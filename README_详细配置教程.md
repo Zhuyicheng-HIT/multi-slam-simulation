@@ -38,17 +38,58 @@ ArduPilot Copter SITL
 Python 3.10
 ```
 
-项目不要求固定 Linux 用户名，也不要求放在固定目录。文档中的 `<仓库目录>` 表示你克隆本仓库的位置，脚本优先使用包共享目录、脚本相对目录和环境变量查找资源。
+项目源码不要求固定安装目录，脚本优先使用包共享目录、脚本相对目录和环境变量查找资源。为了与团队现有验证环境保持一致，并降低历史脚本或遗漏路径造成的复现风险，本教程建议 Linux 用户名统一使用 `zyc`。文档中的 `<仓库目录>` 表示你克隆本仓库的位置。
 
 ## 4. Windows 用户准备 WSL2
 
-原生 Ubuntu 22.04 用户可跳过本节。Windows 管理员 PowerShell 中执行：
+原生 Ubuntu 22.04 用户可跳过本节。Windows 用户建议把 WSL2 的 Ubuntu 虚拟磁盘放在 D 盘，避免长期编译 ROS、Gazebo 和 ArduPilot 占用大量 C 盘空间。
+
+### 4.1 准备 D 盘目录
+
+以管理员身份打开 PowerShell，创建安装目录并更新 WSL：
 
 ```powershell
-wsl --install -d Ubuntu-22.04
+New-Item -ItemType Directory -Force D:\WSL\Ubuntu-22.04
+wsl --update
 ```
 
-重启后打开 Ubuntu-22.04，创建任意 Linux 用户。以后先在 PowerShell 中进入 WSL：
+建议至少为 D 盘预留 80 GB 可用空间。不要把 WSL 虚拟磁盘目录放在移动硬盘、网络盘或开启云端按需同步的目录中。
+
+### 4.2 把 Ubuntu-22.04 安装到 D 盘
+
+管理员 PowerShell 中执行：
+
+```powershell
+wsl --install -d Ubuntu-22.04 --location D:\WSL\Ubuntu-22.04
+```
+
+`--location` 是 WSL 官方提供的自定义安装目录参数。若旧版 WSL 提示不认识该参数，先执行 `wsl --update`，关闭 PowerShell 后重新以管理员身份打开再试。官方命令参考：<https://learn.microsoft.com/windows/wsl/basic-commands>
+
+安装完成后按提示重启 Windows。
+
+### 4.3 第一次启动并创建 `zyc` 用户
+
+重启后在 PowerShell 中执行：
+
+```powershell
+wsl -d Ubuntu-22.04
+```
+
+第一次启动会要求创建 Linux 用户名和密码。用户名建议输入：
+
+```text
+zyc
+```
+
+密码输入时屏幕不会显示字符或星号，这是 Linux 的正常行为。完成后如果看到类似下面的提示符，说明已经进入 Ubuntu：
+
+```text
+zyc@电脑名:~$
+```
+
+虽然当前仓库已经使用相对路径和环境变量，但统一使用 `zyc` 可以减少历史配置、外部脚本或后续组员手工配置中遗漏绝对路径造成的问题。
+
+以后进入该环境仍使用：
 
 ```powershell
 wsl -d Ubuntu-22.04
@@ -61,15 +102,39 @@ echo "$DISPLAY"
 echo "$WAYLAND_DISPLAY"
 ```
 
-建议把仓库放在 WSL 的 Linux 文件系统中，例如 `$HOME/projects`，不要直接在 `/mnt/c` 下编译大型 ROS 工作空间，以免文件访问明显变慢。
+建议把仓库放在 WSL 的 Linux 文件系统中，例如 `$HOME/projects`。因为整个 Ubuntu 虚拟磁盘已经位于 D 盘，这些 Linux 路径的数据也会保存在 D 盘。不要把 ROS 工作空间直接放在 `/mnt/c` 或 `/mnt/d` 下编译，以免跨文件系统访问明显变慢。
 
 ## 5. 安装 ROS 2 Humble
 
-按照 ROS 2 官方 Ubuntu deb 安装说明配置 Humble Desktop：
+本项目建议使用鱼香 ROS 一键安装器配置 ROS 2 Humble。在 Ubuntu/WSL 终端执行：
+
+```bash
+sudo apt update
+sudo apt install -y wget
+wget http://fishros.com/install -O fishros && . fishros
+```
+
+进入交互菜单后依次选择：
+
+```text
+安装 ROS
+ROS 2
+Humble
+桌面版（Desktop）
+```
+
+菜单文字或编号可能随安装器更新，以“ROS 2 Humble 桌面版”为最终选择目标。安装完成后执行：
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 --help
+```
+
+如果鱼香 ROS 安装器无法访问或安装失败，可改用 ROS 2 官方 Ubuntu deb 安装说明：
 
 <https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debians.html>
 
-然后安装本项目常用工具与 ROS 包：
+ROS 2 安装完成后，再安装本项目常用工具与 ROS 包：
 
 ```bash
 sudo apt update
@@ -84,11 +149,12 @@ rosdep update
 sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
 ```
 
-确认 ROS 2：
+最后确认 ROS 2、MAVROS 和常用工具可用：
 
 ```bash
 source /opt/ros/humble/setup.bash
 ros2 --help
+ros2 pkg prefix mavros
 ```
 
 ## 6. 安装 Gazebo Sim Harmonic
