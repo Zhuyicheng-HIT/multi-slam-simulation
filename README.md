@@ -1,96 +1,101 @@
-# Multi-SLAM UAV Simulation
+# 多传感器无人机 SLAM 仿真：快速启动版
 
-ROS 2 Humble + Gazebo Sim Harmonic + ArduPilot SITL multi-sensor UAV
-simulation. The repository contains project-owned source, worlds, sensor
-models, launch scripts and mapping adapters. Downloadable upstream projects
-and compiled artifacts are intentionally not vendored.
+本仓库提供 ROS 2 Humble、Gazebo Sim Harmonic 与 ArduPilot SITL 联合仿真，包含 D435i RGB-D、MID360 激光雷达、光流、MAVROS 飞控接口和 FAST-LIO 建图适配。
 
-## Features
+本页只保留最短复现步骤。首次配置、软件作用、完整终端分工、可视化与排错请阅读 [详细配置教程](README_详细配置教程.md)。
 
-- ArduPilot Copter SITL and MAVROS flight-state chain
-- GPS/GUIDED and non-GPS optical-flow modes
-- rigid front-facing D435i-style RGB-D camera, IMU, TF and point cloud
-- downward optical-flow camera with optional FCU injection
-- simulated MID360 point cloud
-- FAST-LIO ROS 2 integration, reliable map filtering and occupancy grid
-- simple indoor and city worlds with dynamic objects
-- event-driven flight preflight: local pose plus GPS or fresh optical flow
-
-## Repository Layout
+## 1. 仓库包含什么
 
 ```text
-src/multi_slam_uav_sim/      UAV, sensors, bridges, flight and worlds
-src/multi_slam_worlds/       additional reusable Gazebo worlds
-src/mid360_reliable_mapper/  project-owned FAST-LIO map filtering/grid nodes
-docs/                        installation, operation and packaging policy
-tools/                       repository verification helpers
-dependencies.repos           pinned FAST-LIO and Livox ROS driver sources
+src/multi_slam_uav_sim/      无人机、传感器、桥接、飞行和场景启动
+src/multi_slam_worlds/       可复用 Gazebo 场景
+src/mid360_reliable_mapper/  项目自研的点云筛选与栅格地图节点
+docs/                        架构、安装、运行、场景和打包说明
+tools/                       仓库检查工具
+dependencies.repos           FAST-LIO 与 Livox ROS 驱动的固定版本
 ```
 
-## Not Included
+ArduPilot、Gazebo、ArduPilot Gazebo 插件、FAST-LIO、Livox 驱动及其编译产物都不打包进仓库，按照 [安装说明](docs/INSTALL.md) 下载。
 
-The following are downloaded and built separately:
+## 2. 环境要求
 
-- ArduPilot
-- ArduPilot Gazebo plugin and base Iris model
+- Ubuntu 22.04 或 WSL2 Ubuntu-22.04
+- ROS 2 Humble
 - Gazebo Sim Harmonic
-- ROS 2 Humble and MAVROS
-- FAST-LIO and Livox ROS Driver 2
-- optional Clearpath and terrain-generator world collections
+- ArduPilot Copter SITL
 
-No `build/`, `install/`, logs, bags, generated maps or third-party binaries
-are committed. See [Packaging Policy](docs/PACKAGING.md).
+外部依赖的完整安装命令见 [详细配置教程](README_详细配置教程.md)。
 
-## Quick Start
-
-Install external dependencies by following [Installation](docs/INSTALL.md),
-then build this repository:
+## 3. 克隆与编译
 
 ```bash
-cd <workspace>
+git clone https://github.com/Zhuyicheng-HIT/multi-slam-simulation.git
+cd multi-slam-simulation
 source /opt/ros/humble/setup.bash
+python3 -m pip install --user -r requirements.txt
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
+python3 tools/verify_repository.py
 ```
 
-Terminal 1, complete simulator and sensors:
+## 4. 启动仿真
+
+终端 1：启动 Gazebo、ArduPilot SITL、MAVROS、D435i、MID360 和光流诊断。
 
 ```bash
+cd <仓库目录>
+source /opt/ros/humble/setup.bash
+source install/setup.bash
 install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
 ```
 
-Terminal 2, optional flight state machine:
+终端 2：启动矩形飞行状态机。状态机在本地位姿有效，并且 GPS 或新鲜光流任一可用时即可继续起飞准备。
 
 ```bash
+cd <仓库目录>
+source /opt/ros/humble/setup.bash
+source install/setup.bash
 install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
 ```
 
-Terminal 3, optional FAST-LIO and RViz:
+终端 3（可选）：启动 FAST-LIO 与 RViz。
 
 ```bash
-LIDAR_WS=<fast-lio-workspace> \
-  install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_mid360_fastlio_mapping.sh
+cd <仓库目录>
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+LIDAR_WS="$HOME/multi-slam-deps/mid360_ws" RVIZ=1 \
+  install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_fastlio_mapping.sh
 ```
 
-Complete commands, visualization topics and non-GPS mode are documented in
-[Running the Simulation](docs/RUNNING.md).
+## 5. 快速确认可视化
 
-## Verified Environment
+D435i 彩色图：
 
-- Ubuntu 22.04 / WSL 2
-- ROS 2 Humble
-- Gazebo Sim Harmonic 8.13.0
-- MAVROS 2.14.0
-- ArduPilot Copter SITL commit `f9d619e26002d6aaa41643ee99c0ae0ee01e2247`
-- Python 3.10
+```bash
+ros2 run rqt_image_view rqt_image_view
+# 在下拉框选择 /front/d435i/color/image_raw
+```
 
-The project was verified with Gazebo, SITL, MAVROS, RGB-D, MID360, FAST-LIO,
-GPS flight and optical-flow-gated flight running together.
+D435i 深度图：
 
-## License
+```bash
+ros2 run rqt_image_view rqt_image_view
+# 在下拉框选择 /front/d435i/depth/image_rect_raw
+```
 
-The main simulation packages are Apache-2.0. The bundled
-`mid360_reliable_mapper` package declares LGPL-3.0-only and includes its own
-license file. External dependencies retain their upstream licenses.
+FAST-LIO：使用上面的 `RVIZ=1` 命令，确认 RViz 中出现 `/cloud_registered`、轨迹与地图。详细检查命令见 [运行说明](docs/RUNNING.md)。
 
+## 6. 进一步阅读
+
+- [详细配置教程](README_详细配置教程.md)：从新系统到完整仿真的逐步说明
+- [安装说明](docs/INSTALL.md)：依赖版本与下载命令
+- [运行说明](docs/RUNNING.md)：各终端、RGB-D、FAST-LIO 和非 GPS 模式
+- [系统架构](docs/ARCHITECTURE.md)：数据流、TF 与飞控边界
+- [场景说明](docs/WORLDS.md)：可用世界及启动命令
+- [打包原则](docs/PACKAGING.md)：纳入与排除内容
+
+## 7. 许可证
+
+主仿真包采用 Apache-2.0。`src/mid360_reliable_mapper` 保留其目录内声明的许可证；外部依赖继续遵循各自上游许可证。
