@@ -28,17 +28,17 @@
 - Gazebo Sim Harmonic 软件包；
 - 通过根目录 `dependencies.repos` 下载的 FAST-LIO 与 Livox ROS Driver 2；
 - ArduPilot、插件和外部建图工作空间的编译产物；
-- `<工作空间>/external` 下的可下载大型场景仓库。
+- `$HOME/projects/multi-slam-simulation/external` 下的可下载大型场景仓库。
 
 ## 3. 路径规则
 
 - 包内脚本从已安装的 package share 目录解析资源。
 - `ARDUPILOT_DIR` 默认 `$HOME/ardupilot`。
 - `ARDUPILOT_GAZEBO_DIR` 默认 `$HOME/ardupilot_gazebo`。
-- `MULTI_SLAM_EXTERNAL_DIR` 默认 `<工作空间>/external`。
+- `MULTI_SLAM_EXTERNAL_DIR` 默认 `$HOME/projects/multi-slam-simulation/external`。
 - `LIDAR_WS` 用于指定外部 FAST-LIO/Livox 工作空间。
 - Gazebo 资源路径由 `scripts/env.sh` 统一构造。
-- 源码与 launch 文件不得依赖特定用户主目录，也不得直接写死 `<工作空间>/install` 中的路径。
+- 源码与 launch 文件不得依赖特定用户主目录，也不得直接写死工作空间 `install` 目录；运行时应从脚本自身位置推导。
 
 ## 4. 接口规则
 

@@ -1,101 +1,160 @@
-# 多传感器无人机 SLAM 仿真：快速启动版
+# 多传感器无人机 SLAM 仿真：快速配置版
 
-本仓库提供 ROS 2 Humble、Gazebo Sim Harmonic 与 ArduPilot SITL 联合仿真，包含 D435i RGB-D、MID360 激光雷达、光流、MAVROS 飞控接口和 FAST-LIO 建图适配。
+本页用于新电脑直接复现。除第一次启动 Ubuntu 时输入用户名 `zyc`、鱼香 ROS 菜单选择“ROS 2 Humble 桌面版”外，下面命令均可原样复制，不需要修改路径。
 
-本页只保留最短复现步骤。首次配置、软件作用、完整终端分工、可视化与排错请阅读 [详细配置教程](README_详细配置教程.md)。
+零基础解释、组件作用和排错见 [详细配置教程](README_详细配置教程.md)。
 
-## 1. 仓库包含什么
+## 1. 安装内容
+
+| 组件 | 用途 | 安装方式 |
+|---|---|---|
+| WSL2 Ubuntu-22.04 | Windows 上的 Linux 运行环境 | PowerShell 安装到 D 盘 |
+| ROS 2 Humble | 节点、话题、TF 和工具 | 鱼香 ROS 一键安装 |
+| Gazebo Sim Harmonic | 三维场景、物理和传感器 | 项目脚本从 OSRF 官方源安装 |
+| MAVROS2 | ROS 2 与 ArduPilot 的通信桥 | 项目脚本安装 Humble 软件包和 GeographicLib 数据 |
+| ArduPilot Copter SITL | APM 飞控仿真 | 项目脚本下载固定版本并编译 |
+| ArduPilot Gazebo | 飞控与 Gazebo 的动力学接口 | 项目脚本下载固定版本并编译 |
+| D435i 与 MID360 | RGB-D、IMU 与三维激光雷达仿真 | 已包含项目专用模型与桥接源码 |
+| FAST-LIO 地图包 | 激光里程计、注册点云与栅格地图 | 项目脚本下载 FAST-LIO、Livox 驱动和 SDK 并编译 |
+| 默认仿真地图 | 简单场景、隧道和 ArduPilot 仓库 | 已包含在本仓库 |
+| 可选大型地图 | Clearpath 场景与城市地形 | 单独一条脚本按需下载，不上传 GitHub |
+
+## 2. Windows 安装 WSL2 到 D 盘
+
+以管理员身份打开 PowerShell，复制执行：
+
+```powershell
+wsl --update
+wsl --install -d Ubuntu-22.04 --location D:\WSL\Ubuntu-22.04
+```
+
+安装完成后重启电脑。第一次打开 Ubuntu-22.04 时，Linux 用户名输入：
 
 ```text
-src/multi_slam_uav_sim/      无人机、传感器、桥接、飞行和场景启动
-src/multi_slam_worlds/       可复用 Gazebo 场景
-src/mid360_reliable_mapper/  项目自研的点云筛选与栅格地图节点
-docs/                        架构、安装、运行、场景和打包说明
-tools/                       仓库检查工具
-dependencies.repos           FAST-LIO 与 Livox ROS 驱动的固定版本
+zyc
 ```
 
-ArduPilot、Gazebo、ArduPilot Gazebo 插件、FAST-LIO、Livox 驱动及其编译产物都不打包进仓库，按照 [安装说明](docs/INSTALL.md) 下载。
+以后从 PowerShell 进入 Ubuntu：
 
-## 2. 环境要求
+```powershell
+wsl -d Ubuntu-22.04
+```
 
-- Ubuntu 22.04 或 WSL2 Ubuntu-22.04
-- ROS 2 Humble
-- Gazebo Sim Harmonic
-- ArduPilot Copter SITL
+下面所有 `bash` 命令都在 Ubuntu 终端执行。
 
-外部依赖的完整安装命令见 [详细配置教程](README_详细配置教程.md)。
+## 3. 安装 ROS 2 Humble
 
-## 3. 克隆与编译
+在 Ubuntu 终端复制执行：
 
 ```bash
+sudo apt update
+sudo apt install -y wget
+wget http://fishros.com/install -O fishros && . fishros
+```
+
+在鱼香 ROS 菜单中选择“安装 ROS” -> “ROS 2” -> “Humble” -> “桌面版”。完成后关闭当前 Ubuntu 终端，再重新进入：
+
+```powershell
+wsl -d Ubuntu-22.04
+```
+
+## 4. 一键安装全部仿真组件
+
+回到 Ubuntu 终端，整段复制执行：
+
+```bash
+sudo apt update
+sudo apt install -y git
+mkdir -p "$HOME/projects"
+cd "$HOME/projects"
 git clone https://github.com/Zhuyicheng-HIT/multi-slam-simulation.git
-cd multi-slam-simulation
-source /opt/ros/humble/setup.bash
-python3 -m pip install --user -r requirements.txt
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install
-source install/setup.bash
-python3 tools/verify_repository.py
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/setup_ubuntu.sh
 ```
 
-## 4. 启动仿真
+该脚本会自动完成以下工作：
 
-终端 1：启动 Gazebo、ArduPilot SITL、MAVROS、D435i、MID360 和光流诊断。
+- 安装 Gazebo Harmonic、MAVROS2、RGB-D、RViz、PCL 与编译依赖；
+- 下载并编译固定版本 ArduPilot Copter SITL；
+- 下载并编译 ArduPilot Gazebo 插件；
+- 下载并安装 Livox-SDK2；
+- 下载并编译 Livox ROS Driver 2 与 FAST-LIO；
+- 编译本仓库的三个 ROS 2 包并执行仓库检查。
+
+外部大型源码默认保存在 `$HOME/ardupilot`、`$HOME/ardupilot_gazebo` 和 `$HOME/multi-slam-deps`，不会被提交到本仓库。
+
+## 5. 启动仿真
+
+打开第 1 个 Ubuntu 终端，启动 Gazebo、APM、MAVROS2、D435i、MID360 和光流：
 
 ```bash
-cd <仓库目录>
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
 ```
 
-终端 2：启动矩形飞行状态机。状态机在本地位姿有效，并且 GPS 或新鲜光流任一可用时即可继续起飞准备。
+打开第 2 个 Ubuntu 终端，启动自动起飞和矩形飞行状态机：
 
 ```bash
-cd <仓库目录>
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
 ```
 
-终端 3（可选）：启动 FAST-LIO 与 RViz。
+打开第 3 个 Ubuntu 终端，启动 FAST-LIO 建图与 RViz：
 
 ```bash
-cd <仓库目录>
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-LIDAR_WS="$HOME/multi-slam-deps/mid360_ws" RVIZ=1 \
-  install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_fastlio_mapping.sh
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_mid360_fastlio_mapping.sh
 ```
 
-## 5. 快速确认可视化
+## 6. 查看 RGB-D
 
-D435i 彩色图：
+彩色图：
 
 ```bash
+source /opt/ros/humble/setup.bash
 ros2 run rqt_image_view rqt_image_view
-# 在下拉框选择 /front/d435i/color/image_raw
 ```
 
-D435i 深度图：
+在下拉框选择 `/front/d435i/color/image_raw`。
+
+深度图再打开一个终端执行相同命令，并选择 `/front/d435i/depth/image_rect_raw`。
+
+FAST-LIO 的 RViz 会由第 3 个终端自动打开，正常时可以看到 `/cloud_registered`、轨迹和 `/fastlio_occupancy_grid`。
+
+## 7. 下载可选大型地图
+
+默认仿真和 FAST-LIO 不需要本节。需要 Clearpath 仓库、办公室、施工场景或城市地形时执行：
 
 ```bash
-ros2 run rqt_image_view rqt_image_view
-# 在下拉框选择 /front/d435i/depth/image_rect_raw
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/fetch_optional_worlds.sh
 ```
 
-FAST-LIO：使用上面的 `RVIZ=1` 命令，确认 RViz 中出现 `/cloud_registered`、轨迹与地图。详细检查命令见 [运行说明](docs/RUNNING.md)。
+下载后可直接启动示例：
 
-## 6. 进一步阅读
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_worlds/share/multi_slam_worlds/scripts/run_named_world.sh clearpath_warehouse
+```
 
-- [详细配置教程](README_详细配置教程.md)：从新系统到完整仿真的逐步说明
-- [安装说明](docs/INSTALL.md)：依赖版本与下载命令
-- [运行说明](docs/RUNNING.md)：各终端、RGB-D、FAST-LIO 和非 GPS 模式
-- [系统架构](docs/ARCHITECTURE.md)：数据流、TF 与飞控边界
-- [场景说明](docs/WORLDS.md)：可用世界及启动命令
-- [打包原则](docs/PACKAGING.md)：纳入与排除内容
+## 8. 快速检查
 
-## 7. 许可证
+```bash
+source /opt/ros/humble/setup.bash
+source "$HOME/projects/multi-slam-simulation/install/setup.bash"
+ros2 topic echo --once /mavros/state
+ros2 topic hz /front/d435i/color/image_raw
+ros2 topic hz /sim/mid360/points_raw
+ros2 topic hz /cloud_registered
+```
 
-主仿真包采用 Apache-2.0。`src/mid360_reliable_mapper` 保留其目录内声明的许可证；外部依赖继续遵循各自上游许可证。
+## 9. 进一步阅读
+
+- [详细配置教程](README_详细配置教程.md)
+- [安装与依赖说明](docs/INSTALL.md)
+- [运行与排错](docs/RUNNING.md)
+- [系统架构](docs/ARCHITECTURE.md)
+- [场景说明](docs/WORLDS.md)
+- [GitHub 打包原则](docs/PACKAGING.md)
+
+主仿真包采用 Apache-2.0；外部依赖遵循各自上游许可证。
