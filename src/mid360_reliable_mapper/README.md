@@ -1,4 +1,4 @@
-# MID360 Reliable Mapper Nano Flight
+# MID360 可靠建图与 Nano 飞行部署
 
 这是 **Nano 平台真实飞行边缘部署包**。它只包含真实 MID360 雷达运行需要的内容：Livox 驱动、FAST-LIO2、可靠点云建图、二维占据栅格、MID360 模块相对无人机机体的安装外参 TF，以及无头运行脚本。
 

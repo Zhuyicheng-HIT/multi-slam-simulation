@@ -1,67 +1,56 @@
-# Installation
+# 安装说明
 
-The verified platform is Ubuntu 22.04 or WSL 2 Ubuntu-22.04. Commands use
-`<workspace>` as the clone directory and never depend on a specific username.
+已验证平台为 Ubuntu 22.04 或 WSL2 Ubuntu-22.04。命令默认在 Ubuntu 终端执行，项目本身不要求固定用户名或固定安装目录。
 
 ## 1. ROS 2 Humble
 
-Install ROS 2 Humble Desktop using the official instructions:
+先按官方说明安装 ROS 2 Humble Desktop：
 
-https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debians.html
+<https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debians.html>
 
-Then install the project ROS dependencies:
+安装项目依赖：
 
 ```bash
 sudo apt update
 sudo apt install -y \
-  git curl lsb-release gnupg build-essential cmake ninja-build \
-  python3-pip python3-numpy python3-opencv python3-vcstool \
-  python3-colcon-common-extensions python3-rosdep \
+  git curl wget cmake build-essential python3-pip \
+  python3-colcon-common-extensions python3-rosdep python3-vcstool \
   ros-humble-mavros ros-humble-mavros-extras \
-  ros-humble-cv-bridge ros-humble-rqt-image-view ros-humble-rviz2 \
-  ros-humble-tf2-ros ros-humble-pcl-ros
+  ros-humble-rqt-image-view ros-humble-rviz2 ros-humble-tf2-tools
 
 sudo rosdep init 2>/dev/null || true
 rosdep update
-```
-
-Install MAVROS GeographicLib datasets once:
-
-```bash
 sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
 ```
 
 ## 2. Gazebo Sim Harmonic
 
-Use the official OSRF binary repository; do not copy a Gazebo installation
-into this workspace:
+使用 OSRF 官方二进制软件源安装，不要复制其他机器的 Gazebo 安装目录：
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y curl lsb-release gnupg
 sudo curl https://packages.osrfoundation.org/gazebo.gpg \
-  --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+  -o /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] https://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
   | sudo tee /etc/apt/sources.list.d/gazebo-stable.list >/dev/null
 sudo apt-get update
 sudo apt-get install -y gz-harmonic python3-gz-msgs10 python3-gz-transport13
-gz sim --versions
 ```
 
-Official documentation: https://gazebosim.org/docs/harmonic/install_ubuntu/
+官方说明：<https://gazebosim.org/docs/harmonic/install_ubuntu/>
 
-After installing ROS and Gazebo, the pinned Git repositories in sections 3,
-4 and 6 can be downloaded automatically without compiling them:
+## 3. 可选的一键下载脚本
+
+安装 ROS 2 与 Gazebo 后，可在仓库根目录执行脚本下载固定版本的外部源码：
 
 ```bash
-cd <workspace>
 tools/fetch_external_sources.sh
 ```
 
-## 3. ArduPilot SITL
+脚本只负责下载到仓库外或被忽略的目录，外部源码和编译结果不会加入 Git。
 
-ArduPilot is not stored in this repository. Clone it with submodules and use
-the tested commit:
+## 4. ArduPilot SITL
 
 ```bash
 git clone --recurse-submodules https://github.com/ArduPilot/ardupilot.git "$HOME/ardupilot"
@@ -74,35 +63,35 @@ Tools/environment_install/install-prereqs-ubuntu.sh -y
 ./waf copter
 ```
 
-## 4. ArduPilot Gazebo Plugin
+## 5. ArduPilot Gazebo 插件
 
-Clone and build the official plugin. It supplies the base Iris model referenced
-by `model://iris_with_standoffs`:
+该插件提供仿真接口以及本项目引用的基础 Iris 模型：
 
 ```bash
 git clone https://github.com/ArduPilot/ardupilot_gazebo.git "$HOME/ardupilot_gazebo"
 cd "$HOME/ardupilot_gazebo"
 git checkout 082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5
 sudo apt install -y libgz-sim8-dev rapidjson-dev libopencv-dev \
-  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-  gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl
+  libgz-transport13-dev libgz-msgs10-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j"$(nproc)"
 ```
 
-The runtime scripts default to `$HOME/ardupilot` and
-`$HOME/ardupilot_gazebo`. Different locations are supported:
+运行脚本默认查找 `$HOME/ardupilot` 和 `$HOME/ardupilot_gazebo`。其他位置通过环境变量传入：
 
 ```bash
-export ARDUPILOT_DIR=/path/to/ardupilot
-export ARDUPILOT_GAZEBO_DIR=/path/to/ardupilot_gazebo
+export ARDUPILOT_DIR="/你的路径/ardupilot"
+export ARDUPILOT_GAZEBO_DIR="/你的路径/ardupilot_gazebo"
 ```
 
-## 5. Clone and Build This Repository
+## 6. 克隆并编译本仓库
 
 ```bash
-git clone https://github.com/Zhuyicheng-HIT/multi-slam-simulation.git <workspace>
-cd <workspace>
+mkdir -p "$HOME/projects"
+git clone https://github.com/Zhuyicheng-HIT/multi-slam-simulation.git \
+  "$HOME/projects/multi-slam-simulation"
+export MULTI_SLAM_REPO="$HOME/projects/multi-slam-simulation"
+cd "$MULTI_SLAM_REPO"
 source /opt/ros/humble/setup.bash
 python3 -m pip install --user -r requirements.txt
 rosdep install --from-paths src --ignore-src -r -y
@@ -111,19 +100,18 @@ source install/setup.bash
 python3 tools/verify_repository.py
 ```
 
-## 6. Optional FAST-LIO Workspace
+## 7. 可选 FAST-LIO 工作空间
 
-FAST-LIO and Livox ROS Driver 2 remain external. Import their pinned source
-versions into a separate workspace:
+FAST-LIO、Livox ROS Driver 2 与 Livox-SDK2 保持为外部依赖。先导入固定版本源码：
 
 ```bash
 mkdir -p "$HOME/multi-slam-deps/mid360_ws/src"
 cd "$HOME/multi-slam-deps/mid360_ws"
-vcs import --recursive src < <workspace>/dependencies.repos
-source /opt/ros/humble/setup.bash
+export MULTI_SLAM_REPO="${MULTI_SLAM_REPO:-$HOME/projects/multi-slam-simulation}"
+vcs import --recursive src < "$MULTI_SLAM_REPO/dependencies.repos"
 ```
 
-Install the official Livox-SDK2 dependency:
+安装 Livox-SDK2：
 
 ```bash
 git clone https://github.com/Livox-SDK/Livox-SDK2.git \
@@ -135,9 +123,7 @@ cmake --build build -j"$(nproc)"
 sudo cmake --install build
 ```
 
-Prepare the Livox ROS 2 package and build the external workspace. Its official
-build script selects `package_ROS2.xml` and builds FAST-LIO in the same colcon
-workspace:
+编译 ROS 2 外部工作空间：
 
 ```bash
 cd "$HOME/multi-slam-deps/mid360_ws/src/livox_ros_driver2"
@@ -145,36 +131,35 @@ cd "$HOME/multi-slam-deps/mid360_ws/src/livox_ros_driver2"
 source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
 ```
 
-Upstream documentation:
+上游说明：
 
-https://github.com/Livox-SDK/Livox-SDK2
+- <https://github.com/Livox-SDK/Livox-SDK2>
+- <https://github.com/Livox-SDK/livox_ros_driver2>
+- <https://github.com/hku-mars/FAST_LIO>
 
-https://github.com/Livox-SDK/livox_ros_driver2
-
-Then set the workspace used by the mapping launcher:
+启动建图时指定工作空间：
 
 ```bash
 export LIDAR_WS="$HOME/multi-slam-deps/mid360_ws"
 ```
 
-The project-owned `mid360_reliable_mapper` is built with the main repository;
-only FAST-LIO and Livox message/driver packages come from the external overlay.
+`mid360_reliable_mapper` 是本项目源码，随主仓库一起编译；只有 FAST-LIO 与 Livox 消息/驱动来自外部 overlay。
 
-## 7. Optional Large World Collections
+## 8. 可选大型场景仓库
 
-Clearpath Simulator and Gazebo Terrain Generator are not required by the
-default UAV worlds. Clone them under `<workspace>/external` only when needed:
+默认无人机场景不依赖 Clearpath Simulator 和 Gazebo Terrain Generator。只有需要对应场景时才下载到被 Git 忽略的 `external/`：
 
 ```bash
-mkdir -p <workspace>/external
+export MULTI_SLAM_REPO="${MULTI_SLAM_REPO:-$HOME/projects/multi-slam-simulation}"
+mkdir -p "$MULTI_SLAM_REPO/external"
 git clone https://github.com/clearpathrobotics/clearpath_simulator.git \
-  <workspace>/external/clearpath_simulator
+  "$MULTI_SLAM_REPO/external/clearpath_simulator"
 git clone https://github.com/fkromer/gazebo_terrain_generator.git \
-  <workspace>/external/gazebo_terrain_generator
+  "$MULTI_SLAM_REPO/external/gazebo_terrain_generator"
 ```
 
-For a different location:
+放在其他位置时设置：
 
 ```bash
-export MULTI_SLAM_EXTERNAL_DIR=/path/to/external
+export MULTI_SLAM_EXTERNAL_DIR="/你的路径/external"
 ```

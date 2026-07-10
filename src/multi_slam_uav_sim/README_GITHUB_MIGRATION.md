@@ -1,6 +1,8 @@
-# multi_slam_uav_sim GitHub Migration Notes
+# `multi_slam_uav_sim` GitHub 迁移说明
 
-This package contains the small project-specific assets that should be committed:
+本文说明该包迁移到 GitHub 时的内容边界、路径规则与接口约定。
+
+## 1. 应提交的项目资源
 
 - `models/iris_apm_rgbd`
 - `models/d435i_downward_sensor_only`
@@ -16,49 +18,45 @@ This package contains the small project-specific assets that should be committed
 - `multi_slam_uav_sim/*.py`
 - `scripts/*.sh`
 
-Do not commit these external dependencies. Install or clone them separately:
+这些内容是项目专用且复现必需的源码、参数和小型资源。
 
-- ArduPilot: `https://github.com/ArduPilot/ardupilot`
-- ArduPilot Gazebo plugin and base Iris models: `https://github.com/ArduPilot/ardupilot_gazebo`
-- MAVROS from ROS 2 packages
-- Gazebo Sim / Harmonic packages
-- FAST-LIO and Livox ROS Driver 2 (download using `dependencies.repos`)
-- ArduPilot and `ardupilot_gazebo` source or compiled output
-- Large map repositories under `<workspace>/external`
+## 2. 不应提交的外部依赖
 
-Path policy:
+- ArduPilot：<https://github.com/ArduPilot/ardupilot>
+- ArduPilot Gazebo 插件与基础 Iris 模型：<https://github.com/ArduPilot/ardupilot_gazebo>
+- 通过 ROS 2 软件包安装的 MAVROS；
+- Gazebo Sim Harmonic 软件包；
+- 通过根目录 `dependencies.repos` 下载的 FAST-LIO 与 Livox ROS Driver 2；
+- ArduPilot、插件和外部建图工作空间的编译产物；
+- `<工作空间>/external` 下的可下载大型场景仓库。
 
-- Package scripts resolve paths relative to the installed package share directory.
-- External paths are configured with environment variables:
-  - `ARDUPILOT_DIR`, default `$HOME/ardupilot`
-  - `ARDUPILOT_GAZEBO_DIR`, default `$HOME/ardupilot_gazebo`
-  - `MULTI_SLAM_EXTERNAL_DIR`, default `<workspace>/external`
-  - `LIDAR_WS`, default `<workspace>/external/mid360_ws`
-- Gazebo resource paths are constructed by `scripts/env.sh`.
-- No source or launch file may depend on a specific user's home directory or
-  directly source files from `<workspace>/install`; installed scripts locate
-  their package share and workspace prefix from their own location.
+## 3. 路径规则
 
-Interface policy:
+- 包内脚本从已安装的 package share 目录解析资源。
+- `ARDUPILOT_DIR` 默认 `$HOME/ardupilot`。
+- `ARDUPILOT_GAZEBO_DIR` 默认 `$HOME/ardupilot_gazebo`。
+- `MULTI_SLAM_EXTERNAL_DIR` 默认 `<工作空间>/external`。
+- `LIDAR_WS` 用于指定外部 FAST-LIO/Livox 工作空间。
+- Gazebo 资源路径由 `scripts/env.sh` 统一构造。
+- 源码与 launch 文件不得依赖特定用户主目录，也不得直接写死 `<工作空间>/install` 中的路径。
 
-- Flight-controller and attached navigation sensors are exposed through MAVROS and `/uav/...`.
-- LiDAR and RGB-D are direct companion-computer sensors and stay on `/sim/...` or `/camera/...`.
-- The rigid front D435i-style sensor uses `/front/d435i/...`. Its RGB, CameraInfo,
-  16UC1 millimetre depth, aligned-depth, PointCloud2, accel, gyro, combined IMU,
-  and TF interfaces mirror common `realsense2_camera` names. Infrared stereo is
-  intentionally not published because the Gazebo model does not simulate two
-  physically separated infrared imagers.
-  The point cloud is generated on demand at 10 Hz with 4x image decimation
-  (160x120) to keep the Python simulation adapter from throttling camera frames.
-  It contains XYZ fields in the color optical frame but is not color-textured.
-  Aligned depth is valid because the simulated RGB and depth imagers are
-  co-located; it does not model the physical D435i stereo baseline.
-- Gazebo ground truth topics must not be used by algorithm nodes as navigation state.
-- Optical flow testing publishes `/sim/optical_flow/raw` with `mavros_msgs/msg/OpticalFlow`; it is deliberately not injected into the FCU by default.
-- Rectangle flight testing is provided by `guided_rectangle_waypoints`, which uses MAVROS GPS/GUIDED local setpoints while `flow_gazebo_accuracy` compares optical flow with Gazebo motion.
-- Rectangle preflight is event driven: after MAVROS and local pose are ready,
-  either a valid GPS fix or fresh optical flow above `FLOW_MIN_QUALITY` releases
-  the state machine after `NAVIGATION_STABLE_S`. `PREFLIGHT_WAIT_S` is a timeout,
-  not a fixed delay. `NAVIGATION_SOURCE` can be `auto`, `gps`, or `optical_flow`;
-  the default flow threshold is zero (fresh-message presence), while deployments
-  that require stronger flow validation can raise `FLOW_MIN_QUALITY`.
+## 4. 接口规则
+
+- 飞控及其导航传感器通过 MAVROS 与 `/uav/...` 暴露。
+- 激光雷达和 RGB-D 是伴随计算机直连传感器，保留在 `/sim/...` 与 `/front/d435i/...`。
+- D435i 仿真接口包含 RGB、CameraInfo、16UC1 毫米深度、对齐深度、PointCloud2、加速度、角速度、组合 IMU 和 TF。
+- 点云按需以 10 Hz、图像四倍降采样生成，字段为彩色光学坐标系中的 XYZ，不包含颜色纹理。
+- 仿真 RGB 与深度相机共址，所以对齐深度有效，但不模拟真实 D435i 双目基线。
+- Gazebo 真值话题不得作为算法节点的导航状态。
+- 默认光流测试发布 `/sim/optical_flow/raw`，用于诊断，不自动注入飞控。
+
+## 5. 飞行准备规则
+
+矩形飞行由 `guided_rectangle_waypoints` 提供。MAVROS 和本地位姿就绪后，以下任一来源可释放状态机：
+
+- 有效 GPS 定位；
+- 质量不低于 `FLOW_MIN_QUALITY` 的新鲜光流。
+
+来源还需要保持 `NAVIGATION_STABLE_S`。`PREFLIGHT_WAIT_S` 是超时，不是固定延迟；`NAVIGATION_SOURCE` 可设置为 `auto`、`gps` 或 `optical_flow`。
+
+完整仓库级打包规则见根目录 [打包原则](../../docs/PACKAGING.md)。
