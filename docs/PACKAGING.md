@@ -31,7 +31,7 @@
 
 ## 4. 路径规则
 
-项目文件使用 ROS 2 package share、脚本相对路径或 `<工作空间>` 占位符。外部目录只通过以下环境变量配置：
+项目文件使用 ROS 2 package share 与脚本相对路径。推荐工作空间是 `$HOME/projects/multi-slam-simulation`，外部目录只通过以下环境变量配置：
 
 ```text
 ARDUPILOT_DIR

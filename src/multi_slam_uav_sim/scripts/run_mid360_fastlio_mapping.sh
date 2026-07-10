@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PKG_SHARE=$(cd "$SCRIPT_DIR/.." && pwd)
 WS_INSTALL=$(cd "$PKG_SHARE/../../.." && pwd)
 WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
-LIDAR_WS=${LIDAR_WS:-$WS_ROOT/external/mid360_ws}
+LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/mid360_fastlio_mapping_$(date +%Y%m%d_%H%M%S)}
 RVIZ=${RVIZ:-1}
 FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-pointcloud}
@@ -17,11 +17,11 @@ if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
 MID360 / FAST-LIO workspace was not found:
   $LIDAR_WS/install/setup.bash
 
-Set LIDAR_WS to the workspace that contains fast_lio, livox_ros_driver2,
-and mid360_reliable_mapper.
+Run the repository installer first. It creates the workspace containing
+fast_lio and livox_ros_driver2 at the default path below.
 
 Example:
-  LIDAR_WS=/path/to/mid360_ws run_mid360_fastlio_mapping.sh
+  bash $WS_ROOT/tools/setup_ubuntu.sh
 EOF
   exit 2
 fi

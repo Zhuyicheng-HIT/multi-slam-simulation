@@ -75,7 +75,8 @@ Clearpath 与地形生成器相关场景需要额外下载对应上游仓库，�
 精选场景已在 Gazebo Sim 8.13.0 中使用以下无界面命令进行冒烟测试：
 
 ```bash
-gz sim -s -r --headless-rendering <场景文件>
+gz sim -s -r --headless-rendering \
+  "$HOME/projects/multi-slam-simulation/src/multi_slam_worlds/worlds/simple_uav_test.sdf"
 ```
 
 仓库只保留本项目选定的场景入口；可公开下载的大型场景仓库和生成地形不重复打包。

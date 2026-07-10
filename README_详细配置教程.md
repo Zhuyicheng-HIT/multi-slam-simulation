@@ -38,7 +38,7 @@ ArduPilot Copter SITL
 Python 3.10
 ```
 
-项目源码不要求固定安装目录，脚本优先使用包共享目录、脚本相对目录和环境变量查找资源。为了与团队现有验证环境保持一致，并降低历史脚本或遗漏路径造成的复现风险，本教程建议 Linux 用户名统一使用 `zyc`。文档中的 `<仓库目录>` 表示你克隆本仓库的位置。
+项目源码不依赖固定安装目录，但为了让所有命令可以原样复制，并降低历史脚本或遗漏路径造成的复现风险，本教程统一使用 Linux 用户名 `zyc` 和仓库路径 `$HOME/projects/multi-slam-simulation`。脚本内部仍使用包共享目录、脚本相对目录和环境变量查找资源。
 
 ## 4. Windows 用户准备 WSL2
 
@@ -157,9 +157,35 @@ ros2 --help
 ros2 pkg prefix mavros
 ```
 
-## 6. 安装 Gazebo Sim Harmonic
+## 6. 一键安装其余全部组件
 
-Gazebo 通过 OSRF 官方软件源安装，不复制其他电脑的安装目录。完整命令以 [安装说明](docs/INSTALL.md) 为准。安装后确认：
+ROS 2 Humble 安装完成后，推荐直接使用仓库脚本安装 Gazebo、MAVROS2、APM、插件和 FAST-LIO 地图依赖。下面命令可以整段复制：
+
+```bash
+sudo apt update
+sudo apt install -y git
+mkdir -p "$HOME/projects"
+cd "$HOME/projects"
+git clone https://github.com/Zhuyicheng-HIT/multi-slam-simulation.git
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/setup_ubuntu.sh
+```
+
+脚本按固定提交号下载外部项目并自动编译，默认目录如下：
+
+```text
+$HOME/ardupilot
+$HOME/ardupilot_gazebo
+$HOME/multi-slam-deps/Livox-SDK2
+$HOME/multi-slam-deps/mid360_ws
+$HOME/projects/multi-slam-simulation
+```
+
+运行成功后可直接跳到第 11 节启动仿真。第 6.1 至第 10 节用于解释脚本做了什么，以及安装失败时逐项排查。
+
+### 6.1 Gazebo Sim Harmonic
+
+Gazebo 通过 OSRF 官方软件源安装，不复制其他电脑的安装目录。一键脚本会配置软件源并安装 `gz-harmonic`、C++ 开发包与 Python 消息/传输绑定。安装后确认：
 
 ```bash
 gz sim --versions
@@ -167,7 +193,7 @@ gz sim --versions
 
 Gazebo 负责场景、物理、传感器与图形渲染；它不负责飞行控制。飞控由 ArduPilot SITL 运行。
 
-## 7. 下载并编译 ArduPilot
+## 7. ArduPilot 下载与编译细节
 
 ```bash
 git clone --recurse-submodules https://github.com/ArduPilot/ardupilot.git "$HOME/ardupilot"
@@ -182,7 +208,7 @@ Tools/environment_install/install-prereqs-ubuntu.sh -y
 
 ArduPilot 较大且包含子模块，因此只记录提交号，不纳入本仓库。
 
-## 8. 下载并编译 ArduPilot Gazebo 插件
+## 8. ArduPilot Gazebo 插件编译细节
 
 ```bash
 git clone https://github.com/ArduPilot/ardupilot_gazebo.git "$HOME/ardupilot_gazebo"
@@ -194,14 +220,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j"$(nproc)"
 ```
 
-默认位置是 `$HOME/ardupilot` 与 `$HOME/ardupilot_gazebo`。如果放在其他目录，启动前设置：
+默认位置是 `$HOME/ardupilot` 与 `$HOME/ardupilot_gazebo`，与启动脚本的默认查找位置一致，无需设置环境变量。
 
-```bash
-export ARDUPILOT_DIR="/你的路径/ardupilot"
-export ARDUPILOT_GAZEBO_DIR="/你的路径/ardupilot_gazebo"
-```
-
-## 9. 克隆并编译本仓库
+## 9. 主仓库编译细节
 
 ```bash
 mkdir -p "$HOME/projects"
@@ -211,7 +232,7 @@ cd multi-slam-simulation
 
 source /opt/ros/humble/setup.bash
 python3 -m pip install --user -r requirements.txt
-rosdep install --from-paths src --ignore-src -r -y
+rosdep install --from-paths src --ignore-src -r -y --skip-keys ament_python
 colcon build --symlink-install
 source install/setup.bash
 python3 tools/verify_repository.py
@@ -257,21 +278,15 @@ cd "$HOME/multi-slam-deps/mid360_ws/src/livox_ros_driver2"
 source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
 ```
 
-如果外部工作空间放在其他位置，启动时通过 `LIDAR_WS` 指定，不修改脚本：
-
-```bash
-export LIDAR_WS="/你的路径/mid360_ws"
-```
+外部工作空间固定放在 `$HOME/multi-slam-deps/mid360_ws`，与下载工具和建图脚本的默认位置一致，无需修改 `LIDAR_WS`。
 
 ## 11. 终端分工与完整启动
 
 ### 11.1 终端 1：仿真、飞控与传感器
 
 ```bash
-cd <仓库目录>
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
 ```
 
 这个终端统一管理 Gazebo、ArduPilot SITL、MAVROS、传感器桥接与光流诊断。不要再启动第二套完整仿真，否则端口和话题会冲突。
@@ -279,10 +294,8 @@ install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
 ### 11.2 终端 2：飞行状态机
 
 ```bash
-cd <仓库目录>
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
 ```
 
 默认 `NAVIGATION_SOURCE=auto`：本地位姿有效后，只要 GPS 或新鲜光流任一可用，状态机即可继续。`PREFLIGHT_WAIT_S` 是最长等待超时，不是固定休眠。
@@ -291,14 +304,14 @@ install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_
 
 ```bash
 NAVIGATION_SOURCE=gps \
-  install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
+  bash "$HOME/projects/multi-slam-simulation/install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh"
 ```
 
 强制光流：
 
 ```bash
 NAVIGATION_SOURCE=optical_flow FLOW_MIN_QUALITY=0 \
-  install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
+  bash "$HOME/projects/multi-slam-simulation/install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh"
 ```
 
 真正的解锁时间还受 EKF、传感器健康、位置估计和 ArduPilot 安全检查影响。不要通过关闭全部飞控安全检查来换取表面上的快速起飞。
@@ -306,11 +319,8 @@ NAVIGATION_SOURCE=optical_flow FLOW_MIN_QUALITY=0 \
 ### 11.3 终端 3：FAST-LIO 建图
 
 ```bash
-cd <仓库目录>
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-LIDAR_WS="$HOME/multi-slam-deps/mid360_ws" RVIZ=1 \
-  install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_fastlio_mapping.sh
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_mid360_fastlio_mapping.sh
 ```
 
 脚本会加载外部 FAST-LIO 工作空间，并启动项目自己的可靠点云与栅格处理节点。
@@ -364,7 +374,8 @@ RViz 中固定坐标系和显示项以实际 FAST-LIO 配置为准。通常至�
 终端 1 改用向 ArduPilot 注入光流与距离数据的启动脚本：
 
 ```bash
-install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_nongps_flow.sh
+cd "$HOME/projects/multi-slam-simulation"
+bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_nongps_flow.sh
 ```
 
 然后在终端 2 使用 `NAVIGATION_SOURCE=optical_flow`。诊断光流模式与飞控注入模式用途不同，不能仅凭图像流存在就断定 EKF 已接受光流。
@@ -396,7 +407,7 @@ ros2 run tf2_ros tf2_echo base_link front_d435i_color_optical_frame
 ## 17. 发布前检查
 
 ```bash
-cd <仓库目录>
+cd "$HOME/projects/multi-slam-simulation"
 python3 tools/verify_repository.py
 git status --short
 ```
