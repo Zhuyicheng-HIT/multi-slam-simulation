@@ -1,0 +1,85 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Ground Grid
+      Plane: XY
+      Cell Size: 1
+      Color: 70; 70; 70
+      Alpha: 0.45
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: FAST-LIO Live Scan
+      Topic:
+        Value: /cloud_registered_reliable
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 2
+      Queue Size: 2
+      Style: Points
+      Size (Pixels): 4
+      Size (m): 0.06
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Autocompute Intensity Bounds: true
+      Use Fixed Frame: true
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: FAST-LIO Accumulated Map
+      Topic:
+        Value: /fastlio_denoised_map
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 2
+      Queue Size: 1
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.04
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Autocompute Intensity Bounds: true
+      Use Fixed Frame: true
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Enabled: false
+      Name: FAST-LIO Path
+      Topic:
+        Value: /path
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 5
+      Line Style: Lines
+      Line Width: 0.04
+      Color: 25; 255; 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 8; 8; 8
+    Fixed Frame: camera_init
+    Frame Rate: 12
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+Views:
+  Current:
+    Class: rviz_default_plugins/Orbit
+    Distance: 9
+    Focal Point:
+      X: 0
+      Y: 0
+      Z: 0.5
+    Pitch: 1.1
+    Yaw: 0.78
+  Saved: ~

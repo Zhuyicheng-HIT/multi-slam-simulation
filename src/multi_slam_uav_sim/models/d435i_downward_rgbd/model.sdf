@@ -1,0 +1,45 @@
+<?xml version="1.0" ?>
+<sdf version="1.10">
+  <model name="d435i_downward_rgbd">
+    <static>false</static>
+    <self_collide>false</self_collide>
+    <link name="camera_link">
+      <gravity>false</gravity>
+      <kinematic>true</kinematic>
+      <visual name="body">
+        <geometry><box><size>0.09 0.025 0.025</size></box></geometry>
+        <material><diffuse>0.02 0.025 0.03 1</diffuse><specular>0.35 0.35 0.35 1</specular></material>
+      </visual>
+      <visual name="left_lens">
+        <pose>0.046 0.011 0 0 1.5708 0</pose>
+        <geometry><cylinder><radius>0.006</radius><length>0.004</length></cylinder></geometry>
+        <material><diffuse>0.03 0.055 0.08 1</diffuse><specular>0.6 0.6 0.6 1</specular></material>
+      </visual>
+      <visual name="right_lens">
+        <pose>0.046 -0.011 0 0 1.5708 0</pose>
+        <geometry><cylinder><radius>0.006</radius><length>0.004</length></cylinder></geometry>
+        <material><diffuse>0.03 0.055 0.08 1</diffuse><specular>0.6 0.6 0.6 1</specular></material>
+      </visual>
+      <!-- With fixed-level follower attitude, +90 deg points the RGB-D optical axis downward. -->
+      <sensor name="d435i_rgbd_down" type="rgbd_camera">
+        <pose>0 0 -0.08 0 1.57079632679 0</pose>
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+        <visualize>true</visualize>
+        <topic>/camera/camera</topic>
+        <camera>
+          <horizontal_fov>1.21126</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.105</near>
+            <far>12.0</far>
+          </clip>
+        </camera>
+      </sensor>
+    </link>
+  </model>
+</sdf>

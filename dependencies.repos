@@ -1,0 +1,10 @@
+repositories:
+  FAST_LIO_ROS2:
+    type: git
+    url: https://github.com/hku-mars/FAST_LIO.git
+    version: a4743b095409588842a5b30ddfa27e29d2f99164
+  livox_ros_driver2:
+    type: git
+    url: https://github.com/Livox-SDK/livox_ros_driver2.git
+    version: 13eb05e4e6dd7a765b934d0c5fd6236676a57b49
+

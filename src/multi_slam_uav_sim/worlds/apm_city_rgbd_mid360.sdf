@@ -1,0 +1,1242 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.10">
+  <world name="city_apm_rgbd">
+    <physics name="apm_1ms_physics" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat" />
+    <scene>
+      <ambient>0.98 0.98 0.96 1</ambient>
+      <background>0.82 0.90 1.0 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <spherical_coordinates>
+      <latitude_deg>-35.363262</latitude_deg>
+      <longitude_deg>149.165237</longitude_deg>
+      <elevation>584</elevation>
+      <heading_deg>0</heading_deg>
+      <surface_model>EARTH_WGS84</surface_model>
+    </spherical_coordinates>
+    <light name="sun" type="directional">
+      <pose>0 0 24 0.45 0.25 0</pose>
+      <diffuse>1.0 1.0 0.95 1</diffuse>
+      <specular>0.55 0.55 0.50 1</specular>
+      <direction>-0.25 0.18 -0.95</direction>
+    </light>
+    <model name="visual_ground">
+      <static>true</static>
+      <link name="link">
+        <collision name="ground_collision">
+          <pose>0 0 -0.01 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>34 26 0.02</size>
+            </box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>0.4</mu>
+                <mu2>0.4</mu2>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="ground_visual">
+          <geometry>
+            <box>
+              <size>34 26 0.02</size>
+            </box>
+          </geometry>
+          <pose>0 0 -0.01 0 0 0</pose>
+          <material>
+            <diffuse>0.52 0.68 0.50 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="visual_city_block">
+      <static>true</static>
+      <link name="link">
+        <visual name="road_main">
+          <pose>0 0 0.005 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>30 3.2 0.03</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.035 0.038 0.042 1</diffuse>
+          </material>
+        </visual>
+        <visual name="road_cross">
+          <pose>0 0 0.006 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.2 22 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.035 0.038 0.042 1</diffuse>
+          </material>
+        </visual>
+        <visual name="road_outer_top">
+          <pose>0 9.4 0.006 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>30 2.8 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.035 0.038 0.042 1</diffuse>
+          </material>
+        </visual>
+        <visual name="road_outer_bottom">
+          <pose>0 -9.4 0.006 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>30 2.8 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.035 0.038 0.042 1</diffuse>
+          </material>
+        </visual>
+        <visual name="road_outer_left">
+          <pose>-13.6 0 0.006 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.8 22 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.035 0.038 0.042 1</diffuse>
+          </material>
+        </visual>
+        <visual name="road_outer_right">
+          <pose>13.6 0 0.006 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.8 22 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.035 0.038 0.042 1</diffuse>
+          </material>
+        </visual>
+        <visual name="lane_main">
+          <pose>0 0 0.04 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>26 0.055 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.92 0.84 0.2 1</diffuse>
+          </material>
+        </visual>
+        <visual name="lane_cross">
+          <pose>0 0 0.041 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.055 18 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.92 0.84 0.2 1</diffuse>
+          </material>
+        </visual>
+        <visual name="sidewalk_north">
+          <pose>0 2.35 0.02 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>29 0.70 0.025</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.80 0.80 0.75 1</diffuse>
+          </material>
+        </visual>
+        <visual name="sidewalk_south">
+          <pose>0 -2.35 0.02 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>29 0.70 0.025</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.80 0.80 0.75 1</diffuse>
+          </material>
+        </visual>
+        <visual name="sidewalk_east">
+          <pose>2.35 0 0.021 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.70 21 0.025</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.80 0.80 0.75 1</diffuse>
+          </material>
+        </visual>
+        <visual name="sidewalk_west">
+          <pose>-2.35 0 0.021 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.70 21 0.025</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>0.80 0.80 0.75 1</diffuse>
+          </material>
+        </visual>
+        <visual name="building_a">
+          <pose>-8 4.8 2.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.2 2.4 4.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.62 0.64 0.66 1</ambient>
+            <diffuse>0.50 0.52 0.54 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+        <visual name="building_b">
+          <pose>-4.5 7.1 2.7 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.8 2.3 5.4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.62 0.64 0.66 1</ambient>
+            <diffuse>0.50 0.52 0.54 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+        <visual name="building_d">
+          <pose>5.6 -5.4 1.9 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.0 3.0 3.8</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.62 0.64 0.66 1</ambient>
+            <diffuse>0.50 0.52 0.54 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+        <visual name="building_e">
+          <pose>-8.5 -5.8 2.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.3 2.6 4.4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.62 0.64 0.66 1</ambient>
+            <diffuse>0.50 0.52 0.54 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_front_0_0">
+          <pose>-8.8 3.588 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_back_0_0">
+          <pose>-8.8 6.012 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_front_0_1">
+          <pose>-7.2 3.588 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_back_0_1">
+          <pose>-7.2 6.012 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_front_1_0">
+          <pose>-8.8 3.588 2.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_back_1_0">
+          <pose>-8.8 6.012 2.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_front_1_1">
+          <pose>-7.2 3.588 2.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_back_1_1">
+          <pose>-7.2 6.012 2.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_front_2_0">
+          <pose>-8.8 3.588 3.35 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_back_2_0">
+          <pose>-8.8 6.012 3.35 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_front_2_1">
+          <pose>-7.2 3.588 3.35 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_back_2_1">
+          <pose>-7.2 6.012 3.35 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_side_0_0">
+          <pose>-6.388 4.272 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_side_0_1">
+          <pose>-6.388 5.328 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_side_1_0">
+          <pose>-6.388 4.272 3.35 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_a_side_1_1">
+          <pose>-6.388 5.328 3.35 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_0_0">
+          <pose>-5.2 5.938 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_0_0">
+          <pose>-5.2 8.262 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_0_1">
+          <pose>-3.8 5.938 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_0_1">
+          <pose>-3.8 8.262 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_1_0">
+          <pose>-5.2 5.938 2.083 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_1_0">
+          <pose>-5.2 8.262 2.083 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_1_1">
+          <pose>-3.8 5.938 2.083 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_1_1">
+          <pose>-3.8 8.262 2.083 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_2_0">
+          <pose>-5.2 5.938 3.417 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_2_0">
+          <pose>-5.2 8.262 3.417 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_2_1">
+          <pose>-3.8 5.938 3.417 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_2_1">
+          <pose>-3.8 8.262 3.417 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_3_0">
+          <pose>-5.2 5.938 4.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_3_0">
+          <pose>-5.2 8.262 4.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_front_3_1">
+          <pose>-3.8 5.938 4.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_back_3_1">
+          <pose>-3.8 8.262 4.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_side_0_0">
+          <pose>-3.088 6.594 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_side_0_1">
+          <pose>-3.088 7.606 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_side_1_0">
+          <pose>-3.088 6.594 3.417 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_b_side_1_1">
+          <pose>-3.088 7.606 3.417 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_front_0_0">
+          <pose>4.85 -6.912 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_back_0_0">
+          <pose>4.85 -3.888 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_front_0_1">
+          <pose>6.35 -6.912 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_back_0_1">
+          <pose>6.35 -3.888 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_front_1_0">
+          <pose>4.85 -6.912 1.95 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_back_1_0">
+          <pose>4.85 -3.888 1.95 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_front_1_1">
+          <pose>6.35 -6.912 1.95 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_back_1_1">
+          <pose>6.35 -3.888 1.95 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_front_2_0">
+          <pose>4.85 -6.912 3.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_back_2_0">
+          <pose>4.85 -3.888 3.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_front_2_1">
+          <pose>6.35 -6.912 3.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_back_2_1">
+          <pose>6.35 -3.888 3.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_side_0_0">
+          <pose>7.112 -6.06 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_side_0_1">
+          <pose>7.112 -4.74 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_side_1_0">
+          <pose>7.112 -6.06 3.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_d_side_1_1">
+          <pose>7.112 -4.74 3.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_0_0">
+          <pose>-9.325 -7.112 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_0_0">
+          <pose>-9.325 -4.488 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_0_1">
+          <pose>-7.675 -7.112 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_0_1">
+          <pose>-7.675 -4.488 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_1_0">
+          <pose>-9.325 -7.112 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_1_0">
+          <pose>-9.325 -4.488 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_1_1">
+          <pose>-7.675 -7.112 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_1_1">
+          <pose>-7.675 -4.488 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_2_0">
+          <pose>-9.325 -7.112 2.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_2_0">
+          <pose>-9.325 -4.488 2.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_2_1">
+          <pose>-7.675 -7.112 2.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_2_1">
+          <pose>-7.675 -4.488 2.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_3_0">
+          <pose>-9.325 -7.112 3.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_3_0">
+          <pose>-9.325 -4.488 3.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_front_3_1">
+          <pose>-7.675 -7.112 3.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_back_3_1">
+          <pose>-7.675 -4.488 3.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.55 0.035 0.42</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_side_0_0">
+          <pose>-6.838 -6.372 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_side_0_1">
+          <pose>-6.838 -5.228 0.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_side_1_0">
+          <pose>-6.838 -6.372 2.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <visual name="window_building_e_side_1_1">
+          <pose>-6.838 -5.228 2.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.035 0.48 0.38</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.01 0.01 0.01 1</ambient>
+            <diffuse>0.01 0.01 0.01 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <include>
+      <uri>model://textured_person</uri>
+      <name>person_north</name>
+      <pose>-10 3.05 0.05 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://textured_person</uri>
+      <name>person_south</name>
+      <pose>-2.5 -3.05 0.05 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://textured_person</uri>
+      <name>person_block</name>
+      <pose>5 6.8 0.05 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://textured_vehicle</uri>
+      <name>vehicle_main</name>
+      <pose>-12 0.85 0.05 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://textured_vehicle</uri>
+      <name>vehicle_cross</name>
+      <pose>0.75 4.0 0.05 0 0 -1.5708</pose>
+    </include>
+    <include>
+      <uri>model://textured_vehicle</uri>
+      <name>vehicle_loop</name>
+      <pose>4 -9.4 0.05 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://iris_apm_rgbd</uri>
+      <name>apm_iris</name>
+      <pose>0 0 0.5 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://d435i_downward_sensor_only</uri>
+      <name>apm_iris_d435i</name>
+      <pose>0.24 0 0.35 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://lidar_downward_sensor_only</uri>
+      <name>apm_iris_lidar</name>
+      <pose>0.0 0 0.45 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://mid360_3d_lidar_sensor_only</uri>
+      <name>apm_iris_mid360</name>
+      <pose>0.0 0 0.55 0 0 0</pose>
+    </include>
+  </world>
+</sdf>

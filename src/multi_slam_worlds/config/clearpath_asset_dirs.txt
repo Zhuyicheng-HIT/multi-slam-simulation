@@ -1,0 +1,1 @@
+external/clearpath_simulator/clearpath_gz/worlds

@@ -1,0 +1,29 @@
+<?xml version="1.0" ?>
+<sdf version="1.10">
+  <model name="textured_person">
+    <static>false</static>
+    <self_collide>false</self_collide>
+    <link name="visual_link">
+      <gravity>false</gravity>
+      <kinematic>true</kinematic>
+      <visual name="head"><pose>0 0 1.204 0 0 0</pose><geometry><sphere><radius>0.112</radius></sphere></geometry><material><diffuse>0.72 0.52 0.38 1</diffuse></material></visual>
+      <visual name="hair"><pose>-0.025 0 1.288 0 0 0</pose><geometry><sphere><radius>0.108</radius></sphere></geometry><material><diffuse>0.08 0.055 0.04 1</diffuse></material></visual>
+      <visual name="neck"><pose>0 0 1.043 0 0 0</pose><geometry><cylinder><radius>0.046</radius><length>0.13</length></cylinder></geometry><material><diffuse>0.68 0.48 0.34 1</diffuse></material></visual>
+      <visual name="chest"><pose>0 0 0.84 0 0 0</pose><geometry><box><size>0.31 0.18 0.40</size></box></geometry><material><diffuse>0.05 0.18 0.34 1</diffuse><pbr><metal><albedo_map>materials/textures/person_albedo.png</albedo_map><roughness>0.8</roughness></metal></pbr></material></visual>
+      <visual name="abdomen_fill"><pose>0 0 0.63 0 0 0</pose><geometry><box><size>0.27 0.17 0.25</size></box></geometry><material><diffuse>0.045 0.14 0.26 1</diffuse></material></visual>
+      <visual name="pelvis"><pose>0 0 0.49 0 0 0</pose><geometry><box><size>0.25 0.16 0.13</size></box></geometry><material><diffuse>0.05 0.055 0.075 1</diffuse></material></visual>
+      <visual name="left_shoulder"><pose>0 0.16 0.91 0 0 0</pose><geometry><sphere><radius>0.055</radius></sphere></geometry><material><diffuse>0.04 0.16 0.30 1</diffuse></material></visual>
+      <visual name="right_shoulder"><pose>0 -0.16 0.91 0 0 0</pose><geometry><sphere><radius>0.055</radius></sphere></geometry><material><diffuse>0.04 0.16 0.30 1</diffuse></material></visual>
+      <visual name="left_arm"><pose>0.02 0.20 0.76 0.22 0.20 0</pose><geometry><cylinder><radius>0.034</radius><length>0.42</length></cylinder></geometry><material><diffuse>0.04 0.16 0.30 1</diffuse></material></visual>
+      <visual name="right_arm"><pose>0.02 -0.20 0.76 -0.22 -0.20 0</pose><geometry><cylinder><radius>0.034</radius><length>0.42</length></cylinder></geometry><material><diffuse>0.04 0.16 0.30 1</diffuse></material></visual>
+      <visual name="left_hand"><pose>0.045 0.25 0.55 0 0 0</pose><geometry><sphere><radius>0.040</radius></sphere></geometry><material><diffuse>0.70 0.50 0.36 1</diffuse></material></visual>
+      <visual name="right_hand"><pose>0.045 -0.25 0.55 0 0 0</pose><geometry><sphere><radius>0.040</radius></sphere></geometry><material><diffuse>0.70 0.50 0.36 1</diffuse></material></visual>
+      <visual name="left_upper_leg"><pose>0 0.065 0.31 0.04 0 0</pose><geometry><cylinder><radius>0.048</radius><length>0.34</length></cylinder></geometry><material><diffuse>0.035 0.04 0.055 1</diffuse></material></visual>
+      <visual name="right_upper_leg"><pose>0 -0.065 0.31 -0.04 0 0</pose><geometry><cylinder><radius>0.048</radius><length>0.34</length></cylinder></geometry><material><diffuse>0.035 0.04 0.055 1</diffuse></material></visual>
+      <visual name="left_lower_leg"><pose>0.02 0.065 0.13 -0.04 0 0</pose><geometry><cylinder><radius>0.043</radius><length>0.30</length></cylinder></geometry><material><diffuse>0.035 0.04 0.055 1</diffuse></material></visual>
+      <visual name="right_lower_leg"><pose>0.02 -0.065 0.13 0.04 0 0</pose><geometry><cylinder><radius>0.043</radius><length>0.30</length></cylinder></geometry><material><diffuse>0.035 0.04 0.055 1</diffuse></material></visual>
+      <visual name="left_shoe"><pose>0.065 0.065 0.035 0 0 0</pose><geometry><box><size>0.17 0.08 0.055</size></box></geometry><material><diffuse>0.015 0.015 0.014 1</diffuse></material></visual>
+      <visual name="right_shoe"><pose>0.065 -0.065 0.035 0 0 0</pose><geometry><box><size>0.17 0.08 0.055</size></box></geometry><material><diffuse>0.015 0.015 0.014 1</diffuse></material></visual>
+    </link>
+  </model>
+</sdf>

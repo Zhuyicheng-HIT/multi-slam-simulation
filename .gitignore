@@ -1,0 +1,34 @@
+# ROS 2 / colcon
+build/
+install/
+log/
+logs/
+.colcon/
+
+# External repositories and generated data
+external/
+.codex_backups/
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.bag
+*.db3
+*.mcap
+*.pcd
+*.ply
+*.las
+*.laz
+*.ulg
+*.tlog
+
+# Local environments and editors
+.env
+*.local
+.venv/
+venv/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

@@ -1,0 +1,6 @@
+/people_motion:
+  ros__parameters:
+    world_name: city_apm_rgbd
+    rate_hz: 20.0
+    agents_json: >-
+      [{"name":"person_north","path_type":"line","points":[[-10,3.05,0.05],[10,3.05,0.05]],"speed":0.75,"distance_offset":0.0},{"name":"person_south","path_type":"line","points":[[-10,-3.05,0.05],[10,-3.05,0.05]],"speed":0.75,"start_delay":3.0,"distance_offset":7.5},{"name":"person_block","path_type":"line","points":[[-10,6.8,0.05],[10,6.8,0.05]],"speed":0.75,"start_delay":6.0,"distance_offset":15.0},{"name":"vehicle_main","path_type":"two_lane_line","points":[[-12,-0.85,0.05],[12,-0.85,0.05],[12,0.85,0.05],[-12,0.85,0.05]],"speed":1.6,"distance_offset":0.0},{"name":"vehicle_cross","path_type":"two_lane_line","points":[[0.75,12.0,0.05],[0.75,-12.0,0.05],[-0.75,-12.0,0.05],[-0.75,12.0,0.05]],"speed":1.6,"start_delay":2.0,"distance_offset":8.0},{"name":"vehicle_loop","path_type":"two_lane_line","points":[[-12,-10.25,0.05],[12,-10.25,0.05],[12,-8.55,0.05],[-12,-8.55,0.05]],"speed":1.6,"start_delay":4.0,"distance_offset":16.0}]

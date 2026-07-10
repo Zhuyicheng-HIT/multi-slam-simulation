@@ -1,0 +1,19 @@
+# Experimental non-GPS source set: no XY position source, optical flow as XY
+# velocity source, barometer as Z source, and MAVLink rangefinder for flow scale.
+GPS1_TYPE 0
+SIM_GPS1_TYPE 0
+EK3_GPS_TYPE 3
+EK3_SRC1_POSXY 0
+EK3_SRC1_VELXY 5
+EK3_SRC1_VELZ 0
+EK3_SRC1_POSZ 1
+FLOW_TYPE 5
+RNGFND1_TYPE 10
+RNGFND1_MIN 0.08
+RNGFND1_MAX 12.00
+WP_RFND_USE 0
+TERRAIN_ENABLE 0
+TERRAIN_FOLLOW 0
+RTL_ALT_TYPE 0
+PLND_ENABLED 0
+SIM_FLOW_ENABLE 0

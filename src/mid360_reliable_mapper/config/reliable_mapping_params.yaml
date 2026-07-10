@@ -1,0 +1,61 @@
+fastlio_cloud_mapper:
+  ros__parameters:
+    input_topic: /cloud_registered
+    scan_topic: /cloud_registered_filtered
+    reliable_scan_topic: /cloud_registered_reliable
+    map_topic: /fastlio_denoised_map
+    output_frame: camera_init
+    scan_voxel: 0.05
+    map_voxel: 0.10
+    radius_filter: 0.22
+    radius_min_neighbors: 1
+    min_map_hits: 1
+    max_scan_points: 65000
+    max_map_voxels: 220000
+    map_window_frames: 300
+    map_publish_every: 1
+    enable_quality_gate: true
+    require_odom_for_map: true
+    max_odom_speed_mps: 2.5
+    max_odom_jump_m: 0.55
+    max_z_jump_m: 0.35
+    min_scan_map_overlap: 0.035
+    min_overlap_map_voxels: 800
+    overlap_warmup_frames: 12
+    overlap_neighbor_voxels: 2
+    overlap_sample_stride: 4
+    min_range: 0.45
+    max_range: 35.0
+    z_min: -20.0
+    z_max: 10.0
+    restamp: true
+
+fastlio_occupancy_grid:
+  ros__parameters:
+    input_topic: /cloud_registered_reliable
+    odom_topic: /Odometry
+    grid_topic: /fastlio_occupancy_grid
+    marker_topic: /fastlio_occupancy_cells
+    free_marker_topic: /fastlio_occupancy_free_cells
+    occupied_marker_topic: /fastlio_occupancy_occupied_cells
+    output_frame: camera_init
+    resolution: 0.10
+    width_m: 30.0
+    height_m: 30.0
+    origin_x: -15.0
+    origin_y: -15.0
+    min_range: 0.45
+    max_range: 25.0
+    z_min: -0.30
+    z_max: 2.50
+    point_stride: 1
+    publish_every_n_clouds: 1
+    use_odometry: true
+    raycast_free_space: true
+    occupied_increment: 12
+    free_decrement: 4
+    occupied_threshold: 45
+    free_threshold: -12
+    log_odds_decay_per_cloud: 2
+    stale_after_clouds: 60
+    occupied_cell_inflation: 1

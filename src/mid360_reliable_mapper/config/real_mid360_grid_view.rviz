@@ -1,0 +1,67 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Meter Grid
+      Plane: XY
+      Cell Size: 1
+      Color: 120; 120; 120
+      Alpha: 0.18
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Free Cells White
+      Topic:
+        Value: /fastlio_occupancy_free_cells
+        Reliability Policy: Best Effort
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Queue Size: 1
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Occupied Cells Black
+      Topic:
+        Value: /fastlio_occupancy_occupied_cells
+        Reliability Policy: Best Effort
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Queue Size: 1
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Enabled: false
+      Name: FAST-LIO Path
+      Topic:
+        Value: /path
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 5
+      Line Style: Lines
+      Line Width: 0.05
+      Color: 30; 160; 255
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 128; 128; 128
+    Fixed Frame: camera_init
+    Frame Rate: 12
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+Views:
+  Current:
+    Class: rviz_default_plugins/TopDownOrtho
+    Scale: 24
+    X: 0
+    Y: 0
+  Saved: ~

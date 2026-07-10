@@ -1,0 +1,26 @@
+# MID360 模块相对无人机机体的安装外参。
+#
+# 这里描述的是：base_link -> MID360 模块/body frame 的静态变换。
+# FAST-LIO2 默认发布 camera_init -> body，其中 body 是 MID360/IMU 估计出来的传感器运动 frame。
+# 为了不让 body 出现两个父节点，本工程默认会把下面这组 base_link -> body 自动取逆，实际发布为：body -> base_link。
+# 这样 TF 链会变成：camera_init -> body -> base_link。
+#
+# 如果你的雷达整体相对无人机机体有安装角，例如雷达向下俯仰 12 度，通常先改：
+#   rotation_deg.pitch: -12.0
+# 每次只改一个角度，先慢速移动观察点云和轨迹是否合理。
+
+base_frame: base_link
+sensor_frame: body
+publish_inverse_for_fastlio: true
+
+translation_m:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+
+# roll 绕 X 轴，pitch 绕 Y 轴，yaw 绕 Z 轴，单位是度。
+# 含义是 base_link -> MID360 模块/body frame 的安装角。
+rotation_deg:
+  roll: 0.0
+  pitch: 0.0
+  yaw: 0.0

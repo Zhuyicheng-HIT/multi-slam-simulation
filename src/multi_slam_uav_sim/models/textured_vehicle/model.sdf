@@ -1,0 +1,33 @@
+<?xml version="1.0" ?>
+<sdf version="1.10">
+  <model name="textured_vehicle">
+    <static>false</static>
+    <self_collide>false</self_collide>
+    <link name="visual_link">
+      <gravity>false</gravity>
+      <kinematic>true</kinematic>
+      <visual name="body">
+        <pose>0 0 0.36 0 0 0</pose>
+        <geometry><box><size>1.85 0.86 0.42</size></box></geometry>
+        <material>
+          <diffuse>0.92 0.16 0.10 1</diffuse>
+          <pbr><metal><albedo_map>materials/textures/vehicle_body.png</albedo_map><roughness>0.55</roughness></metal></pbr>
+        </material>
+      </visual>
+      <visual name="cabin">
+        <pose>-0.15 0 0.70 0 0 0</pose>
+        <geometry><box><size>0.86 0.74 0.36</size></box></geometry>
+        <material>
+          <diffuse>0.12 0.18 0.22 1</diffuse>
+          <pbr><metal><albedo_map>materials/textures/vehicle_window.png</albedo_map><roughness>0.25</roughness></metal></pbr>
+        </material>
+      </visual>
+      <visual name="front_light_left"><pose>0.94 0.24 0.39 0 0 0</pose><geometry><box><size>0.04 0.16 0.10</size></box></geometry><material><diffuse>1.0 0.92 0.62 1</diffuse></material></visual>
+      <visual name="front_light_right"><pose>0.94 -0.24 0.39 0 0 0</pose><geometry><box><size>0.04 0.16 0.10</size></box></geometry><material><diffuse>1.0 0.92 0.62 1</diffuse></material></visual>
+      <visual name="wheel_fl"><pose>0.55 0.47 0.20 1.570796 0 0</pose><geometry><cylinder><radius>0.18</radius><length>0.12</length></cylinder></geometry><material><diffuse>0.02 0.02 0.02 1</diffuse></material></visual>
+      <visual name="wheel_fr"><pose>0.55 -0.47 0.20 1.570796 0 0</pose><geometry><cylinder><radius>0.18</radius><length>0.12</length></cylinder></geometry><material><diffuse>0.02 0.02 0.02 1</diffuse></material></visual>
+      <visual name="wheel_rl"><pose>-0.58 0.47 0.20 1.570796 0 0</pose><geometry><cylinder><radius>0.18</radius><length>0.12</length></cylinder></geometry><material><diffuse>0.02 0.02 0.02 1</diffuse></material></visual>
+      <visual name="wheel_rr"><pose>-0.58 -0.47 0.20 1.570796 0 0</pose><geometry><cylinder><radius>0.18</radius><length>0.12</length></cylinder></geometry><material><diffuse>0.02 0.02 0.02 1</diffuse></material></visual>
+    </link>
+  </model>
+</sdf>

@@ -1,0 +1,56 @@
+fastlio_cloud_mapper:
+  ros__parameters:
+    input_topic: /sim/mid360/cloud_registered
+    odom_topic: /uav/local_odom
+    scan_topic: /sim/mid360/cloud_registered_filtered
+    reliable_scan_topic: /sim/mid360/cloud_registered_reliable
+    map_topic: /sim/mid360/denoised_map
+    output_frame: camera_init
+    scan_voxel: 0.08
+    map_voxel: 0.12
+    radius_filter: 0.24
+    radius_min_neighbors: 1
+    min_map_hits: 1
+    max_scan_points: 65000
+    max_map_voxels: 220000
+    map_window_frames: 240
+    map_publish_every: 1
+    enable_quality_gate: false
+    require_odom_for_map: false
+    min_range: 0.45
+    max_range: 35.0
+    z_min: -3.0
+    z_max: 8.0
+    restamp: true
+
+fastlio_occupancy_grid:
+  ros__parameters:
+    input_topic: /sim/mid360/cloud_registered_reliable
+    odom_topic: /uav/local_odom
+    grid_topic: /sim/mid360/occupancy_grid
+    marker_topic: /sim/mid360/occupancy_cells
+    free_marker_topic: /sim/mid360/occupancy_free_cells
+    occupied_marker_topic: /sim/mid360/occupancy_occupied_cells
+    output_frame: camera_init
+    resolution: 0.10
+    width_m: 34.0
+    height_m: 26.0
+    origin_x: -17.0
+    origin_y: -13.0
+    min_range: 0.45
+    max_range: 25.0
+    z_min: -0.35
+    z_max: 3.50
+    point_stride: 1
+    publish_every_n_clouds: 1
+    # Visualization-only sim map. Algorithm nodes should use /uav/local_odom
+    # from flight_state_bridge, not this Gazebo-registered map.
+    use_odometry: false
+    raycast_free_space: true
+    occupied_increment: 12
+    free_decrement: 4
+    occupied_threshold: 45
+    free_threshold: -12
+    log_odds_decay_per_cloud: 1
+    stale_after_clouds: 90
+    occupied_cell_inflation: 1

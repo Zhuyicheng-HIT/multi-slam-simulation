@@ -1,0 +1,7 @@
+# Overrides for MAVROS-only guided SITL runs without MAVProxy RC input.
+# Keep the vehicle controllable from MAVROS/Python services in GUIDED mode.
+FS_THR_ENABLE 0
+SIM_RC_FAIL 0
+FS_GCS_ENABLE 0
+DISARM_DELAY 0
+ARMING_CHECK 0

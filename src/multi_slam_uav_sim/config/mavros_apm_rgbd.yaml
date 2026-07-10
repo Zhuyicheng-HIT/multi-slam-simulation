@@ -1,0 +1,10 @@
+/**:
+  ros__parameters:
+    fcu_url: tcp://127.0.0.1:5760
+    gcs_url: ""
+    target_system_id: 1
+    target_component_id: 1
+    system_id: 255
+    component_id: 240
+    time:
+      timesync_rate: 0.0
