@@ -52,7 +52,8 @@ sudo apt-get install -y \
   python3-pip python3-rosdep python3-vcstool python3-yaml \
   gz-harmonic libgz-msgs10-dev libgz-sim8-dev libgz-transport13-dev \
   python3-gz-msgs10 python3-gz-transport13 \
-  libapr1-dev libeigen3-dev libopencv-dev libpcl-dev \
+  libapr1-dev libeigen3-dev libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev libopencv-dev libpcl-dev \
   ros-humble-ament-cmake-auto ros-humble-cv-bridge \
   ros-humble-image-transport ros-humble-launch-ros \
   ros-humble-mavros ros-humble-mavros-extras \
@@ -66,7 +67,9 @@ fi
 rosdep update
 sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
 
+set +u
 source /opt/ros/humble/setup.bash
+set -u
 python3 -m pip install --user -r "$REPO_ROOT/requirements.txt"
 
 printf '\n[3/8] 下载固定版本的 ArduPilot、Gazebo 插件和 FAST-LIO 地图依赖...\n'
@@ -110,12 +113,16 @@ colcon build --cmake-args -DROS_EDITION=ROS2 -DDISTRO_ROS=humble
 
 printf '\n[8/8] 编译主仿真仓库并执行检查...\n'
 cd "$REPO_ROOT"
+set +u
 source /opt/ros/humble/setup.bash
 source "$LIDAR_WS/install/setup.bash"
+set -u
 rosdep install --from-paths src --ignore-src -r -y --rosdistro humble \
   --skip-keys ament_python
 colcon build --symlink-install
+set +u
 source "$REPO_ROOT/install/setup.bash"
+set -u
 python3 "$REPO_ROOT/tools/verify_repository.py"
 
 cat <<EOF
