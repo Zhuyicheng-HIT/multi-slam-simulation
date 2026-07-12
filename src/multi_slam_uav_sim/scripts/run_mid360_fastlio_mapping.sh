@@ -49,7 +49,7 @@ Logs:
 
 Inputs:
   /sim/mid360/points_raw  -> /livox/lidar  (livox_ros_driver2/msg/CustomMsg, protocol reference)
-  /uav/imu                -> /livox/imu    (sensor_msgs/msg/Imu)
+  /mavros/imu/data_raw    -> /livox/imu    (FCU HIGHRES_IMU sensor_msgs/msg/Imu)
   FASTLIO_INPUT_MODE=$FASTLIO_INPUT_MODE
 
 Outputs:
@@ -76,11 +76,12 @@ esac
 
 setsid ros2 run multi_slam_uav_sim livox_mid360_bridge --ros-args \
   -p input_cloud_topic:=/sim/mid360/points_raw \
-  -p input_imu_topic:=/uav/imu \
+  -p input_imu_topic:=/mavros/imu/data_raw \
   -p livox_lidar_topic:=/livox/lidar \
   -p livox_imu_topic:=/livox/imu \
-  -p frame_id:=livox_frame \
-  -p scan_lines:=4 \
+  -p lidar_frame_id:=mid360_link \
+  -p imu_frame_id:=base_link \
+  -p scan_lines:=40 \
   -p frame_rate_hz:=10.0 \
   -p vertical_min_deg:=-7.0 \
   -p vertical_max_deg:=52.0 \

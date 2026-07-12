@@ -8,14 +8,14 @@ GPS 模式，并保留光流诊断：
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
+bash tools/run_sim_with_flow.sh
 ```
 
 非 GPS 模式，向 ArduPilot 注入光流与距离数据：
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_nongps_flow.sh
+bash tools/run_sim_with_nongps_flow.sh
 ```
 
 终端 1 统一管理 Gazebo、ArduPilot SITL、MAVROS2 和传感器。不要重复启动完整栈，否则会发生端口、进程和话题冲突。
@@ -26,21 +26,21 @@ bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_no
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
+bash tools/run_rectangle_state_machine.sh
 ```
 
 只接受 GPS：
 
 ```bash
 NAVIGATION_SOURCE=gps \
-  bash "$HOME/projects/multi-slam-simulation/install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh"
+  bash "$HOME/projects/multi-slam-simulation/tools/run_rectangle_state_machine.sh"
 ```
 
 只接受光流：
 
 ```bash
 NAVIGATION_SOURCE=optical_flow FLOW_MIN_QUALITY=0 \
-  bash "$HOME/projects/multi-slam-simulation/install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh"
+  bash "$HOME/projects/multi-slam-simulation/tools/run_rectangle_state_machine.sh"
 ```
 
 关键变量：
@@ -56,14 +56,14 @@ NAVIGATION_SOURCE=optical_flow FLOW_MIN_QUALITY=0 \
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_mid360_fastlio_mapping.sh
+bash tools/run_fastlio_mapping.sh
 ```
 
 无界面建图：
 
 ```bash
 RVIZ=0 \
-  bash "$HOME/projects/multi-slam-simulation/install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_mid360_fastlio_mapping.sh"
+  bash "$HOME/projects/multi-slam-simulation/tools/run_fastlio_mapping.sh"
 ```
 
 确认原始点云和建图输出：
@@ -124,3 +124,27 @@ ros2 run tf2_ros tf2_echo base_link front_d435i_color_optical_frame
 ```
 
 运行日志位于 `$HOME/projects/multi-slam-simulation/logs`，该目录被 Git 忽略。
+
+## 6. 漂移、偏航耦合与点云突变检测
+
+先启动仿真、FAST-LIO和矩形飞行，再开一个终端执行：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 tools/analyze_slam_drift.py --duration 125 \
+  --output /tmp/multi_slam_slam_report.json
+```
+
+分析器对比 FAST-LIO `/Odometry` 与 Gazebo MID360 真值里程计，检查：
+
+- 位置 RMSE 与最大位置误差；
+- 偏航 RMSE 与最大偏航误差；
+- FAST-LIO偏航角速度与飞控 HIGHRES_IMU 陀螺 Z 轴的延迟补偿相关系数；
+- 原始点云、注册点云和飞控 IMU时间戳回退次数；
+- 连续注册点云体素重叠率和质心跳变。
+
+终端输出 `"passed": true` 表示所有阈值通过，完整 JSON 同时写入 `/tmp/multi_slam_slam_report.json`。
+
+FAST-LIO 的主 IMU 固定为飞控 `HIGHRES_IMU -> /mavros/imu/data_raw -> /livox/imu`，不会使用 D435i IMU。默认验收线为位置 RMSE 0.75 m、偏航 RMSE 12 度、稳态及终点偏航误差 15 度、延迟补偿后的 IMU 相关系数 0.65。

@@ -14,7 +14,7 @@ class MavrosStreamRequester(Node):
         self.declare_parameter("mavros_ns", "/mavros")
         self.declare_parameter("stream_rate_hz", 20)
         self.declare_parameter("position_rate_hz", 20.0)
-        self.declare_parameter("imu_rate_hz", 50.0)
+        self.declare_parameter("imu_rate_hz", 100.0)
         self.declare_parameter("gps_rate_hz", 10.0)
         self.declare_parameter("attitude_rate_hz", 30.0)
         self.declare_parameter("timeout_s", 30.0)
@@ -93,7 +93,10 @@ class MavrosStreamRequester(Node):
             32: float(self.get_parameter("position_rate_hz").value),  # LOCAL_POSITION_NED
             33: float(self.get_parameter("position_rate_hz").value),  # GLOBAL_POSITION_INT
             74: 10.0,                                                  # VFR_HUD
-            105: float(self.get_parameter("imu_rate_hz").value),      # HIGHRES_IMU
+            # Use one FCU source. HIGHRES_IMU feeds MAVROS data_raw directly;
+            # disabling RAW_IMU prevents multiple raw sensor sources.
+            27: 0.0,                                                     # RAW_IMU off
+            105: float(self.get_parameter("imu_rate_hz").value),       # HIGHRES_IMU
         }
         if self._wait_service(self.interval_cli, "set_message_interval"):
             for msg_id, rate_hz in intervals.items():

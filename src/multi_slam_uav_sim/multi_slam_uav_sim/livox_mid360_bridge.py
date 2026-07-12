@@ -1,5 +1,6 @@
 import math
 import struct
+import time
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -51,21 +52,25 @@ class LivoxMid360Bridge(Node):
             )
         super().__init__("livox_mid360_bridge")
         self.declare_parameter("input_cloud_topic", "/sim/mid360/points_raw")
-        self.declare_parameter("input_imu_topic", "/uav/imu")
+        self.declare_parameter("input_imu_topic", "/mavros/imu/data_raw")
         self.declare_parameter("livox_lidar_topic", "/livox/lidar")
         self.declare_parameter("livox_imu_topic", "/livox/imu")
-        self.declare_parameter("frame_id", "livox_frame")
-        self.declare_parameter("scan_lines", 4)
+        self.declare_parameter("lidar_frame_id", "mid360_link")
+        self.declare_parameter("imu_frame_id", "base_link")
+        self.declare_parameter("restamp_imu", False)
+        self.declare_parameter("scan_lines", 40)
         self.declare_parameter("frame_rate_hz", 10.0)
         self.declare_parameter("vertical_min_deg", -7.0)
         self.declare_parameter("vertical_max_deg", 52.0)
         self.declare_parameter("max_points", 65000)
         self.declare_parameter("point_stride", 1)
 
-        self.frame_id = self.get_parameter("frame_id").value
+        self.lidar_frame_id = self.get_parameter("lidar_frame_id").value
+        self.imu_frame_id = self.get_parameter("imu_frame_id").value
+        self.restamp_imu = bool(self.get_parameter("restamp_imu").value)
         self.scan_lines = max(1, int(self.get_parameter("scan_lines").value))
         frame_rate_hz = max(0.1, float(self.get_parameter("frame_rate_hz").value))
-        self.scan_period_us = int(round(1.0e6 / frame_rate_hz))
+        self.scan_period_ns = int(round(1.0e9 / frame_rate_hz))
         self.vertical_min = math.radians(float(self.get_parameter("vertical_min_deg").value))
         self.vertical_max = math.radians(float(self.get_parameter("vertical_max_deg").value))
         self.max_points = max(1, int(self.get_parameter("max_points").value))
@@ -98,10 +103,18 @@ class LivoxMid360Bridge(Node):
         )
 
         self.cloud_count = 0
+        self.imu_count = 0
+        self.dropped_imu_count = 0
         self.point_count_last = 0
+        self.last_cloud_stamp_ns = 0
+        self.last_imu_stamp_ns = 0
+        self.last_status_time = time.monotonic()
+        self.last_status_cloud_count = 0
+        self.last_status_imu_count = 0
         self.status_timer = self.create_timer(2.0, self._status)
         self.get_logger().info(
-            "MID360 Livox bridge active: raw PointCloud2 -> /livox/lidar CustomMsg, /uav/imu -> /livox/imu"
+            "MID360 Livox bridge active: raw PointCloud2 -> /livox/lidar CustomMsg, "
+            f"{self.get_parameter('input_imu_topic').value} -> /livox/imu"
         )
 
     def _stamp_to_ns(self, stamp):
@@ -122,6 +135,7 @@ class LivoxMid360Bridge(Node):
         intensity_field = fields.get("intensity")
         tag_field = fields.get("tag")
         line_field = fields.get("line")
+        time_field = fields.get("time")
         declared = int(msg.width) * int(msg.height)
         available = len(msg.data) // int(msg.point_step) if msg.point_step else 0
         count = min(declared, available)
@@ -130,7 +144,7 @@ class LivoxMid360Bridge(Node):
 
         out = CustomMsg()
         out.header.stamp = msg.header.stamp
-        out.header.frame_id = self.frame_id
+        out.header.frame_id = self.lidar_frame_id
         out.timebase = self._stamp_to_ns(msg.header.stamp)
         out.lidar_id = 1
         out.rsvd = [0, 0, 0]
@@ -162,19 +176,35 @@ class LivoxMid360Bridge(Node):
                 p.line = max(0, min(self.scan_lines - 1, int(_read_float(raw, line_field.offset, line_field.datatype))))
             else:
                 p.line = self._line_from_pitch(x, y, z)
-            p.offset_time = int(round((len(points) / max(1, self.max_points - 1)) * self.scan_period_us))
+            if time_field is not None:
+                point_time_s = _read_float(raw, time_field.offset, time_field.datatype)
+                p.offset_time = max(0, min(0xFFFFFFFF, int(round(point_time_s * 1.0e9))))
+            else:
+                p.offset_time = int(round((src_idx / max(1, count - 1)) * self.scan_period_ns))
             points.append(p)
 
         out.points = points
         out.point_num = len(points)
         self.point_count_last = len(points)
         self.cloud_count += 1
+        self.last_cloud_stamp_ns = self._stamp_to_ns(msg.header.stamp)
         self.lidar_pub.publish(out)
 
     def _imu_cb(self, msg):
+        if self.restamp_imu:
+            output_stamp = self.get_clock().now().to_msg()
+        else:
+            output_stamp = msg.header.stamp
+        stamp_ns = self._stamp_to_ns(output_stamp)
+        if stamp_ns <= self.last_imu_stamp_ns:
+            stamp_ns = self.last_imu_stamp_ns + 1
+            output_stamp.sec, output_stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+            self.dropped_imu_count += 1
+            if self.dropped_imu_count <= 3:
+                self.get_logger().warning("Adjusted non-monotonic FCU IMU timestamp")
         out = Imu()
-        out.header = msg.header
-        out.header.frame_id = self.frame_id
+        out.header.stamp = output_stamp
+        out.header.frame_id = self.imu_frame_id
         out.orientation = msg.orientation
         out.orientation_covariance = msg.orientation_covariance
         out.angular_velocity = msg.angular_velocity
@@ -182,12 +212,25 @@ class LivoxMid360Bridge(Node):
         out.linear_acceleration = msg.linear_acceleration
         out.linear_acceleration_covariance = msg.linear_acceleration_covariance
         self.imu_pub.publish(out)
+        self.last_imu_stamp_ns = stamp_ns
+        self.imu_count += 1
 
     def _status(self):
+        now = time.monotonic()
+        elapsed = max(now - self.last_status_time, 1.0e-6)
+        cloud_hz = (self.cloud_count - self.last_status_cloud_count) / elapsed
+        imu_hz = (self.imu_count - self.last_status_imu_count) / elapsed
+        stamp_delta_ms = 0.0
+        if self.last_cloud_stamp_ns and self.last_imu_stamp_ns:
+            stamp_delta_ms = (self.last_cloud_stamp_ns - self.last_imu_stamp_ns) / 1.0e6
         self.get_logger().info(
             f"livox bridge clouds={self.cloud_count} last_points={self.point_count_last} "
-            f"scan_lines={self.scan_lines}"
+            f"scan_lines={self.scan_lines} cloud_hz={cloud_hz:.1f} imu_hz={imu_hz:.1f} "
+            f"cloud_minus_imu_ms={stamp_delta_ms:.1f} adjusted_imu={self.dropped_imu_count}"
         )
+        self.last_status_time = now
+        self.last_status_cloud_count = self.cloud_count
+        self.last_status_imu_count = self.imu_count
 
 
 def main(args=None):

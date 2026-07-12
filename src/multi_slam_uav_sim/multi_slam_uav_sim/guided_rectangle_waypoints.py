@@ -20,8 +20,9 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("takeoff_alt", 3.0)
         self.declare_parameter("length_x", 2.0)
         self.declare_parameter("length_y", 1.2)
-        self.declare_parameter("speed_mps", 0.35)
+        self.declare_parameter("speed_mps", 0.20)
         self.declare_parameter("hold_time", 2.0)
+        self.declare_parameter("yaw_rate_deg_s", 12.0)
         self.declare_parameter("setpoint_rate_hz", 10.0)
         self.declare_parameter("preflight_wait_s", 45.0)
         self.declare_parameter("navigation_stable_s", 1.0)
@@ -43,6 +44,7 @@ class GuidedRectangleWaypoints(Node):
         self.length_y = float(self.get_parameter("length_y").value)
         self.speed_mps = max(0.05, float(self.get_parameter("speed_mps").value))
         self.hold_time = float(self.get_parameter("hold_time").value)
+        self.yaw_rate = math.radians(max(1.0, float(self.get_parameter("yaw_rate_deg_s").value)))
         self.rate_hz = max(1.0, float(self.get_parameter("setpoint_rate_hz").value))
         self.preflight_wait_s = float(self.get_parameter("preflight_wait_s").value)
         self.navigation_stable_s = float(self.get_parameter("navigation_stable_s").value)
@@ -71,6 +73,7 @@ class GuidedRectangleWaypoints(Node):
         self.home_x = 0.0
         self.home_y = 0.0
         self.home_z = 0.0
+        self.home_yaw = 0.0
         self.last_status_time = 0.0
 
         self.create_subscription(State, "/mavros/state", self._state_cb, 10)
@@ -207,9 +210,15 @@ class GuidedRectangleWaypoints(Node):
             self.home_x = float(p.x)
             self.home_y = float(p.y)
             self.home_z = float(p.z)
+            q = self.pose.pose.orientation
+            self.home_yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+            )
             self.get_logger().info(
                 f"Navigation ready from {source} after a stable {self.navigation_stable_s:.1f}s; "
-                f"local origin=({self.home_x:.2f},{self.home_y:.2f},{self.home_z:.2f})."
+                f"local origin=({self.home_x:.2f},{self.home_y:.2f},{self.home_z:.2f}), "
+                f"yaw={math.degrees(self.home_yaw):.1f}deg."
             )
             return source
         raise RuntimeError(
@@ -247,7 +256,8 @@ class GuidedRectangleWaypoints(Node):
                 f"armed={self.state.armed}, last_fcu_text={self.last_statustext}"
             )
 
-    def hold_setpoint(self, x, y, z, seconds, yaw=0.0, label="hold", require_guided=False):
+    def hold_setpoint(self, x, y, z, seconds, yaw=None, label="hold", require_guided=False):
+        yaw = self.home_yaw if yaw is None else yaw
         period = 1.0 / self.rate_hz
         end = time.monotonic() + max(0.0, seconds)
         while rclpy.ok() and time.monotonic() < end:
@@ -294,7 +304,7 @@ class GuidedRectangleWaypoints(Node):
     def wait_for_state(self, predicate, label, timeout=12.0):
         end = time.monotonic() + timeout
         while rclpy.ok() and time.monotonic() < end:
-            self.publish_setpoint(self.home_x, self.home_y, self.takeoff_alt, 0.0)
+            self.publish_setpoint(self.home_x, self.home_y, self.takeoff_alt, self.home_yaw)
             rclpy.spin_once(self, timeout_sec=0.05)
             if predicate():
                 self.get_logger().info(
@@ -429,6 +439,22 @@ class GuidedRectangleWaypoints(Node):
             time.sleep(1.0 / self.rate_hz)
         self.hold_setpoint(gx, gy, gz, self.hold_time, yaw, label=f"{label} hold", require_guided=True)
 
+    def rotate_in_place(self, position, start_yaw, goal_yaw, label):
+        delta = math.atan2(math.sin(goal_yaw - start_yaw), math.cos(goal_yaw - start_yaw))
+        duration = abs(delta) / self.yaw_rate
+        steps = max(1, int(duration * self.rate_hz))
+        self.get_logger().info(
+            f"{label}: yaw {math.degrees(start_yaw):.1f} -> "
+            f"{math.degrees(start_yaw + delta):.1f} deg, duration={duration:.1f}s"
+        )
+        for i in range(steps + 1):
+            self.ensure_guided(label)
+            yaw = start_yaw + delta * (i / float(steps))
+            self.publish_setpoint(*position, yaw)
+            rclpy.spin_once(self, timeout_sec=0.0)
+            time.sleep(1.0 / self.rate_hz)
+        self.hold_setpoint(*position, 1.0, goal_yaw, label=f"{label} settle", require_guided=True)
+
     def run(self):
         self.wait_ready()
         navigation_source = self.wait_navigation_ready()
@@ -447,20 +473,26 @@ class GuidedRectangleWaypoints(Node):
 
         self.get_logger().info("Switching to local setpoints for rectangle hold/waypoints...")
         self.ensure_guided("post-takeoff")
-        self.hold_setpoint(*start, seconds=3.0, yaw=0.0, label="post-takeoff hold", require_guided=True)
+        self.hold_setpoint(
+            *start, seconds=3.0, yaw=self.home_yaw,
+            label="post-takeoff hold", require_guided=True)
 
         points = [
-            (self.home_x, self.home_y, z, 0.0),
-            (self.home_x + self.length_x, self.home_y, z, 0.0),
-            (self.home_x + self.length_x, self.home_y + self.length_y, z, 1.5708),
-            (self.home_x, self.home_y + self.length_y, z, 3.1416),
-            (self.home_x, self.home_y, z, -1.5708),
+            (self.home_x, self.home_y, z, self.home_yaw),
+            (self.home_x + self.length_x, self.home_y, z, self.home_yaw),
+            (self.home_x + self.length_x, self.home_y + self.length_y, z, self.home_yaw + math.pi / 2.0),
+            (self.home_x, self.home_y + self.length_y, z, self.home_yaw + math.pi),
+            (self.home_x, self.home_y, z, self.home_yaw + 3.0 * math.pi / 2.0),
         ]
         current = points[0][:3]
+        current_yaw = points[0][3]
         for idx, (x, y, target_z, yaw) in enumerate(points[1:], start=1):
             goal = (x, y, target_z)
+            if abs(math.atan2(math.sin(yaw - current_yaw), math.cos(yaw - current_yaw))) > math.radians(1.0):
+                self.rotate_in_place(current, current_yaw, yaw, f"turn {idx}/4")
             self.fly_segment(current, goal, yaw, f"waypoint {idx}/4")
             current = goal
+            current_yaw = yaw
 
         if self.land_at_end:
             if self.land_cli.wait_for_service(timeout_sec=5.0):
@@ -474,7 +506,9 @@ class GuidedRectangleWaypoints(Node):
         else:
             self.get_logger().info("Rectangle complete. Holding final setpoint; Ctrl+C to stop.")
             while rclpy.ok():
-                self.hold_setpoint(*current, seconds=1.0, yaw=0.0, label="final hold", require_guided=True)
+                self.hold_setpoint(
+                    *current, seconds=1.0, yaw=points[-1][3],
+                    label="final hold", require_guided=True)
 
 
 def main(args=None):

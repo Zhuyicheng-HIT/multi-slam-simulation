@@ -169,7 +169,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     -p mavros_ns:=/mavros \
     -p stream_rate_hz:=20 \
     -p position_rate_hz:=20.0 \
-    -p imu_rate_hz:=50.0 \
+    -p imu_rate_hz:=100.0 \
     -p gps_rate_hz:=10.0 \
     >"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
 fi
