@@ -286,7 +286,7 @@ source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
+bash tools/run_sim_with_flow.sh
 ```
 
 这个终端统一管理 Gazebo、ArduPilot SITL、MAVROS、传感器桥接与光流诊断。不要再启动第二套完整仿真，否则端口和话题会冲突。
@@ -295,7 +295,7 @@ bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_fl
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
+bash tools/run_rectangle_state_machine.sh
 ```
 
 默认 `NAVIGATION_SOURCE=auto`：本地位姿有效后，只要 GPS 或新鲜光流任一可用，状态机即可继续。`PREFLIGHT_WAIT_S` 是最长等待超时，不是固定休眠。
@@ -304,14 +304,14 @@ bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_s
 
 ```bash
 NAVIGATION_SOURCE=gps \
-  bash "$HOME/projects/multi-slam-simulation/install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh"
+  bash "$HOME/projects/multi-slam-simulation/tools/run_rectangle_state_machine.sh"
 ```
 
 强制光流：
 
 ```bash
 NAVIGATION_SOURCE=optical_flow FLOW_MIN_QUALITY=0 \
-  bash "$HOME/projects/multi-slam-simulation/install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh"
+  bash "$HOME/projects/multi-slam-simulation/tools/run_rectangle_state_machine.sh"
 ```
 
 真正的解锁时间还受 EKF、传感器健康、位置估计和 ArduPilot 安全检查影响。不要通过关闭全部飞控安全检查来换取表面上的快速起飞。
@@ -320,7 +320,7 @@ NAVIGATION_SOURCE=optical_flow FLOW_MIN_QUALITY=0 \
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_mid360_fastlio_mapping.sh
+bash tools/run_fastlio_mapping.sh
 ```
 
 脚本会加载外部 FAST-LIO 工作空间，并启动项目自己的可靠点云与栅格处理节点。
@@ -375,7 +375,7 @@ RViz 中固定坐标系和显示项以实际 FAST-LIO 配置为准。通常至�
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_nongps_flow.sh
+bash tools/run_sim_with_nongps_flow.sh
 ```
 
 然后在终端 2 使用 `NAVIGATION_SOURCE=optical_flow`。诊断光流模式与飞控注入模式用途不同，不能仅凭图像流存在就断定 EKF 已接受光流。

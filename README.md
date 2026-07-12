@@ -89,21 +89,21 @@ bash tools/setup_ubuntu.sh
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
+bash tools/run_sim_with_flow.sh
 ```
 
 打开第 2 个 Ubuntu 终端，启动自动起飞和矩形飞行状态机：
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_rectangle_state_machine.sh
+bash tools/run_rectangle_state_machine.sh
 ```
 
 打开第 3 个 Ubuntu 终端，启动 FAST-LIO 建图与 RViz：
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
-bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_mid360_fastlio_mapping.sh
+bash tools/run_fastlio_mapping.sh
 ```
 
 ## 6. 查看 RGB-D
@@ -146,6 +146,15 @@ ros2 topic echo --once /mavros/state
 ros2 topic hz /front/d435i/color/image_raw
 ros2 topic hz /sim/mid360/points_raw
 ros2 topic hz /cloud_registered
+```
+
+光流矩形飞行期间量化检查 FAST-LIO 漂移、偏航/IMU耦合和点云突变：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 tools/analyze_slam_drift.py --duration 120
 ```
 
 ## 9. 进一步阅读

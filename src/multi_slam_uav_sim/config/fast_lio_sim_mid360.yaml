@@ -17,20 +17,21 @@
 
         preprocess:
             lidar_type: 1
-            scan_line: 4
+            scan_line: 40
             blind: 0.10
             timestamp_unit: 3
             scan_rate: 10
 
         mapping:
             acc_cov: 0.1
-            gyr_cov: 0.1
+            gyr_cov: 0.001
             b_acc_cov: 0.0001
             b_gyr_cov: 0.0001
             fov_degree: 360.0
             det_range: 40.0
             extrinsic_est_en: false
-            extrinsic_T: [-0.011, -0.02329, 0.04412]
+            # Simulated FCU IMU and MID360 are co-located in base_link.
+            extrinsic_T: [0.0, 0.0, 0.0]
             extrinsic_R: [1., 0., 0.,
                           0., 1., 0.,
                           0., 0., 1.]
