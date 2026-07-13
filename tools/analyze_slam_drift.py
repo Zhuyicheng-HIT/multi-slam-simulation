@@ -74,6 +74,8 @@ class SlamDriftAnalyzer(Node):
         self.last_raw_stamp = 0
         self.last_registered_stamp = 0
         self.last_imu_stamp = 0
+        self.raw_timing = []
+        self.registered_timing = []
         self.cloud_overlaps = []
         self.cloud_centroid_jumps = []
         self.previous_voxels = None
@@ -113,20 +115,24 @@ class SlamDriftAnalyzer(Node):
         self.imu.append((time.monotonic(), stamp, float(msg.angular_velocity.z)))
 
     def _raw_cloud_cb(self, msg):
+        arrival = time.monotonic()
         stamp = stamp_ns(msg.header)
         if stamp < self.last_raw_stamp:
             self.raw_stamp_regressions += 1
         elif stamp == self.last_raw_stamp and stamp != 0:
             self.raw_stamp_duplicates += 1
         self.last_raw_stamp = max(stamp, self.last_raw_stamp)
+        self.raw_timing.append((arrival, stamp))
 
     def _registered_cloud_cb(self, msg):
+        arrival = time.monotonic()
         stamp = stamp_ns(msg.header)
         if stamp < self.last_registered_stamp:
             self.registered_stamp_regressions += 1
         elif stamp == self.last_registered_stamp and stamp != 0:
             self.registered_stamp_duplicates += 1
         self.last_registered_stamp = max(stamp, self.last_registered_stamp)
+        self.registered_timing.append((arrival, stamp))
         points = cloud_xyz(msg)
         if len(points) < 20:
             return
@@ -142,16 +148,17 @@ class SlamDriftAnalyzer(Node):
         self.previous_centroid = centroid
 
 
-def nearest_records(source, target):
+def nearest_records(source, target, max_delta_s=0.05):
     if not source or not target:
         return []
-    target_times = np.asarray([row[0] for row in target])
+    target_times = np.asarray([row[1] * 1.0e-9 for row in target])
     matches = []
     for row in source:
-        index = int(np.searchsorted(target_times, row[0]))
+        source_time = row[1] * 1.0e-9
+        index = int(np.searchsorted(target_times, source_time))
         candidates = [i for i in (index - 1, index) if 0 <= i < len(target)]
-        best = min(candidates, key=lambda i: abs(target_times[i] - row[0]))
-        if abs(target_times[best] - row[0]) <= 0.25:
+        best = min(candidates, key=lambda i: abs(target_times[i] - source_time))
+        if abs(target_times[best] - source_time) <= max_delta_s:
             matches.append((row, target[best]))
     return matches
 
@@ -160,8 +167,44 @@ def percentile(values, q, default=None):
     return float(np.percentile(values, q)) if values else default
 
 
+def timing_stats(records):
+    if len(records) < 2:
+        return {
+            "samples": len(records),
+            "stamp_period_median_ms": None,
+            "stamp_period_p95_ms": None,
+            "arrival_minus_stamp_jitter_p95_ms": None,
+        }
+    arrivals = np.asarray([row[0] for row in records], dtype=np.float64)
+    stamps = np.asarray([row[1] for row in records], dtype=np.float64) * 1.0e-9
+    stamp_period = np.diff(stamps)
+    scheduling_jitter = np.diff(arrivals) - stamp_period
+    return {
+        "samples": len(records),
+        "stamp_period_median_ms": float(np.median(stamp_period) * 1.0e3),
+        "stamp_period_p95_ms": float(np.percentile(stamp_period, 95) * 1.0e3),
+        "arrival_minus_stamp_jitter_p95_ms": float(
+            np.percentile(np.abs(scheduling_jitter), 95) * 1.0e3
+        ),
+    }
+
+
+def assess_coupling(coupling_corr, truth_imu_corr, threshold=0.65):
+    failures = []
+    warnings = []
+    reference_valid = truth_imu_corr is not None and truth_imu_corr >= threshold
+    if coupling_corr is None or truth_imu_corr is None:
+        failures.append("有效偏航转动样本不足")
+    elif not reference_valid:
+        warnings.append("真值偏航与飞控陀螺参考相关系数低于 0.65，不能裁决 FAST-LIO 耦合")
+    elif coupling_corr < threshold:
+        failures.append("FAST-LIO 偏航与飞控陀螺相关系数低于 0.65")
+    return reference_valid, failures, warnings
+
+
 def build_report(node, duration):
     matches = nearest_records(node.fast, node.truth)
+    match_stamp_delta_ms = [abs(fast[1] - truth[1]) * 1.0e-6 for fast, truth in matches]
     report = {
         "duration_s": duration,
         "samples": {
@@ -187,6 +230,16 @@ def build_report(node, duration):
             "centroid_jump_p95_m": percentile(node.cloud_centroid_jumps, 95),
             "centroid_jump_max_m": max(node.cloud_centroid_jumps, default=None),
         },
+        "timing": {
+            "association_basis": "header_stamp",
+            "fast_lio_odom": timing_stats(node.fast),
+            "ground_truth_odom": timing_stats(node.truth),
+            "fast_lio_fcu_imu": timing_stats(node.imu),
+            "raw_cloud": timing_stats(node.raw_timing),
+            "registered_cloud": timing_stats(node.registered_timing),
+            "fast_truth_stamp_delta_p95_ms": percentile(match_stamp_delta_ms, 95),
+            "fast_truth_stamp_delta_max_ms": max(match_stamp_delta_ms, default=None),
+        },
     }
 
     if len(matches) < 10:
@@ -208,11 +261,11 @@ def build_report(node, duration):
         truth_rel = rotate_to_initial(truth[2] - truth0[2], truth[3] - truth0[3], truth0[5])
         position_errors.append(float(np.linalg.norm(fast_rel - truth_rel)))
 
-    times = np.asarray([row[0] for row in fast_rows])
+    times = np.asarray([row[1] * 1.0e-9 for row in fast_rows])
     dt = np.diff(times)
     fast_yaw_rate = np.diff(relative_fast_yaw) / np.maximum(dt, 1.0e-3)
     truth_yaw_rate = np.diff(relative_truth_yaw) / np.maximum(dt, 1.0e-3)
-    imu_times = np.asarray([row[0] for row in node.imu])
+    imu_times = np.asarray([row[1] * 1.0e-9 for row in node.imu])
     imu_z = np.asarray([row[2] for row in node.imu])
     best = None
     for lag_s in np.arange(-0.5, 0.501, 0.02):
@@ -258,9 +311,13 @@ def build_report(node, duration):
         "fast_yaw_vs_fcu_gyro_rmse_rad_s": coupling_rmse,
         "estimated_fcu_imu_lag_s": imu_lag_s,
         "turning_samples": int(np.count_nonzero(turning)),
+        "coupling_reference_valid": bool(
+            truth_imu_corr is not None and truth_imu_corr >= 0.65
+        ),
     }
 
     failures = []
+    warnings = []
     if any(report["timestamp_regressions"].values()):
         failures.append("存在点云或 IMU 时间戳回退")
     if report["trajectory"]["position_rmse_m"] > 0.75:
@@ -278,10 +335,9 @@ def build_report(node, duration):
     settled_p95 = report["trajectory"]["yaw_error_settled_p95_deg"]
     if settled_p95 is not None and settled_p95 > 15.0:
         failures.append("非转向阶段偏航误差 P95 超过 15 度")
-    if coupling_corr is None:
-        failures.append("有效偏航转动样本不足")
-    elif coupling_corr < 0.65:
-        failures.append("FAST-LIO 偏航与飞控陀螺相关系数低于 0.65")
+    _, coupling_failures, coupling_warnings = assess_coupling(coupling_corr, truth_imu_corr)
+    failures.extend(coupling_failures)
+    warnings.extend(coupling_warnings)
     overlap_p05 = report["pointcloud"]["voxel_overlap_p05"]
     if overlap_p05 is not None and overlap_p05 < 0.05:
         failures.append("连续注册点云体素重叠率出现突降")
@@ -290,6 +346,7 @@ def build_report(node, duration):
             overlap_p05 is not None and overlap_p05 < 0.15):
         failures.append("注册点云质心跳变且体素重叠率过低")
     report["failures"] = failures
+    report["warnings"] = warnings
     report["passed"] = not failures
     return report
 
