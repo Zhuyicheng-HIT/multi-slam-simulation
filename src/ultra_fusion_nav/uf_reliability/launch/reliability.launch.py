@@ -1,0 +1,17 @@
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch_ros.actions import Node
+import os
+
+
+def generate_launch_description():
+    config = os.path.join(get_package_share_directory("uf_reliability"), "config", "reliability.yaml")
+    return LaunchDescription([
+        Node(
+            package="uf_reliability",
+            executable="reliability_monitor",
+            name="reliability_monitor",
+            parameters=[config],
+            output="screen",
+        )
+    ])
