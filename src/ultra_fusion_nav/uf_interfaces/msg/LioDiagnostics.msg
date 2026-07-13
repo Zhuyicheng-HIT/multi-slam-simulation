@@ -1,0 +1,13 @@
+std_msgs/Header header
+uint32 input_points
+uint32 matched_points
+float32 residual_mean_m
+float32 residual_median_m
+float32 residual_p95_m
+float64[6] hessian_eigenvalues
+float64 hessian_condition
+float32 spatial_coverage
+float32 dynamic_ratio
+float32 map_quality
+bool approximate
+string source

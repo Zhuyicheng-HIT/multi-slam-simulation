@@ -1,0 +1,91 @@
+pointcloud_body_filter:
+  ros__parameters:
+    input_topic: /sim/mid360/points_raw
+    output_topic: /sensors/lidar/points_body_filtered
+    body_min_x_m: -0.45
+    body_max_x_m: 0.45
+    body_min_y_m: -0.45
+    body_max_y_m: 0.45
+    body_min_z_m: -0.35
+    body_max_z_m: 0.15
+    min_range_m: 0.10
+    max_range_m: 40.0
+
+fault_injector_lidar:
+  ros__parameters:
+    modality: lidar
+    input_topic: /sensors/lidar/points_body_filtered
+    output_topic: /sensors/lidar/points
+    fault_type: none
+    fault_start_s: 0.0
+    fault_duration_s: 0.0
+    magnitude: 0.0
+    seed: 7
+
+fault_injector_imu:
+  ros__parameters:
+    modality: imu
+    input_topic: /livox/imu
+    output_topic: /sensors/imu
+    fault_type: none
+    fault_start_s: 0.0
+    fault_duration_s: 0.0
+    magnitude: 0.0
+    secondary_magnitude: 0.0
+    seed: 11
+
+fault_injector_gnss:
+  ros__parameters:
+    modality: gnss
+    input_topic: /uav/global_fix
+    output_topic: /sensors/gnss/fix
+    fault_type: none
+    fault_start_s: 0.0
+    fault_duration_s: 0.0
+    magnitude: 0.0
+    secondary_magnitude: 0.0
+    seed: 13
+
+fault_injector_optical_flow:
+  ros__parameters:
+    modality: optical_flow
+    input_topic: /sim/optical_flow/rad
+    output_topic: /sensors/optical_flow/rad
+    fault_type: none
+    fault_start_s: 0.0
+    fault_duration_s: 0.0
+    magnitude: 0.0
+    seed: 17
+
+fault_injector_depth:
+  ros__parameters:
+    modality: depth
+    input_topic: /front/d435i/aligned_depth_to_color/image_raw
+    output_topic: /sensors/rgbd/depth
+    fault_type: none
+    fault_start_s: 0.0
+    fault_duration_s: 0.0
+    magnitude: 0.0
+    seed: 19
+
+fault_injector_color:
+  ros__parameters:
+    modality: color
+    input_topic: /front/d435i/color/image_raw
+    output_topic: /sensors/rgbd/color
+    fault_type: none
+    fault_start_s: 0.0
+    fault_duration_s: 0.0
+    magnitude: 127.0
+    seed: 23
+
+sensor_contract_monitor:
+  ros__parameters:
+    lidar_topic: /sensors/lidar/points
+    imu_topic: /sensors/imu
+    gnss_topic: /sensors/gnss/fix
+    optical_flow_topic: /sensors/optical_flow/rad
+    depth_topic: /sensors/rgbd/depth
+    color_topic: /sensors/rgbd/color
+    startup_grace_s: 12.0
+    stale_after_s: 3.0
