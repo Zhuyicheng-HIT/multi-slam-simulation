@@ -6,6 +6,8 @@ float32 residual_median_m
 float32 residual_p95_m
 float64[6] hessian_eigenvalues
 float64 hessian_condition
+float64[3] normal_covariance_eigenvalues
+float32 axial_penalty
 float32 spatial_coverage
 float32 dynamic_ratio
 float32 map_quality

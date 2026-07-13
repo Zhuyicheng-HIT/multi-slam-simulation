@@ -19,4 +19,5 @@ exec ros2 bag record --storage sqlite3 --output "$OUTPUT" \
   /sensors/imu /sensors/gnss/fix /sensors/optical_flow/rad \
   /sensors/rgbd/color /sensors/rgbd/depth \
   /fault/state /sensor_contract/diagnostics \
-  /Odometry /cloud_registered
+  /Odometry /cloud_registered \
+  /lio/odom /lio/path /lio/local_map /lio/diagnostics /lidar/points_deskewed

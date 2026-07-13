@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>uf_lio_adapter</name>
+  <version>0.1.0</version>
+  <description>Stable LIO outputs and external geometry diagnostics for the Ultra-Fusion pipeline.</description>
+  <maintainer email="zyc@example.com">zyc</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>uf_interfaces</exec_depend>
+  <test_depend>ament_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
