@@ -21,7 +21,9 @@ URL:     https://github.com/hku-mars/FAST_LIO.git
 commit: a4743b095409588842a5b30ddfa27e29d2f99164
 ```
 
-The commit is the ROS2 merge commit and exists in both the upstream network and `Ericsii/FAST_LIO_ROS2`, while the local package README explicitly tells users to clone the latter. M0.1 must perform a clean import/build from the manifest in a new external workspace. If it cannot reproduce the current binary, change the manifest to the actual fork and pin the verified commit. Do not update to the fork's current HEAD merely because it is newer.
+The commit is the upstream ROS2 merge commit. On 2026-07-17 it was shallow-imported with recursive submodule `ikd-Tree` commit `e2e3f4e9d3b95a9e66b1ba83dc98d4a05ed8a3c4`, then built successfully in `$HOME/multi-slam-deps/mid360_ws`. Livox driver commit `13eb05e4e6dd7a765b934d0c5fd6236676a57b49` also built successfully. `tools/fetch_external_sources.sh` uses shallow recursive import so a clean setup does not require the full FAST-LIO history.
+
+Three consecutive fixed-route runs from this workspace passed, followed by a fourth pass after the Stage 3 evidence-policy change. The earlier extracted `$HOME/mid360_flight_ws` remains historical only and is no longer the accepted default dependency. Do not update either dependency to a newer HEAD without a separate regression campaign.
 
 Required project-owned extension: expose per-scan diagnostic data without changing the state estimate:
 
@@ -86,3 +88,7 @@ An external dependency is accepted only when all conditions hold:
 3. Ubuntu 22.04 + ROS 2 Humble build succeeds without copying local binaries.
 4. Minimal launch publishes the documented interfaces.
 5. Repository verification finds no external source, personal absolute path, large artifact, or generated directory in Git.
+
+## 7. Official Ultra-Fusion Runtime
+
+The official repository was rechecked on 2026-07-17 at Git commit `439c8385dbcd78174a2b98ab454b53ec64c9e7ca`. It advertises ROS 2 Humble binary release `v0.2.2`, but states that the estimator source is not yet public. The binary may be used later as an external behavioral oracle on supported datasets; it cannot replace project-owned source, formula audits, or simulator-specific validation.

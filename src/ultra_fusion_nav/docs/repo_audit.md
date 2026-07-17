@@ -144,3 +144,11 @@ The same flight produced an optical-flow comparison with 289 accepted samples, R
 ## 7. Stage 0 Verdict
 
 The machine and repository are sufficient to start the simulation-only program. The work is not blocked by compute, ROS, Gazebo, MAVROS, or Git access. It is blocked from claiming reproducibility until the external FAST-LIO source/path and rosbag profile are fixed, and blocked from claiming a stable LIO baseline until the failed correlation/timestamp/jump metrics are explained or corrected by a single-variable iteration.
+
+## 8. 2026-07-17 Closure Update
+
+The FAST-LIO reproducibility blocker is closed for the simple-map baseline. A clean, manifest-pinned workspace now exists at `$HOME/multi-slam-deps/mid360_ws`; FAST-LIO, its `ikd-Tree` submodule, and Livox ROS2 all build from recorded immutable commits. Three consecutive unchanged fixed-route runs passed, and a fourth run passed after a reliability-only change. Online position RMSE was `0.043-0.056 m`, yaw RMSE was `0.145-0.176 deg`, TUM ATE was `0.053-0.079 m`, and all recorded timestamp regressions were zero.
+
+The earlier extracted `$HOME/mid360_flight_ws` produced two large-drift failures and one near-pass after WSL restart. It is not accepted for future milestone claims. This does not prove the source-tree difference caused the drift; it establishes that only the clean pinned workspace has met the repeatability gate.
+
+Stage 1 rosbag2 infrastructure and Stage 3 scoring now exist. Remaining simulator limitations from Section 6 still apply, especially generic GNSS versus real BDS, lack of hardware PPS/PTP, approximate LiDAR timing, and unavailable true FAST-LIO internal Hessian.

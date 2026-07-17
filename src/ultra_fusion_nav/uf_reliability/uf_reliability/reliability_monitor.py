@@ -111,7 +111,6 @@ class ReliabilityMonitor(Node):
         self.last_gnss_ns = None
         self.last_gnss_arrival_ns = None
         self.last_gnss_lio_position = None
-        self.lio_speed = 0.0
         self.lio_position = None
         self.latest_depth_ratio = -1.0
         self.latest_blur_energy = -1.0
@@ -130,12 +129,14 @@ class ReliabilityMonitor(Node):
 
     def _publish(self, modality, header, result, valid=True):
         score, evidence, reasons = result
+        complete = evidence.get("score_complete", 0.0) >= 0.5
+        usable = bool(valid and complete)
         msg = ReliabilityScore()
         msg.header = copy.deepcopy(header)
         msg.modality = modality
         msg.degradation_score = float(score)
-        msg.reliability_weight = float(1.0 - score)
-        msg.valid = bool(valid)
+        msg.reliability_weight = float(1.0 - score) if usable else 0.0
+        msg.valid = usable
         msg.reasons = reasons
         msg.evidence_names = list(evidence.keys())
         msg.evidence_values = [float(value) for value in evidence.values()]
@@ -156,8 +157,6 @@ class ReliabilityMonitor(Node):
         self._publish("lidar", msg.header, result, msg.input_points > 0)
 
     def _odom(self, msg):
-        v = msg.twist.twist.linear
-        self.lio_speed = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
         p = msg.pose.pose.position
         self.lio_position = np.asarray([p.x, p.y, p.z], dtype=float)
 
@@ -253,14 +252,12 @@ class ReliabilityMonitor(Node):
     def _flow(self, msg):
         integration_s = float(msg.integration_time_us) * 1.0e-6
         delta_flow = 0.0
-        delta_prediction = 0.0
         if integration_s > 1.0e-5 and msg.distance > 0.0:
             delta_flow = math.hypot(msg.integrated_x, msg.integrated_y) * msg.distance
-            delta_prediction = self.lio_speed * integration_s
         self._publish(
             "optical_flow", msg.header,
             optical_flow_score(
-                delta_flow, delta_prediction, msg.quality, msg.distance,
+                delta_flow, None, msg.quality, msg.distance,
                 self.get_parameter("optical_flow.tau_translation").value,
                 tuple(self.get_parameter("optical_flow.weights").value),
             ), True

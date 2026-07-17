@@ -8,6 +8,7 @@ import time
 import numpy as np
 import rclpy
 from mavros_msgs.msg import OpticalFlowRad
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Image, Imu, NavSatFix, NavSatStatus
 from uf_interfaces.msg import LioDiagnostics, ReliabilityScore
@@ -20,18 +21,29 @@ class ReliabilityProbe(Node):
     def __init__(self):
         super().__init__("reliability_validation_probe")
         self.lidar_pub = self.create_publisher(LioDiagnostics, "/lio/diagnostics", 20)
+        self.odom_pub = self.create_publisher(Odometry, "/lio/odom", 20)
         self.gnss_pub = self.create_publisher(NavSatFix, "/sensors/gnss/fix", 20)
         self.imu_pub = self.create_publisher(Imu, "/sensors/imu", 50)
         self.flow_pub = self.create_publisher(OpticalFlowRad, "/sensors/optical_flow/rad", 20)
         self.depth_pub = self.create_publisher(Image, "/sensors/rgbd/depth", 20)
         self.color_pub = self.create_publisher(Image, "/sensors/rgbd/color", 20)
         self.samples = {modality: [] for modality in MODALITIES}
+        self.valid_samples = {modality: [] for modality in MODALITIES}
+        self.weight_samples = {modality: [] for modality in MODALITIES}
+        self.coverage_samples = {modality: [] for modality in MODALITIES}
         for modality in MODALITIES:
             self.create_subscription(
                 ReliabilityScore, f"/reliability/{modality}_score",
-                lambda msg, key=modality: self.samples[key].append(float(msg.degradation_score)), 20
+                lambda msg, key=modality: self._score(msg, key), 20
             )
         self.sequence = 0
+
+    def _score(self, msg, modality):
+        evidence = dict(zip(msg.evidence_names, msg.evidence_values))
+        self.samples[modality].append(float(msg.degradation_score))
+        self.valid_samples[modality].append(1.0 if msg.valid else 0.0)
+        self.weight_samples[modality].append(float(msg.reliability_weight))
+        self.coverage_samples[modality].append(float(evidence.get("evidence_weight_coverage", -1.0)))
 
     def _stamp(self, msg):
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -51,6 +63,11 @@ class ReliabilityProbe(Node):
         lidar.approximate = True
         lidar.source = "validation"
         self.lidar_pub.publish(lidar)
+
+        odom = Odometry()
+        self._stamp(odom)
+        odom.pose.pose.orientation.w = 1.0
+        self.odom_pub.publish(odom)
 
         gnss = NavSatFix()
         self._stamp(gnss)
@@ -110,8 +127,11 @@ class ReliabilityProbe(Node):
 
 
 def run_phase(node, degraded, duration):
-    for values in node.samples.values():
-        values.clear()
+    for sample_group in (
+        node.samples, node.valid_samples, node.weight_samples, node.coverage_samples
+    ):
+        for values in sample_group.values():
+            values.clear()
     started = time.monotonic()
     while time.monotonic() - started < duration:
         node.publish_set(degraded)
@@ -119,10 +139,18 @@ def run_phase(node, degraded, duration):
         time.sleep(0.02)
     for _ in range(20):
         rclpy.spin_once(node, timeout_sec=0.03)
-    return {
+    scores = {
         key: float(np.median(values[-20:])) if values else math.nan
         for key, values in node.samples.items()
     }
+    evidence = {}
+    for key in MODALITIES:
+        evidence[key] = {
+            "valid_rate": float(np.mean(node.valid_samples[key][-20:])) if node.valid_samples[key] else math.nan,
+            "weight_median": float(np.median(node.weight_samples[key][-20:])) if node.weight_samples[key] else math.nan,
+            "coverage_median": float(np.median(node.coverage_samples[key][-20:])) if node.coverage_samples[key] else math.nan,
+        }
+    return scores, evidence
 
 
 def main():
@@ -133,11 +161,35 @@ def main():
     rclpy.init()
     node = ReliabilityProbe()
     time.sleep(1.0)
-    healthy = run_phase(node, False, args.phase_duration)
-    degraded = run_phase(node, True, args.phase_duration)
+    healthy, healthy_evidence = run_phase(node, False, args.phase_duration)
+    degraded, degraded_evidence = run_phase(node, True, args.phase_duration)
     deltas = {key: degraded[key] - healthy[key] for key in MODALITIES}
-    passed = all(math.isfinite(deltas[key]) and deltas[key] >= 0.15 for key in MODALITIES)
-    result = {"healthy": healthy, "degraded": degraded, "delta": deltas, "passed": passed}
+    direction_passed = all(
+        math.isfinite(deltas[key]) and deltas[key] >= 0.15 for key in MODALITIES
+    )
+    complete_modalities = ("lidar", "gnss")
+    incomplete_modalities = ("imu", "optical_flow", "vision")
+    evidence_passed = all(
+        healthy_evidence[key]["valid_rate"] >= 0.95
+        and degraded_evidence[key]["valid_rate"] >= 0.95
+        for key in complete_modalities
+    ) and all(
+        healthy_evidence[key]["valid_rate"] <= 0.05
+        and degraded_evidence[key]["valid_rate"] <= 0.05
+        and abs(healthy_evidence[key]["weight_median"]) <= 1.0e-6
+        and abs(degraded_evidence[key]["weight_median"]) <= 1.0e-6
+        for key in incomplete_modalities
+    )
+    passed = direction_passed and evidence_passed
+    result = {
+        "healthy": healthy,
+        "degraded": degraded,
+        "delta": deltas,
+        "evidence": {"healthy": healthy_evidence, "degraded": degraded_evidence},
+        "direction_passed": direction_passed,
+        "evidence_policy_passed": evidence_passed,
+        "passed": passed,
+    }
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2))

@@ -1,14 +1,27 @@
-import math
-
-
 def clamp(value, low=0.0, high=1.0):
     return max(low, min(high, float(value)))
 
 
-def normalized_sum(terms):
-    available = [(clamp(value), float(weight)) for value, weight in terms if value is not None]
-    total = sum(weight for _, weight in available)
-    return clamp(sum(value * weight for value, weight in available) / total) if total else 1.0
+def weighted_score(terms):
+    weighted_terms = [
+        (None if value is None else clamp(value), max(0.0, float(weight)))
+        for value, weight in terms
+    ]
+    total_weight = sum(weight for _, weight in weighted_terms)
+    if total_weight <= 0.0:
+        return 1.0, 0.0
+    available_weight = sum(weight for value, weight in weighted_terms if value is not None)
+    score = sum(value * weight for value, weight in weighted_terms if value is not None)
+    return clamp(score / total_weight), clamp(available_weight / total_weight)
+
+
+def finalize_score(score, coverage, evidence, reasons):
+    complete = coverage >= 1.0 - 1.0e-9
+    evidence["evidence_weight_coverage"] = coverage
+    evidence["score_complete"] = 1.0 if complete else 0.0
+    if not complete:
+        reasons.append("incomplete_paper_evidence")
+    return score, evidence, reasons
 
 
 def lidar_score(hessian_eigenvalues, normal_covariance_eigenvalues, axial_penalty,
@@ -27,7 +40,7 @@ def lidar_score(hessian_eigenvalues, normal_covariance_eigenvalues, axial_penalt
     lambda_3_normal = normal_eigenvalues[0] if normal_eigenvalues else 0.0
     normal_term = tau_normal / (tau_normal + lambda_3_normal)
     match_term = 1.0 - min(1.0, float(matched_points) / max(1.0, float(match_reference)))
-    score = normalized_sum([
+    score, coverage = weighted_score([
         (phi_h, weights[0]),
         (normal_term, weights[1]),
         (axial_penalty, weights[2]),
@@ -53,7 +66,7 @@ def lidar_score(hessian_eigenvalues, normal_covariance_eigenvalues, axial_penalt
         reasons.append("weak_axis_eq19")
     if match_term > 0.5:
         reasons.append("few_matches_eq19")
-    return score, evidence, reasons
+    return finalize_score(score, coverage, evidence, reasons)
 
 
 def gnss_score(q_fix, covariance_trace_m2, innovation_mahalanobis,
@@ -64,7 +77,7 @@ def gnss_score(q_fix, covariance_trace_m2, innovation_mahalanobis,
     innovation_term = None
     if innovation_mahalanobis >= 0.0:
         innovation_term = min(1.0, innovation_mahalanobis / tau_innovation)
-    score = normalized_sum([
+    score, coverage = weighted_score([
         (fix_term, weights[0]),
         (covariance_term, weights[1]),
         (innovation_term, weights[2]),
@@ -83,7 +96,7 @@ def gnss_score(q_fix, covariance_trace_m2, innovation_mahalanobis,
         reasons.append("large_covariance_eq23")
     if innovation_term is not None and innovation_term > 0.5:
         reasons.append("large_innovation_eq23")
-    return score, evidence, reasons
+    return finalize_score(score, coverage, evidence, reasons)
 
 
 def imu_score(excitation, preintegration_residual_mahalanobis, saturation,
@@ -93,7 +106,7 @@ def imu_score(excitation, preintegration_residual_mahalanobis, saturation,
     if preintegration_residual_mahalanobis >= 0.0:
         residual_term = min(1.0, preintegration_residual_mahalanobis / tau_imu)
     saturation_term = 1.0 if saturation else 0.0
-    score = normalized_sum([
+    score, coverage = weighted_score([
         (excitation_term, weights[0]),
         (residual_term, weights[1]),
         (saturation_term, weights[2]),
@@ -107,42 +120,51 @@ def imu_score(excitation, preintegration_residual_mahalanobis, saturation,
     }
     reasons = []
     if excitation_term > 0.5:
-        reasons.append("low_excitation_eq21")
+        reasons.append("low_excitation_observability_eq21")
     if residual_term is not None and residual_term > 0.5:
         reasons.append("large_preintegration_residual_eq21")
     if saturation:
         reasons.append("saturation_eq21")
-    return score, evidence, reasons
+    return finalize_score(score, coverage, evidence, reasons)
 
 
 def optical_flow_score(delta_position_flow_m, delta_position_prediction_m,
                        quality, ground_distance_m, tau_translation=0.30,
                        weights=(0.60, 0.25, 0.15)):
-    increment_residual = abs(float(delta_position_flow_m) - float(delta_position_prediction_m))
-    increment_term = min(1.0, increment_residual / tau_translation)
+    increment_residual = None
+    increment_term = None
+    if delta_position_prediction_m is not None and float(delta_position_prediction_m) >= 0.0:
+        increment_residual = abs(float(delta_position_flow_m) - float(delta_position_prediction_m))
+        increment_term = min(1.0, increment_residual / tau_translation)
     quality_term = 1.0 - clamp(float(quality) / 255.0)
     distance_term = 0.0 if 0.10 <= float(ground_distance_m) <= 30.0 else 1.0
-    score = normalized_sum([
+    score, coverage = weighted_score([
         (increment_term, weights[0]),
         (quality_term, weights[1]),
         (distance_term, weights[2]),
     ])
     evidence = {
         "delta_position_flow_m": float(delta_position_flow_m),
-        "delta_position_prediction_m": float(delta_position_prediction_m),
-        "increment_residual_m_eq22_adapted": increment_residual,
-        "increment_term_eq22_adapted": increment_term,
+        "delta_position_prediction_m": (
+            -1.0 if delta_position_prediction_m is None else float(delta_position_prediction_m)
+        ),
+        "increment_residual_m_eq22_adapted": (
+            -1.0 if increment_residual is None else increment_residual
+        ),
+        "increment_term_eq22_adapted": -1.0 if increment_term is None else increment_term,
         "quality": float(quality),
         "ground_distance_m": float(ground_distance_m),
     }
     reasons = []
-    if increment_term > 0.5:
+    if increment_term is None:
+        reasons.append("increment_prediction_unavailable_eq22_adapted")
+    elif increment_term > 0.5:
         reasons.append("increment_inconsistent_eq22_adapted")
     if quality_term > 0.5:
         reasons.append("low_quality_extension")
     if distance_term > 0.5:
         reasons.append("invalid_ground_distance_extension")
-    return score, evidence, reasons
+    return finalize_score(score, coverage, evidence, reasons)
 
 
 def vision_score(feature_count, feature_reference, spatial_uniformity,
@@ -155,7 +177,7 @@ def vision_score(feature_count, feature_reference, spatial_uniformity,
     if reprojection_residual_px >= 0.0:
         reprojection_term = min(1.0, reprojection_residual_px / tau_reprojection_px)
     depth_term = 1.0 - clamp(depth_valid_ratio)
-    score = normalized_sum([
+    score, coverage = weighted_score([
         (feature_term, weights[0]),
         (uniformity_term, weights[1]),
         (reprojection_term, weights[2]),
@@ -181,4 +203,4 @@ def vision_score(feature_count, feature_reference, spatial_uniformity,
         reasons.append("large_reprojection_residual_eq20")
     if depth_term > 0.5:
         reasons.append("depth_holes_extension")
-    return score, evidence, reasons
+    return finalize_score(score, coverage, evidence, reasons)

@@ -40,7 +40,7 @@ clone_at_commit \
   "$LIVOX_SDK2_DIR" \
   f5d9375f84efe2b15bc0a052d3e18482ed13adf4
 
-vcs import --recursive --skip-existing "$LIDAR_WS/src" \
+vcs import --recursive --skip-existing --shallow "$LIDAR_WS/src" \
   < "$REPO_ROOT/dependencies.repos"
 
 cat <<EOF
@@ -54,4 +54,3 @@ Livox SDK2:        $LIVOX_SDK2_DIR
 No external project was copied into this repository.
 Continue with docs/INSTALL.md to build each dependency.
 EOF
-

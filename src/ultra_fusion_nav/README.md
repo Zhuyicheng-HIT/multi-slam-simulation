@@ -13,6 +13,18 @@ The implementation order is deliberate:
 
 The first backend may consume a relative LIO pose as a transitional factor, but it must be described as loose/mid coupling. A tightly coupled Ultra-Fusion-style backend requires point-to-plane LiDAR residuals and must not combine a FAST-LIO pose with a second factor built from the same IMU without accounting for correlation.
 
+## Current Status
+
+| Stage | Status | Gate |
+| --- | --- | --- |
+| M0 repository/dependencies | accepted for current simple-map scope | clean manifest-pinned FAST-LIO/Livox build |
+| M1 sensor data layer | implemented | normalized topics, faults, body crop, rosbag2 record/replay |
+| M2 LiDAR-IMU baseline | accepted on fixed simple route | four consecutive passing runs, including one post-scoring change |
+| M3 reliability scores | formula semantics accepted; evidence still incomplete by modality | unit tests, ROS endpoint policy, 11-level monotonic sweep, full flight |
+| M4-M8 | not started | do not bypass earlier evidence gates |
+
+The next implementation gate is Stage 4 BDS/GNSS and optical-flow assistance. Before any fallback can affect pose, Stage 4 must supply a calibrated optical-frame vector prediction, distinguish pure optical flow from FCU fused local position, and implement smooth BDS re-anchor. See `docs/paper_formula_audit.md` and `docs/score_validation_report.md`.
+
 ## Layout
 
 ```text

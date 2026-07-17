@@ -15,10 +15,13 @@ class ScoringTest(unittest.TestCase):
     def test_gnss_jump_and_outage_increase(self):
         good = gnss_score(1.0, 0.5, 0.2)[0]
         jump = gnss_score(1.0, 0.5, 9.0)[0]
-        outage = gnss_score(0.0, 0.5, -1.0)[0]
+        outage_result = gnss_score(0.0, 0.5, -1.0)
+        outage = outage_result[0]
         self.assertLess(good, 0.1)
         self.assertGreater(jump, 0.5)
-        self.assertGreater(outage, 0.4)
+        self.assertGreater(outage, 0.2)
+        self.assertAlmostEqual(outage_result[1]["evidence_weight_coverage"], 0.45)
+        self.assertIn("incomplete_paper_evidence", outage_result[2])
 
     def test_imu_saturation_increases(self):
         self.assertLess(imu_score(1.0, 0.1, False)[0], 0.1)
@@ -35,6 +38,26 @@ class ScoringTest(unittest.TestCase):
         bad = vision_score(10, 150, 0.1, 8.0, 0.10)[0]
         self.assertLess(good, 0.1)
         self.assertGreater(bad, 0.6)
+
+    def test_missing_imu_residual_preserves_paper_weights(self):
+        score, evidence, reasons = imu_score(0.0, -1.0, False)
+        self.assertAlmostEqual(score, 0.35)
+        self.assertAlmostEqual(evidence["evidence_weight_coverage"], 0.55)
+        self.assertEqual(evidence["score_complete"], 0.0)
+        self.assertIn("incomplete_paper_evidence", reasons)
+
+    def test_missing_flow_prediction_is_not_treated_as_zero_motion(self):
+        score, evidence, reasons = optical_flow_score(0.8, None, 255, 3.0)
+        self.assertAlmostEqual(score, 0.0)
+        self.assertAlmostEqual(evidence["evidence_weight_coverage"], 0.40)
+        self.assertEqual(evidence["increment_term_eq22_adapted"], -1.0)
+        self.assertIn("increment_prediction_unavailable_eq22_adapted", reasons)
+
+    def test_missing_vision_reprojection_preserves_paper_weights(self):
+        _, evidence, reasons = vision_score(150, 150, 1.0, -1.0, 1.0)
+        self.assertAlmostEqual(evidence["evidence_weight_coverage"], 0.75)
+        self.assertEqual(evidence["score_complete"], 0.0)
+        self.assertIn("incomplete_paper_evidence", reasons)
 
 
 if __name__ == "__main__":
