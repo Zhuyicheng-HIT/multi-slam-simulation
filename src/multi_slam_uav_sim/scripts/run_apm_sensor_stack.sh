@@ -88,19 +88,28 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
   setsid ros2 run multi_slam_uav_sim gz_rgbd_latest_bridge --ros-args \
     -p gz_prefix:=/camera/camera \
     -p ros_prefix:=/camera/camera \
-    -p publish_hz:=20.0 \
+    -p publish_hz:=30.0 \
+    -p publish_all_frames:=true \
+    -p restamp:=false \
     >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
   pids+=("$!")
 
   flow_args=(
     -p image_topic:=/camera/camera/color/image_raw
+    -p camera_info_topic:=/camera/camera/color/camera_info
     -p depth_topic:=/camera/camera/depth/image_rect_raw
     -p flow_topic:=/sim/optical_flow/raw
-    -p use_gazebo_height:=true
+    -p gazebo_range_topic:=/flow/range
+    -p gazebo_imu_topic:=/flow/imu
+    -p imu_topic:=/mavros/imu/data_raw
+    -p max_rate_hz:=30.0
+    -p angular_scale:=1.0
+    -p use_gazebo_height:=false
     -p gazebo_world_name:="$WORLD_NAME"
     -p gazebo_height_model:=apm_iris
     -p publish_to_fcu:="$publish_to_fcu"
     -p fcu_flow_topic:=/mavros/optical_flow/raw/send
+    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-true}
     -p debug:=${FLOW_DEBUG:-false}
   )
   if [[ -n "$fcu_range_topic" ]]; then
@@ -200,19 +209,28 @@ if [[ "$FLOW_STACK_STARTED" != "1" && ( "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${
   setsid ros2 run multi_slam_uav_sim gz_rgbd_latest_bridge --ros-args \
     -p gz_prefix:=/camera/camera \
     -p ros_prefix:=/camera/camera \
-    -p publish_hz:=20.0 \
+    -p publish_hz:=30.0 \
+    -p publish_all_frames:=true \
+    -p restamp:=false \
     >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
   pids+=("$!")
 
   flow_args=(
     -p image_topic:=/camera/camera/color/image_raw
+    -p camera_info_topic:=/camera/camera/color/camera_info
     -p depth_topic:=/camera/camera/depth/image_rect_raw
     -p flow_topic:=/sim/optical_flow/raw
-    -p use_gazebo_height:=true
+    -p gazebo_range_topic:=/flow/range
+    -p gazebo_imu_topic:=/flow/imu
+    -p imu_topic:=/mavros/imu/data_raw
+    -p max_rate_hz:=30.0
+    -p angular_scale:=1.0
+    -p use_gazebo_height:=false
     -p gazebo_world_name:="$WORLD_NAME"
     -p gazebo_height_model:=apm_iris
     -p publish_to_fcu:="$publish_to_fcu"
     -p fcu_flow_topic:=/mavros/optical_flow/raw/send
+    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-true}
     -p debug:=${FLOW_DEBUG:-false}
   )
   if [[ -n "$fcu_range_topic" ]]; then

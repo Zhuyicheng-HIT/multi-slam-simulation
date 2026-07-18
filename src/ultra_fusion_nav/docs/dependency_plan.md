@@ -50,6 +50,7 @@ SQLite3 is available and is the required baseline storage format. `ros-humble-ro
 | `uf_interfaces` | `ament_cmake` | 1 | Score, health, GNSS integrity, fault-state, and diagnostic messages |
 | `uf_sensor_pipeline` | `ament_cmake` plus Python tools where justified | 1 | Topic normalization, frame/time validation, body crop, fault injection, and bag profiles |
 | `uf_reliability` | `ament_cmake` | 3 | Deterministic sensor score estimators and evidence publication |
+| `uf_aiding` | `ament_python` | 4 | GNSS/optical-flow admission, outage handling, and smooth re-anchor |
 | `uf_scheduler` | `ament_cmake` | 6 | Hysteretic continuous weights, gates, covariance inflation, and state machine |
 | `uf_backend` | `ament_cmake` | 7 | Offline fixed-lag/sliding-window estimator and ablations |
 | `uf_relocalization` | `ament_cmake` | 8 | Keyframe database, place candidates, registration, and recovery checks |

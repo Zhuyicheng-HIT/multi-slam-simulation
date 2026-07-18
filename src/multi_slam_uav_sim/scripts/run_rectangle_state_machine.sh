@@ -88,7 +88,7 @@ EOF
 accuracy_pid=""
 if [[ "$ENABLE_FLOW_ACCURACY" == "1" ]]; then
   ros2 run multi_slam_uav_sim flow_gazebo_accuracy --ros-args \
-    -p flow_topic:=/sim/optical_flow/raw \
+    -p flow_topic:=/sim/optical_flow/rad \
     -p gazebo_world_name:="$WORLD_NAME" \
     -p gazebo_model:=apm_iris \
     -p duration_s:="$ACCURACY_DURATION_S_PARAM" \

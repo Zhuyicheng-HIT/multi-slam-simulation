@@ -8,6 +8,8 @@ OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/logs/uf_stage2_${RUN_ID}}
 ANALYSIS_DURATION_S=${ANALYSIS_DURATION_S:-125}
 ENABLE_LIO_ADAPTER=${ENABLE_LIO_ADAPTER:-1}
 ENABLE_RELIABILITY=${ENABLE_RELIABILITY:-0}
+ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
+FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
 
 mkdir -p "$OUTPUT_DIR"
 set +u
@@ -52,7 +54,7 @@ wait_for_message() {
 
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 
-setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG=false LOG_DIR="$OUTPUT_DIR/sim" \
+setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" LOG_DIR="$OUTPUT_DIR/sim" \
   bash "$REPO_ROOT/tools/run_sim_with_flow.sh" \
   >"$OUTPUT_DIR/sim.stdout.log" 2>"$OUTPUT_DIR/sim.stderr.log" &
 pids+=("$!")
@@ -95,6 +97,20 @@ if [[ "$ENABLE_RELIABILITY" == "1" ]]; then
   pids+=("$score_recorder_pid")
 fi
 
+flow_calibration_pid=""
+if [[ "$ENABLE_FLOW_CALIBRATION" == "1" ]]; then
+  flow_args=(
+    --duration "$ANALYSIS_DURATION_S"
+    --output "$OUTPUT_DIR/optical_flow_lio_calibration.json"
+    --csv "$OUTPUT_DIR/optical_flow_lio_pairs.csv"
+  )
+  python3 "$SCRIPT_DIR/calibrate_optical_flow_lio.py" "${flow_args[@]}" \
+    >"$OUTPUT_DIR/optical_flow_lio_calibration.stdout.log" \
+    2>"$OUTPUT_DIR/optical_flow_lio_calibration.stderr.log" &
+  flow_calibration_pid=$!
+  pids+=("$flow_calibration_pid")
+fi
+
 python3 "$REPO_ROOT/tools/analyze_slam_drift.py" \
   --duration "$ANALYSIS_DURATION_S" --output "$OUTPUT_DIR/report.json" \
   >"$OUTPUT_DIR/analyzer.stdout.log" 2>"$OUTPUT_DIR/analyzer.stderr.log" &
@@ -122,6 +138,11 @@ if [[ -n "$score_recorder_pid" ]]; then
   wait "$score_recorder_pid"
   score_status=$?
 fi
+flow_calibration_status=0
+if [[ -n "$flow_calibration_pid" ]]; then
+  wait "$flow_calibration_pid"
+  flow_calibration_status=$?
+fi
 set -e
 
 python3 "$SCRIPT_DIR/evaluate_lio_trajectory.py" \
@@ -135,7 +156,26 @@ if [[ -n "$score_recorder_pid" ]]; then
     --output "$OUTPUT_DIR/reliability_timeline.png"
 fi
 
-printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s\n' \
-  "$rectangle_status" "$analyzer_status" "$recorder_status" "$score_status"
+flow_gate_status=0
+if [[ -n "$flow_calibration_pid" ]]; then
+  flow_gate_args=(
+    --calibration "$OUTPUT_DIR/optical_flow_lio_calibration.json"
+    --lio-report "$OUTPUT_DIR/report.json"
+    --gazebo-log "$OUTPUT_DIR/rectangle/flow_gazebo_accuracy.log"
+    --output "$OUTPUT_DIR/optical_flow_gate.json"
+  )
+  if [[ "$FLOW_CALIBRATION_REQUIRE_PASS" == "1" ]]; then
+    flow_gate_args+=(--require-pass)
+  fi
+  set +e
+  python3 "$SCRIPT_DIR/evaluate_optical_flow_gate.py" "${flow_gate_args[@]}"
+  flow_gate_status=$?
+  set -e
+fi
+
+printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s flow_calibration_status=%s flow_gate_status=%s\n' \
+  "$rectangle_status" "$analyzer_status" "$recorder_status" "$score_status" \
+  "$flow_calibration_status" "$flow_gate_status"
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
-(( rectangle_status == 0 && analyzer_status == 0 && recorder_status == 0 && score_status == 0 ))
+(( rectangle_status == 0 && analyzer_status == 0 && recorder_status == 0 \
+   && score_status == 0 && flow_calibration_status == 0 && flow_gate_status == 0 ))

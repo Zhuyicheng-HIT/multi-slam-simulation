@@ -21,11 +21,15 @@ class LatestGzRgbdBridge(RosNode):
         self.declare_parameter("gz_prefix", "/camera/camera")
         self.declare_parameter("ros_prefix", "/camera/camera")
         self.declare_parameter("publish_hz", 15.0)
+        self.declare_parameter("publish_all_frames", False)
+        self.declare_parameter("restamp", False)
         self.declare_parameter("color_frame_id", "camera_color_optical_frame")
         self.declare_parameter("depth_frame_id", "camera_depth_optical_frame")
         self.gz_prefix = self.get_parameter("gz_prefix").value.rstrip("/")
         self.ros_prefix = self.get_parameter("ros_prefix").value.rstrip("/")
         self.publish_hz = float(self.get_parameter("publish_hz").value)
+        self.publish_all_frames = bool(self.get_parameter("publish_all_frames").value)
+        self.restamp = bool(self.get_parameter("restamp").value)
         self.color_frame_id = self.get_parameter("color_frame_id").value
         self.depth_frame_id = self.get_parameter("depth_frame_id").value
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
@@ -47,18 +51,31 @@ class LatestGzRgbdBridge(RosNode):
         self.gz_node.subscribe(GzImage, self.gz_prefix, self._color_cb)
         self.gz_node.subscribe(GzImage, f"{self.gz_prefix}/depth_image", self._depth_cb)
         self.gz_node.subscribe(GzCameraInfo, f"{self.gz_prefix}/camera_info", self._info_cb)
-        self.create_timer(1.0 / max(self.publish_hz, 1.0), self._publish_latest)
-        self.get_logger().info(f"Latest-frame RGBD bridge active: {self.gz_prefix} -> {self.ros_prefix}, publish_hz={self.publish_hz}")
+        if self.publish_all_frames:
+            self.create_timer(1.0, self._report)
+        else:
+            self.create_timer(1.0 / max(self.publish_hz, 1.0), self._publish_latest)
+        mode = "all source frames" if self.publish_all_frames else f"latest at {self.publish_hz} Hz"
+        self.get_logger().info(
+            f"Gazebo RGBD bridge active: {self.gz_prefix} -> {self.ros_prefix}, "
+            f"mode={mode}, restamp={self.restamp}"
+        )
 
     def _color_cb(self, msg):
         with self.lock:
             self.latest_color = msg
             self.color_count += 1
+            count = self.color_count
+        if self.publish_all_frames:
+            self._publish_color(msg, count)
 
     def _depth_cb(self, msg):
         with self.lock:
             self.latest_depth = msg
             self.depth_count += 1
+            count = self.depth_count
+        if self.publish_all_frames:
+            self._publish_depth(msg, count)
 
     def _info_cb(self, msg):
         with self.lock:
@@ -66,6 +83,8 @@ class LatestGzRgbdBridge(RosNode):
 
     def _stamp(self, msg):
         stamp = self.get_clock().now().to_msg()
+        if self.restamp:
+            return stamp
         try:
             stamp.sec = msg.header.stamp.sec
             stamp.nanosec = msg.header.stamp.nsec
@@ -84,6 +103,45 @@ class LatestGzRgbdBridge(RosNode):
         out.step = int(msg.step)
         out.data = bytes(msg.data)
         return out
+
+    def _publish_camera_info(self, frame_id):
+        with self.lock:
+            info = self.latest_info
+        if info is None:
+            return
+        self.color_info_pub.publish(self._camera_info_msg(info, frame_id))
+
+    def _publish_color(self, msg, count):
+        try:
+            self.color_pub.publish(self._image_msg(msg, self.color_frame_id))
+            self._publish_camera_info(self.color_frame_id)
+            self.published_color_count = count
+        except Exception as exc:
+            self.get_logger().warning(f"Direct color publish failed: {exc}")
+
+    def _publish_depth(self, msg, count):
+        try:
+            out = self._image_msg(msg, self.depth_frame_id)
+            if out.encoding == "passthrough" and out.step == out.width * 4:
+                out.encoding = "32FC1"
+            self.depth_pub.publish(out)
+            with self.lock:
+                info = self.latest_info
+            if info is not None:
+                self.depth_info_pub.publish(self._camera_info_msg(info, self.depth_frame_id))
+            self.published_depth_count = count
+        except Exception as exc:
+            self.get_logger().warning(f"Direct depth publish failed: {exc}")
+
+    def _report(self):
+        with self.lock:
+            color_count = self.color_count
+            depth_count = self.depth_count
+        self.get_logger().info(
+            f"bridge frames: color={color_count}, depth={depth_count}, "
+            f"published_color={self.published_color_count}, "
+            f"published_depth={self.published_depth_count}"
+        )
 
     def _camera_info_msg(self, msg, frame_id):
         out = CameraInfo()
