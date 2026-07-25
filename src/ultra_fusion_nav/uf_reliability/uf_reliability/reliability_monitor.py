@@ -220,6 +220,15 @@ class ReliabilityMonitor(Node):
             self.get_parameter("lidar.tau_normal").value,
             tuple(self.get_parameter("lidar.weights").value),
         )
+        result[1].update({
+            "residual_mean_m_extension": float(msg.residual_mean_m),
+            "residual_p95_m_extension": float(msg.residual_p95_m),
+            "spatial_coverage_extension": float(msg.spatial_coverage),
+            "dynamic_ratio_extension": float(msg.dynamic_ratio),
+            "uncertain_ratio_extension": float(msg.uncertain_ratio),
+            "feature_repeatability_extension": float(msg.feature_repeatability),
+            "map_quality_extension": float(msg.map_quality),
+        })
         if msg.approximate:
             result[2].append("approximate_external_geometry")
         self._publish(

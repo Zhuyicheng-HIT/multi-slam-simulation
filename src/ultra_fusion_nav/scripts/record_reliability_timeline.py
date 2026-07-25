@@ -3,14 +3,16 @@
 
 import argparse
 import json
+import math
 from pathlib import Path
+import statistics
 import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from diagnostic_msgs.msg import DiagnosticArray
-from uf_interfaces.msg import FaultState, SchedulerState
+from uf_interfaces.msg import FaultState, LioDiagnostics, SchedulerState
 
 
 def stamp_seconds(stamp):
@@ -38,6 +40,12 @@ class ReliabilityTimelineRecorder(Node):
             DiagnosticArray,
             "/fusion/unified/diagnostics",
             self._backend,
+            20,
+        )
+        self.create_subscription(
+            LioDiagnostics,
+            "/lio/diagnostics",
+            self._lio,
             20,
         )
 
@@ -105,11 +113,31 @@ class ReliabilityTimelineRecorder(Node):
             })
             self.events.append(event)
 
+    def _lio(self, msg):
+        event = self._relative_event("lio", msg)
+        event.update({
+            "input_points": int(msg.input_points),
+            "matched_points": int(msg.matched_points),
+            "residual_mean_m": float(msg.residual_mean_m),
+            "residual_p95_m": float(msg.residual_p95_m),
+            "spatial_coverage": float(msg.spatial_coverage),
+            "dynamic_ratio": float(msg.dynamic_ratio),
+            "uncertain_ratio": float(msg.uncertain_ratio),
+            "feature_repeatability": float(msg.feature_repeatability),
+            "map_quality": float(msg.map_quality),
+        })
+        self.events.append(event)
+
 
 def summarize(events):
     scheduler = [event for event in events if event["kind"] == "scheduler"]
     faults = [event for event in events if event["kind"] == "fault"]
     backend = [event for event in events if event["kind"] == "backend"]
+    lio = [event for event in events if event["kind"] == "lio"]
+
+    def finite_median(name):
+        values = [event[name] for event in lio if math.isfinite(event[name])]
+        return statistics.median(values) if values else None
     states = []
     for event in scheduler:
         state = event["health_state"]
@@ -137,6 +165,13 @@ def summarize(events):
         "backend_lidar_disabled_max": max(
             (event["lidar_disabled"] for event in backend), default=0
         ),
+        "lio_samples": len(lio),
+        "lio_matched_points_median": finite_median("matched_points"),
+        "lio_residual_p95_m_median": finite_median("residual_p95_m"),
+        "lio_dynamic_ratio_median": finite_median("dynamic_ratio"),
+        "lio_uncertain_ratio_median": finite_median("uncertain_ratio"),
+        "lio_feature_repeatability_median": finite_median("feature_repeatability"),
+        "lio_map_quality_median": finite_median("map_quality"),
     }
 
 
