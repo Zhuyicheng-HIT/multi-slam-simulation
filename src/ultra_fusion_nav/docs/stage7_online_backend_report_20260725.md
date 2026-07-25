@@ -54,7 +54,7 @@ The clean GNSS-jump fault run is recorded separately from the nominal table:
 
 | Run | Fault | Active samples | Protection evidence | Unified ATE RMSE | Max error | Result |
 |---|---|---:|---:|---:|---:|---|
-| `uf_stage2_gnss_jump_v7` | 50 m GNSS jump, about 14 s | 105 | 105 | 0.0511 m | 0.337 m | passed |
+| `uf_stage2_gnss_jump_v7` | 50 m GNSS jump, about 14 s | 105 | 105 rejected GNSS factors | 0.0511 m | 0.337 m | passed |
 | `uf_stage2_gnss_outage_v2` | GNSS outage, about 13 s | 98 | GNSS disabled for 121 scheduler samples | 0.0430 m | 0.133 m | passed |
 | `uf_stage2_flow_low_quality_v1` | optical-flow quality 0, about 13 s | 240 | 149 quality-disabled flow factors | 0.0609 m | 0.275 m | passed |
 
@@ -63,6 +63,35 @@ backend hard gate rejects every GNSS factor whose position innovation exceeds
 `gnss_jump_gate_m=20.0`, while LIO remains the local anchor. No optimization
 error occurred. The corresponding artifacts are under
 `logs/uf_stage2_uf_stage2_gnss_jump_v7/`.
+
+### LiDAR input-path correction
+
+The original experiments ran FAST-LIO directly from
+`/sim/mid360/points_raw`; therefore an injected fault on
+`/sensors/lidar/points` did not exercise LIO. The Stage 2 experiment now
+defaults to `FASTLIO_INPUT_MODE=filtered_pointcloud`, producing this chain:
+
+```text
+/sim/mid360/points_raw -> body filter -> fault injector
+    -> /sensors/lidar/points -> FAST-LIO
+```
+
+The new no-fault filtered baseline produced unified ATE RMSE `0.0715 m`,
+RTF median `0.999`, and ExternalNav rate `7.67 Hz`. Under 95% point dropout,
+the LiDAR degradation-score median rose from `0.715` to `0.825`, median
+matched points fell from `309` to `11.5`, and the scheduler disabled LiDAR
+for 124 samples inside the fault interval. Unified ATE remained `0.0610 m`
+with zero backend optimization errors. The raw point-cloud analyzer correctly
+failed this stress run because voxel overlap became too low while centroid
+jumps increased; this is expected degradation evidence rather than a passing
+point-cloud-quality result.
+
+`preserve_lio_anchor=true` retains a minimum-weight LIO pose proxy when the
+scheduler disables LiDAR, using reliability weight `0.05` together with the
+scheduler's covariance inflation. This prevents rotation from becoming
+unobservable in the current tangent-space prototype. It is not equivalent to
+fully removing a future point-to-plane factor and remains an explicit backend
+limitation.
 
 For v7, `/fusion/unified/odom` reached 7.75 Hz through the ExternalNav gate,
 with source-to-arrival rate ratio `1.0001`. The same run's raw FAST-LIO
@@ -97,8 +126,8 @@ unapplied fault cannot be reported as a valid experiment.
 The dense Python normal-equation solve has been replaced by an optional SciPy
 sparse solve with a dense fallback. The local factor now consumes analytic
 first-order bias Jacobians, but the remaining gate is manifold SE(3)
-relinearization and proper bias covariance propagation. The GNSS jump gate is
-now validated, but it is a protective innovation gate rather than a complete
-GNSS re-anchor. Next run the same clean-stack procedure for GNSS outage,
-optical-flow low texture, LiDAR degeneration, and dynamic-map protection
-before making a final fixed-vs-dynamic accuracy claim.
+relinearization and proper bias covariance propagation. GNSS jump, GNSS
+outage, optical-flow low quality, and LiDAR point-dropout paths are validated,
+but the GNSS jump gate is a protective innovation gate rather than a complete
+re-anchor. The next experiment is dynamic-map protection and a relocalization
+trigger/recovery loop before any fixed-vs-dynamic accuracy claim.

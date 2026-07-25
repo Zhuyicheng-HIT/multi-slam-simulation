@@ -14,6 +14,7 @@ FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
 ENABLE_PERFORMANCE_MONITOR=${ENABLE_PERFORMANCE_MONITOR:-1}
 ENABLE_RELIABILITY_TIMELINE=${ENABLE_RELIABILITY_TIMELINE:-0}
 SIM_WORLD_NAME=${SIM_WORLD_NAME:-simple_apm_rgbd_mid360}
+FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-filtered_pointcloud}
 ALLOW_MISSING_RELIABILITY=${ALLOW_MISSING_RELIABILITY:-0}
 FAULT_MODALITY=${FAULT_MODALITY:-}
 FAULT_TYPE=${FAULT_TYPE:-none}
@@ -76,8 +77,11 @@ wait_for_message /sim/mid360/points_raw 90
 setsid ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
   >"$OUTPUT_DIR/sensor_pipeline.stdout.log" 2>"$OUTPUT_DIR/sensor_pipeline.stderr.log" &
 pids+=("$!")
+if [[ "$FASTLIO_INPUT_MODE" == "filtered_pointcloud" ]]; then
+  wait_for_message /sensors/lidar/points 30
+fi
 
-setsid env RVIZ=0 LOG_DIR="$OUTPUT_DIR/lio" \
+setsid env RVIZ=0 LOG_DIR="$OUTPUT_DIR/lio" FASTLIO_INPUT_MODE="$FASTLIO_INPUT_MODE" \
   bash "$REPO_ROOT/tools/run_fastlio_mapping.sh" \
   >"$OUTPUT_DIR/fastlio.stdout.log" 2>"$OUTPUT_DIR/fastlio.stderr.log" &
 pids+=("$!")
@@ -149,7 +153,6 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
     if awk "BEGIN {exit !($FAULT_SECONDARY_MAGNITUDE != 0.0)}"; then
       timeout 60s ros2 param set "$fault_node" secondary_magnitude "$fault_secondary_value"
     fi
-    timeout 60s ros2 param set "$fault_node" fault_duration_s 0.0
     timeout 60s ros2 param set "$fault_node" fault_type "$FAULT_TYPE"
     printf 'fault_trigger_active node=%s\n' "$fault_node"
     if awk "BEGIN {exit !($FAULT_DURATION_S > 0.0)}"; then
@@ -163,10 +166,12 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
 fi
 
 score_recorder_pid=""
-if [[ "$ENABLE_RELIABILITY" == "1" && "$ENABLE_UNIFIED_BACKEND" != "1" ]]; then
-  setsid ros2 launch uf_reliability reliability.launch.py \
-    >"$OUTPUT_DIR/reliability.stdout.log" 2>"$OUTPUT_DIR/reliability.stderr.log" &
-  pids+=("$!")
+if [[ "$ENABLE_RELIABILITY" == "1" ]]; then
+  if [[ "$ENABLE_UNIFIED_BACKEND" != "1" ]]; then
+    setsid ros2 launch uf_reliability reliability.launch.py \
+      >"$OUTPUT_DIR/reliability.stdout.log" 2>"$OUTPUT_DIR/reliability.stderr.log" &
+    pids+=("$!")
+  fi
   wait_for_message /reliability/imu_score 30
   score_args=(
     --duration "$ANALYSIS_DURATION_S"

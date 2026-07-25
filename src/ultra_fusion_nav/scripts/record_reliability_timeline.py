@@ -94,6 +94,8 @@ class ReliabilityTimelineRecorder(Node):
             event.update({
                 "level": level,
                 "message": str(status.message),
+                "lidar_factors": int(values.get("lidar_factors", 0)),
+                "lidar_disabled": int(values.get("lidar_disabled", 0)),
                 "gnss_factors": int(values.get("gnss_factors", 0)),
                 "gnss_jump_rejected": int(values.get("gnss_jump_rejected", 0)),
                 "flow_factors": int(values.get("flow_factors", 0)),
@@ -131,6 +133,9 @@ def summarize(events):
         ),
         "backend_flow_disabled_quality_max": max(
             (event["flow_disabled_quality"] for event in backend), default=0
+        ),
+        "backend_lidar_disabled_max": max(
+            (event["lidar_disabled"] for event in backend), default=0
         ),
     }
 
