@@ -20,17 +20,20 @@ The first backend may consume a relative LIO pose as a transitional factor, but 
 | M0 repository/dependencies | accepted for current simple-map scope | clean manifest-pinned FAST-LIO/Livox build |
 | M1 sensor data layer | implemented | normalized topics, faults, body crop, rosbag2 record/replay |
 | M2 LiDAR-IMU baseline | accepted on fixed simple route | four consecutive passing runs, including one post-scoring change |
-| M3 reliability scores | formula semantics accepted; evidence still incomplete by modality | unit tests, ROS endpoint policy, 11-level monotonic sweep, full flight |
-| M4 BDS/GNSS and optical flow | integrated, acceptance rerun pending | three GPS/flow ExternalNav rectangle flights passed; corrected flow interval evaluator still needs repeated confirmation |
-| M5 dynamic map protection | not started | temporal static/dynamic split and repeatability ablation required |
-| M6 ReliabilityScheduler | implementation and ROS runtime sequence pass | live five-modality fault campaign and LIO-backed flow residual still pending |
-| M7-M8 backend/relocalization | not started | do not bypass M4-M6 evidence gates |
+| M3 reliability scores | formula and runtime evidence implemented | all score tests pass; GNSS, flow, and LiDAR fault timelines validated |
+| M4 BDS/GNSS and optical flow | single-fault acceptance complete | GNSS jump/outage and flow quality gates pass fixed-route simulation |
+| M5 dynamic map protection | static-route baseline complete | dynamic-object injection and enabled/disabled contamination ablation remain |
+| M6 ReliabilityScheduler | implementation and online factor changes pass | concurrent degradation and relocalization recovery remain |
+| M7 unified backend | online tangent-space prototype running | sparse solve, analytic IMU bias Jacobians, and fault gates pass; manifold backend remains |
+| M8 relocalization | registration core started | PCL ICP/NDT synthetic transform tests pass; keyframes, retrieval, and online recovery remain |
 
-The next gates are three repeated flights with the corrected optical-flow interval
-evaluator, followed by the full LIO and dynamic-point pipeline needed to supply
-independent residuals to the scheduler. See `docs/paper_formula_audit.md`,
-`docs/score_validation_report.md`, `docs/bds_integrity_report.md`,
-`docs/optical_flow_report.md`, and `docs/reliability_scheduler_report.md`.
+The next gates are reproducible dynamic-object injection, keyframe admission,
+candidate retrieval, and a scheduler-triggered ICP/NDT recovery experiment.
+The online backend still requires manifold SE(3) relinearization and proper
+bias covariance propagation before a final fixed-vs-dynamic claim. See
+`docs/stage5_temporal_map_report_20260725.md`,
+`docs/stage7_online_backend_report_20260725.md`, and the earlier formula and
+sensor reports.
 
 ## Layout
 
@@ -45,14 +48,13 @@ ultra_fusion_nav/
   scripts/                 reproducible build, run, bag, and evaluation entrypoints
   tests/                   unit, launch, replay, and regression tests
 
-  # Added only when their stage starts:
   uf_interfaces/           messages and services shared across packages
   uf_sensor_pipeline/      topic normalization, fault injection, and bag profiles
   uf_reliability/          D_L, D_B, D_I, D_OF, and D_V estimators
   uf_aiding/               GNSS outage/jump admission and smooth re-anchor core
   uf_reliability/          modality scores plus factor weights and health-state machine
-  uf_backend/              offline sliding-window estimator
-  uf_relocalization/       keyframe map and Scan Context/NDT/ICP pipeline
+  uf_backend_fusion/       offline and online sliding-window prototype
+  uf_relocalization/       PCL ICP/NDT registration core; retrieval pending
   uf_evaluation/           ATE/RPE, plots, ablations, and scenario matrix
 ```
 
