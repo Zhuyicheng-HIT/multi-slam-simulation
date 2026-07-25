@@ -18,6 +18,7 @@ unified_backend_fusion:
     minimum_flow_distance_m: 0.08
     maximum_flow_distance_m: 12.0
     gnss_default_variance_m2: 4.0
+    gnss_jump_gate_m: 20.0
     imu_factor_enabled: true
     preserve_lio_anchor: true
     imu_covariance_scale: 50.0

@@ -131,6 +131,16 @@ def scheduler_decision(weight=1.0, enabled=True, inflation=1.0):
     }
 
 
+def gnss_jump_rejected(current_position, gnss_position, gate_m=20.0):
+    current = np.asarray(current_position, dtype=float)
+    measurement = np.asarray(gnss_position, dtype=float)
+    if current.shape != (3,) or measurement.shape != (3,):
+        raise ValueError("GNSS jump gate expects two 3-vectors")
+    if not np.all(np.isfinite(current)) or not np.all(np.isfinite(measurement)):
+        return True
+    return float(np.linalg.norm(current - measurement)) > float(gate_m)
+
+
 def flow_observation_delta(flow_records, yaw):
     """Aggregate valid MAVLink optical-flow increments into map ENU."""
     delta = np.zeros(2, dtype=float)
@@ -188,6 +198,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("minimum_flow_distance_m", 0.08)
         self.declare_parameter("maximum_flow_distance_m", 12.0)
         self.declare_parameter("gnss_default_variance_m2", 4.0)
+        self.declare_parameter("gnss_jump_gate_m", 20.0)
         self.declare_parameter("imu_factor_enabled", True)
         self.declare_parameter("preserve_lio_anchor", True)
         self.declare_parameter("imu_covariance_scale", 50.0)
@@ -207,6 +218,8 @@ class UnifiedBackendNode(Node):
             self.get_parameter("maximum_flow_distance_m").value)
         self.gnss_default_variance = float(
             self.get_parameter("gnss_default_variance_m2").value)
+        self.gnss_jump_gate_m = float(
+            self.get_parameter("gnss_jump_gate_m").value)
         self.imu_factor_enabled = bool(self.get_parameter("imu_factor_enabled").value)
         self.preserve_lio_anchor = bool(self.get_parameter("preserve_lio_anchor").value)
         self.imu_covariance_scale = float(
@@ -237,7 +250,7 @@ class UnifiedBackendNode(Node):
         self.scores = {}
         self.counts = {
             "lio": 0, "published": 0, "lidar_factors": 0,
-            "lidar_disabled": 0, "gnss_factors": 0,
+            "lidar_disabled": 0, "gnss_factors": 0, "gnss_jump_rejected": 0,
             "flow_factors": 0, "flow_disabled_quality": 0,
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
         }
@@ -476,6 +489,13 @@ class UnifiedBackendNode(Node):
         )
         decision = self._decision("gnss", default_enabled=True)
         decision["degradation_score"] = float(score)
+        if gnss_jump_rejected(current, gnss_position, self.gnss_jump_gate_m):
+            decision["factor_enabled"] = False
+            decision["reliability_weight"] = 0.0
+            decision["covariance_inflation"] = MAX_COVARIANCE_INFLATION
+            decision["degradation_score"] = 1.0
+            decision["reasons"] = ["gnss_jump_hard_gate"]
+            self.counts["gnss_jump_rejected"] += 1
         self.backend.add_gnss(index, gnss_position, covariance=covariance, decision=decision)
         self.counts["gnss_factors"] += 1
 

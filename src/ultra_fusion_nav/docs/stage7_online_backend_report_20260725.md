@@ -50,6 +50,18 @@ bias probes, and v7 is the retained analytic-recursion configuration.
 | v6, bias-aware local IMU | 408 | 0.0528 m | 0.360 deg | 0.892 | retained |
 | v7, analytic bias recursion | 456 | 0.0582 m | 0.363 deg | 0.999 | retained |
 
+The clean GNSS-jump fault run is recorded separately from the nominal table:
+
+| Run | Fault | Active samples | GNSS factors rejected | Unified ATE RMSE | Max error | Result |
+|---|---|---:|---:|---:|---:|---|
+| `uf_stage2_gnss_jump_v7` | 50 m GNSS jump, about 14 s | 105 | 105 | 0.0511 m | 0.337 m | passed |
+
+The fault timeline also records the scheduler and backend diagnostics. The
+backend hard gate rejects every GNSS factor whose position innovation exceeds
+`gnss_jump_gate_m=20.0`, while LIO remains the local anchor. No optimization
+error occurred. The corresponding artifacts are under
+`logs/uf_stage2_uf_stage2_gnss_jump_v7/`.
+
 For v7, `/fusion/unified/odom` reached 7.75 Hz through the ExternalNav gate,
 with source-to-arrival rate ratio `1.0001`. The same run's raw FAST-LIO
 evaluator reported position RMSE `0.0354 m` and yaw RMSE `0.1079 deg`; unified
@@ -71,13 +83,20 @@ bash src/ultra_fusion_nav/scripts/run_lio_baseline_experiment.sh
 ```
 
 The experiment writes `trajectory_metrics.json`, `report.json`,
-`simulation_performance.json`, and the unified backend logs below `logs/`.
+`simulation_performance.json`, `reliability_timeline.json`, and the unified
+backend logs below `logs/`. Fault experiments can be enabled with
+`ENABLE_RELIABILITY_TIMELINE=1`, `FAULT_MODALITY`, `FAULT_TYPE`,
+`FAULT_TRIGGER_DELAY_S`, `FAULT_DURATION_S`, and the two magnitude variables.
+The trigger process is waited on and uses bounded ROS 2 parameter calls so an
+unapplied fault cannot be reported as a valid experiment.
 
 ## Next gate
 
 The dense Python normal-equation solve has been replaced by an optional SciPy
 sparse solve with a dense fallback. The local factor now consumes analytic
 first-order bias Jacobians, but the remaining gate is manifold SE(3)
-relinearization and proper bias covariance propagation. Only after that should
-GNSS outage, optical-flow low texture, LiDAR degeneration, and dynamic-map
-protection be used for a final fixed-vs-dynamic accuracy claim.
+relinearization and proper bias covariance propagation. The GNSS jump gate is
+now validated, but it is a protective innovation gate rather than a complete
+GNSS re-anchor. Next run the same clean-stack procedure for GNSS outage,
+optical-flow low texture, LiDAR degeneration, and dynamic-map protection
+before making a final fixed-vs-dynamic accuracy claim.

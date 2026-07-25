@@ -5,6 +5,7 @@ import numpy as np
 from uf_backend_fusion.online_backend import (
     flow_observation_delta,
     frd_to_enu_delta,
+    gnss_jump_rejected,
     scheduler_decision,
     unwrap_yaw,
     yaw_to_quaternion,
@@ -46,6 +47,11 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertFalse(decision["factor_enabled"])
         self.assertEqual(decision["reliability_weight"], 0.0)
         self.assertEqual(decision["covariance_inflation"], 20.0)
+
+    def test_gnss_jump_gate_rejects_large_innovation(self):
+        self.assertFalse(gnss_jump_rejected([1.0, 2.0, 0.0], [3.0, 4.0, 0.0]))
+        self.assertTrue(gnss_jump_rejected([1.0, 2.0, 0.0], [30.0, 2.0, 0.0]))
+        self.assertTrue(gnss_jump_rejected([1.0, 2.0, 0.0], [float("nan"), 2.0, 0.0]))
 
     def test_yaw_quaternion_is_normalized(self):
         quaternion = yaw_to_quaternion(1.2)

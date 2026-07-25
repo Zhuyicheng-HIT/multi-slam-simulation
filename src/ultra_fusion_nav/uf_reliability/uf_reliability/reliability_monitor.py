@@ -295,6 +295,7 @@ class ReliabilityMonitor(Node):
             self.get_parameter("gnss.tau_covariance").value,
             self.get_parameter("gnss.tau_innovation").value,
             tuple(self.get_parameter("gnss.weights").value),
+            hard_jump=jump,
         )
         result[1].update(integrity_evidence)
         result[1]["vdop"] = -1.0 if vdop is None else vdop

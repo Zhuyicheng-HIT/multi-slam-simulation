@@ -12,8 +12,15 @@ ENABLE_RELIABILITY=${ENABLE_RELIABILITY:-0}
 ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
 FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
 ENABLE_PERFORMANCE_MONITOR=${ENABLE_PERFORMANCE_MONITOR:-1}
+ENABLE_RELIABILITY_TIMELINE=${ENABLE_RELIABILITY_TIMELINE:-0}
 SIM_WORLD_NAME=${SIM_WORLD_NAME:-simple_apm_rgbd_mid360}
 ALLOW_MISSING_RELIABILITY=${ALLOW_MISSING_RELIABILITY:-0}
+FAULT_MODALITY=${FAULT_MODALITY:-}
+FAULT_TYPE=${FAULT_TYPE:-none}
+FAULT_TRIGGER_DELAY_S=${FAULT_TRIGGER_DELAY_S:-0}
+FAULT_DURATION_S=${FAULT_DURATION_S:-0}
+FAULT_MAGNITUDE=${FAULT_MAGNITUDE:-0}
+FAULT_SECONDARY_MAGNITUDE=${FAULT_SECONDARY_MAGNITUDE:-0}
 
 mkdir -p "$OUTPUT_DIR"
 set +u
@@ -109,6 +116,48 @@ if [[ "$ENABLE_UNIFIED_BACKEND" == "1" ]]; then
   estimate_topic=/fusion/unified/odom
 fi
 
+timeline_pid=""
+if [[ "$ENABLE_RELIABILITY_TIMELINE" == "1" ]]; then
+  python3 "$SCRIPT_DIR/record_reliability_timeline.py" \
+    --duration "$ANALYSIS_DURATION_S" \
+    --output "$OUTPUT_DIR/reliability_timeline.json" \
+    >"$OUTPUT_DIR/reliability_timeline.stdout.log" \
+    2>"$OUTPUT_DIR/reliability_timeline.stderr.log" &
+  timeline_pid=$!
+  pids+=("$timeline_pid")
+fi
+
+fault_trigger_pid=""
+if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
+  case "$FAULT_MODALITY" in
+    lidar|imu|gnss|optical_flow|depth|color) ;;
+    *)
+      printf 'Unsupported FAULT_MODALITY=%s\n' "$FAULT_MODALITY" >&2
+      exit 2
+      ;;
+  esac
+  fault_node="/fault_injector_${FAULT_MODALITY}"
+  fault_magnitude_value=$(printf '%.9f' "$FAULT_MAGNITUDE")
+  fault_secondary_value=$(printf '%.9f' "$FAULT_SECONDARY_MAGNITUDE")
+  (
+    printf 'fault_trigger_start modality=%s type=%s delay_s=%s duration_s=%s\n' \
+      "$FAULT_MODALITY" "$FAULT_TYPE" "$FAULT_TRIGGER_DELAY_S" "$FAULT_DURATION_S"
+    sleep "$FAULT_TRIGGER_DELAY_S"
+    timeout 60s ros2 param set "$fault_node" magnitude "$fault_magnitude_value"
+    timeout 60s ros2 param set "$fault_node" secondary_magnitude "$fault_secondary_value"
+    timeout 60s ros2 param set "$fault_node" fault_duration_s 0.0
+    timeout 60s ros2 param set "$fault_node" fault_type "$FAULT_TYPE"
+    printf 'fault_trigger_active node=%s\n' "$fault_node"
+    if awk "BEGIN {exit !($FAULT_DURATION_S > 0.0)}"; then
+      sleep "$FAULT_DURATION_S"
+      timeout 60s ros2 param set "$fault_node" fault_type none
+      printf 'fault_trigger_cleared node=%s\n' "$fault_node"
+    fi
+  ) >"$OUTPUT_DIR/fault_trigger.log" 2>&1 &
+  fault_trigger_pid=$!
+  pids+=("$fault_trigger_pid")
+fi
+
 score_recorder_pid=""
 if [[ "$ENABLE_RELIABILITY" == "1" && "$ENABLE_UNIFIED_BACKEND" != "1" ]]; then
   setsid ros2 launch uf_reliability reliability.launch.py \
@@ -175,6 +224,16 @@ if [[ -n "$flow_calibration_pid" ]]; then
   wait "$flow_calibration_pid"
   flow_calibration_status=$?
 fi
+fault_status=0
+if [[ -n "$fault_trigger_pid" ]]; then
+  wait "$fault_trigger_pid"
+  fault_status=$?
+fi
+timeline_status=0
+if [[ -n "$timeline_pid" ]]; then
+  wait "$timeline_pid"
+  timeline_status=$?
+fi
 set -e
 
 python3 "$SCRIPT_DIR/evaluate_lio_trajectory.py" \
@@ -205,9 +264,11 @@ if [[ -n "$flow_calibration_pid" ]]; then
   set -e
 fi
 
-printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s flow_calibration_status=%s flow_gate_status=%s\n' \
+printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s flow_calibration_status=%s flow_gate_status=%s fault_status=%s timeline_status=%s\n' \
   "$rectangle_status" "$analyzer_status" "$recorder_status" "$score_status" \
-  "$flow_calibration_status" "$flow_gate_status"
+  "$flow_calibration_status" "$flow_gate_status" "$fault_status" "$timeline_status"
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 (( rectangle_status == 0 && analyzer_status == 0 && recorder_status == 0 \
-   && score_status == 0 && flow_calibration_status == 0 && flow_gate_status == 0 ))
+   && score_status == 0 && flow_calibration_status == 0 && flow_gate_status == 0 \
+   && fault_status == 0 \
+   && timeline_status == 0 ))

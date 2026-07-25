@@ -158,7 +158,7 @@ def lidar_score(hessian_eigenvalues, normal_covariance_eigenvalues, axial_penalt
 
 def gnss_score(q_fix, covariance_trace_m2, innovation_mahalanobis,
                tau_covariance=25.0, tau_innovation=5.0,
-               weights=(0.25, 0.20, 0.55)):
+               weights=(0.25, 0.20, 0.55), hard_jump=False):
     fix_term = 1.0 - clamp(q_fix)
     covariance_term = min(1.0, max(0.0, covariance_trace_m2) / tau_covariance)
     innovation_term = None
@@ -183,6 +183,13 @@ def gnss_score(q_fix, covariance_trace_m2, innovation_mahalanobis,
         reasons.append("large_covariance_eq23")
     if innovation_term is not None and innovation_term > 0.5:
         reasons.append("large_innovation_eq23")
+    if hard_jump:
+        # A detected position discontinuity is an integrity failure, not just
+        # another soft term.  Eq. 23 remains in the evidence for diagnostics,
+        # while the scheduler receives a score that must disable this factor.
+        score = 1.0
+        evidence["jump_hard_gate"] = 1.0
+        reasons.append("jump_hard_gate_eq23")
     return finalize_score(score, coverage, evidence, reasons)
 
 

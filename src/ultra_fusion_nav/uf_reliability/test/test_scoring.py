@@ -24,6 +24,14 @@ class ScoringTest(unittest.TestCase):
         self.assertAlmostEqual(outage_result[1]["evidence_weight_coverage"], 0.45)
         self.assertIn("incomplete_paper_evidence", outage_result[2])
 
+    def test_gnss_hard_jump_gate_forces_factor_failure(self):
+        score, evidence, reasons = gnss_score(
+            1.0, 0.5, 9.0, hard_jump=True
+        )
+        self.assertEqual(score, 1.0)
+        self.assertEqual(evidence["jump_hard_gate"], 1.0)
+        self.assertIn("jump_hard_gate_eq23", reasons)
+
     def test_fcu_gnss_metadata_refines_fix_quality(self):
         good, evidence, reasons = gnss_integrity_quality(6, 10, 1.2)
         weak, _, weak_reasons = gnss_integrity_quality(2, 4, 6.0)
