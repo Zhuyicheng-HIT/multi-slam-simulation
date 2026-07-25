@@ -12,6 +12,7 @@ def extract_main() -> int:
     result = extract_factors(args.bag, args.output)
     print(f"frames={result['frame_count']} output={args.output}")
     print(f"streams={result['streams']}")
+    print(f"imu_preintegration={result['imu_preintegration_summary']}")
     return 0
 
 

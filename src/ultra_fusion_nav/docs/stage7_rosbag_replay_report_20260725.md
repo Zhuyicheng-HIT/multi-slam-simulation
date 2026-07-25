@@ -10,7 +10,8 @@ The replay uses the repository-local bag:
 
 It is 224.02 s, 2.8 GiB, and contains 51,638 messages. The extractor reads
 `/lio/odom`, `/Odometry` (evaluation reference only),
-`/sensors/gnss/fix`, `/sensors/optical_flow/rad`, and `/lio/diagnostics`.
+`/sensors/gnss/fix`, `/sensors/optical_flow/rad`, `/sensors/imu`, and
+`/lio/diagnostics`.
 
 ## Compatibility findings
 
@@ -28,6 +29,13 @@ these, 301 fail the hard MTF01P quality gate (`quality < 20`) and are disabled;
 the remaining 227 use the continuous reliability weight. This prevents a
 zero-quality sample from becoming a backend constraint merely because its
 displacement agrees with the prediction.
+
+The bag also contains 10,977 `/sensors/imu` samples. Boundary-interpolated
+midpoint preintegration is valid for 1,067 of the 1,097 LIO intervals. The 30
+invalid intervals are retained in the JSON status summary (`26` duplicate or
+non-positive LIO intervals and `4` IMU gaps over the 100 ms limit). These
+deltas are exported for the next SE(3) factor milestone, but are not injected
+into the current linear replay.
 
 ## Replay result
 

@@ -19,9 +19,10 @@ from rosbag2_py import ConverterOptions, SequentialReader, StorageOptions
 
 from mavros_msgs.msg import OpticalFlowRad
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import Imu, NavSatFix
 from uf_interfaces.msg import LioDiagnostics
 
+from .imu_preintegration import ImuSample, preintegrate
 from uf_reliability.scoring import (
     gnss_score,
     lidar_score,
@@ -159,6 +160,7 @@ def _read_streams(bag_path: str) -> dict[str, list[dict[str, Any]]]:
         "/Odometry": (Odometry, "reference"),
         "/sensors/gnss/fix": (NavSatFix, "gnss"),
         "/sensors/optical_flow/rad": (OpticalFlowRad, "flow"),
+        "/sensors/imu": (Imu, "imu"),
         "/lio/diagnostics": (LioDiagnostics, "diagnostics"),
     }
     streams = {name: [] for _, name in wanted.values()}
@@ -203,6 +205,20 @@ def _read_streams(bag_path: str) -> dict[str, list[dict[str, Any]]]:
                 "altitude": float(message.altitude),
                 "covariance": covariance,
                 "status": int(message.status.status),
+            })
+        elif stream_name == "imu":
+            streams[stream_name].append({
+                "stamp_s": stamp,
+                "acceleration": [
+                    float(message.linear_acceleration.x),
+                    float(message.linear_acceleration.y),
+                    float(message.linear_acceleration.z),
+                ],
+                "angular_velocity": [
+                    float(message.angular_velocity.x),
+                    float(message.angular_velocity.y),
+                    float(message.angular_velocity.z),
+                ],
             })
         elif stream_name == "flow":
             streams[stream_name].append({
@@ -286,6 +302,7 @@ def extract_factors(bag_path: str, output_path: str, tolerance_s: float = 0.30):
     gnss_stamps = [record["stamp_s"] for record in streams["gnss"]]
     diagnostic_stamps = [record["stamp_s"] for record in streams["diagnostics"]]
     flow_stamps = [record["stamp_s"] for record in streams["flow"]]
+    imu_stamps = [record["stamp_s"] for record in streams["imu"]]
 
     valid_gnss = [
         record for record in streams["gnss"]
@@ -316,6 +333,8 @@ def extract_factors(bag_path: str, output_path: str, tolerance_s: float = 0.30):
             "reference_position": None,
             "gnss": None,
             "optical_flow": None,
+            "imu_preintegration": None,
+            "imu_preintegration_status": None,
         }
         reference = _nearest(streams["reference"], reference_stamps, stamp, tolerance_s)
         if reference is not None:
@@ -344,6 +363,35 @@ def extract_factors(bag_path: str, output_path: str, tolerance_s: float = 0.30):
                 "decision": decision,
             }
         if previous_stamp is not None:
+            imu_start = max(0, bisect_left(imu_stamps, previous_stamp) - 1)
+            imu_end = min(len(imu_stamps), bisect_right(imu_stamps, stamp) + 1)
+            if imu_end - imu_start >= 2:
+                imu_samples = [
+                    ImuSample(
+                        item["stamp_s"],
+                        tuple(item["acceleration"]),
+                        tuple(item["angular_velocity"]),
+                    )
+                    for item in streams["imu"][imu_start:imu_end]
+                ]
+                preintegrated = preintegrate(imu_samples, previous_stamp, stamp)
+                frame["imu_preintegration_status"] = {
+                    "valid": preintegrated.valid,
+                    "reason": preintegrated.reason,
+                    "sample_count": preintegrated.sample_count,
+                    "max_gap_s": preintegrated.max_gap_s,
+                }
+                if preintegrated.valid:
+                    frame["imu_preintegration"] = {
+                        "dt_s": preintegrated.dt_s,
+                        "delta_position": list(preintegrated.delta_position),
+                        "delta_velocity": list(preintegrated.delta_velocity),
+                        "delta_quaternion": list(preintegrated.delta_quaternion),
+                        "covariance": list(preintegrated.covariance),
+                        "sample_count": preintegrated.sample_count,
+                        "max_gap_s": preintegrated.max_gap_s,
+                        "reason": preintegrated.reason,
+                    }
             flow_start = bisect_right(flow_stamps, previous_stamp)
             flow_end = bisect_right(flow_stamps, stamp)
             flow_records = streams["flow"][flow_start:flow_end]
@@ -388,6 +436,16 @@ def extract_factors(bag_path: str, output_path: str, tolerance_s: float = 0.30):
         frames.append(frame)
         previous_stamp = stamp
 
+    imu_statuses = [
+        frame["imu_preintegration_status"]
+        for frame in frames
+        if frame["imu_preintegration_status"] is not None
+    ]
+    invalid_reasons = {}
+    for status in imu_statuses:
+        if not status["valid"]:
+            reason = status["reason"]
+            invalid_reasons[reason] = invalid_reasons.get(reason, 0) + 1
     result = {
         "schema_version": 1,
         "source_bag": str(Path(bag_path).resolve()),
@@ -399,6 +457,12 @@ def extract_factors(bag_path: str, output_path: str, tolerance_s: float = 0.30):
         "deserialize_skipped_messages": deserialize_skipped,
         "lidar_diagnostics_available": bool(streams["diagnostics"]),
         "flow_stamp_offset_s": flow_stamp_offset_s,
+        "imu_preintegration_summary": {
+            "interval_count": len(imu_statuses),
+            "valid_count": sum(status["valid"] for status in imu_statuses),
+            "invalid_count": sum(not status["valid"] for status in imu_statuses),
+            "invalid_reasons": invalid_reasons,
+        },
         "frames": frames,
     }
     output = Path(output_path)
