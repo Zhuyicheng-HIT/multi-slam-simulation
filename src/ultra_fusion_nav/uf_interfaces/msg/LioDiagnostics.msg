@@ -10,6 +10,11 @@ float64[3] normal_covariance_eigenvalues
 float32 axial_penalty
 float32 spatial_coverage
 float32 dynamic_ratio
+float32 uncertain_ratio
+float32 feature_repeatability
+uint32 static_points
+uint32 dynamic_points
+uint32 uncertain_points
 float32 map_quality
 bool approximate
 string source

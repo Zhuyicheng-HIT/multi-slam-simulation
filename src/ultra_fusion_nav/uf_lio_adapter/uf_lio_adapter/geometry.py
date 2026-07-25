@@ -1,5 +1,6 @@
 import math
 import struct
+from collections import deque
 
 import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
@@ -37,6 +38,68 @@ def voxel_centroids(points, voxel_size):
             accumulators[key][0] += point
             accumulators[key][1] += 1
     return {key: total / count for key, (total, count) in accumulators.items()}
+
+
+class TemporalVoxelFilter:
+    """Classify registered-cloud voxels by persistence in a fixed world frame."""
+
+    def __init__(self, window_frames=5, min_static_support=2, neighbor_radius=1):
+        if window_frames < 1:
+            raise ValueError("window_frames must be positive")
+        if min_static_support < 1:
+            raise ValueError("min_static_support must be positive")
+        if neighbor_radius < 0:
+            raise ValueError("neighbor_radius must be non-negative")
+        self.window_frames = int(window_frames)
+        self.min_static_support = int(min_static_support)
+        self.neighbor_radius = int(neighbor_radius)
+        self.history = deque(maxlen=self.window_frames)
+
+    def _supported(self, key, frame):
+        radius = self.neighbor_radius
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                for dz in range(-radius, radius + 1):
+                    if (key[0] + dx, key[1] + dy, key[2] + dz) in frame:
+                        return True
+        return False
+
+    @staticmethod
+    def _array(values):
+        if not values:
+            return np.empty((0, 3), dtype=np.float64)
+        return np.asarray(values, dtype=np.float64).reshape((-1, 3))
+
+    def classify(self, points, voxel_size):
+        centroids = voxel_centroids(points, voxel_size) if len(points) else {}
+        current_keys = set(centroids)
+        previous = self.history[-1] if self.history else set()
+        window_warm = len(self.history) >= self.window_frames
+        static = []
+        dynamic = []
+        uncertain = []
+        repeatable = 0
+
+        for key, centroid in centroids.items():
+            support = sum(self._supported(key, frame) for frame in self.history)
+            if previous and self._supported(key, previous):
+                repeatable += 1
+            if support >= self.min_static_support:
+                static.append(centroid)
+            elif window_warm and support == 0:
+                dynamic.append(centroid)
+            else:
+                uncertain.append(centroid)
+
+        self.history.append(current_keys)
+        return {
+            "static_points": self._array(static),
+            "dynamic_points": self._array(dynamic),
+            "uncertain_points": self._array(uncertain),
+            "feature_repeatability": repeatable / max(1, len(current_keys)),
+            "window_warm": window_warm,
+            "input_voxels": len(current_keys),
+        }
 
 
 def voxel_buckets(points, voxel_size):

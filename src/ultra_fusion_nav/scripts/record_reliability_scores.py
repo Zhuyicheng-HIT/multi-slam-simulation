@@ -36,6 +36,11 @@ class ScoreRecorder(Node):
             "degradation_score": float(msg.degradation_score),
             "reliability_weight": float(msg.reliability_weight),
             "valid": int(msg.valid),
+            "observation_count": int(msg.observation_count),
+            "minimum_observation_count": int(msg.minimum_observation_count),
+            "observation_ready": int(
+                msg.observation_count >= msg.minimum_observation_count
+            ),
             "reasons": "|".join(msg.reasons),
             "evidence_json": json.dumps(evidence, separators=(",", ":")),
         })
@@ -45,6 +50,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=float, default=145.0)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="return success when a deliberately disabled modality has no rows",
+    )
     args = parser.parse_args()
     rclpy.init()
     node = ScoreRecorder()
@@ -54,7 +64,9 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "elapsed_s", "stamp_s", "modality", "degradation_score",
-        "reliability_weight", "valid", "reasons", "evidence_json",
+        "reliability_weight", "valid", "observation_count",
+        "minimum_observation_count", "observation_ready", "reasons",
+        "evidence_json",
     ]
     with output.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -64,7 +76,8 @@ def main():
     print(json.dumps({"output": str(output), "counts": counts}, indent=2))
     node.destroy_node()
     rclpy.shutdown()
-    return 0 if all(counts[key] > 0 for key in MODALITIES) else 1
+    complete = all(counts[key] > 0 for key in MODALITIES)
+    return 0 if complete or args.allow_missing else 1
 
 
 if __name__ == "__main__":

@@ -22,7 +22,10 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
+            "external_nav_gate = uf_sensor_pipeline.external_nav_gate:main",
+            "fcu_observation_bridge = uf_sensor_pipeline.fcu_observation_bridge:main",
             "fault_injector = uf_sensor_pipeline.fault_injector:main",
+            "gps_flow_fusion = uf_sensor_pipeline.gps_flow_fusion_node:main",
             "pointcloud_body_filter = uf_sensor_pipeline.pointcloud_body_filter:main",
             "sensor_contract_monitor = uf_sensor_pipeline.sensor_contract_monitor:main",
         ]

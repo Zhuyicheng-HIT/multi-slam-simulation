@@ -21,10 +21,16 @@ The first backend may consume a relative LIO pose as a transitional factor, but 
 | M1 sensor data layer | implemented | normalized topics, faults, body crop, rosbag2 record/replay |
 | M2 LiDAR-IMU baseline | accepted on fixed simple route | four consecutive passing runs, including one post-scoring change |
 | M3 reliability scores | formula semantics accepted; evidence still incomplete by modality | unit tests, ROS endpoint policy, 11-level monotonic sweep, full flight |
-| M4 BDS/GNSS and optical flow | in progress | GNSS state core passes; Gazebo flow sensor passes, aiding remains disabled |
-| M5-M8 | not started | do not bypass earlier evidence gates |
+| M4 BDS/GNSS and optical flow | integrated, acceptance rerun pending | three GPS/flow ExternalNav rectangle flights passed; corrected flow interval evaluator still needs repeated confirmation |
+| M5 dynamic map protection | not started | temporal static/dynamic split and repeatability ablation required |
+| M6 ReliabilityScheduler | implementation and ROS runtime sequence pass | live five-modality fault campaign and LIO-backed flow residual still pending |
+| M7-M8 backend/relocalization | not started | do not bypass M4-M6 evidence gates |
 
-The next implementation gates are a live, GeographicLib-based GNSS local-frame adapter and a separate non-GPS optical-flow/FCU flight test. The Gazebo flow sensor now passes its physics gate, but its observation is not yet enabled as an aiding factor. See `docs/paper_formula_audit.md`, `docs/score_validation_report.md`, `docs/bds_integrity_report.md`, and `docs/optical_flow_report.md`.
+The next gates are three repeated flights with the corrected optical-flow interval
+evaluator, followed by the full LIO and dynamic-point pipeline needed to supply
+independent residuals to the scheduler. See `docs/paper_formula_audit.md`,
+`docs/score_validation_report.md`, `docs/bds_integrity_report.md`,
+`docs/optical_flow_report.md`, and `docs/reliability_scheduler_report.md`.
 
 ## Layout
 
@@ -44,7 +50,7 @@ ultra_fusion_nav/
   uf_sensor_pipeline/      topic normalization, fault injection, and bag profiles
   uf_reliability/          D_L, D_B, D_I, D_OF, and D_V estimators
   uf_aiding/               GNSS outage/jump admission and smooth re-anchor core
-  uf_scheduler/            factor weights and health-state machine
+  uf_reliability/          modality scores plus factor weights and health-state machine
   uf_backend/              offline sliding-window estimator
   uf_relocalization/       keyframe map and Scan Context/NDT/ICP pipeline
   uf_evaluation/           ATE/RPE, plots, ablations, and scenario matrix

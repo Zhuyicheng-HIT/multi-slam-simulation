@@ -1,0 +1,9 @@
+std_msgs/Header header
+string health_state
+string[] modality_names
+float32[] degradation_scores
+float32[] reliability_weights
+float32[] covariance_inflation
+bool[] factor_enabled
+string[] reasons
+bool relocalization_requested

@@ -56,7 +56,7 @@ class FlowGazeboAccuracy(Node):
         self.lock = threading.Lock()
         self.pose_samples = []
         self.flow_samples = []
-        self.last_flow_time = None
+        self.last_flow_arrival = None
         self.start_time = time.monotonic()
         self.done = False
         self.last_report = 0.0
@@ -77,15 +77,19 @@ class FlowGazeboAccuracy(Node):
 
     def _flow_cb(self, msg):
         now = time.monotonic()
-        output_interval = 0.0 if self.last_flow_time is None else now - self.last_flow_time
-        self.last_flow_time = now
+        arrival_interval = (
+            0.0 if self.last_flow_arrival is None else now - self.last_flow_arrival
+        )
+        self.last_flow_arrival = now
+        integration_s = float(msg.integration_time_us) * 1.0e-6
         distance = float(msg.distance)
         estimated_dx = (float(msg.integrated_y) - float(msg.integrated_ygyro)) * distance
         estimated_dy = -(float(msg.integrated_x) - float(msg.integrated_xgyro)) * distance
         with self.lock:
             self.flow_samples.append((
                 now,
-                output_interval,
+                integration_s,
+                arrival_interval,
                 estimated_dx,
                 estimated_dy,
                 int(msg.quality),
@@ -122,7 +126,7 @@ class FlowGazeboAccuracy(Node):
             with self.lock:
                 pose_count = len(self.pose_samples)
                 flow_count = len(self.flow_samples)
-                recent_quality = [sample[4] for sample in self.flow_samples[-50:]]
+                recent_quality = [sample[5] for sample in self.flow_samples[-50:]]
             quality_median = float(np.median(recent_quality)) if recent_quality else 0.0
             self.get_logger().info(
                 f"accuracy capture elapsed={elapsed:.1f}s pose_samples={pose_count} "
@@ -193,27 +197,29 @@ class FlowGazeboAccuracy(Node):
             flows = list(self.flow_samples)
         pose_times = [sample[0] for sample in poses]
         rows = []
-        for stamp, output_interval, estimated_dx, estimated_dy, quality, distance in flows:
+        for (stamp, integration_s, arrival_interval, estimated_dx, estimated_dy,
+             quality, distance) in flows:
             if (
-                output_interval <= 1.0e-4
+                integration_s <= 1.0e-4
                 or quality < self.min_quality
                 or distance < self.min_ground_distance_m
             ):
                 continue
-            start_pose = self._pose_at(poses, pose_times, stamp - output_interval)
+            start_pose = self._pose_at(poses, pose_times, stamp - integration_s)
             end_pose = self._pose_at(poses, pose_times, stamp)
             if start_pose is None or end_pose is None:
                 continue
             truth = sensor_displacement_frd(start_pose, end_pose, self.lever_arm_frd)
-            speed = math.hypot(truth[0], truth[1]) / output_interval
-            vertical_speed = abs(truth[2]) / output_interval
+            speed = math.hypot(truth[0], truth[1]) / integration_s
+            vertical_speed = abs(truth[2]) / integration_s
             if not self.min_truth_speed_mps <= speed <= self.max_truth_speed_mps:
                 continue
             if vertical_speed > self.max_vertical_speed_mps:
                 continue
             rows.append((
                 stamp,
-                output_interval,
+                integration_s,
+                arrival_interval,
                 truth[0],
                 truth[1],
                 estimated_dx,
@@ -225,8 +231,8 @@ class FlowGazeboAccuracy(Node):
         if not rows:
             self.get_logger().error("FLOW_ACCURACY no aligned displacement samples")
             return
-        estimates = np.asarray([[row[4], row[5]] for row in rows])
-        truth = np.asarray([[row[2], row[3]] for row in rows])
+        estimates = np.asarray([[row[5], row[6]] for row in rows])
+        truth = np.asarray([[row[3], row[4]] for row in rows])
         mappings = [
             self._evaluate_mapping(estimates, truth, swap, sign_x, sign_y)
             for swap in (False, True)
@@ -247,14 +253,17 @@ class FlowGazeboAccuracy(Node):
             f"mapping=[swap={best['swap']},sx={best['sign_x']:+.0f},sy={best['sign_y']:+.0f}] "
             f"expected_mapping={expected_mapping} scale={best['scale']:.3f} "
             f"rmse_m={best['rmse_m']:.4f} normalized_rmse={best['normalized_rmse']:.3f} "
-            f"corr={best['correlation']:.3f} quality_median={float(np.median([r[6] for r in rows])):.1f} "
-            f"distance_median={float(np.median([r[7] for r in rows])):.2f}m passed={passed}"
+            f"corr={best['correlation']:.3f} quality_median={float(np.median([r[7] for r in rows])):.1f} "
+            f"distance_median={float(np.median([r[8] for r in rows])):.2f}m "
+            f"arrival_gap_outliers={sum(r[2] > max(0.20, 3.0 * r[1]) for r in rows)} "
+            f"passed={passed}"
         )
 
         if self.csv_path:
             with open(self.csv_path, "w", encoding="utf-8") as stream:
                 stream.write(
-                    "t,output_interval_s,truth_dx,truth_dy,flow_dx,flow_dy,quality,distance\n"
+                    "t,integration_time_s,arrival_interval_s,truth_dx,truth_dy,"
+                    "flow_dx,flow_dy,quality,distance\n"
                 )
                 for row in rows:
                     stream.write(",".join(str(value) for value in row) + "\n")

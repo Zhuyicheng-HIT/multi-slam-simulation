@@ -39,6 +39,7 @@ setup(
     entry_points={
         "console_scripts": [
             "d435i_sim_bridge = multi_slam_uav_sim.d435i_sim_bridge:main",
+            "external_nav_accuracy = multi_slam_uav_sim.external_nav_accuracy:main",
             "flight_state_bridge = multi_slam_uav_sim.flight_state_bridge:main",
             "gazebo_optical_flow_to_mavros = multi_slam_uav_sim.gazebo_optical_flow_to_mavros:main",
             "gz_mid360_pointcloud_bridge = multi_slam_uav_sim.gz_mid360_pointcloud_bridge:main",
@@ -52,6 +53,7 @@ setup(
             "rectangle_flow_test = multi_slam_uav_sim.rectangle_flow_test:main",
             "people_motion = multi_slam_uav_sim.people_motion:main",
             "rgbd_camera_follow = multi_slam_uav_sim.rgbd_camera_follow:main",
+            "simulation_performance_monitor = multi_slam_uav_sim.simulation_performance_monitor:main",
         ]
     },
 )

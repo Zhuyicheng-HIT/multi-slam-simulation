@@ -6,6 +6,11 @@ import os
 
 def generate_launch_description():
     config = os.path.join(get_package_share_directory("uf_reliability"), "config", "reliability.yaml")
+    scheduler_config = os.path.join(
+        get_package_share_directory("uf_reliability"),
+        "config",
+        "scheduler_config.yaml",
+    )
     return LaunchDescription([
         Node(
             package="uf_reliability",
@@ -13,5 +18,12 @@ def generate_launch_description():
             name="reliability_monitor",
             parameters=[config],
             output="screen",
-        )
+        ),
+        Node(
+            package="uf_reliability",
+            executable="reliability_scheduler",
+            name="reliability_scheduler",
+            parameters=[scheduler_config],
+            output="screen",
+        ),
     ])

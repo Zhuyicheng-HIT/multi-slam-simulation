@@ -1,0 +1,39 @@
+gps_flow_fusion:
+  ros__parameters:
+    gnss_topic: /sensors/gnss/fix
+    flow_topic: /sensors/optical_flow/rad
+    imu_topic: /mavros/imu/data
+    gnss_reliability_topic: /reliability/gnss_score
+    flow_reliability_topic: /reliability/optical_flow_score
+    scheduler_topic: /reliability/scheduler_state
+    output_topic: /fusion/gps_flow/odom
+    diagnostic_topic: /fusion/gps_flow/diagnostics
+    map_frame: map
+    body_frame: base_link
+    publish_rate_hz: 20.0
+    gps_position_gain: 0.35
+    flow_velocity_gain: 0.65
+    gps_jump_gate_m: 20.0
+    default_gnss_variance_m2: 4.0
+    gnss_weight_scale_m: 5.0
+    minimum_flow_quality: 20
+    minimum_flow_distance_m: 0.08
+    maximum_flow_distance_m: 12.0
+    maximum_flow_speed_mps: 8.0
+    gnss_timeout_s: 5.0
+    flow_timeout_s: 1.0
+    imu_timeout_s: 0.5
+    reliability_timeout_s: 1.0
+    scheduler_timeout_s: 1.0
+    use_scheduler: true
+    require_flow_observation: true
+
+external_nav_gate:
+  ros__parameters:
+    input_topic: /fusion/gps_flow/odom
+    output_topic: /mavros/odometry/out
+    expected_map_frame: map
+    expected_body_frame: base_link
+    maximum_input_age_s: 0.25
+    minimum_rate_hz: 4.0
+    enabled: true

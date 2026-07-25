@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
 
-from uf_lio_adapter.geometry import cloud_xyz, geometry_diagnostics
+from uf_lio_adapter.geometry import TemporalVoxelFilter, cloud_xyz, geometry_diagnostics
 
 
 class GeometryDiagnosticsTest(unittest.TestCase):
@@ -67,6 +67,24 @@ class GeometryDiagnosticsTest(unittest.TestCase):
         points = cloud_xyz(msg)
 
         np.testing.assert_allclose(points, np.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+
+    def test_temporal_filter_requires_persistence_and_rejects_transient_voxel(self):
+        filter_ = TemporalVoxelFilter(window_frames=2, min_static_support=2, neighbor_radius=0)
+        stable = np.asarray([[0.1, 0.1, 0.1], [1.1, 0.1, 0.1]])
+
+        first = filter_.classify(stable, voxel_size=1.0)
+        second = filter_.classify(stable, voxel_size=1.0)
+        third = filter_.classify(
+            np.vstack((stable, np.asarray([[9.1, 0.1, 0.1]]))), voxel_size=1.0
+        )
+
+        self.assertEqual(len(first["uncertain_points"]), 2)
+        self.assertEqual(len(second["uncertain_points"]), 2)
+        self.assertEqual(len(third["static_points"]), 2)
+        self.assertEqual(len(third["dynamic_points"]), 1)
+        self.assertEqual(len(third["uncertain_points"]), 0)
+        self.assertAlmostEqual(third["feature_repeatability"], 2.0 / 3.0)
+        self.assertTrue(third["window_warm"])
 
 
 if __name__ == "__main__":

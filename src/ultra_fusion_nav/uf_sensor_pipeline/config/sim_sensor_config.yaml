@@ -1,3 +1,20 @@
+fcu_observation_bridge:
+  ros__parameters:
+    flow_input_topic: /mavros/optical_flow/raw/optical_flow
+    flow_output_topic: /fcu/optical_flow/rad
+    imu_input_topic: /mavros/imu/data_raw
+    range_input_topic: /mavros/rangefinder/rangefinder
+    gnss_fix_input_topic: /mavros/global_position/raw/fix
+    gnss_fix_output_topic: /fcu/gnss/fix
+    gnss_raw_input_topic: /mavros/gpsstatus/gps1/raw
+    gnss_raw_output_topic: /fcu/gnss/raw
+    minimum_flow_interval_s: 0.005
+    maximum_flow_interval_s: 0.5
+    maximum_imu_gap_s: 0.12
+    maximum_flow_wait_s: 0.3
+    range_timeout_s: 0.5
+    stale_after_s: 1.0
+
 pointcloud_body_filter:
   ros__parameters:
     input_topic: /sim/mid360/points_raw
@@ -25,7 +42,7 @@ fault_injector_lidar:
 fault_injector_imu:
   ros__parameters:
     modality: imu
-    input_topic: /livox/imu
+    input_topic: /mavros/imu/data_raw
     output_topic: /sensors/imu
     fault_type: none
     fault_start_s: 0.0
@@ -37,7 +54,9 @@ fault_injector_imu:
 fault_injector_gnss:
   ros__parameters:
     modality: gnss
-    input_topic: /uav/global_fix
+    # SITL exposes the simulated receiver observation through MAVROS raw/fix.
+    # No FCU local-position or fused-global-position topic is used here.
+    input_topic: /mavros/global_position/raw/fix
     output_topic: /sensors/gnss/fix
     fault_type: none
     fault_start_s: 0.0

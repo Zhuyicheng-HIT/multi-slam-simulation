@@ -31,12 +31,14 @@ class D435iSimBridge(Node):
         self.declare_parameter("gz_prefix", "/front/d435i/gz")
         self.declare_parameter("ros_prefix", "/front/d435i")
         self.declare_parameter("publish_hz", 30.0)
+        self.declare_parameter("publish_pointcloud", False)
         self.declare_parameter("pointcloud_hz", 10.0)
         self.declare_parameter("pointcloud_stride", 4)
         self.declare_parameter("max_depth_m", 10.0)
         self.gz_prefix = str(self.get_parameter("gz_prefix").value).rstrip("/")
         self.ros_prefix = str(self.get_parameter("ros_prefix").value).rstrip("/")
         self.publish_hz = float(self.get_parameter("publish_hz").value)
+        self.publish_pointcloud = bool(self.get_parameter("publish_pointcloud").value)
         self.pointcloud_interval = 1.0 / max(float(self.get_parameter("pointcloud_hz").value), 0.1)
         self.pointcloud_stride = max(int(self.get_parameter("pointcloud_stride").value), 1)
         self.max_depth_m = float(self.get_parameter("max_depth_m").value)
@@ -56,8 +58,10 @@ class D435iSimBridge(Node):
         self.depth_info_pub = self.create_publisher(CameraInfo, f"{self.ros_prefix}/depth/camera_info", self.qos)
         self.aligned_pub = self.create_publisher(
             Image, f"{self.ros_prefix}/aligned_depth_to_color/image_raw", self.qos)
-        self.points_pub = self.create_publisher(
-            PointCloud2, f"{self.ros_prefix}/depth/color/points", self.qos)
+        self.points_pub = None
+        if self.publish_pointcloud:
+            self.points_pub = self.create_publisher(
+                PointCloud2, f"{self.ros_prefix}/depth/color/points", self.qos)
         self.gyro_pub = self.create_publisher(Imu, f"{self.ros_prefix}/gyro/sample", self.qos)
         self.accel_pub = self.create_publisher(Imu, f"{self.ros_prefix}/accel/sample", self.qos)
         self.imu_pub = self.create_publisher(Imu, f"{self.ros_prefix}/imu", self.qos)
@@ -79,7 +83,8 @@ class D435iSimBridge(Node):
         self.create_timer(1.0 / max(self.publish_hz, 1.0), self._publish_images)
         self._publish_static_tf()
         self.get_logger().info(
-            f"D435i simulation bridge active: {self.gz_prefix} -> {self.ros_prefix}")
+            f"D435i simulation bridge active: {self.gz_prefix} -> {self.ros_prefix}; "
+            f"pointcloud={'enabled' if self.publish_pointcloud else 'disabled'}")
 
     def _stamp(self, msg):
         stamp = self.get_clock().now().to_msg()
@@ -207,7 +212,8 @@ class D435iSimBridge(Node):
                     depth_info = self._camera_info(info, self.depth_frame)
                     self.depth_info_pub.publish(depth_info)
                     now = self.get_clock().now().nanoseconds * 1e-9
-                    if (self.points_pub.get_subscription_count() > 0 and
+                    if (self.points_pub is not None and
+                            self.points_pub.get_subscription_count() > 0 and
                             now - self.last_cloud_time >= self.pointcloud_interval):
                         self._pointcloud(depth_m, valid, depth_info, depth_msg.header.stamp)
                         self.last_cloud_time = now

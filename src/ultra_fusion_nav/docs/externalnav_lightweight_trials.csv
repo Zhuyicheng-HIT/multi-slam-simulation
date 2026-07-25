@@ -1,0 +1,4 @@
+sim_run,route_run,ate_rmse_m,ate_p95_m,rpe_1s_rmse_m,rpe_1s_p95_m,rtf_median,flow_hz,gnss_hz,externalnav_hz,integration_arrival_ratio,flow_scale,flow_normalized_rmse,flow_correlation,arrival_gap_outliers,passed
+apm_sensor_stack_20260721_005218,rectangle_state_machine_20260721_005327,0.114024,0.246679,0.101204,0.230881,0.999892,15.0000,9.6386,19.9995,0.990147,0.940,0.363,0.973,2,true
+apm_sensor_stack_20260721_005608,rectangle_state_machine_20260721_005707,0.125563,0.280556,0.111101,0.246725,0.999812,14.9977,9.5581,19.9999,0.990099,0.935,0.363,0.974,2,true
+apm_sensor_stack_20260721_005940,rectangle_state_machine_20260721_010043,0.092314,0.190413,0.087340,0.188194,0.999869,13.9141,9.7151,18.6856,0.990505,0.933,0.294,0.974,2,true

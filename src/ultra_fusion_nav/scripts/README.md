@@ -13,3 +13,5 @@ Current entrypoints:
 - `calibrate_optical_flow_lio.py`: evaluator-only optical-flow/LIO timestamp, axis, and scale cross-check.
 - `evaluate_optical_flow_gate.py`: combines the hard Gazebo sensor gate with the LIO cross-check without treating an independently invalid LIO reference as a sensor failure.
 - `run_gnss_reanchor_validation.sh`: outage, jump, and smooth recovery timeline validation.
+- `ros2 run uf_backend_fusion run_backend_ablation`: deterministic GNSS-jump
+  factor-weight ablation for the first offline window prototype.

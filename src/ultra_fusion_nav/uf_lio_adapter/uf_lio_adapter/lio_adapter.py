@@ -11,7 +11,13 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
 from uf_interfaces.msg import LioDiagnostics
 
-from .geometry import cloud_xyz, geometry_diagnostics, voxel_centroids, xyz_cloud
+from .geometry import (
+    TemporalVoxelFilter,
+    cloud_xyz,
+    geometry_diagnostics,
+    voxel_centroids,
+    xyz_cloud,
+)
 
 
 class LioAdapter(Node):
@@ -26,6 +32,9 @@ class LioAdapter(Node):
             "local_map_output_topic": "/lio/local_map",
             "deskewed_output_topic": "/lidar/points_deskewed",
             "diagnostics_topic": "/lio/diagnostics",
+            "static_cloud_output_topic": "/lidar/static_cloud",
+            "dynamic_cloud_output_topic": "/lidar/dynamic_cloud",
+            "uncertain_cloud_output_topic": "/lidar/uncertain_cloud",
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -34,6 +43,9 @@ class LioAdapter(Node):
         self.declare_parameter("local_map_frames", 20)
         self.declare_parameter("local_map_publish_period_s", 1.0)
         self.declare_parameter("diagnostics_period_s", 1.0)
+        self.declare_parameter("temporal_window_frames", 5)
+        self.declare_parameter("temporal_min_static_support", 2)
+        self.declare_parameter("temporal_neighbor_radius", 1)
         self.declare_parameter("path_publish_period_s", 1.0)
         self.declare_parameter("max_path_poses", 3000)
 
@@ -45,6 +57,11 @@ class LioAdapter(Node):
         self.map_frames = deque(maxlen=int(self.get_parameter("local_map_frames").value))
         self.last_cloud_header = None
         self.last_diagnostic_ns = None
+        self.temporal_filter = TemporalVoxelFilter(
+            window_frames=int(self.get_parameter("temporal_window_frames").value),
+            min_static_support=int(self.get_parameter("temporal_min_static_support").value),
+            neighbor_radius=int(self.get_parameter("temporal_neighbor_radius").value),
+        )
         self.diagnostics_period_ns = int(
             float(self.get_parameter("diagnostics_period_s").value) * 1e9
         )
@@ -59,6 +76,21 @@ class LioAdapter(Node):
         )
         self.diagnostic_pub = self.create_publisher(
             LioDiagnostics, str(self.get_parameter("diagnostics_topic").value), 20
+        )
+        self.static_cloud_pub = self.create_publisher(
+            PointCloud2,
+            str(self.get_parameter("static_cloud_output_topic").value),
+            qos_profile_sensor_data,
+        )
+        self.dynamic_cloud_pub = self.create_publisher(
+            PointCloud2,
+            str(self.get_parameter("dynamic_cloud_output_topic").value),
+            qos_profile_sensor_data,
+        )
+        self.uncertain_cloud_pub = self.create_publisher(
+            PointCloud2,
+            str(self.get_parameter("uncertain_cloud_output_topic").value),
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             Odometry, str(self.get_parameter("odom_input_topic").value), self._odom, 20
@@ -104,6 +136,14 @@ class LioAdapter(Node):
         self.last_diagnostic_ns = stamp_ns
         points = cloud_xyz(msg, self.max_points)
         metrics = geometry_diagnostics(points, self.previous_cloud, self.voxel_size)
+        temporal = self.temporal_filter.classify(points, self.voxel_size)
+        input_voxels = int(temporal["input_voxels"])
+        static_count = len(temporal["static_points"])
+        dynamic_count = len(temporal["dynamic_points"])
+        uncertain_count = len(temporal["uncertain_points"])
+        dynamic_ratio = dynamic_count / max(1, input_voxels)
+        uncertain_ratio = uncertain_count / max(1, input_voxels)
+        repeatability = float(temporal["feature_repeatability"])
         diagnostic = LioDiagnostics()
         diagnostic.header = copy.deepcopy(msg.header)
         diagnostic.input_points = int(msg.width) * int(msg.height)
@@ -118,14 +158,23 @@ class LioAdapter(Node):
         ]
         diagnostic.axial_penalty = float(metrics["axial_penalty"])
         diagnostic.spatial_coverage = float(metrics["spatial_coverage"])
-        diagnostic.dynamic_ratio = 0.0
-        diagnostic.map_quality = float(metrics["map_quality"])
+        diagnostic.dynamic_ratio = float(dynamic_ratio)
+        diagnostic.uncertain_ratio = float(uncertain_ratio)
+        diagnostic.feature_repeatability = repeatability
+        diagnostic.static_points = static_count
+        diagnostic.dynamic_points = dynamic_count
+        diagnostic.uncertain_points = uncertain_count
+        temporal_quality = (1.0 - dynamic_ratio) * (0.5 + 0.5 * repeatability)
+        diagnostic.map_quality = float(metrics["map_quality"] * temporal_quality)
         diagnostic.approximate = True
-        diagnostic.source = "external_voxel_point_to_plane_paper_eq18_proxy"
+        diagnostic.source = "external_voxel_point_to_plane_temporal_persistence_proxy"
         self.diagnostic_pub.publish(diagnostic)
+        self.static_cloud_pub.publish(xyz_cloud(temporal["static_points"], msg.header))
+        self.dynamic_cloud_pub.publish(xyz_cloud(temporal["dynamic_points"], msg.header))
+        self.uncertain_cloud_pub.publish(xyz_cloud(temporal["uncertain_points"], msg.header))
         self.previous_cloud = points
-        if len(points):
-            self.map_frames.append(points)
+        if static_count:
+            self.map_frames.append(temporal["static_points"])
             self.last_cloud_header = copy.deepcopy(msg.header)
 
     def _publish_map(self):

@@ -14,4 +14,4 @@ export FLOW_DEBUG=${FLOW_DEBUG:-true}
 export RECTANGLE_FLOW_TEST=0
 export AUTO_FLIGHT=0
 
-exec "$SCRIPT_DIR/run_apm_sensor_stack.sh"
+exec bash "$SCRIPT_DIR/run_apm_sensor_stack.sh"

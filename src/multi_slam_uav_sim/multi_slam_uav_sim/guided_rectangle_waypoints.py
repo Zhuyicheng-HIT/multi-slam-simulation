@@ -27,7 +27,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("preflight_wait_s", 45.0)
         self.declare_parameter("navigation_stable_s", 1.0)
         self.declare_parameter("navigation_source", "auto")
-        self.declare_parameter("flow_topic", "/sim/optical_flow/raw")
+        self.declare_parameter("flow_topic", "/mavros/optical_flow/raw/optical_flow")
         self.declare_parameter("flow_min_quality", 0)
         self.declare_parameter("flow_max_age_s", 1.0)
         self.declare_parameter("command_retry_s", 60.0)

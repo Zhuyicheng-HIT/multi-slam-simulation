@@ -1,6 +1,8 @@
 # Optical-Flow Sensor Report
 
-Status: Gazebo optical-flow sensor model accepted on the simple fixed route; FCU injection and non-GPS aiding remain disabled.
+Status: image-LK optical flow accepted on three repeated simple-map flights;
+companion GPS/flow aiding is active through one ExternalNav output, while direct
+FCU optical-flow injection remains disabled.
 
 ## Sensor Boundary
 
@@ -11,11 +13,16 @@ The estimator-facing observation is `/sensors/optical_flow/rad`. The Gazebo sour
 - `distance`: noisy downward single-beam range;
 - `quality`: image-derived texture, LK survival, forward/backward consistency, spatial coverage, range, and motion-limit score.
 
-The vector is synthesized inside the Gazebo sensor from the flow-camera displacement and internal gyro, with angular noise. Real rendered images still control quality and failure: low texture or failed tracking produces quality zero. Simulator pose and velocity are never published to the estimator, FCU, scheduler, or bag contract. This is the same boundary used by simulated IMU and LiDAR sensors; explicit ground-truth topics remain evaluator-only.
+The default ExternalNav profile derives the vector from rendered 100 by 100 images
+using LK tracking and the flow-module gyro. The optional physics-derived vector is
+diagnostic-only and must remain disabled for algorithm-quality evaluation. Low
+texture or failed tracking produces quality zero. Simulator pose and velocity are
+never published to the estimator, FCU, scheduler, or bag contract; explicit
+ground-truth topics remain evaluator-only.
 
 ## Implementation Changes
 
-- Replaced the 20 Hz latest-frame sampler with all-frame camera delivery.
+- Uses best-effort, keep-last depth 1 at both image endpoints and a 15 Hz latest-frame bridge.
 - Replaced grid block matching with pyramidal Lucas-Kanade tracking, forward/backward checks, robust inlier filtering, and coverage-aware quality.
 - Removed the empirical `angular_scale=0.024`; the default scale is `1.0`.
 - Added a noisy 30 Hz downward single-beam range sensor.
@@ -23,6 +30,7 @@ The vector is synthesized inside the Gazebo sensor from the flow-camera displace
 - Corrected legacy `OPTICAL_FLOW` units: pixels, rad/s, compensated m/s, and distance.
 - Added a dual-clock policy: Gazebo source time defines image/gyro/pose integration, while the published ROS header uses wall time for association with the current non-`use_sim_time` LIO stack.
 - Added independent Gazebo sensor and LIO cross-check gates.
+- Corrected the evaluator to align truth with `integration_time_us`, while reporting callback arrival gaps separately.
 
 ## Iteration Evidence
 
@@ -34,6 +42,9 @@ The vector is synthesized inside the Gazebo sensor from the flow-camera displace
 | 16 | pose-window displacement | 0.642 | 0.604 | 0.913 | failed |
 | 17 | dual source/wall clocks | 0.972 | 0.850 | 0.705 | LIO cross-check passed |
 | 19 | clean WSL repeat, Gazebo sensor gate | 0.951 | 0.840 | 0.617 | sensor gate passed |
+| 20a | image-LK ExternalNav, corrected interval, repeat 1 | 0.940 | 0.973 | 0.363 | passed |
+| 20b | image-LK ExternalNav, corrected interval, repeat 2 | 0.935 | 0.974 | 0.363 | passed |
+| 20c | image-LK ExternalNav, corrected interval, repeat 3 | 0.933 | 0.974 | 0.294 | passed |
 
 Run 19 used 455 observable Gazebo displacement samples and recovered the identity sensor-axis mapping. The concurrent LIO cross-check produced scale `0.937` and correlation `0.735`, but normalized RMSE `0.889`; its LIO reference was independently invalid (`position_rmse=0.142 m`, `yaw_rmse=1.11 deg`, coupling reference false). The combined gate therefore reports `sensor_passed_lio_crosscheck_inconclusive`, not a false LIO pass.
 
@@ -48,7 +59,7 @@ Acceptance thresholds for an observable-motion segment are:
 ## Decision and Remaining Gates
 
 - The Gazebo optical-flow sensor data layer is accepted for rosbag2 recording, fault injection, and reliability-score work.
-- Keep the pure image-LK vector available as a diagnostic, but use the physics sensor vector as the default simulated measurement.
+- Use the pure image-LK vector as the default algorithm measurement; physics-derived flow is diagnostic-only.
 - Do not feed `/uav/local_pose`, `/uav/local_odom`, or Gazebo ground-truth topics into the navigation algorithm.
-- Do not enable FCU optical-flow injection or non-GPS aiding until a separate flight validates ArduPilot orientation, range handling, EKF innovation, outage behavior, and landing transitions.
-- `D_OF` may now consume quality, range validity, clock diagnostics, and the admitted vector residual. Scheduler weight remains zero until the Stage 4 aiding test passes.
+- Companion GPS/flow aiding is enabled through `/mavros/odometry/out`; direct FCU optical-flow injection remains disabled to avoid double fusion.
+- `D_OF` consumes quality, range validity, timing diagnostics, and a vector-increment residual. Live scheduler admission still requires an independent LIO increment.

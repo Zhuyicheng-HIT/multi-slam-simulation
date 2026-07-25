@@ -5,17 +5,28 @@ reliability_monitor:
     lidar.tau_kappa: 100000.0
     lidar.tau_normal: 0.02
     lidar.weights: [0.35, 0.20, 0.20, 0.25]
+    lidar.minimum_matches: 50
     gnss.tau_covariance: 25.0
     gnss.tau_innovation: 5.0
     gnss.weights: [0.25, 0.20, 0.55]
+    gnss.raw_topic: /mavros/gpsstatus/gps1/raw
+    gnss.raw_timeout_s: 1.0
+    gnss.minimum_satellites: 5
+    gnss.good_satellites: 10
+    gnss.good_hdop: 1.0
+    gnss.maximum_hdop: 4.0
     imu.tau_preintegration: 5.0
     imu.accel_excitation_scale: 0.5
     imu.gyro_excitation_scale: 0.15
     imu.accel_saturation: 55.0
     imu.gyro_saturation: 10.0
     imu.weights: [0.35, 0.45, 0.20]
+    imu.minimum_window_samples: 20
     optical_flow.tau_translation: 0.30
     optical_flow.weights: [0.60, 0.25, 0.15]
+    optical_flow.lio_max_gap_s: 0.5
+    optical_flow.lio_wait_s: 0.4
     vision.feature_reference: 150
     vision.tau_reprojection_px: 3.0
     vision.weights: [0.30, 0.25, 0.25, 0.20]
+    vision.minimum_features: 20

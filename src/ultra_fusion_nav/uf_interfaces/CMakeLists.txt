@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GnssIntegrity.msg"
   "msg/LioDiagnostics.msg"
   "msg/ReliabilityScore.msg"
+  "msg/SchedulerState.msg"
   DEPENDENCIES std_msgs
 )
 

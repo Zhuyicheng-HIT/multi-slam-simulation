@@ -9,6 +9,7 @@ LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/mid360_fastlio_mapping_$(date +%Y%m%d_%H%M%S)}
 RVIZ=${RVIZ:-1}
 FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-pointcloud}
+FASTLIO_CLOUD_TOPIC=/sim/mid360/points_raw
 
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
@@ -48,7 +49,7 @@ Logs:
   $LOG_DIR/fastlio_occupancy_grid.log
 
 Inputs:
-  /sim/mid360/points_raw  -> /livox/lidar  (livox_ros_driver2/msg/CustomMsg, protocol reference)
+  $FASTLIO_CLOUD_TOPIC  -> /livox/lidar  (livox_ros_driver2/msg/CustomMsg, protocol reference)
   /mavros/imu/data_raw    -> /livox/imu    (FCU HIGHRES_IMU sensor_msgs/msg/Imu)
   FASTLIO_INPUT_MODE=$FASTLIO_INPUT_MODE
 
@@ -68,14 +69,18 @@ case "$FASTLIO_INPUT_MODE" in
   pointcloud)
     FASTLIO_CONFIG=fast_lio_sim_mid360_pointcloud.yaml
     ;;
+  filtered_pointcloud)
+    FASTLIO_CONFIG=fast_lio_sim_mid360_filtered_pointcloud.yaml
+    FASTLIO_CLOUD_TOPIC=/sensors/lidar/points
+    ;;
   *)
-    printf 'Unsupported FASTLIO_INPUT_MODE=%s. Use pointcloud or livox.\n' "$FASTLIO_INPUT_MODE" >&2
+    printf 'Unsupported FASTLIO_INPUT_MODE=%s. Use pointcloud, filtered_pointcloud, or livox.\n' "$FASTLIO_INPUT_MODE" >&2
     exit 2
     ;;
 esac
 
 setsid ros2 run multi_slam_uav_sim livox_mid360_bridge --ros-args \
-  -p input_cloud_topic:=/sim/mid360/points_raw \
+  -p input_cloud_topic:="$FASTLIO_CLOUD_TOPIC" \
   -p input_imu_topic:=/mavros/imu/data_raw \
   -p livox_lidar_topic:=/livox/lidar \
   -p livox_imu_topic:=/livox/imu \

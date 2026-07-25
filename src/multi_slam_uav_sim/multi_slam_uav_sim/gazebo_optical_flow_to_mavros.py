@@ -48,10 +48,10 @@ class GazeboOpticalFlowToMavros(Node):
         self.declare_parameter("gazebo_imu_topic", "/flow/imu")
         self.declare_parameter("gazebo_range_topic", "/flow/range")
         self.declare_parameter("camera_fov_x_rad", 1.21126)
-        self.declare_parameter("camera_width_px", 640)
-        self.declare_parameter("camera_height_px", 480)
+        self.declare_parameter("camera_width_px", 100)
+        self.declare_parameter("camera_height_px", 100)
         self.declare_parameter("max_rate_hz", 30.0)
-        self.declare_parameter("downsample", 0.5)
+        self.declare_parameter("downsample", 1.0)
         self.declare_parameter("max_corners", 160)
         self.declare_parameter("feature_quality_level", 0.01)
         self.declare_parameter("min_feature_distance_px", 7.0)
@@ -155,6 +155,11 @@ class GazeboOpticalFlowToMavros(Node):
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
         )
+        self.latest_sensor_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
         self.flow_pub = self.create_publisher(
             OpticalFlow, self.get_parameter("flow_topic").value, qos_profile_sensor_data
         )
@@ -178,7 +183,10 @@ class GazeboOpticalFlowToMavros(Node):
             self.fcu_range_pub = self.create_publisher(Range, fcu_range_topic, qos_profile_sensor_data)
 
         self.create_subscription(
-            Image, self.get_parameter("image_topic").value, self._image_cb, qos_profile_sensor_data
+            Image,
+            self.get_parameter("image_topic").value,
+            self._image_cb,
+            self.latest_sensor_qos,
         )
         self.create_subscription(
             CameraInfo,
@@ -187,7 +195,10 @@ class GazeboOpticalFlowToMavros(Node):
             qos_profile_sensor_data,
         )
         self.create_subscription(
-            Image, self.get_parameter("depth_topic").value, self._depth_cb, qos_profile_sensor_data
+            Image,
+            self.get_parameter("depth_topic").value,
+            self._depth_cb,
+            self.latest_sensor_qos,
         )
         imu_topic = str(self.get_parameter("imu_topic").value)
         if imu_topic:

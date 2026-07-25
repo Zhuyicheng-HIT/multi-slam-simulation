@@ -1,6 +1,7 @@
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -9,7 +10,16 @@ def generate_launch_description():
     default_config = get_package_share_directory("uf_sensor_pipeline") + "/config/sim_sensor_config.yaml"
     config = LaunchConfiguration("config")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    enable_fcu_observation_bridge = LaunchConfiguration("enable_fcu_observation_bridge")
     nodes = [
+        Node(
+            package="uf_sensor_pipeline",
+            executable="fcu_observation_bridge",
+            name="fcu_observation_bridge",
+            parameters=[config, {"use_sim_time": use_sim_time}],
+            output="screen",
+            condition=IfCondition(enable_fcu_observation_bridge),
+        ),
         Node(
             package="uf_sensor_pipeline",
             executable="pointcloud_body_filter",
@@ -40,5 +50,6 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
         *nodes,
     ])

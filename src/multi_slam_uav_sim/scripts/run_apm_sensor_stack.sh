@@ -15,7 +15,6 @@ ARDUPILOT_GAZEBO_DIR=${ARDUPILOT_GAZEBO_DIR:-$HOME/ardupilot_gazebo}
 WORLD=${WORLD:-$PKG_SHARE/worlds/simple_apm_rgbd_mid360.sdf}
 WORLD_NAME=${WORLD_NAME:-simple_apm_rgbd_mid360}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/apm_sensor_stack_$(date +%Y%m%d_%H%M%S)}
-mkdir -p "$LOG_DIR"
 LOCK_FILE=${LOCK_FILE:-/tmp/multi_slam_apm_sensor_stack.lock}
 
 if [[ -f "$LOCK_FILE" ]]; then
@@ -37,19 +36,31 @@ EOF
   fi
 fi
 printf '%s\n' "$$" > "$LOCK_FILE"
+mkdir -p "$LOG_DIR"
 
 pids=()
+cleanup_started=0
 cleanup() {
+  if [[ "$cleanup_started" == "1" ]]; then
+    return
+  fi
+  cleanup_started=1
+  trap - EXIT INT TERM
   printf '\nStopping APM sensor stack...\n'
   rm -f "$LOCK_FILE"
   for pid in "${pids[@]:-}"; do
-    kill "$pid" 2>/dev/null || true
-    kill -- "-$pid" 2>/dev/null || true
+    kill -INT "$pid" 2>/dev/null || true
+    kill -INT -- "-$pid" 2>/dev/null || true
   done
   sleep 1
   for pid in "${pids[@]:-}"; do
     kill -TERM "$pid" 2>/dev/null || true
     kill -TERM -- "-$pid" 2>/dev/null || true
+  done
+  sleep 1
+  for pid in "${pids[@]:-}"; do
+    kill -KILL "$pid" 2>/dev/null || true
+    kill -KILL -- "-$pid" 2>/dev/null || true
   done
 }
 trap cleanup EXIT INT TERM
@@ -66,16 +77,18 @@ fi
 pids+=("$!")
 sleep 6
 
-setsid ros2 run multi_slam_uav_sim d435i_sim_bridge --ros-args \
-  -p gz_prefix:=/front/d435i/gz \
-  -p ros_prefix:=/front/d435i \
-  -p publish_hz:=30.0 \
-  -p pointcloud_hz:=10.0 \
-  -p pointcloud_stride:=4 \
-  >"$LOG_DIR/d435i_sim_bridge.log" 2>&1 &
-pids+=("$!")
+if [[ "${ENABLE_D435_BRIDGE:-1}" == "1" ]]; then
+  setsid ros2 run multi_slam_uav_sim d435i_sim_bridge --ros-args \
+    -p gz_prefix:=/front/d435i/gz \
+    -p ros_prefix:=/front/d435i \
+    -p publish_hz:=30.0 \
+    -p publish_pointcloud:=${ENABLE_D435_POINTCLOUD:-false} \
+    -p pointcloud_hz:=10.0 \
+    -p pointcloud_stride:=4 \
+    >"$LOG_DIR/d435i_sim_bridge.log" 2>&1 &
+  pids+=("$!")
+fi
 
-FLOW_STACK_STARTED=0
 if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; then
   publish_to_fcu=false
   if [[ "${ENABLE_FCU_FLOW:-0}" == "1" ]]; then
@@ -88,8 +101,8 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
   setsid ros2 run multi_slam_uav_sim gz_rgbd_latest_bridge --ros-args \
     -p gz_prefix:=/camera/camera \
     -p ros_prefix:=/camera/camera \
-    -p publish_hz:=30.0 \
-    -p publish_all_frames:=true \
+    -p publish_hz:=${FLOW_BRIDGE_HZ:-30.0} \
+    -p publish_all_frames:=${FLOW_PUBLISH_ALL_FRAMES:-true} \
     -p restamp:=false \
     >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
   pids+=("$!")
@@ -104,6 +117,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
     -p imu_topic:=/mavros/imu/data_raw
     -p max_rate_hz:=30.0
     -p angular_scale:=1.0
+    -p use_physics_flow:=${FLOW_USE_PHYSICS:-true}
     -p use_gazebo_height:=false
     -p gazebo_world_name:="$WORLD_NAME"
     -p gazebo_height_model:=apm_iris
@@ -127,7 +141,6 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
       >"$LOG_DIR/optical_flow_viewer.log" 2>&1 &
     pids+=("$!")
   fi
-  FLOW_STACK_STARTED=1
 fi
 
 if [[ "${START_SITL:-1}" == "1" ]]; then
@@ -145,6 +158,9 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
     else
       sitl_defaults+=("$PKG_SHARE/params/apm_mavlink_optflow_gps.parm")
     fi
+  fi
+  if [[ "${ENABLE_EXTERNALNAV_FUSION:-0}" == "1" ]]; then
+    sitl_defaults+=("$PKG_SHARE/params/apm_externalnav_gps_flow.parm")
   fi
   SITL_DEFAULTS=$(IFS=,; printf '%s' "${sitl_defaults[*]}")
   WIPE_ARG=""
@@ -187,67 +203,26 @@ setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
   -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
 pids+=("$!")
 
-setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
-  -p gz_topic:=/mid360/lidar \
-  -p raw_topic:=/sim/mid360/points_raw \
-  -p registered_topic:=/sim/mid360/cloud_registered \
-  -p odom_topic:=/sim/mid360/ground_truth_odom \
-  -p sensor_frame:=mid360_link \
-  -p map_frame:=camera_init \
-  >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
-pids+=("$!")
-
-if [[ "$FLOW_STACK_STARTED" != "1" && ( "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ) ]]; then
-  publish_to_fcu=false
-  if [[ "${ENABLE_FCU_FLOW:-0}" == "1" ]]; then
-    publish_to_fcu=true
-  fi
-  fcu_range_topic=""
-  if [[ "${ENABLE_FCU_RANGE:-0}" == "1" || "${ENABLE_NONGPS_FLOW:-0}" == "1" ]]; then
-    fcu_range_topic="/mavros/rangefinder_sub"
-  fi
-  setsid ros2 run multi_slam_uav_sim gz_rgbd_latest_bridge --ros-args \
-    -p gz_prefix:=/camera/camera \
-    -p ros_prefix:=/camera/camera \
-    -p publish_hz:=30.0 \
-    -p publish_all_frames:=true \
-    -p restamp:=false \
-    >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
+if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
+  setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
+    -p gz_topic:=/mid360/lidar \
+    -p raw_topic:=/sim/mid360/points_raw \
+    -p registered_topic:=/sim/mid360/cloud_registered \
+    -p odom_topic:=/sim/mid360/ground_truth_odom \
+    -p sensor_frame:=mid360_link \
+    -p map_frame:=camera_init \
+    >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
   pids+=("$!")
+fi
 
-  flow_args=(
-    -p image_topic:=/camera/camera/color/image_raw
-    -p camera_info_topic:=/camera/camera/color/camera_info
-    -p depth_topic:=/camera/camera/depth/image_rect_raw
-    -p flow_topic:=/sim/optical_flow/raw
-    -p gazebo_range_topic:=/flow/range
-    -p gazebo_imu_topic:=/flow/imu
-    -p imu_topic:=/mavros/imu/data_raw
-    -p max_rate_hz:=30.0
-    -p angular_scale:=1.0
-    -p use_gazebo_height:=false
-    -p gazebo_world_name:="$WORLD_NAME"
-    -p gazebo_height_model:=apm_iris
-    -p publish_to_fcu:="$publish_to_fcu"
-    -p fcu_flow_topic:=/mavros/optical_flow/raw/send
-    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-true}
-    -p debug:=${FLOW_DEBUG:-false}
-  )
-  if [[ -n "$fcu_range_topic" ]]; then
-    flow_args+=(-p fcu_range_topic:="$fcu_range_topic")
-  fi
-  setsid ros2 run multi_slam_uav_sim gazebo_optical_flow_to_mavros --ros-args \
-    "${flow_args[@]}" \
-    >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
+if [[ "${ENABLE_EXTERNALNAV_FUSION:-0}" == "1" ]]; then
+  setsid ros2 launch uf_sensor_pipeline gps_flow_externalnav.launch.py \
+    world_name:="$WORLD_NAME" \
+    flow_truth_assistance:=${FLOW_USE_PHYSICS:-true} \
+    performance_output_path:="$LOG_DIR/simulation_performance.json" \
+    accuracy_output_path:="$LOG_DIR/externalnav_accuracy.json" \
+    >"$LOG_DIR/gps_flow_externalnav.log" 2>&1 &
   pids+=("$!")
-
-  if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
-    setsid ros2 run multi_slam_uav_sim optical_flow_viewer --ros-args \
-      -p image_topic:=/camera/camera/color/image_raw \
-      -p flow_topic:=/sim/optical_flow/raw \
-      >"$LOG_DIR/optical_flow_viewer.log" 2>&1 &
-    pids+=("$!")
-  fi
 fi
 
 if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" ]]; then
@@ -276,7 +251,7 @@ Direct companion-computer sensors:
   /front/d435i/color/image_raw
   /front/d435i/depth/image_rect_raw
   /front/d435i/aligned_depth_to_color/image_raw
-  /front/d435i/depth/color/points
+  /front/d435i/depth/color/points  (disabled by default; set ENABLE_D435_POINTCLOUD=true)
   /front/d435i/imu
   /camera/camera/color/image_raw
   /camera/camera/depth/image_rect_raw  (optional; optical flow can use Gazebo height)
@@ -290,6 +265,13 @@ Optional FCU optical-flow injection:
   ENABLE_FCU_FLOW=1 publishes optical flow to /mavros/optical_flow/raw/send
   ENABLE_FCU_RANGE=1 publishes range to /mavros/rangefinder_sub
   ENABLE_NONGPS_FLOW=1 enables FCU range and loads the optical-flow EKF source parameters
+
+Optional companion GPS/flow ExternalNav:
+  ENABLE_EXTERNALNAV_FUSION=1 starts /fusion/gps_flow/odom -> /mavros/odometry/out
+  FLOW_USE_PHYSICS=false is required for algorithm-quality evaluation
+  ENABLE_D435_BRIDGE=0 and ENABLE_MID360_BRIDGE=0 disable unused ROS conversion bridges
+  Performance report: $LOG_DIR/simulation_performance.json
+  Accuracy report: $LOG_DIR/externalnav_accuracy.json
 
 Optical-flow viewer:
   run_sim_with_flow.sh

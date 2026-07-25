@@ -1,3 +1,6 @@
+import math
+
+
 def clamp(value, low=0.0, high=1.0):
     return max(low, min(high, float(value)))
 
@@ -15,6 +18,37 @@ def weighted_score(terms):
     return clamp(score / total_weight), clamp(available_weight / total_weight)
 
 
+def planar_norm(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return abs(float(value))
+    values = list(value)
+    if len(values) < 2:
+        raise ValueError("planar residual requires at least two components")
+    return math.hypot(float(values[0]), float(values[1]))
+
+
+def optical_flow_displacement_frd(integrated_x, integrated_y,
+                                  integrated_xgyro, integrated_ygyro,
+                                  ground_distance_m):
+    """Invert MAVLink OPTICAL_FLOW_RAD geometry into planar sensor-FRD displacement."""
+    values = (
+        integrated_x, integrated_y, integrated_xgyro, integrated_ygyro,
+        ground_distance_m,
+    )
+    if not all(math.isfinite(float(value)) for value in values):
+        return None
+    if float(ground_distance_m) <= 0.0:
+        return None
+    translational_x = float(integrated_x) - float(integrated_xgyro)
+    translational_y = float(integrated_y) - float(integrated_ygyro)
+    return (
+        translational_y * float(ground_distance_m),
+        -translational_x * float(ground_distance_m),
+    )
+
+
 def finalize_score(score, coverage, evidence, reasons):
     complete = coverage >= 1.0 - 1.0e-9
     evidence["evidence_weight_coverage"] = coverage
@@ -22,6 +56,59 @@ def finalize_score(score, coverage, evidence, reasons):
     if not complete:
         reasons.append("incomplete_paper_evidence")
     return score, evidence, reasons
+
+
+def gnss_integrity_quality(fix_type, satellites_visible, hdop,
+                           minimum_satellites=5, good_satellites=10,
+                           good_hdop=1.0, maximum_hdop=4.0):
+    """Build q_fix for Eq. 23 from FCU-reported GPS_RAW_INT integrity fields."""
+    if fix_type is None:
+        return None, {
+            "fix_type": -1.0,
+            "satellite_count": -1.0,
+            "hdop": -1.0,
+            "satellite_quality": -1.0,
+            "dop_quality": -1.0,
+        }, ["fcu_gnss_metadata_unavailable"]
+    fix_type = int(fix_type)
+    fix_quality = 1.0 if fix_type >= 3 else (0.5 if fix_type == 2 else 0.0)
+    satellite_quality = None
+    if satellites_visible is not None and int(satellites_visible) != 255:
+        span = max(1, int(good_satellites) - int(minimum_satellites))
+        satellite_quality = clamp((int(satellites_visible) - int(minimum_satellites)) / span)
+    dop_quality = None
+    if hdop is not None and math.isfinite(float(hdop)):
+        span = max(1.0e-6, float(maximum_hdop) - float(good_hdop))
+        dop_quality = clamp((float(maximum_hdop) - float(hdop)) / span)
+    available = [value for value in (satellite_quality, dop_quality) if value is not None]
+    if available:
+        metadata_quality = sum(available) / len(available)
+        quality = fix_quality * (0.6 + 0.4 * metadata_quality)
+    else:
+        quality = fix_quality
+    reasons = []
+    if fix_quality < 1.0:
+        reasons.append("weak_fcu_fix_type")
+    if satellite_quality is None:
+        reasons.append("satellite_count_unavailable")
+    elif satellite_quality < 0.5:
+        reasons.append("few_satellites")
+    if dop_quality is None:
+        reasons.append("dop_unavailable")
+    elif dop_quality < 0.5:
+        reasons.append("large_hdop")
+    evidence = {
+        "fix_type": float(fix_type),
+        "satellite_count": (
+            -1.0 if satellites_visible is None else float(satellites_visible)
+        ),
+        "hdop": -1.0 if hdop is None else float(hdop),
+        "satellite_quality": (
+            -1.0 if satellite_quality is None else satellite_quality
+        ),
+        "dop_quality": -1.0 if dop_quality is None else dop_quality,
+    }
+    return quality, evidence, reasons
 
 
 def lidar_score(hessian_eigenvalues, normal_covariance_eigenvalues, axial_penalty,
@@ -131,10 +218,22 @@ def imu_score(excitation, preintegration_residual_mahalanobis, saturation,
 def optical_flow_score(delta_position_flow_m, delta_position_prediction_m,
                        quality, ground_distance_m, tau_translation=0.30,
                        weights=(0.60, 0.25, 0.15)):
+    flow_norm = planar_norm(delta_position_flow_m)
+    prediction_norm = planar_norm(delta_position_prediction_m)
     increment_residual = None
     increment_term = None
-    if delta_position_prediction_m is not None and float(delta_position_prediction_m) >= 0.0:
-        increment_residual = abs(float(delta_position_flow_m) - float(delta_position_prediction_m))
+    if delta_position_flow_m is not None and delta_position_prediction_m is not None:
+        if isinstance(delta_position_flow_m, (int, float)):
+            increment_residual = abs(
+                float(delta_position_flow_m) - float(delta_position_prediction_m)
+            )
+        else:
+            flow = list(delta_position_flow_m)
+            prediction = list(delta_position_prediction_m)
+            increment_residual = math.hypot(
+                float(flow[0]) - float(prediction[0]),
+                float(flow[1]) - float(prediction[1]),
+            )
         increment_term = min(1.0, increment_residual / tau_translation)
     quality_term = 1.0 - clamp(float(quality) / 255.0)
     distance_term = 0.0 if 0.10 <= float(ground_distance_m) <= 30.0 else 1.0
@@ -144,9 +243,9 @@ def optical_flow_score(delta_position_flow_m, delta_position_prediction_m,
         (distance_term, weights[2]),
     ])
     evidence = {
-        "delta_position_flow_m": float(delta_position_flow_m),
+        "delta_position_flow_m": -1.0 if flow_norm is None else flow_norm,
         "delta_position_prediction_m": (
-            -1.0 if delta_position_prediction_m is None else float(delta_position_prediction_m)
+            -1.0 if prediction_norm is None else prediction_norm
         ),
         "increment_residual_m_eq22_adapted": (
             -1.0 if increment_residual is None else increment_residual

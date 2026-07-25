@@ -642,8 +642,8 @@
         <camera>
           <horizontal_fov>1.21126</horizontal_fov>
           <image>
-            <width>640</width>
-            <height>480</height>
+            <width>100</width>
+            <height>100</height>
             <format>R8G8B8</format>
           </image>
           <clip>

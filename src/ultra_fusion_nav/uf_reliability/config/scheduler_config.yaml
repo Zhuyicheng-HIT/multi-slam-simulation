@@ -1,0 +1,15 @@
+reliability_scheduler:
+  ros__parameters:
+    active_modalities: [lidar, gnss, imu, optical_flow, vision]
+    score_timeout_s: 1.0
+    degraded_threshold: 0.35
+    risk_threshold: 0.60
+    failsafe_threshold: 0.85
+    factor_disable_threshold: 0.80
+    factor_enable_threshold: 0.55
+    minimum_weight: 0.05
+    maximum_covariance_inflation: 20.0
+    transition_dwell_s: 0.5
+    recovery_dwell_s: 1.5
+    recovered_hold_s: 1.0
+    publish_rate_hz: 10.0

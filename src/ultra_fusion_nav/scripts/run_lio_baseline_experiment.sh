@@ -10,6 +10,9 @@ ENABLE_LIO_ADAPTER=${ENABLE_LIO_ADAPTER:-1}
 ENABLE_RELIABILITY=${ENABLE_RELIABILITY:-0}
 ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
 FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
+ENABLE_PERFORMANCE_MONITOR=${ENABLE_PERFORMANCE_MONITOR:-1}
+SIM_WORLD_NAME=${SIM_WORLD_NAME:-simple_apm_rgbd_mid360}
+ALLOW_MISSING_RELIABILITY=${ALLOW_MISSING_RELIABILITY:-0}
 
 mkdir -p "$OUTPUT_DIR"
 set +u
@@ -73,6 +76,19 @@ pids+=("$!")
 wait_for_message /Odometry 90
 wait_for_message /sensors/imu 30
 
+performance_monitor_pid=""
+if [[ "$ENABLE_PERFORMANCE_MONITOR" == "1" ]]; then
+  ros2 run multi_slam_uav_sim simulation_performance_monitor --ros-args \
+    -p world_name:="$SIM_WORLD_NAME" \
+    -p output_path:="$OUTPUT_DIR/simulation_performance.json" \
+    -p flow_truth_assistance:=false \
+    -p minimum_external_nav_rate_hz:=0.0 \
+    >"$OUTPUT_DIR/simulation_performance.stdout.log" \
+    2>"$OUTPUT_DIR/simulation_performance.stderr.log" &
+  performance_monitor_pid=$!
+  pids+=("$performance_monitor_pid")
+fi
+
 estimate_topic=/Odometry
 if [[ "$ENABLE_LIO_ADAPTER" == "1" ]]; then
   setsid ros2 launch uf_lio_adapter lio_adapter.launch.py \
@@ -88,9 +104,14 @@ if [[ "$ENABLE_RELIABILITY" == "1" ]]; then
     >"$OUTPUT_DIR/reliability.stdout.log" 2>"$OUTPUT_DIR/reliability.stderr.log" &
   pids+=("$!")
   wait_for_message /reliability/imu_score 30
-  python3 "$SCRIPT_DIR/record_reliability_scores.py" \
-    --duration "$ANALYSIS_DURATION_S" \
-    --output "$OUTPUT_DIR/reliability_scores.csv" \
+  score_args=(
+    --duration "$ANALYSIS_DURATION_S"
+    --output "$OUTPUT_DIR/reliability_scores.csv"
+  )
+  if [[ "$ALLOW_MISSING_RELIABILITY" == "1" ]]; then
+    score_args+=(--allow-missing)
+  fi
+  python3 "$SCRIPT_DIR/record_reliability_scores.py" "${score_args[@]}" \
     >"$OUTPUT_DIR/reliability_recorder.stdout.log" \
     2>"$OUTPUT_DIR/reliability_recorder.stderr.log" &
   score_recorder_pid=$!

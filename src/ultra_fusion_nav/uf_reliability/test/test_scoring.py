@@ -1,7 +1,8 @@
 import unittest
 
 from uf_reliability.scoring import (
-    gnss_score, imu_score, lidar_score, optical_flow_score, vision_score,
+    gnss_integrity_quality, gnss_score, imu_score, lidar_score,
+    optical_flow_displacement_frd, optical_flow_score, vision_score,
 )
 
 
@@ -23,6 +24,22 @@ class ScoringTest(unittest.TestCase):
         self.assertAlmostEqual(outage_result[1]["evidence_weight_coverage"], 0.45)
         self.assertIn("incomplete_paper_evidence", outage_result[2])
 
+    def test_fcu_gnss_metadata_refines_fix_quality(self):
+        good, evidence, reasons = gnss_integrity_quality(6, 10, 1.2)
+        weak, _, weak_reasons = gnss_integrity_quality(2, 4, 6.0)
+        self.assertGreater(good, 0.95)
+        self.assertEqual(evidence["fix_type"], 6.0)
+        self.assertNotIn("few_satellites", reasons)
+        self.assertLess(weak, 0.4)
+        self.assertIn("weak_fcu_fix_type", weak_reasons)
+        self.assertIn("few_satellites", weak_reasons)
+
+    def test_missing_fcu_gnss_metadata_is_explicit(self):
+        quality, evidence, reasons = gnss_integrity_quality(None, None, None)
+        self.assertIsNone(quality)
+        self.assertEqual(evidence["fix_type"], -1.0)
+        self.assertIn("fcu_gnss_metadata_unavailable", reasons)
+
     def test_imu_saturation_increases(self):
         self.assertLess(imu_score(1.0, 0.1, False)[0], 0.1)
         self.assertGreater(imu_score(0.0, 10.0, True)[0], 0.9)
@@ -32,6 +49,15 @@ class ScoringTest(unittest.TestCase):
         bad = optical_flow_score(1.0, 0.0, 5, 3.0)[0]
         self.assertLess(good, 0.1)
         self.assertGreater(bad, 0.8)
+
+    def test_optical_flow_uses_vector_increment_residual(self):
+        result = optical_flow_score((1.0, 0.0), (0.0, 1.0), 255, 3.0)
+        self.assertEqual(result[1]["increment_term_eq22_adapted"], 1.0)
+
+    def test_optical_flow_rad_geometry_recovers_frd_displacement(self):
+        displacement = optical_flow_displacement_frd(0.03, 0.12, 0.01, 0.02, 2.0)
+        self.assertAlmostEqual(displacement[0], 0.20)
+        self.assertAlmostEqual(displacement[1], -0.04)
 
     def test_vision_holes_and_blur_increase(self):
         good = vision_score(150, 150, 1.0, 0.2, 0.98)[0]

@@ -19,5 +19,8 @@ setup(
     maintainer_email="zyc@example.com",
     description="Independent sensor degradation scores for Ultra-Fusion simulation.",
     license="MIT",
-    entry_points={"console_scripts": ["reliability_monitor = uf_reliability.reliability_monitor:main"]},
+    entry_points={"console_scripts": [
+        "reliability_monitor = uf_reliability.reliability_monitor:main",
+        "reliability_scheduler = uf_reliability.reliability_scheduler:main",
+    ]},
 )

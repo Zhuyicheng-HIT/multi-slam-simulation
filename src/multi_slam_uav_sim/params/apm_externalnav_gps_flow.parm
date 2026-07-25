@@ -1,0 +1,25 @@
+# GPS/optical-flow fusion is produced on the companion and returned as ODOMETRY.
+AHRS_EKF_TYPE 3
+EK3_ENABLE 1
+VISO_TYPE 1
+VISO_DELAY_MS 30
+VISO_POS_M_NSE 0.5
+VISO_VEL_M_NSE 0.2
+VISO_YAW_M_NSE 0.3
+VISO_QUAL_MIN 0
+
+# Primary source: companion ExternalNav for horizontal position and velocity.
+# Barometer and compass remain authoritative for height and yaw in this first test.
+EK3_SRC1_POSXY 6
+EK3_SRC1_VELXY 6
+EK3_SRC1_POSZ 1
+EK3_SRC1_VELZ 0
+EK3_SRC1_YAW 1
+
+# Secondary source is an explicit GPS fallback, not fused concurrently.
+EK3_SRC2_POSXY 3
+EK3_SRC2_VELXY 3
+EK3_SRC2_POSZ 1
+EK3_SRC2_VELZ 0
+EK3_SRC2_YAW 1
+EK3_SRC_OPTIONS 0
