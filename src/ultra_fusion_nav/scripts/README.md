@@ -6,7 +6,7 @@ Scripts must derive the repository root from their own location, accept external
 
 Current entrypoints:
 
-- `run_lio_baseline_experiment.sh`: simple-map fixed-route LIO, trajectory, timing, and optional reliability capture.
+- `run_lio_baseline_experiment.sh`: simple-map fixed-route LIO, trajectory, timing, optional reliability capture, and (with `ENABLE_UNIFIED_BACKEND=1`) online weighted sliding-window fusion.
 - `run_reliability_validation.sh`: ROS 2 healthy/degraded endpoint and evidence-policy validation.
 - `run_reliability_sweeps.sh`: 11-level complete-evidence formula monotonicity sweep and plot.
 - `summarize_stage23_runs.py`: aggregate repeated LIO and reliability runs into one JSON acceptance record.

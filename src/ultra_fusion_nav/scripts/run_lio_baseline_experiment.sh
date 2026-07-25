@@ -7,6 +7,7 @@ RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S)}
 OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/logs/uf_stage2_${RUN_ID}}
 ANALYSIS_DURATION_S=${ANALYSIS_DURATION_S:-125}
 ENABLE_LIO_ADAPTER=${ENABLE_LIO_ADAPTER:-1}
+ENABLE_UNIFIED_BACKEND=${ENABLE_UNIFIED_BACKEND:-0}
 ENABLE_RELIABILITY=${ENABLE_RELIABILITY:-0}
 ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
 FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
@@ -98,8 +99,18 @@ if [[ "$ENABLE_LIO_ADAPTER" == "1" ]]; then
   estimate_topic=/lio/odom
 fi
 
+unified_backend_pid=""
+if [[ "$ENABLE_UNIFIED_BACKEND" == "1" ]]; then
+  setsid ros2 launch uf_backend_fusion online_backend.launch.py \
+    >"$OUTPUT_DIR/unified_backend.stdout.log" 2>"$OUTPUT_DIR/unified_backend.stderr.log" &
+  unified_backend_pid=$!
+  pids+=("$unified_backend_pid")
+  wait_for_message /fusion/unified/odom 45
+  estimate_topic=/fusion/unified/odom
+fi
+
 score_recorder_pid=""
-if [[ "$ENABLE_RELIABILITY" == "1" ]]; then
+if [[ "$ENABLE_RELIABILITY" == "1" && "$ENABLE_UNIFIED_BACKEND" != "1" ]]; then
   setsid ros2 launch uf_reliability reliability.launch.py \
     >"$OUTPUT_DIR/reliability.stdout.log" 2>"$OUTPUT_DIR/reliability.stderr.log" &
   pids+=("$!")

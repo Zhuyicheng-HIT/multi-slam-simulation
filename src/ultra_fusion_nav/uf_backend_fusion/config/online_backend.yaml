@@ -1,0 +1,25 @@
+unified_backend_fusion:
+  ros__parameters:
+    lio_topic: /lio/odom
+    gnss_topic: /sensors/gnss/fix
+    flow_topic: /sensors/optical_flow/rad
+    imu_topic: /sensors/imu
+    scheduler_topic: /reliability/scheduler_state
+    output_topic: /fusion/unified/odom
+    path_topic: /fusion/unified/path
+    diagnostic_topic: /fusion/unified/diagnostics
+    map_frame: map
+    body_frame: base_link
+    window_size: 8
+    gnss_max_age_s: 2.0
+    flow_max_age_s: 1.0
+    imu_buffer_s: 5.0
+    minimum_flow_quality: 20
+    minimum_flow_distance_m: 0.08
+    maximum_flow_distance_m: 12.0
+    gnss_default_variance_m2: 4.0
+    imu_factor_enabled: true
+    preserve_lio_anchor: true
+    imu_covariance_scale: 50.0
+    scheduler_timeout_s: 1.0
+    publish_path_length: 2000
