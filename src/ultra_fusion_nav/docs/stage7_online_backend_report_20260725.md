@@ -21,8 +21,8 @@ The simple-map experiment now has an online companion-computer path:
 The node does not subscribe to `/uav/local_odom`, MAVROS fused local position,
 or Gazebo truth. Truth is consumed only by the evaluator. LIO is the local pose
 anchor; GNSS and optical flow are optional factors, and the scheduler supplies
-their factor weight and covariance inflation. IMU uses the validated midpoint
-preintegration data layer through the current low-weight linear delta factor.
+their factor weight and covariance inflation. IMU uses midpoint preintegration
+with first-order bias-aware Δp/Δv/Δθ and bias random-walk rows.
 
 ## Online configuration
 
@@ -37,8 +37,8 @@ an explicit prior/relocalization path.
 
 All runs used the simple `simple_apm_rgbd_mid360` world, `FLOW_USE_PHYSICS=false`,
 D435 bridge disabled, and the existing rectangle flight. The v1-v4 runs were
-debugging iterations; v5 was the sparse-solver baseline and v6 is the retained
-bias-aware local-factor configuration.
+debugging iterations; v5 was the sparse-solver baseline, v6 used finite-difference
+bias probes, and v7 is the retained analytic-recursion configuration.
 
 | Run | Unified samples | Unified ATE RMSE | Unified yaw RPE | RTF median | Result |
 |---|---:|---:|---:|---:|---|
@@ -48,14 +48,15 @@ bias-aware local-factor configuration.
 | v4, anchor preserved | 406 | 0.071 m | 0.313 deg | 0.791 | retained for next iteration |
 | v5, sparse solve + anchor | 451 | 0.0479 m | 0.364 deg | 0.999 | retained |
 | v6, bias-aware local IMU | 408 | 0.0528 m | 0.360 deg | 0.892 | retained |
+| v7, analytic bias recursion | 456 | 0.0582 m | 0.363 deg | 0.999 | retained |
 
-For v6, `/fusion/unified/odom` reached 6.89 Hz through the ExternalNav gate,
-with source-to-arrival rate ratio `0.9997`. The same run's raw FAST-LIO
-evaluator reported position RMSE `0.0352 m` and yaw RMSE `0.1167 deg`; unified
-position ATE is therefore not yet an accuracy improvement claim. The online
-chain remained stable after adding Δp/Δv/Δθ, bias Jacobians, and bias random
-walk rows. The finite-difference Jacobian probe costs runtime, but RTF remains
-above the `0.8` simulation gate.
+For v7, `/fusion/unified/odom` reached 7.75 Hz through the ExternalNav gate,
+with source-to-arrival rate ratio `1.0001`. The same run's raw FAST-LIO
+evaluator reported position RMSE `0.0354 m` and yaw RMSE `0.1079 deg`; unified
+position ATE is therefore not yet an accuracy improvement claim. Replacing
+the six extra finite-difference integrations with SO(3) analytic recursion
+restored the RTF median from `0.892` to `0.999` while preserving the bias-aware
+factor contract.
 
 ## Reproduction
 
@@ -75,8 +76,8 @@ The experiment writes `trajectory_metrics.json`, `report.json`,
 ## Next gate
 
 The dense Python normal-equation solve has been replaced by an optional SciPy
-sparse solve with a dense fallback. The local factor now consumes bias-aware
-first-order Jacobians, but the remaining gate is analytic manifold SE(3)
-relinearization and proper bias covariance propagation. Only after that should GNSS outage, optical-flow low
-texture, LiDAR degeneration, and dynamic-map protection be used for a final
-fixed-vs-dynamic accuracy claim.
+sparse solve with a dense fallback. The local factor now consumes analytic
+first-order bias Jacobians, but the remaining gate is manifold SE(3)
+relinearization and proper bias covariance propagation. Only after that should
+GNSS outage, optical-flow low texture, LiDAR degeneration, and dynamic-map
+protection be used for a final fixed-vs-dynamic accuracy claim.

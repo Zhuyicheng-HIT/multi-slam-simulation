@@ -59,6 +59,18 @@ class ImuPreintegrationTest(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(position_jacobian)))
         self.assertTrue(np.all(np.isfinite(velocity_jacobian)))
 
+    def test_gyro_bias_jacobian_follows_so3_increment(self):
+        result = preintegrate(
+            samples_for(1.0, (0.0, 0.0, 9.81), (0.0, 0.0, math.pi / 2.0)),
+            0.0, 1.0,
+        )
+        rotation_jacobian = np.asarray(
+            result.jacobian_delta_rotation_gyro_bias
+        ).reshape(3, 3)
+        self.assertAlmostEqual(rotation_jacobian[2, 2], -1.0, places=3)
+        self.assertLess(rotation_jacobian[0, 0], -0.6)
+        self.assertLess(rotation_jacobian[1, 1], -0.6)
+
     def test_uncovered_interval_and_long_gap_are_reported(self):
         uncovered = preintegrate(samples_for(1.0, (0.0, 0.0, 9.81)), 1.1, 1.5)
         self.assertFalse(uncovered.valid)
