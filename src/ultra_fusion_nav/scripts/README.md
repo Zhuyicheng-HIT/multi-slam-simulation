@@ -15,3 +15,7 @@ Current entrypoints:
 - `run_gnss_reanchor_validation.sh`: outage, jump, and smooth recovery timeline validation.
 - `ros2 run uf_backend_fusion run_backend_ablation`: deterministic GNSS-jump
   factor-weight ablation for the first offline window prototype.
+- `ros2 run uf_backend_fusion extract_backend_factors`: convert selected ROS 2
+  bag topics into timestamp-aligned backend factors.
+- `ros2 run uf_backend_fusion replay_backend_factors`: replay fixed and
+  scheduler-weighted factors through the bounded sliding-window prototype.

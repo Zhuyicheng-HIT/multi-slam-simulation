@@ -19,6 +19,8 @@ setup(
     entry_points={
         "console_scripts": [
             "run_backend_ablation = uf_backend_fusion.ablation:main",
+            "extract_backend_factors = uf_backend_fusion.bag_cli:extract_main",
+            "replay_backend_factors = uf_backend_fusion.bag_cli:replay_main",
         ],
     },
 )
