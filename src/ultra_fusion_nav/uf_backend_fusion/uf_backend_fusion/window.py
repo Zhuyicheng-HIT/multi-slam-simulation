@@ -7,8 +7,20 @@ full SE(3), IMU preintegration, and marginalization implementation is introduced
 
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
+import warnings
 
 import numpy as np
+
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        from scipy.sparse import csc_matrix
+        from scipy.sparse.linalg import spsolve
+    SPARSE_SOLVER_AVAILABLE = True
+except Exception:  # pragma: no cover - exercised on minimal ROS images
+    csc_matrix = None
+    spsolve = None
+    SPARSE_SOLVER_AVAILABLE = False
 
 
 STATE_SIZE = 15
@@ -74,13 +86,23 @@ class SlidingWindowBackend:
     weighting contract without silently feeding one modality into another.
     """
 
-    def __init__(self, max_states: int = 10, damping: float = 1.0e-8):
+    def __init__(self, max_states: int = 10, damping: float = 1.0e-8,
+                 solver: str = "auto"):
         if max_states < 1:
             raise ValueError("max_states must be positive")
         if damping <= 0.0:
             raise ValueError("damping must be positive")
         self.max_states = int(max_states)
         self.damping = float(damping)
+        requested_solver = str(solver).lower()
+        if requested_solver not in {"auto", "dense", "sparse"}:
+            raise ValueError("solver must be auto, dense, or sparse")
+        if requested_solver == "sparse" and not SPARSE_SOLVER_AVAILABLE:
+            raise RuntimeError("sparse solver requested but scipy is unavailable")
+        self.solver = (
+            "sparse" if requested_solver == "auto" and SPARSE_SOLVER_AVAILABLE
+            else ("dense" if requested_solver == "auto" else requested_solver)
+        )
         self._states: list[np.ndarray] = []
         self._factors: list[dict[str, object]] = []
         self._last_cost = 0.0
@@ -239,7 +261,14 @@ class SlidingWindowBackend:
             gradient += matrix.T @ (information * measurement)
             residual = matrix @ np.concatenate(self._states) - measurement
             cost += float(np.sum(information * residual * residual))
-        solution = np.linalg.solve(hessian, gradient)
+        if self.solver == "sparse":
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", Warning)
+                solution = np.asarray(
+                    spsolve(csc_matrix(hessian), gradient), dtype=float
+                )
+        else:
+            solution = np.linalg.solve(hessian, gradient)
         self._states = [
             solution[index * STATE_SIZE:(index + 1) * STATE_SIZE].copy()
             for index in range(len(self._states))

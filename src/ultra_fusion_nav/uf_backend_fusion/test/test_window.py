@@ -3,7 +3,11 @@ import unittest
 import numpy as np
 
 from uf_backend_fusion.ablation import run_ablation
-from uf_backend_fusion.window import STATE_SIZE, SlidingWindowBackend
+from uf_backend_fusion.window import (
+    SPARSE_SOLVER_AVAILABLE,
+    STATE_SIZE,
+    SlidingWindowBackend,
+)
 
 
 class SlidingWindowBackendTest(unittest.TestCase):
@@ -44,6 +48,22 @@ class SlidingWindowBackendTest(unittest.TestCase):
         for _ in range(4):
             backend.add_state()
         self.assertEqual(backend.state_count, 2)
+
+    @unittest.skipUnless(SPARSE_SOLVER_AVAILABLE, "scipy sparse solver unavailable")
+    def test_sparse_and_dense_solvers_agree_when_available(self):
+        dense = SlidingWindowBackend(max_states=3, solver="dense")
+        sparse = SlidingWindowBackend(max_states=3, solver="sparse")
+        for backend in (dense, sparse):
+            backend.add_state()
+            backend.add_state()
+            backend.add_prior(0, np.zeros(STATE_SIZE), covariance=1.0e-4)
+            backend.add_lidar_pose(
+                1, [0.4, -0.2, 0.1], [0.0, 0.0, 0.2],
+                covariance=[0.01] * 3 + [0.02] * 3,
+            )
+        np.testing.assert_allclose(dense.optimize()[1], sparse.optimize()[1], atol=1.0e-8)
+        self.assertEqual(dense.solver, "dense")
+        self.assertEqual(sparse.solver, "sparse")
 
 
 if __name__ == "__main__":

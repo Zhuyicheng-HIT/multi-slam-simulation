@@ -36,8 +36,8 @@ an explicit prior/relocalization path.
 ## Simple-map experiments
 
 All runs used the simple `simple_apm_rgbd_mid360` world, `FLOW_USE_PHYSICS=false`,
-D435 bridge disabled, and the existing rectangle flight. The v1/v2/v3 runs
-were debugging iterations; v4 is the retained online configuration.
+D435 bridge disabled, and the existing rectangle flight. The v1-v4 runs were
+debugging iterations; v5 is the retained online configuration.
 
 | Run | Unified samples | Unified ATE RMSE | Unified yaw RPE | RTF median | Result |
 |---|---:|---:|---:|---:|---|
@@ -45,14 +45,13 @@ were debugging iterations; v4 is the retained online configuration.
 | v2, 8-state + yaw unwrap | 366 | 0.059 m | 31.4 deg | 0.636 | rejected: intermittent yaw reset |
 | v3, anchor diagnosis | 404 | 0.056 m | 23.6 deg | 0.819 | rejected: occasional LIO factor disable |
 | v4, anchor preserved | 406 | 0.071 m | 0.313 deg | 0.791 | retained for next iteration |
+| v5, sparse solve + anchor | 451 | 0.0479 m | 0.364 deg | 0.999 | retained |
 
-For v4, `/fusion/unified/odom` reached 6.14 Hz through the ExternalNav gate.
-The same run's raw FAST-LIO evaluator reported position RMSE `0.0438 m` and
-yaw RMSE `0.0875 deg`; unified position ATE is therefore not yet an accuracy
+For v5, `/fusion/unified/odom` reached 7.72 Hz through the ExternalNav gate.
+The same run's raw FAST-LIO evaluator reported position RMSE `0.0410 m` and
+yaw RMSE `0.1087 deg`; unified position ATE is therefore not yet an accuracy
 improvement claim. The online chain is functionally closed and geometrically
-stable, but the linear factor model still costs about 2.7 cm of position error.
-The RTF median is just below the 0.8 target, so the simulation remains near its
-CPU budget.
+stable, and the sparse solver returned the simulation RTF median to `0.999`.
 
 ## Reproduction
 
@@ -71,9 +70,9 @@ The experiment writes `trajectory_metrics.json`, `report.json`,
 
 ## Next gate
 
-Replace the dense Python normal-equation solve with a sparse/local solve, then
-replace the approximate IMU delta with bias-aware SE(3) preintegration and
+The dense Python normal-equation solve has been replaced by an optional SciPy
+sparse solve with a dense fallback. The next gate is to replace the approximate
+IMU delta with bias-aware SE(3) preintegration and
 rotation Jacobians. Only after that should GNSS outage, optical-flow low
 texture, LiDAR degeneration, and dynamic-map protection be used for a final
 fixed-vs-dynamic accuracy claim.
-
