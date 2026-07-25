@@ -143,8 +143,12 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
     printf 'fault_trigger_start modality=%s type=%s delay_s=%s duration_s=%s\n' \
       "$FAULT_MODALITY" "$FAULT_TYPE" "$FAULT_TRIGGER_DELAY_S" "$FAULT_DURATION_S"
     sleep "$FAULT_TRIGGER_DELAY_S"
-    timeout 60s ros2 param set "$fault_node" magnitude "$fault_magnitude_value"
-    timeout 60s ros2 param set "$fault_node" secondary_magnitude "$fault_secondary_value"
+    if awk "BEGIN {exit !($FAULT_MAGNITUDE != 0.0)}"; then
+      timeout 60s ros2 param set "$fault_node" magnitude "$fault_magnitude_value"
+    fi
+    if awk "BEGIN {exit !($FAULT_SECONDARY_MAGNITUDE != 0.0)}"; then
+      timeout 60s ros2 param set "$fault_node" secondary_magnitude "$fault_secondary_value"
+    fi
     timeout 60s ros2 param set "$fault_node" fault_duration_s 0.0
     timeout 60s ros2 param set "$fault_node" fault_type "$FAULT_TYPE"
     printf 'fault_trigger_active node=%s\n' "$fault_node"

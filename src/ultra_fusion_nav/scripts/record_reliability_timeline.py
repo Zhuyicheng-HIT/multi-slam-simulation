@@ -96,6 +96,8 @@ class ReliabilityTimelineRecorder(Node):
                 "message": str(status.message),
                 "gnss_factors": int(values.get("gnss_factors", 0)),
                 "gnss_jump_rejected": int(values.get("gnss_jump_rejected", 0)),
+                "flow_factors": int(values.get("flow_factors", 0)),
+                "flow_disabled_quality": int(values.get("flow_disabled_quality", 0)),
                 "published": int(values.get("published", 0)),
                 "optimization_errors": int(values.get("optimization_errors", 0)),
             })
@@ -126,6 +128,9 @@ def summarize(events):
         ),
         "backend_optimization_errors_max": max(
             (event["optimization_errors"] for event in backend), default=0
+        ),
+        "backend_flow_disabled_quality_max": max(
+            (event["flow_disabled_quality"] for event in backend), default=0
         ),
     }
 

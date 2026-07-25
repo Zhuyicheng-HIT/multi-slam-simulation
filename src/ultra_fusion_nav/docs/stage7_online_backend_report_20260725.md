@@ -52,9 +52,11 @@ bias probes, and v7 is the retained analytic-recursion configuration.
 
 The clean GNSS-jump fault run is recorded separately from the nominal table:
 
-| Run | Fault | Active samples | GNSS factors rejected | Unified ATE RMSE | Max error | Result |
+| Run | Fault | Active samples | Protection evidence | Unified ATE RMSE | Max error | Result |
 |---|---|---:|---:|---:|---:|---|
 | `uf_stage2_gnss_jump_v7` | 50 m GNSS jump, about 14 s | 105 | 105 | 0.0511 m | 0.337 m | passed |
+| `uf_stage2_gnss_outage_v2` | GNSS outage, about 13 s | 98 | GNSS disabled for 121 scheduler samples | 0.0430 m | 0.133 m | passed |
+| `uf_stage2_flow_low_quality_v1` | optical-flow quality 0, about 13 s | 240 | 149 quality-disabled flow factors | 0.0609 m | 0.275 m | passed |
 
 The fault timeline also records the scheduler and backend diagnostics. The
 backend hard gate rejects every GNSS factor whose position innovation exceeds
