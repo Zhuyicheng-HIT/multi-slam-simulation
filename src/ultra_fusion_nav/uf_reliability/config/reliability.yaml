@@ -6,6 +6,12 @@ reliability_monitor:
     lidar.tau_normal: 0.02
     lidar.weights: [0.35, 0.20, 0.20, 0.25]
     lidar.minimum_matches: 50
+    lidar.extension.tau_residual_m: 0.15
+    lidar.extension.tau_dynamic_ratio: 0.20
+    lidar.extension.tau_uncertain_ratio: 0.25
+    lidar.extension.reference: 0.35
+    lidar.extension.paper_weight: 0.70
+    lidar.extension.weights: [0.20, 0.15, 0.20, 0.10, 0.15, 0.20]
     gnss.tau_covariance: 25.0
     gnss.tau_innovation: 5.0
     gnss.weights: [0.25, 0.20, 0.55]

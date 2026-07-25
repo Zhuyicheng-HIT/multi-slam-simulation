@@ -179,6 +179,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=float, default=125.0)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--expect-fault-modality", default="")
+    parser.add_argument("--expect-fault-type", default="")
     args = parser.parse_args()
     rclpy.init()
     node = ReliabilityTimelineRecorder()
@@ -190,13 +192,27 @@ def main():
         "summary": summarize(node.events),
         "events": node.events,
     }
+    expected_faults = [
+        event for event in node.events
+        if event["kind"] == "fault"
+        and event["active"]
+        and event["modality"] == args.expect_fault_modality
+        and event["fault_type"] == args.expect_fault_type
+    ]
+    if args.expect_fault_modality or args.expect_fault_type:
+        payload["summary"]["expected_fault_active_samples"] = len(expected_faults)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(payload["summary"], sort_keys=True))
     node.destroy_node()
     rclpy.shutdown()
-    return 0 if payload["summary"]["scheduler_samples"] > 0 else 1
+    scheduler_ok = payload["summary"]["scheduler_samples"] > 0
+    expected_fault_ok = (
+        not args.expect_fault_modality
+        and not args.expect_fault_type
+    ) or bool(expected_faults)
+    return 0 if scheduler_ok and expected_fault_ok else 1
 
 
 if __name__ == "__main__":

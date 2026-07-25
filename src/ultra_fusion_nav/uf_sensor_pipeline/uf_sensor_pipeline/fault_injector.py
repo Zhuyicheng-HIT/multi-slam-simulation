@@ -12,6 +12,7 @@ from uf_interfaces.msg import FaultState
 from .fault_models import (
     add_depth_holes,
     add_gnss_jump,
+    add_moving_lidar_cluster,
     drop_pointcloud,
     ensure_monotonic_stamp,
     flatten_image,
@@ -61,6 +62,8 @@ class FaultInjector(Node):
         self.affected_messages = 0
         self.last_output_stamp_ns = 0
         self.timestamp_repairs = 0
+        self.active_fault_type = "none"
+        self.active_fault_start_stamp_s = None
         self.get_logger().info(
             f"fault injector modality={self.modality} "
             f"input={self.get_parameter('input_topic').value} "
@@ -94,12 +97,16 @@ class FaultInjector(Node):
         state.timestamp_repairs = self.timestamp_repairs
         self.state_pub.publish(state)
 
-    def _apply(self, msg, fault_type, magnitude, secondary):
+    def _apply(self, msg, fault_type, magnitude, secondary, fault_elapsed_s=0.0):
         output = copy.deepcopy(msg)
         if fault_type == "time_offset":
             shift_stamp(output.header.stamp, magnitude)
         elif self.modality == "lidar" and fault_type == "point_dropout":
             output = drop_pointcloud(msg, magnitude, self.rng)
+        elif self.modality == "lidar" and fault_type == "dynamic_cluster":
+            output = add_moving_lidar_cluster(
+                msg, magnitude, fault_elapsed_s, secondary if secondary else 0.6
+            )
         elif self.modality == "imu" and fault_type == "bias":
             output.angular_velocity.z += magnitude
             output.linear_acceleration.x += secondary
@@ -126,12 +133,26 @@ class FaultInjector(Node):
     def _callback(self, msg):
         fault_type, magnitude, secondary = self._settings()
         active = self._active(fault_type)
+        stamp_s = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1.0e-9
+        if active and fault_type != self.active_fault_type:
+            self.active_fault_type = fault_type
+            self.active_fault_start_stamp_s = stamp_s
+        elif not active:
+            self.active_fault_type = "none"
+            self.active_fault_start_stamp_s = None
+        fault_elapsed_s = (
+            0.0 if self.active_fault_start_stamp_s is None
+            else max(0.0, stamp_s - self.active_fault_start_stamp_s)
+        )
         if active:
             self.affected_messages += 1
         if active and fault_type == "outage":
             self._state(msg, fault_type, magnitude, active)
             return
-        output = self._apply(msg, fault_type, magnitude, secondary) if active else msg
+        output = (
+            self._apply(msg, fault_type, magnitude, secondary, fault_elapsed_s)
+            if active else msg
+        )
         self.last_output_stamp_ns, repaired = ensure_monotonic_stamp(
             output.header.stamp, self.last_output_stamp_ns
         )

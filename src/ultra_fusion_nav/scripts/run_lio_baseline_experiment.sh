@@ -22,6 +22,13 @@ FAULT_TRIGGER_DELAY_S=${FAULT_TRIGGER_DELAY_S:-0}
 FAULT_DURATION_S=${FAULT_DURATION_S:-0}
 FAULT_MAGNITUDE=${FAULT_MAGNITUDE:-0}
 FAULT_SECONDARY_MAGNITUDE=${FAULT_SECONDARY_MAGNITUDE:-0}
+FAULT_DELIVERY_MODE=${FAULT_DELIVERY_MODE:-runtime}
+
+if [[ "$FAULT_DELIVERY_MODE" != "runtime" && "$FAULT_DELIVERY_MODE" != "startup" ]]; then
+  printf 'FAULT_DELIVERY_MODE must be runtime or startup, got %s\n' \
+    "$FAULT_DELIVERY_MODE" >&2
+  exit 2
+fi
 
 mkdir -p "$OUTPUT_DIR"
 set +u
@@ -74,7 +81,19 @@ wait_for_message /mavros/state 90
 wait_for_message /mavros/imu/data_raw 90
 wait_for_message /sim/mid360/points_raw 90
 
-setsid ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
+fault_launch_env=()
+if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
+      && "$FAULT_DELIVERY_MODE" == "startup" ]]; then
+  fault_launch_env=(
+    "UF_FAULT_MODALITY=$FAULT_MODALITY"
+    "UF_FAULT_TYPE=$FAULT_TYPE"
+    "UF_FAULT_START_S=$FAULT_TRIGGER_DELAY_S"
+    "UF_FAULT_DURATION_S=$FAULT_DURATION_S"
+    "UF_FAULT_MAGNITUDE=$FAULT_MAGNITUDE"
+    "UF_FAULT_SECONDARY_MAGNITUDE=$FAULT_SECONDARY_MAGNITUDE"
+  )
+fi
+setsid env "${fault_launch_env[@]}" ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
   >"$OUTPUT_DIR/sensor_pipeline.stdout.log" 2>"$OUTPUT_DIR/sensor_pipeline.stderr.log" &
 pids+=("$!")
 if [[ "$FASTLIO_INPUT_MODE" == "filtered_pointcloud" ]]; then
@@ -122,9 +141,17 @@ fi
 
 timeline_pid=""
 if [[ "$ENABLE_RELIABILITY_TIMELINE" == "1" ]]; then
-  python3 "$SCRIPT_DIR/record_reliability_timeline.py" \
-    --duration "$ANALYSIS_DURATION_S" \
-    --output "$OUTPUT_DIR/reliability_timeline.json" \
+  timeline_args=(
+    --duration "$ANALYSIS_DURATION_S"
+    --output "$OUTPUT_DIR/reliability_timeline.json"
+  )
+  if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
+    timeline_args+=(
+      --expect-fault-modality "$FAULT_MODALITY"
+      --expect-fault-type "$FAULT_TYPE"
+    )
+  fi
+  python3 "$SCRIPT_DIR/record_reliability_timeline.py" "${timeline_args[@]}" \
     >"$OUTPUT_DIR/reliability_timeline.stdout.log" \
     2>"$OUTPUT_DIR/reliability_timeline.stderr.log" &
   timeline_pid=$!
@@ -132,7 +159,8 @@ if [[ "$ENABLE_RELIABILITY_TIMELINE" == "1" ]]; then
 fi
 
 fault_trigger_pid=""
-if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
+if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
+      && "$FAULT_DELIVERY_MODE" == "runtime" ]]; then
   case "$FAULT_MODALITY" in
     lidar|imu|gnss|optical_flow|depth|color) ;;
     *)
@@ -163,6 +191,10 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
   ) >"$OUTPUT_DIR/fault_trigger.log" 2>&1 &
   fault_trigger_pid=$!
   pids+=("$fault_trigger_pid")
+elif [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
+  printf 'fault_trigger_scheduled modality=%s type=%s start_from_node_s=%s duration_s=%s\n' \
+    "$FAULT_MODALITY" "$FAULT_TYPE" "$FAULT_TRIGGER_DELAY_S" "$FAULT_DURATION_S" \
+    >"$OUTPUT_DIR/fault_trigger.log"
 fi
 
 score_recorder_pid=""

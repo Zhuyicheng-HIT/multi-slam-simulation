@@ -15,6 +15,7 @@ from sensor_msgs.msg import Image, Imu, NavSatFix
 from uf_interfaces.msg import GnssIntegrity, LioDiagnostics, ReliabilityScore
 
 from .scoring import (
+    augment_lidar_score,
     gnss_integrity_quality,
     gnss_score,
     imu_score,
@@ -121,6 +122,12 @@ class ReliabilityMonitor(Node):
             "lidar.tau_normal": 0.02,
             "lidar.weights": [0.35, 0.20, 0.20, 0.25],
             "lidar.minimum_matches": 50,
+            "lidar.extension.tau_residual_m": 0.15,
+            "lidar.extension.tau_dynamic_ratio": 0.20,
+            "lidar.extension.tau_uncertain_ratio": 0.25,
+            "lidar.extension.reference": 0.35,
+            "lidar.extension.paper_weight": 0.70,
+            "lidar.extension.weights": [0.20, 0.15, 0.20, 0.10, 0.15, 0.20],
             "gnss.tau_covariance": 25.0,
             "gnss.tau_innovation": 5.0,
             "gnss.weights": [0.25, 0.20, 0.55],
@@ -211,7 +218,7 @@ class ReliabilityMonitor(Node):
         self.score_publishers[modality].publish(msg)
 
     def _lidar(self, msg):
-        result = lidar_score(
+        paper_result = lidar_score(
             msg.hessian_eigenvalues, msg.normal_covariance_eigenvalues,
             msg.axial_penalty, msg.matched_points,
             self.get_parameter("lidar.match_reference").value,
@@ -220,15 +227,22 @@ class ReliabilityMonitor(Node):
             self.get_parameter("lidar.tau_normal").value,
             tuple(self.get_parameter("lidar.weights").value),
         )
-        result[1].update({
-            "residual_mean_m_extension": float(msg.residual_mean_m),
-            "residual_p95_m_extension": float(msg.residual_p95_m),
-            "spatial_coverage_extension": float(msg.spatial_coverage),
-            "dynamic_ratio_extension": float(msg.dynamic_ratio),
-            "uncertain_ratio_extension": float(msg.uncertain_ratio),
-            "feature_repeatability_extension": float(msg.feature_repeatability),
-            "map_quality_extension": float(msg.map_quality),
-        })
+        result = augment_lidar_score(
+            paper_result,
+            msg.residual_p95_m,
+            msg.spatial_coverage,
+            msg.dynamic_ratio,
+            msg.uncertain_ratio,
+            msg.feature_repeatability,
+            msg.map_quality,
+            self.get_parameter("lidar.extension.tau_residual_m").value,
+            self.get_parameter("lidar.extension.tau_dynamic_ratio").value,
+            self.get_parameter("lidar.extension.tau_uncertain_ratio").value,
+            self.get_parameter("lidar.extension.reference").value,
+            self.get_parameter("lidar.extension.paper_weight").value,
+            tuple(self.get_parameter("lidar.extension.weights").value),
+        )
+        result[1]["residual_mean_m_extension"] = float(msg.residual_mean_m)
         if msg.approximate:
             result[2].append("approximate_external_geometry")
         self._publish(

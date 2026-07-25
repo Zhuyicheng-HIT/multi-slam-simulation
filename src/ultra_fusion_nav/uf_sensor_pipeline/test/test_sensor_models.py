@@ -8,6 +8,7 @@ from sensor_msgs.msg import Image, NavSatFix, PointCloud2, PointField
 from uf_sensor_pipeline.fault_models import (
     add_depth_holes,
     add_gnss_jump,
+    add_moving_lidar_cluster,
     ensure_monotonic_stamp,
     shift_stamp,
 )
@@ -78,6 +79,29 @@ class SensorModelsTest(unittest.TestCase):
 
         self.assertEqual(first.data, second.data)
         self.assertGreater(np.count_nonzero(np.frombuffer(first.data, dtype=np.uint16) == 0), 30)
+
+    def test_moving_lidar_cluster_preserves_input_and_uses_elapsed_time(self):
+        msg = cloud([(1.0, 0.0, 0.0, 20.0), (2.0, 0.0, 0.0, 30.0)])
+
+        first = add_moving_lidar_cluster(msg, 8, elapsed_s=0.0, speed_mps=1.0)
+        second = add_moving_lidar_cluster(msg, 8, elapsed_s=1.0, speed_mps=1.0)
+
+        self.assertEqual(first.width, 10)
+        self.assertEqual(first.data[:len(msg.data)], msg.data)
+        first_points = np.asarray([
+            struct.unpack_from("<fff", first.data, index * first.point_step)
+            for index in range(msg.width, first.width)
+        ])
+        second_points = np.asarray([
+            struct.unpack_from("<fff", second.data, index * second.point_step)
+            for index in range(msg.width, second.width)
+        ])
+        self.assertTrue(np.all(np.isfinite(first_points)))
+        self.assertAlmostEqual(
+            float(np.mean(second_points[:, 1]) - np.mean(first_points[:, 1])),
+            1.0,
+            places=5,
+        )
 
 
 if __name__ == "__main__":

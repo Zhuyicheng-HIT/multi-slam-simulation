@@ -1,7 +1,15 @@
 import copy
 import math
+import struct
 
 import numpy as np
+from sensor_msgs.msg import PointField
+
+
+_POINT_FIELD_FORMATS = {
+    PointField.FLOAT32: "f",
+    PointField.FLOAT64: "d",
+}
 
 
 def shift_stamp(stamp, offset_s):
@@ -33,6 +41,59 @@ def drop_pointcloud(msg, fraction, rng):
     output.width = len(chunks)
     output.row_step = int(output.point_step) * int(output.width)
     output.data = b"".join(chunks)
+    output.is_dense = False
+    return output
+
+
+def add_moving_lidar_cluster(msg, point_count, elapsed_s, speed_mps=0.6):
+    """Append a timestamp-driven moving cuboid while preserving point records."""
+    output = copy.deepcopy(msg)
+    requested = max(0, int(round(point_count)))
+    point_step = int(msg.point_step)
+    source_count = min(
+        int(msg.width) * int(msg.height),
+        len(msg.data) // max(1, point_step),
+    )
+    if requested == 0 or source_count == 0 or point_step <= 0:
+        return output
+
+    fields = {field.name: field for field in msg.fields}
+    if not {"x", "y", "z"}.issubset(fields):
+        raise ValueError("moving LiDAR cluster requires x/y/z fields")
+    for name in ("x", "y", "z"):
+        field = fields[name]
+        if field.datatype not in _POINT_FIELD_FORMATS or int(field.count) != 1:
+            raise ValueError(f"moving LiDAR cluster requires scalar floating-point {name}")
+
+    prefix = ">" if msg.is_bigendian else "<"
+    template = msg.data[:point_step]
+    side = max(2, int(math.ceil(requested ** (1.0 / 3.0))))
+    center_x = 5.0
+    center_y = -2.0 + (float(speed_mps) * max(0.0, float(elapsed_s))) % 4.0
+    center_z = -0.3
+    injected = []
+    for index in range(requested):
+        ix = index % side
+        iy = (index // side) % side
+        iz = (index // (side * side)) % side
+        x = center_x + 0.8 * (ix / (side - 1) - 0.5)
+        y = center_y + 0.8 * (iy / (side - 1) - 0.5)
+        z = center_z + 1.4 * (iz / (side - 1) - 0.5)
+        record = bytearray(template)
+        for name, value in (("x", x), ("y", y), ("z", z)):
+            field = fields[name]
+            struct.pack_into(
+                prefix + _POINT_FIELD_FORMATS[field.datatype],
+                record,
+                int(field.offset),
+                float(value),
+            )
+        injected.append(bytes(record))
+
+    output.height = 1
+    output.width = source_count + requested
+    output.row_step = point_step * int(output.width)
+    output.data = bytes(msg.data[:source_count * point_step]) + b"".join(injected)
     output.is_dense = False
     return output
 

@@ -1,7 +1,7 @@
 import unittest
 
 from uf_reliability.scoring import (
-    gnss_integrity_quality, gnss_score, imu_score, lidar_score,
+    augment_lidar_score, gnss_integrity_quality, gnss_score, imu_score, lidar_score,
     optical_flow_displacement_frd, optical_flow_score, vision_score,
 )
 
@@ -12,6 +12,24 @@ class ScoringTest(unittest.TestCase):
         bad = lidar_score([1e-8, 1e-8, 1e-6, 10, 20, 30], [0.0, 0.0, 1.0], 0.8, 80)[0]
         self.assertLess(good, 0.3)
         self.assertGreater(bad, 0.8)
+
+    def test_lidar_map_protection_extensions_raise_dynamic_score(self):
+        paper_result = lidar_score(
+            [10, 20, 30, 40, 50, 60], [0.1, 0.2, 0.7], 0.0, 800
+        )
+        clean = augment_lidar_score(
+            paper_result, 0.03, 1.0, 0.0, 0.02, 0.95, 0.90,
+        )
+        dynamic = augment_lidar_score(
+            paper_result, 0.10, 0.8, 0.20, 0.20, 0.55, 0.35,
+        )
+
+        self.assertGreater(dynamic[0], clean[0] + 0.20)
+        self.assertEqual(
+            clean[1]["paper_score_eq19"], dynamic[1]["paper_score_eq19"]
+        )
+        self.assertGreater(dynamic[1]["extension_score_normalized"], 0.9)
+        self.assertIn("map_protection_degraded_extension", dynamic[2])
 
     def test_gnss_jump_and_outage_increase(self):
         good = gnss_score(1.0, 0.5, 0.2)[0]

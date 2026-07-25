@@ -156,6 +156,92 @@ def lidar_score(hessian_eigenvalues, normal_covariance_eigenvalues, axial_penalt
     return finalize_score(score, coverage, evidence, reasons)
 
 
+def augment_lidar_score(
+        paper_result, residual_p95_m, spatial_coverage, dynamic_ratio,
+        uncertain_ratio, feature_repeatability, map_quality,
+        tau_residual_m=0.15, tau_dynamic_ratio=0.20,
+        tau_uncertain_ratio=0.25, extension_reference=0.35,
+        paper_weight=0.70,
+        extension_weights=(0.20, 0.15, 0.20, 0.10, 0.15, 0.20)):
+    """Fuse Eq. 19 with explicit project-owned map-protection evidence."""
+    paper_score, paper_evidence, paper_reasons = paper_result
+
+    def finite_term(value, transform):
+        if value is None or not math.isfinite(float(value)):
+            return None
+        return clamp(transform(float(value)))
+
+    residual_term = finite_term(
+        residual_p95_m,
+        lambda value: value / max(1.0e-9, float(tau_residual_m)),
+    )
+    coverage_term = finite_term(spatial_coverage, lambda value: 1.0 - value)
+    dynamic_term = finite_term(
+        dynamic_ratio,
+        lambda value: value / max(1.0e-9, float(tau_dynamic_ratio)),
+    )
+    uncertain_term = finite_term(
+        uncertain_ratio,
+        lambda value: value / max(1.0e-9, float(tau_uncertain_ratio)),
+    )
+    repeatability_term = finite_term(
+        feature_repeatability, lambda value: 1.0 - value,
+    )
+    map_quality_term = finite_term(map_quality, lambda value: 1.0 - value)
+    extension_raw, extension_coverage = weighted_score([
+        (residual_term, extension_weights[0]),
+        (coverage_term, extension_weights[1]),
+        (dynamic_term, extension_weights[2]),
+        (uncertain_term, extension_weights[3]),
+        (repeatability_term, extension_weights[4]),
+        (map_quality_term, extension_weights[5]),
+    ])
+    extension_score = clamp(
+        extension_raw / max(1.0e-9, float(extension_reference))
+    )
+    paper_weight = clamp(paper_weight)
+    score = clamp(
+        paper_weight * float(paper_score)
+        + (1.0 - paper_weight) * extension_score
+    )
+    evidence = dict(paper_evidence)
+    evidence.update({
+        "paper_score_eq19": float(paper_score),
+        "residual_p95_m_extension": float(residual_p95_m),
+        "residual_term_extension": -1.0 if residual_term is None else residual_term,
+        "spatial_coverage_extension": float(spatial_coverage),
+        "spatial_coverage_term_extension": (
+            -1.0 if coverage_term is None else coverage_term
+        ),
+        "dynamic_ratio_extension": float(dynamic_ratio),
+        "dynamic_ratio_term_extension": -1.0 if dynamic_term is None else dynamic_term,
+        "uncertain_ratio_extension": float(uncertain_ratio),
+        "uncertain_ratio_term_extension": (
+            -1.0 if uncertain_term is None else uncertain_term
+        ),
+        "feature_repeatability_extension": float(feature_repeatability),
+        "repeatability_term_extension": (
+            -1.0 if repeatability_term is None else repeatability_term
+        ),
+        "map_quality_extension": float(map_quality),
+        "map_quality_term_extension": (
+            -1.0 if map_quality_term is None else map_quality_term
+        ),
+        "extension_composite_raw": extension_raw,
+        "extension_reference": float(extension_reference),
+        "extension_score_normalized": extension_score,
+        "extension_evidence_weight_coverage": extension_coverage,
+        "paper_weight_final_score": paper_weight,
+        "final_score_eq19_with_extensions": score,
+    })
+    reasons = list(paper_reasons)
+    if extension_score > 0.5:
+        reasons.append("map_protection_degraded_extension")
+    if extension_coverage < 1.0 - 1.0e-9:
+        reasons.append("incomplete_map_protection_evidence")
+    return score, evidence, reasons
+
+
 def gnss_score(q_fix, covariance_trace_m2, innovation_mahalanobis,
                tau_covariance=25.0, tau_innovation=5.0,
                weights=(0.25, 0.20, 0.55), hard_jump=False):

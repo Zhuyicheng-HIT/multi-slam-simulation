@@ -45,11 +45,23 @@ def diagnostic(degraded=False):
         msg.hessian_eigenvalues = [1.0e-8, 1.0e-8, 1.0e-6, 10.0, 20.0, 30.0]
         msg.normal_covariance_eigenvalues = [0.0, 0.0, 1.0]
         msg.axial_penalty = 0.8
+        msg.residual_p95_m = 0.30
+        msg.spatial_coverage = 0.20
+        msg.dynamic_ratio = 0.80
+        msg.uncertain_ratio = 0.80
+        msg.feature_repeatability = 0.10
+        msg.map_quality = 0.10
     else:
         msg.matched_points = 1000
         msg.hessian_eigenvalues = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
         msg.normal_covariance_eigenvalues = [0.1, 0.2, 0.7]
         msg.axial_penalty = 0.0
+        msg.residual_p95_m = 0.03
+        msg.spatial_coverage = 1.0
+        msg.dynamic_ratio = 0.0
+        msg.uncertain_ratio = 0.02
+        msg.feature_repeatability = 0.95
+        msg.map_quality = 0.90
     msg.approximate = True
     msg.source = "test_external_geometry"
     return msg

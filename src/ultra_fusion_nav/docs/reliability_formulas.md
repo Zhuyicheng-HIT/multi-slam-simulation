@@ -10,7 +10,9 @@ Paper weights keep their original denominator. If a paper term is unavailable, i
 
 ## LiDAR: equations (18)-(19)
 
-For each point-to-plane match, the adapter computes `J_i = [n_i^T, -n_i^T [p_i]_x]` and `H_k = sum(J_i^T J_i) + 1e-8 I_6`. It reports the six ordered Hessian eigenvalues, condition number, normal second-moment eigenvalues, a weak-axis proxy and match count. `D_L` is the exact four-term structure in equation (19): Hessian degeneracy, normal diversity, weak-axis penalty and insufficient matches.
+For each point-to-plane match, the adapter computes `J_i = [n_i^T, -n_i^T [p_i]_x]` and `H_k = sum(J_i^T J_i) + 1e-8 I_6`. It reports the six ordered Hessian eigenvalues, condition number, normal second-moment eigenvalues, a weak-axis proxy and match count. `paper_score_eq19` preserves the exact four-term structure in equation (19): Hessian degeneracy, normal diversity, weak-axis penalty and insufficient matches.
+
+The final project `D_L` adds separately named map-protection evidence required by Stage 3: point-to-plane residual P95, spatial coverage, temporal dynamic and uncertain ratios, feature repeatability, and static-map quality. These six normalized terms produce `extension_score_normalized`; the default final score is `0.70 * paper_score_eq19 + 0.30 * extension_score_normalized`. The raw terms, thresholds, component scores, and final score are all published in the evidence arrays, so this extension is not presented as part of the paper's equation (19).
 
 The adapter is external to FAST-LIO and estimates planes from consecutive registered scans. Its message therefore sets `approximate=true`; it is not presented as FAST-LIO's internal scan-to-map Hessian.
 
