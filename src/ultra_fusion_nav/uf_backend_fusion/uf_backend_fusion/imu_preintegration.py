@@ -1,9 +1,11 @@
-"""Small, testable IMU preintegration primitive for the Stage 7 data layer.
+"""Small, testable IMU preintegration primitive for the Stage 7 backend.
 
-This module exports a delta in the frame at the start of an interval. It is
-deliberately independent of the current linear backend: bias Jacobians and a
-full SE(3) factor are a later milestone, so callers must not treat this delta
-as final estimator evidence yet.
+The delta is expressed in the frame at the start of an interval.  The
+preintegrator also exports first-order bias Jacobians so the local backend can
+apply a bias-aware factor without pretending to be a complete manifold
+optimizer.  Bias Jacobians are obtained by symmetric finite differences of
+the same midpoint integrator, which keeps the convention explicit and easy to
+validate before replacing it with an analytic SE(3) implementation.
 """
 
 from bisect import bisect_left
@@ -32,6 +34,11 @@ class PreintegratedImu:
     covariance: tuple[float, ...]
     sample_count: int
     max_gap_s: float
+    jacobian_delta_position_accel_bias: tuple[float, ...] = (0.0,) * 9
+    jacobian_delta_position_gyro_bias: tuple[float, ...] = (0.0,) * 9
+    jacobian_delta_velocity_accel_bias: tuple[float, ...] = (0.0,) * 9
+    jacobian_delta_velocity_gyro_bias: tuple[float, ...] = (0.0,) * 9
+    jacobian_delta_rotation_gyro_bias: tuple[float, ...] = (0.0,) * 9
 
 
 def _quat_normalize(value: np.ndarray) -> np.ndarray:
@@ -67,6 +74,25 @@ def _rotate(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
     return _quat_multiply(_quat_multiply(quaternion, pure), conjugate)[1:]
 
 
+def _quat_conjugate(quaternion: np.ndarray) -> np.ndarray:
+    return np.array(
+        [quaternion[0], -quaternion[1], -quaternion[2], -quaternion[3]],
+        dtype=float,
+    )
+
+
+def _quat_to_rotvec(quaternion: np.ndarray) -> np.ndarray:
+    quaternion = _quat_normalize(np.asarray(quaternion, dtype=float))
+    if quaternion[0] < 0.0:
+        quaternion = -quaternion
+    scalar = float(np.clip(quaternion[0], -1.0, 1.0))
+    vector = quaternion[1:]
+    norm = float(np.linalg.norm(vector))
+    if norm <= 1.0e-12:
+        return 2.0 * vector
+    return vector * (2.0 * math.atan2(norm, scalar) / norm)
+
+
 def _interpolate(first: ImuSample, second: ImuSample, stamp_s: float) -> ImuSample:
     span = second.stamp_s - first.stamp_s
     ratio = 0.0 if span <= 0.0 else (stamp_s - first.stamp_s) / span
@@ -96,6 +122,30 @@ def _invalid(reason: str, start_s: float, end_s: float, sample_count: int = 0,
         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0),
         (1.0,) * 9, sample_count, max_gap_s,
     )
+
+
+def _integrate_interval(
+    interval_samples: Sequence[ImuSample], gravity_vector: np.ndarray,
+    accel_bias: np.ndarray | None = None,
+    gyro_bias: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the exact midpoint loop used for the nominal delta and probes."""
+    accel_bias = np.zeros(3, dtype=float) if accel_bias is None else np.asarray(accel_bias, dtype=float)
+    gyro_bias = np.zeros(3, dtype=float) if gyro_bias is None else np.asarray(gyro_bias, dtype=float)
+    delta_position = np.zeros(3, dtype=float)
+    delta_velocity = np.zeros(3, dtype=float)
+    quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    for first, second in zip(interval_samples[:-1], interval_samples[1:]):
+        dt = second.stamp_s - first.stamp_s
+        accel = 0.5 * (np.asarray(first.acceleration) + np.asarray(second.acceleration))
+        gyro = 0.5 * (np.asarray(first.angular_velocity) + np.asarray(second.angular_velocity))
+        world_acceleration = _rotate(quaternion, accel - accel_bias) + gravity_vector
+        delta_position += delta_velocity * dt + 0.5 * world_acceleration * dt * dt
+        delta_velocity += world_acceleration * dt
+        quaternion = _quat_normalize(
+            _quat_multiply(quaternion, _quat_from_rotvec((gyro - gyro_bias) * dt))
+        )
+    return delta_position, delta_velocity, quaternion
 
 
 def preintegrate(
@@ -160,19 +210,40 @@ def preintegrate(
     gravity_vector = np.asarray(gravity, dtype=float)
     if gravity_vector.shape != (3,) or not np.all(np.isfinite(gravity_vector)):
         return _invalid("invalid_gravity", start_s, end_s, len(interior), largest_gap)
-    delta_position = np.zeros(3, dtype=float)
-    delta_velocity = np.zeros(3, dtype=float)
-    quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
-    for first, second in zip(interval_samples[:-1], interval_samples[1:]):
-        dt = second.stamp_s - first.stamp_s
-        accel = 0.5 * (np.asarray(first.acceleration) + np.asarray(second.acceleration))
-        gyro = 0.5 * (np.asarray(first.angular_velocity) + np.asarray(second.angular_velocity))
-        world_acceleration = _rotate(quaternion, accel) + gravity_vector
-        delta_position += delta_velocity * dt + 0.5 * world_acceleration * dt * dt
-        delta_velocity += world_acceleration * dt
-        quaternion = _quat_normalize(
-            _quat_multiply(quaternion, _quat_from_rotvec(gyro * dt))
-        )
+    delta_position, delta_velocity, quaternion = _integrate_interval(
+        interval_samples, gravity_vector)
+    accel_position_jacobian = np.zeros((3, 3), dtype=float)
+    accel_velocity_jacobian = np.zeros((3, 3), dtype=float)
+    gyro_position_jacobian = np.zeros((3, 3), dtype=float)
+    gyro_velocity_jacobian = np.zeros((3, 3), dtype=float)
+    gyro_rotation_jacobian = np.zeros((3, 3), dtype=float)
+    # Finite differences deliberately share the nominal midpoint loop.  This
+    # is slower than closed-form Forster Jacobians, but removes a convention
+    # mismatch while the Python backend is still a validation prototype.
+    accel_epsilon = 1.0e-4
+    gyro_epsilon = 1.0e-5
+    for axis in range(3):
+        probe = np.zeros(3, dtype=float)
+        probe[axis] = accel_epsilon
+        plus_position, plus_velocity, _ = _integrate_interval(
+            interval_samples, gravity_vector, accel_bias=probe)
+        minus_position, minus_velocity, _ = _integrate_interval(
+            interval_samples, gravity_vector, accel_bias=-probe)
+        accel_position_jacobian[:, axis] = (plus_position - minus_position) / (2.0 * accel_epsilon)
+        accel_velocity_jacobian[:, axis] = (plus_velocity - minus_velocity) / (2.0 * accel_epsilon)
+        probe[axis] = gyro_epsilon
+        plus_position, plus_velocity, plus_quaternion = _integrate_interval(
+            interval_samples, gravity_vector, gyro_bias=probe)
+        minus_position, minus_velocity, minus_quaternion = _integrate_interval(
+            interval_samples, gravity_vector, gyro_bias=-probe)
+        gyro_position_jacobian[:, axis] = (plus_position - minus_position) / (2.0 * gyro_epsilon)
+        gyro_velocity_jacobian[:, axis] = (plus_velocity - minus_velocity) / (2.0 * gyro_epsilon)
+        nominal_inverse = _quat_conjugate(quaternion)
+        plus_relative = _quat_multiply(plus_quaternion, nominal_inverse)
+        minus_relative = _quat_multiply(minus_quaternion, nominal_inverse)
+        gyro_rotation_jacobian[:, axis] = (
+            _quat_to_rotvec(plus_relative) - _quat_to_rotvec(minus_relative)
+        ) / (2.0 * gyro_epsilon)
     dt_s = end_s - start_s
     position_sigma = max(1.0e-6, float(accel_noise_density) * dt_s * dt_s)
     velocity_sigma = max(1.0e-6, float(accel_noise_density) * dt_s)
@@ -188,4 +259,9 @@ def preintegrate(
         tuple(float(value) for value in delta_velocity),
         tuple(float(value) for value in quaternion),
         covariance, len(interior), largest_gap,
+        tuple(float(value) for value in accel_position_jacobian.ravel()),
+        tuple(float(value) for value in gyro_position_jacobian.ravel()),
+        tuple(float(value) for value in accel_velocity_jacobian.ravel()),
+        tuple(float(value) for value in gyro_velocity_jacobian.ravel()),
+        tuple(float(value) for value in gyro_rotation_jacobian.ravel()),
     )

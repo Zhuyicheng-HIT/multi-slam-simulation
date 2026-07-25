@@ -65,6 +65,30 @@ class SlidingWindowBackendTest(unittest.TestCase):
         self.assertEqual(dense.solver, "dense")
         self.assertEqual(sparse.solver, "sparse")
 
+    def test_bias_aware_imu_factor_contains_bias_random_walk_rows(self):
+        backend = SlidingWindowBackend(max_states=3, solver="dense")
+        backend.add_state()
+        backend.add_state()
+        zero_jacobian = np.zeros(9)
+        backend.add_bias_aware_imu(
+            0, 1, 0.1,
+            delta_position=[0.0, 0.0, 0.0],
+            delta_velocity=[0.0, 0.0, 0.0],
+            delta_rotation=[0.0, 0.0, 0.0],
+            position_accel_bias_jacobian=zero_jacobian,
+            position_gyro_bias_jacobian=zero_jacobian,
+            velocity_accel_bias_jacobian=zero_jacobian,
+            velocity_gyro_bias_jacobian=zero_jacobian,
+            rotation_gyro_bias_jacobian=zero_jacobian,
+            gravity=[0.0, 0.0, 0.0],
+            covariance=[0.1] * 9,
+            bias_random_walk_covariance=[0.01] * 6,
+        )
+        summary = backend.factor_summary()
+        self.assertEqual(summary[-1].name, "imu_preintegrated")
+        self.assertEqual(summary[-1].residual_dimension, 15)
+        self.assertTrue(summary[-1].enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,7 +26,7 @@ from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
 from geometry_msgs.msg import PoseStamped
 from uf_interfaces.msg import ReliabilityScore, SchedulerState
 
-from .imu_preintegration import ImuSample, preintegrate
+from .imu_preintegration import ImuSample, _quat_to_rotvec, preintegrate
 from .window import SlidingWindowBackend
 from uf_reliability.scoring import (
     gnss_score,
@@ -191,6 +191,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("imu_factor_enabled", True)
         self.declare_parameter("preserve_lio_anchor", True)
         self.declare_parameter("imu_covariance_scale", 50.0)
+        self.declare_parameter("imu_bias_random_walk_variance", 1.0e-4)
         self.declare_parameter("scheduler_timeout_s", 1.0)
         self.declare_parameter("publish_path_length", 2000)
 
@@ -210,6 +211,8 @@ class UnifiedBackendNode(Node):
         self.preserve_lio_anchor = bool(self.get_parameter("preserve_lio_anchor").value)
         self.imu_covariance_scale = float(
             self.get_parameter("imu_covariance_scale").value)
+        self.imu_bias_random_walk_variance = float(
+            self.get_parameter("imu_bias_random_walk_variance").value)
         self.scheduler_timeout_s = float(
             self.get_parameter("scheduler_timeout_s").value)
         self.max_path = int(self.get_parameter("publish_path_length").value)
@@ -274,7 +277,7 @@ class UnifiedBackendNode(Node):
         self.create_timer(1.0, self._diagnostics)
         self.get_logger().info(
             "Unified backend active: LIO anchor + GNSS/flow factors; "
-            f"IMU linear factor={'on' if self.imu_factor_enabled else 'off'}")
+            f"IMU bias-aware local factor={'on' if self.imu_factor_enabled else 'off'}")
 
     def _now_s(self):
         return self.get_clock().now().nanoseconds * 1.0e-9
@@ -415,14 +418,42 @@ class UnifiedBackendNode(Node):
             result.delta_position[0], result.delta_position[1], previous_yaw)
         world_velocity = rotate_planar(
             result.delta_velocity[0], result.delta_velocity[1], previous_yaw)
-        covariance = np.asarray(result.covariance[:6], dtype=float)
+        yaw_cosine, yaw_sine = math.cos(previous_yaw), math.sin(previous_yaw)
+        map_rotation = np.array([
+            [yaw_cosine, -yaw_sine, 0.0],
+            [yaw_sine, yaw_cosine, 0.0],
+            [0.0, 0.0, 1.0],
+        ], dtype=float)
+        delta_position = np.asarray(
+            [world_position[0], world_position[1], result.delta_position[2]], dtype=float)
+        delta_velocity = np.asarray(
+            [world_velocity[0], world_velocity[1], result.delta_velocity[2]], dtype=float)
+        delta_rotation = map_rotation @ _quat_to_rotvec(np.asarray(result.delta_quaternion))
+        position_accel_jacobian = map_rotation @ np.asarray(
+            result.jacobian_delta_position_accel_bias).reshape(3, 3)
+        position_gyro_jacobian = map_rotation @ np.asarray(
+            result.jacobian_delta_position_gyro_bias).reshape(3, 3)
+        velocity_accel_jacobian = map_rotation @ np.asarray(
+            result.jacobian_delta_velocity_accel_bias).reshape(3, 3)
+        velocity_gyro_jacobian = map_rotation @ np.asarray(
+            result.jacobian_delta_velocity_gyro_bias).reshape(3, 3)
+        rotation_gyro_jacobian = map_rotation @ np.asarray(
+            result.jacobian_delta_rotation_gyro_bias).reshape(3, 3)
+        covariance = np.asarray(result.covariance, dtype=float)
         covariance = np.maximum(covariance * self.imu_covariance_scale, 1.0e-6)
         decision = self._decision("imu", default_enabled=True)
-        self.backend.add_imu_delta(
-            previous_index, current_index,
-            [world_position[0], world_position[1], result.delta_position[2]],
-            [world_velocity[0], world_velocity[1], result.delta_velocity[2]],
+        self.backend.add_bias_aware_imu(
+            previous_index, current_index, result.dt_s,
+            delta_position, delta_velocity, delta_rotation,
+            position_accel_jacobian.ravel(), position_gyro_jacobian.ravel(),
+            velocity_accel_jacobian.ravel(), velocity_gyro_jacobian.ravel(),
+            rotation_gyro_jacobian.ravel(),
+            # The data-layer preintegrator already adds gravity.  Passing a
+            # zero vector here avoids adding it twice; the eventual manifold
+            # implementation will carry gravity outside the delta instead.
+            gravity=(0.0, 0.0, 0.0),
             covariance=covariance,
+            bias_random_walk_covariance=np.full(6, self.imu_bias_random_walk_variance),
             decision=decision,
         )
         self.counts["imu_factors"] += 1

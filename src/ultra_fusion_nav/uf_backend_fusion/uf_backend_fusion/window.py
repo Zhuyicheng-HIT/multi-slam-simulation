@@ -226,6 +226,96 @@ class SlidingWindowBackend:
             np.concatenate((np.asarray(delta_position, dtype=float), np.asarray(delta_velocity, dtype=float))),
             covariance, decision)
 
+    def add_bias_aware_imu(
+        self,
+        previous: int,
+        current: int,
+        dt_s: float,
+        delta_position: Sequence[float],
+        delta_velocity: Sequence[float],
+        delta_rotation: Sequence[float],
+        position_accel_bias_jacobian: Sequence[float],
+        position_gyro_bias_jacobian: Sequence[float],
+        velocity_accel_bias_jacobian: Sequence[float],
+        velocity_gyro_bias_jacobian: Sequence[float],
+        rotation_gyro_bias_jacobian: Sequence[float],
+        gravity: Sequence[float] = (0.0, 0.0, -9.81),
+        covariance=1.0,
+        bias_random_walk_covariance=1.0,
+        decision: Mapping[str, object] | None = None,
+    ) -> None:
+        """Add a first-order local tangent IMU factor.
+
+        The residual is the standard position/velocity/rotation preintegration
+        contract with a first-order correction from the previous state's
+        accelerometer and gyro biases, followed by bias random-walk rows. The
+        factor is linear in the current state and therefore remains compatible
+        with this bounded backend; a manifold relinearization is a later gate.
+        """
+        dt_s = float(dt_s)
+        if not np.isfinite(dt_s) or dt_s <= 0.0:
+            raise ValueError("IMU interval must be finite and positive")
+        gravity = np.asarray(gravity, dtype=float)
+        if gravity.shape != (3,) or np.any(~np.isfinite(gravity)):
+            raise ValueError("gravity must be a finite 3-vector")
+        jacobians = [
+            np.asarray(value, dtype=float).reshape(3, 3)
+            for value in (
+                position_accel_bias_jacobian,
+                position_gyro_bias_jacobian,
+                velocity_accel_bias_jacobian,
+                velocity_gyro_bias_jacobian,
+                rotation_gyro_bias_jacobian,
+            )
+        ]
+        if any(np.any(~np.isfinite(value)) for value in jacobians):
+            raise ValueError("IMU bias Jacobians must be finite 3x3 matrices")
+        position_accel, position_gyro, velocity_accel, velocity_gyro, rotation_gyro = jacobians
+        previous_block = np.zeros((15, STATE_SIZE), dtype=float)
+        current_block = np.zeros((15, STATE_SIZE), dtype=float)
+        previous_block[0:3, POSITION] = -np.eye(3)
+        previous_block[0:3, VELOCITY] = -dt_s * np.eye(3)
+        previous_block[0:3, ACCEL_BIAS] = -position_accel
+        previous_block[0:3, GYRO_BIAS] = -position_gyro
+        current_block[0:3, POSITION] = np.eye(3)
+        previous_block[3:6, VELOCITY] = -np.eye(3)
+        previous_block[3:6, ACCEL_BIAS] = -velocity_accel
+        previous_block[3:6, GYRO_BIAS] = -velocity_gyro
+        current_block[3:6, VELOCITY] = np.eye(3)
+        previous_block[6:9, ROTATION] = -np.eye(3)
+        previous_block[6:9, GYRO_BIAS] = -rotation_gyro
+        current_block[6:9, ROTATION] = np.eye(3)
+        previous_block[9:12, ACCEL_BIAS] = -np.eye(3)
+        current_block[9:12, ACCEL_BIAS] = np.eye(3)
+        previous_block[12:15, GYRO_BIAS] = -np.eye(3)
+        current_block[12:15, GYRO_BIAS] = np.eye(3)
+        delta_position = np.asarray(delta_position, dtype=float)
+        delta_velocity = np.asarray(delta_velocity, dtype=float)
+        delta_rotation = np.asarray(delta_rotation, dtype=float)
+        measurement = np.concatenate((
+            delta_position + 0.5 * gravity * dt_s * dt_s,
+            delta_velocity + gravity * dt_s,
+            delta_rotation,
+            np.zeros(6, dtype=float),
+        ))
+        base_covariance = np.asarray(covariance, dtype=float)
+        if base_covariance.ndim == 0:
+            base_covariance = np.full(9, float(base_covariance), dtype=float)
+        if base_covariance.shape == (15,):
+            full_covariance = base_covariance
+        elif base_covariance.shape == (9,):
+            bias_covariance = np.asarray(bias_random_walk_covariance, dtype=float)
+            if bias_covariance.ndim == 0:
+                bias_covariance = np.full(6, float(bias_covariance), dtype=float)
+            if bias_covariance.shape != (6,):
+                raise ValueError("bias random-walk covariance must be scalar or 6-vector")
+            full_covariance = np.concatenate((base_covariance, bias_covariance))
+        else:
+            raise ValueError("IMU covariance must contain 9 or 15 diagonal entries")
+        self._append_factor(
+            "imu_preintegrated", [(previous, previous_block), (current, current_block)],
+            measurement, full_covariance, decision)
+
     def add_rgbd_pose(
         self, index: int, position: Sequence[float], rotation: Sequence[float],
         covariance=1.0, decision: Mapping[str, object] | None = None,

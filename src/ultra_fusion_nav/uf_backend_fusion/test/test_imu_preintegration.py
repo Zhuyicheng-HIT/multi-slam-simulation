@@ -44,6 +44,21 @@ class ImuPreintegrationTest(unittest.TestCase):
         self.assertAlmostEqual(result.delta_quaternion[0], math.sqrt(0.5), places=3)
         self.assertAlmostEqual(result.delta_quaternion[3], math.sqrt(0.5), places=3)
 
+    def test_bias_jacobians_follow_acceleration_bias_sign(self):
+        result = preintegrate(
+            samples_for(1.0, (0.0, 0.0, 9.81)), 0.0, 1.0
+        )
+        position_jacobian = np.asarray(
+            result.jacobian_delta_position_accel_bias
+        ).reshape(3, 3)
+        velocity_jacobian = np.asarray(
+            result.jacobian_delta_velocity_accel_bias
+        ).reshape(3, 3)
+        self.assertLess(position_jacobian[2, 2], -0.45)
+        self.assertLess(velocity_jacobian[2, 2], -0.90)
+        self.assertTrue(np.all(np.isfinite(position_jacobian)))
+        self.assertTrue(np.all(np.isfinite(velocity_jacobian)))
+
     def test_uncovered_interval_and_long_gap_are_reported(self):
         uncovered = preintegrate(samples_for(1.0, (0.0, 0.0, 9.81)), 1.1, 1.5)
         self.assertFalse(uncovered.valid)
