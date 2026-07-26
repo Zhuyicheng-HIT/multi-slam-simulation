@@ -42,6 +42,15 @@ class FactorRecord:
     effective_weight: float
 
 
+@dataclass(frozen=True)
+class FactorResidual:
+    name: str
+    state_indices: tuple[int, ...]
+    residual_dimension: int
+    enabled: bool
+    mahalanobis_squared: float
+
+
 def _covariance_diagonal(covariance, dimension: int) -> np.ndarray:
     values = np.asarray(covariance, dtype=float)
     if values.ndim == 0:
@@ -87,11 +96,14 @@ class SlidingWindowBackend:
     """
 
     def __init__(self, max_states: int = 10, damping: float = 1.0e-8,
-                 solver: str = "auto"):
+                 solver: str = "auto", carry_marginal_prior: bool = True,
+                 marginal_prior_variance: float = 1.0e-2):
         if max_states < 1:
             raise ValueError("max_states must be positive")
         if damping <= 0.0:
             raise ValueError("damping must be positive")
+        if marginal_prior_variance <= 0.0:
+            raise ValueError("marginal_prior_variance must be positive")
         self.max_states = int(max_states)
         self.damping = float(damping)
         requested_solver = str(solver).lower()
@@ -103,6 +115,8 @@ class SlidingWindowBackend:
             "sparse" if requested_solver == "auto" and SPARSE_SOLVER_AVAILABLE
             else ("dense" if requested_solver == "auto" else requested_solver)
         )
+        self.carry_marginal_prior = bool(carry_marginal_prior)
+        self.marginal_prior_variance = float(marginal_prior_variance)
         self._states: list[np.ndarray] = []
         self._factors: list[dict[str, object]] = []
         self._last_cost = 0.0
@@ -359,6 +373,8 @@ class SlidingWindowBackend:
                 )
         else:
             solution = np.linalg.solve(hessian, gradient)
+        if solution.shape != (dimension,) or np.any(~np.isfinite(solution)):
+            raise np.linalg.LinAlgError("sliding-window solution is non-finite")
         self._states = [
             solution[index * STATE_SIZE:(index + 1) * STATE_SIZE].copy()
             for index in range(len(self._states))
@@ -384,10 +400,42 @@ class SlidingWindowBackend:
             for factor in self._factors
         ]
 
+    def latest_factor_residual(self, name: str, covariance=None) -> FactorResidual | None:
+        """Evaluate the newest named factor against the optimized states.
+
+        The caller may provide a nominal covariance distinct from the tuned
+        optimization covariance. Scheduler weight and covariance inflation are
+        never applied, keeping the evidence independent from the decision it
+        will influence on the next scheduling cycle.
+        """
+        for factor in reversed(self._factors):
+            if factor["name"] != name:
+                continue
+            residual = -np.asarray(factor["measurement"], dtype=float).copy()
+            for index, block in factor["blocks"]:
+                residual += np.asarray(block, dtype=float) @ self._states[index]
+            variance = (
+                np.asarray(factor["variance"], dtype=float)
+                if covariance is None
+                else _covariance_diagonal(covariance, int(residual.size))
+            )
+            mahalanobis_squared = float(np.sum(residual * residual / variance))
+            if not np.isfinite(mahalanobis_squared):
+                raise ValueError("factor residual must be finite")
+            return FactorResidual(
+                name=str(factor["name"]),
+                state_indices=tuple(index for index, _ in factor["blocks"]),
+                residual_dimension=int(residual.size),
+                enabled=bool(factor["enabled"]),
+                mahalanobis_squared=mahalanobis_squared,
+            )
+        return None
+
     def _marginalize_if_needed(self) -> None:
         excess = len(self._states) - self.max_states
         if excess <= 0:
             return
+        boundary_state = self._states[excess].copy()
         self._states = self._states[excess:]
         retained = []
         for factor in self._factors:
@@ -397,3 +445,11 @@ class SlidingWindowBackend:
             factor["blocks"] = [(index - excess, block) for index, block in blocks]
             retained.append(factor)
         self._factors = retained
+        if self.carry_marginal_prior:
+            self._append_factor(
+                "marginal_prior",
+                [(0, np.eye(STATE_SIZE, dtype=float))],
+                boundary_state,
+                self.marginal_prior_variance,
+                None,
+            )

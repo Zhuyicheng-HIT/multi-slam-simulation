@@ -110,6 +110,22 @@ class ReliabilityTimelineRecorder(Node):
                 "flow_disabled_quality": int(values.get("flow_disabled_quality", 0)),
                 "published": int(values.get("published", 0)),
                 "optimization_errors": int(values.get("optimization_errors", 0)),
+                "imu_residual_updates": int(values.get("imu_residual_updates", 0)),
+                "imu_residual_errors": int(values.get("imu_residual_errors", 0)),
+                "lidar_anchor_overrides": int(values.get("lidar_anchor_overrides", 0)),
+                "lidar_prediction_position_innovation_m": float(
+                    values.get("lidar_prediction_position_innovation_m", -1.0)
+                ),
+                "lidar_prediction_yaw_innovation_rad": float(
+                    values.get("lidar_prediction_yaw_innovation_rad", -1.0)
+                ),
+                "imu_preintegration_residual_mahalanobis": float(
+                    values.get("imu_preintegration_residual_mahalanobis", -1.0)
+                ),
+                "last_imu_residual_error": str(
+                    values.get("last_imu_residual_error", "unavailable")
+                ),
+                "last_exception": str(values.get("last_exception", "unavailable")),
             })
             self.events.append(event)
 
@@ -138,6 +154,13 @@ def summarize(events):
     def finite_median(name):
         values = [event[name] for event in lio if math.isfinite(event[name])]
         return statistics.median(values) if values else None
+
+    def backend_nonnegative_median(name):
+        values = [
+            event[name] for event in backend
+            if math.isfinite(event[name]) and event[name] >= 0.0
+        ]
+        return statistics.median(values) if values else None
     states = []
     for event in scheduler:
         state = event["health_state"]
@@ -164,6 +187,21 @@ def summarize(events):
         ),
         "backend_lidar_disabled_max": max(
             (event["lidar_disabled"] for event in backend), default=0
+        ),
+        "backend_lidar_anchor_overrides_max": max(
+            (event["lidar_anchor_overrides"] for event in backend), default=0
+        ),
+        "backend_lidar_prediction_position_innovation_m_median": (
+            backend_nonnegative_median("lidar_prediction_position_innovation_m")
+        ),
+        "backend_lidar_prediction_yaw_innovation_rad_median": (
+            backend_nonnegative_median("lidar_prediction_yaw_innovation_rad")
+        ),
+        "backend_imu_residual_updates_max": max(
+            (event["imu_residual_updates"] for event in backend), default=0
+        ),
+        "backend_imu_residual_errors_max": max(
+            (event["imu_residual_errors"] for event in backend), default=0
         ),
         "lio_samples": len(lio),
         "lio_matched_points_median": finite_median("matched_points"),

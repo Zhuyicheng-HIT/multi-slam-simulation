@@ -1,6 +1,9 @@
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -10,6 +13,11 @@ def generate_launch_description():
     reliability_config = reliability_share + "/config/reliability.yaml"
     scheduler_config = reliability_share + "/config/scheduler_config.yaml"
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "preserve_lio_anchor",
+            default_value="true",
+            description="Keep a minimum LIO pose anchor when the scheduler disables LiDAR",
+        ),
         Node(
             package="uf_reliability",
             executable="reliability_monitor",
@@ -31,7 +39,15 @@ def generate_launch_description():
             package="uf_backend_fusion",
             executable="online_backend_fusion",
             name="unified_backend_fusion",
-            parameters=[backend_config],
+            parameters=[
+                backend_config,
+                {
+                    "preserve_lio_anchor": ParameterValue(
+                        LaunchConfiguration("preserve_lio_anchor"),
+                        value_type=bool,
+                    )
+                },
+            ],
             output="screen",
         ),
         Node(

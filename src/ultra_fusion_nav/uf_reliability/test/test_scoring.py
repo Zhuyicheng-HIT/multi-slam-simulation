@@ -2,6 +2,7 @@ import unittest
 
 from uf_reliability.scoring import (
     augment_lidar_score, gnss_integrity_quality, gnss_score, imu_score, lidar_score,
+    lidar_factor_score, lidar_innovation_score, lidar_map_score,
     optical_flow_displacement_frd, optical_flow_score, vision_score,
 )
 
@@ -30,6 +31,51 @@ class ScoringTest(unittest.TestCase):
         )
         self.assertGreater(dynamic[1]["extension_score_normalized"], 0.9)
         self.assertIn("map_protection_degraded_extension", dynamic[2])
+
+    def test_approximate_lidar_geometry_is_soft_only(self):
+        poor_geometry = lidar_score(
+            [1.0e-8, 1.0e-8, 1.0e-6, 10.0, 20.0, 30.0],
+            [0.0, 0.0, 1.0], 0.8, 80,
+        )
+        consistent_prediction = lidar_innovation_score(0.02, 0.01)
+        result = lidar_factor_score(
+            poor_geometry, consistent_prediction, approximate_geometry=True
+        )
+
+        self.assertLess(result[0], 0.30)
+        self.assertEqual(result[1]["hard_gate_allowed"], 0.0)
+        self.assertEqual(result[1]["score_complete"], 1.0)
+        self.assertIn("approximate_geometry_soft_only", result[2])
+
+    def test_native_geometry_and_prediction_can_authorise_hard_gate(self):
+        poor_geometry = lidar_score(
+            [1.0e-8, 1.0e-8, 1.0e-6, 10.0, 20.0, 30.0],
+            [0.0, 0.0, 1.0], 0.8, 80,
+        )
+        inconsistent_prediction = lidar_innovation_score(1.0, 0.8)
+        result = lidar_factor_score(
+            poor_geometry, inconsistent_prediction, approximate_geometry=False
+        )
+
+        self.assertGreater(result[0], 0.80)
+        self.assertEqual(result[1]["hard_gate_allowed"], 1.0)
+
+    def test_map_quality_diagnostic_is_not_double_counted(self):
+        first = lidar_map_score(
+            0.05, 0.8, 0.05, 0.10, 0.85,
+            map_quality_diagnostic=0.1,
+        )
+        second = lidar_map_score(
+            0.05, 0.8, 0.05, 0.10, 0.85,
+            map_quality_diagnostic=0.9,
+        )
+
+        self.assertAlmostEqual(first[0], second[0])
+        self.assertNotEqual(
+            first[1]["map_quality_diagnostic"],
+            second[1]["map_quality_diagnostic"],
+        )
+        self.assertIn("map_risk_not_used_for_lidar_pose_factor", first[2])
 
     def test_gnss_jump_and_outage_increase(self):
         good = gnss_score(1.0, 0.5, 0.2)[0]

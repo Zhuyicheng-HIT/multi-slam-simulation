@@ -12,6 +12,16 @@ reliability_monitor:
     lidar.extension.reference: 0.35
     lidar.extension.paper_weight: 0.70
     lidar.extension.weights: [0.20, 0.15, 0.20, 0.10, 0.15, 0.20]
+    lidar.factor.approximate_geometry_weight: 0.20
+    lidar.factor.native_geometry_weight: 0.60
+    lidar.factor.tau_position_innovation_m: 0.50
+    lidar.factor.tau_yaw_innovation_rad: 0.35
+    lidar.factor.innovation_weights: [0.70, 0.30]
+    lidar.factor.innovation_timeout_s: 2.0
+    lidar.map.tau_residual_m: 0.15
+    lidar.map.tau_dynamic_ratio: 0.20
+    lidar.map.tau_uncertain_ratio: 0.25
+    lidar.map.weights: [0.25, 0.20, 0.20, 0.15, 0.20]
     gnss.tau_covariance: 25.0
     gnss.tau_innovation: 5.0
     gnss.weights: [0.25, 0.20, 0.55]

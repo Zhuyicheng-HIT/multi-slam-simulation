@@ -110,6 +110,12 @@ class LioSchedulerPipelineTest(unittest.TestCase):
         self.assertEqual(self.harness.latest_score.observation_count, 1000)
         self.assertEqual(self.harness.latest_score.minimum_observation_count, 50)
         self.assertIn("score_complete", self.harness.latest_score.evidence_names)
+        hard_gate_index = list(self.harness.latest_score.evidence_names).index(
+            "hard_gate_allowed"
+        )
+        self.assertEqual(
+            self.harness.latest_score.evidence_values[hard_gate_index], 0.0
+        )
 
         healthy = self.harness.latest_state
         self.assertIsNotNone(healthy)
@@ -119,10 +125,9 @@ class LioSchedulerPipelineTest(unittest.TestCase):
 
         self.drive(diagnostic(degraded=True))
         failed = self.harness.latest_state
-        self.assertGreater(self.harness.latest_score.degradation_score, 0.8)
-        self.assertEqual(failed.health_state, "FAILSAFE")
-        self.assertFalse(failed.factor_enabled[lidar_index])
-        self.assertEqual(failed.covariance_inflation[lidar_index], 20.0)
+        self.assertLess(self.harness.latest_score.degradation_score, 0.3)
+        self.assertEqual(failed.health_state, "DEGRADED")
+        self.assertTrue(failed.factor_enabled[lidar_index])
 
 
 if __name__ == "__main__":

@@ -3,10 +3,12 @@ import unittest
 from uf_reliability.scheduler_core import ReliabilitySchedulerCore, SchedulerConfig
 
 
-def score(value, valid=True, arrival_s=0.0, reasons=(), count=1, minimum=1):
+def score(value, valid=True, arrival_s=0.0, reasons=(), count=1, minimum=1,
+          hard_gate_allowed=True):
     return {
         "degradation_score": value,
         "valid": valid,
+        "hard_gate_allowed": hard_gate_allowed,
         "arrival_s": arrival_s,
         "reasons": reasons,
         "observation_count": count,
@@ -58,6 +60,25 @@ class SchedulerCoreTest(unittest.TestCase):
             "optical_flow": score(0.10, arrival_s=0.2),
         }, 0.3)
         self.assertTrue(reenabled.factor_enabled["gnss"])
+
+    def test_soft_only_evidence_cannot_binary_disable_an_enabled_factor(self):
+        self.core.update({
+            "gnss": score(0.10, arrival_s=0.0),
+            "optical_flow": score(0.10, arrival_s=0.0),
+        }, 0.1)
+        degraded = self.core.update({
+            "gnss": score(
+                0.95, arrival_s=0.1, hard_gate_allowed=False,
+            ),
+            "optical_flow": score(0.10, arrival_s=0.1),
+        }, 0.2)
+
+        self.assertTrue(degraded.factor_enabled["gnss"])
+        self.assertAlmostEqual(degraded.covariance_inflation["gnss"], 20.0)
+        self.assertIn(
+            "hard_gate_blocked_by_evidence_policy",
+            degraded.reasons["gnss"],
+        )
 
     def test_stale_scores_fail_safe_and_relocalization_request_is_explicit(self):
         result = self.core.update({}, 2.0)

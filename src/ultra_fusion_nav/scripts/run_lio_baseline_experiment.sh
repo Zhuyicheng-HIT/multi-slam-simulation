@@ -8,6 +8,7 @@ OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/logs/uf_stage2_${RUN_ID}}
 ANALYSIS_DURATION_S=${ANALYSIS_DURATION_S:-125}
 ENABLE_LIO_ADAPTER=${ENABLE_LIO_ADAPTER:-1}
 ENABLE_UNIFIED_BACKEND=${ENABLE_UNIFIED_BACKEND:-0}
+PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-true}
 ENABLE_RELIABILITY=${ENABLE_RELIABILITY:-0}
 ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
 FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
@@ -27,6 +28,11 @@ FAULT_DELIVERY_MODE=${FAULT_DELIVERY_MODE:-runtime}
 if [[ "$FAULT_DELIVERY_MODE" != "runtime" && "$FAULT_DELIVERY_MODE" != "startup" ]]; then
   printf 'FAULT_DELIVERY_MODE must be runtime or startup, got %s\n' \
     "$FAULT_DELIVERY_MODE" >&2
+  exit 2
+fi
+if [[ "$PRESERVE_LIO_ANCHOR" != "true" && "$PRESERVE_LIO_ANCHOR" != "false" ]]; then
+  printf 'PRESERVE_LIO_ANCHOR must be true or false, got %s\n' \
+    "$PRESERVE_LIO_ANCHOR" >&2
   exit 2
 fi
 
@@ -132,6 +138,7 @@ fi
 unified_backend_pid=""
 if [[ "$ENABLE_UNIFIED_BACKEND" == "1" ]]; then
   setsid ros2 launch uf_backend_fusion online_backend.launch.py \
+    preserve_lio_anchor:="$PRESERVE_LIO_ANCHOR" \
     >"$OUTPUT_DIR/unified_backend.stdout.log" 2>"$OUTPUT_DIR/unified_backend.stderr.log" &
   unified_backend_pid=$!
   pids+=("$unified_backend_pid")

@@ -5,7 +5,10 @@ import numpy as np
 from uf_backend_fusion.online_backend import (
     flow_observation_delta,
     frd_to_enu_delta,
+    fused_motion_reference,
     gnss_jump_rejected,
+    lidar_bypass_allowed,
+    lidar_prediction_innovation,
     scheduler_decision,
     unwrap_yaw,
     yaw_to_quaternion,
@@ -48,10 +51,41 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(decision["reliability_weight"], 0.0)
         self.assertEqual(decision["covariance_inflation"], 20.0)
 
+    def test_lidar_bypass_requires_explicit_mode_and_live_imu_backup(self):
+        self.assertTrue(lidar_bypass_allowed(False, True, True, True))
+        self.assertFalse(lidar_bypass_allowed(True, True, True, True))
+        self.assertFalse(lidar_bypass_allowed(False, False, True, True))
+        self.assertFalse(lidar_bypass_allowed(False, True, False, True))
+        self.assertFalse(lidar_bypass_allowed(False, True, True, False))
+
     def test_gnss_jump_gate_rejects_large_innovation(self):
         self.assertFalse(gnss_jump_rejected([1.0, 2.0, 0.0], [3.0, 4.0, 0.0]))
         self.assertTrue(gnss_jump_rejected([1.0, 2.0, 0.0], [30.0, 2.0, 0.0]))
         self.assertTrue(gnss_jump_rejected([1.0, 2.0, 0.0], [float("nan"), 2.0, 0.0]))
+
+    def test_fused_motion_reference_does_not_use_current_lio(self):
+        state = np.zeros(15)
+        state[:3] = [1.0, 2.0, 3.0]
+        state[5] = 0.4
+        state[6:9] = [2.0, -1.0, 0.5]
+
+        reference = fused_motion_reference(state, 0.2)
+
+        np.testing.assert_allclose(reference["position"], [1.4, 1.8, 3.1])
+        np.testing.assert_allclose(reference["delta_position"], [0.4, -0.2, 0.1])
+        self.assertEqual(reference["yaw"], 0.4)
+
+    def test_lidar_prediction_innovation_uses_lidar_free_reference(self):
+        reference = {
+            "position": np.asarray([1.0, 2.0, 3.0]),
+            "yaw": 3.10,
+        }
+        innovation = lidar_prediction_innovation(
+            [1.3, 2.4, 3.0], -3.12, reference,
+        )
+
+        self.assertAlmostEqual(innovation["position_m"], 0.5)
+        self.assertLess(innovation["yaw_rad"], 0.1)
 
     def test_yaw_quaternion_is_normalized(self):
         quaternion = yaw_to_quaternion(1.2)

@@ -156,6 +156,173 @@ def lidar_score(hessian_eigenvalues, normal_covariance_eigenvalues, axial_penalt
     return finalize_score(score, coverage, evidence, reasons)
 
 
+def lidar_innovation_score(position_innovation_m, yaw_innovation_rad,
+                           tau_position_m=0.50, tau_yaw_rad=0.35,
+                           weights=(0.70, 0.30)):
+    """Score LiDAR disagreement with a prediction that excludes current LiDAR."""
+    def term(value, threshold):
+        if value is None or not math.isfinite(float(value)) or float(value) < 0.0:
+            return None
+        return clamp(float(value) / max(1.0e-9, float(threshold)))
+
+    position_term = term(position_innovation_m, tau_position_m)
+    yaw_term = term(yaw_innovation_rad, tau_yaw_rad)
+    score, coverage = weighted_score([
+        (position_term, weights[0]),
+        (yaw_term, weights[1]),
+    ])
+    evidence = {
+        "lidar_prediction_position_innovation_m": (
+            -1.0 if position_innovation_m is None else float(position_innovation_m)
+        ),
+        "lidar_prediction_yaw_innovation_rad": (
+            -1.0 if yaw_innovation_rad is None else float(yaw_innovation_rad)
+        ),
+        "lidar_prediction_position_term": (
+            -1.0 if position_term is None else position_term
+        ),
+        "lidar_prediction_yaw_term": -1.0 if yaw_term is None else yaw_term,
+        "lidar_prediction_innovation_score": score,
+    }
+    reasons = []
+    if position_term is None:
+        reasons.append("lidar_prediction_position_unavailable")
+    elif position_term > 0.5:
+        reasons.append("large_lidar_prediction_position_innovation")
+    if yaw_term is None:
+        reasons.append("lidar_prediction_yaw_unavailable")
+    elif yaw_term > 0.5:
+        reasons.append("large_lidar_prediction_yaw_innovation")
+    return finalize_score(score, coverage, evidence, reasons)
+
+
+def lidar_factor_score(paper_result, innovation_result, approximate_geometry,
+                       approximate_geometry_weight=0.20,
+                       native_geometry_weight=0.60):
+    """Build LiDAR pose-factor risk without map-admission evidence.
+
+    An external Hessian is useful for soft covariance inflation, but cannot
+    independently remove the LIO pose factor.  Only native geometry plus a
+    complete LiDAR-free innovation can authorise a future binary hard gate.
+    """
+    paper_score, paper_evidence, paper_reasons = paper_result
+    innovation_score, innovation_evidence, innovation_reasons = innovation_result
+    innovation_complete = (
+        innovation_evidence.get("score_complete", 0.0) >= 0.5
+    )
+    geometry_weight = clamp(
+        approximate_geometry_weight if approximate_geometry
+        else native_geometry_weight
+    )
+    innovation_weight = 1.0 - geometry_weight
+    if innovation_complete:
+        score = clamp(
+            geometry_weight * float(paper_score)
+            + innovation_weight * float(innovation_score)
+        )
+        coverage = 1.0
+    else:
+        # Keep available geometry as a soft diagnostic, but mark the result
+        # hard-gate-ineligible.  The external geometry is still sufficient for
+        # a conservative continuous weight during backend startup.
+        score = clamp(geometry_weight * float(paper_score))
+        coverage = (
+            1.0 if paper_evidence.get("score_complete", 0.0) >= 0.5 else 0.0
+        )
+    evidence = dict(paper_evidence)
+    evidence.update({
+        "paper_score_eq19": float(paper_score),
+        "geometry_source_approximate": 1.0 if approximate_geometry else 0.0,
+        "geometry_weight_factor_score": geometry_weight,
+        "innovation_weight_factor_score": innovation_weight,
+        "innovation_complete_factor_score": (
+            1.0 if innovation_complete else 0.0
+        ),
+        "hard_gate_allowed": (
+            1.0 if (not approximate_geometry and innovation_complete) else 0.0
+        ),
+        "lidar_factor_score": score,
+    })
+    for key, value in innovation_evidence.items():
+        if key not in ("evidence_weight_coverage", "score_complete"):
+            evidence[key] = value
+    reasons = list(paper_reasons) + list(innovation_reasons)
+    if approximate_geometry:
+        reasons.append("approximate_geometry_soft_only")
+    if not innovation_complete:
+        reasons.append("incomplete_lidar_prediction_innovation")
+    return finalize_score(score, coverage, evidence, reasons)
+
+
+def lidar_map_score(residual_p95_m, spatial_coverage, dynamic_ratio,
+                    uncertain_ratio, feature_repeatability,
+                    tau_residual_m=0.15, tau_dynamic_ratio=0.20,
+                    tau_uncertain_ratio=0.25,
+                    weights=(0.25, 0.20, 0.20, 0.15, 0.20),
+                    map_quality_diagnostic=None):
+    """Score project-owned map-admission risk, never pose-factor risk.
+
+    `map_quality` is intentionally excluded because the adapter currently
+    derives it from dynamic ratio and repeatability.
+    """
+    def finite_term(value, transform):
+        if value is None or not math.isfinite(float(value)):
+            return None
+        return clamp(transform(float(value)))
+
+    residual_term = finite_term(
+        residual_p95_m,
+        lambda value: value / max(1.0e-9, float(tau_residual_m)),
+    )
+    coverage_term = finite_term(spatial_coverage, lambda value: 1.0 - value)
+    dynamic_term = finite_term(
+        dynamic_ratio,
+        lambda value: value / max(1.0e-9, float(tau_dynamic_ratio)),
+    )
+    uncertain_term = finite_term(
+        uncertain_ratio,
+        lambda value: value / max(1.0e-9, float(tau_uncertain_ratio)),
+    )
+    repeatability_term = finite_term(
+        feature_repeatability, lambda value: 1.0 - value,
+    )
+    score, coverage = weighted_score([
+        (residual_term, weights[0]),
+        (coverage_term, weights[1]),
+        (dynamic_term, weights[2]),
+        (uncertain_term, weights[3]),
+        (repeatability_term, weights[4]),
+    ])
+    evidence = {
+        "map_residual_p95_m": -1.0 if residual_p95_m is None else float(residual_p95_m),
+        "map_residual_term": -1.0 if residual_term is None else residual_term,
+        "map_spatial_coverage": -1.0 if spatial_coverage is None else float(spatial_coverage),
+        "map_spatial_coverage_term": -1.0 if coverage_term is None else coverage_term,
+        "map_dynamic_ratio": -1.0 if dynamic_ratio is None else float(dynamic_ratio),
+        "map_dynamic_ratio_term": -1.0 if dynamic_term is None else dynamic_term,
+        "map_uncertain_ratio": -1.0 if uncertain_ratio is None else float(uncertain_ratio),
+        "map_uncertain_ratio_term": -1.0 if uncertain_term is None else uncertain_term,
+        "map_feature_repeatability": (
+            -1.0 if feature_repeatability is None else float(feature_repeatability)
+        ),
+        "map_repeatability_term": -1.0 if repeatability_term is None else repeatability_term,
+        "map_quality_diagnostic": (
+            -1.0 if map_quality_diagnostic is None else float(map_quality_diagnostic)
+        ),
+        "map_visibility_evidence_available": 0.0,
+        "map_hard_gate_allowed": 0.0,
+        "lidar_map_score": score,
+    }
+    reasons = ["map_risk_not_used_for_lidar_pose_factor"]
+    if dynamic_term is not None and dynamic_term > 0.5:
+        reasons.append("high_dynamic_ratio_map_risk")
+    if uncertain_term is not None and uncertain_term > 0.5:
+        reasons.append("high_uncertain_ratio_map_risk")
+    if repeatability_term is not None and repeatability_term > 0.5:
+        reasons.append("low_repeatability_map_risk")
+    return finalize_score(score, coverage, evidence, reasons)
+
+
 def augment_lidar_score(
         paper_result, residual_p95_m, spatial_coverage, dynamic_ratio,
         uncertain_ratio, feature_repeatability, map_quality,

@@ -11,7 +11,7 @@ The implementation order is deliberate:
 5. Connect only stable observations to an offline unified sliding-window backend.
 6. Add relocalization and the full fault-injection evaluation matrix.
 
-The first backend may consume a relative LIO pose as a transitional factor, but it must be described as loose/mid coupling. A tightly coupled Ultra-Fusion-style backend requires point-to-plane LiDAR residuals and must not combine a FAST-LIO pose with a second factor built from the same IMU without accounting for correlation.
+The online backend currently accepts LIO, GNSS, IMU, and optical-flow factors in one bounded window. This is an initial four-source factor-fusion milestone, not a full tightly coupled Ultra-Fusion estimator: LiDAR remains an LIO pose factor and the front-end IMU correlation is not yet modelled. A tightly coupled Ultra-Fusion-style backend requires native point-to-plane LiDAR residuals, manifold relinearization, and explicit correlation handling.
 
 ## Current Status
 
@@ -20,15 +20,16 @@ The first backend may consume a relative LIO pose as a transitional factor, but 
 | M0 repository/dependencies | accepted for current simple-map scope | clean manifest-pinned FAST-LIO/Livox build |
 | M1 sensor data layer | implemented | normalized topics, faults, body crop, rosbag2 record/replay |
 | M2 LiDAR-IMU baseline | accepted on fixed simple route | four consecutive passing runs, including one post-scoring change |
-| M3 reliability scores | formula and runtime evidence implemented | all score tests pass; GNSS, flow, and LiDAR fault timelines validated |
+| M3 reliability scores | LiDAR factor/map risk split implemented | approximate LiDAR geometry is soft-only; clean and 95% point-dropout timelines validated |
 | M4 BDS/GNSS and optical flow | single-fault acceptance complete | GNSS jump/outage and flow quality gates pass fixed-route simulation |
-| M5 dynamic map protection | static-route baseline complete | dynamic-object injection and enabled/disabled contamination ablation remain |
+| M5 dynamic map protection | deterministic moving-cluster injection and metric ablation complete | clean/fault classifier separation is insufficient for default hard exclusion |
 | M6 ReliabilityScheduler | implementation and online factor changes pass | concurrent degradation and relocalization recovery remain |
-| M7 unified backend | online tangent-space prototype running | sparse solve, analytic IMU bias Jacobians, and fault gates pass; manifold backend remains |
+| M7 unified backend | initial four-source co-window factor fusion running | clean route accepted LiDAR/GNSS/IMU/flow factors concurrently; native LiDAR residual coupling and manifold backend remain |
 | M8 relocalization | registration core started | PCL ICP/NDT synthetic transform tests pass; keyframes, retrieval, and online recovery remain |
 
-The next gates are reproducible dynamic-object injection, keyframe admission,
-candidate retrieval, and a scheduler-triggered ICP/NDT recovery experiment.
+The next gates are native LiDAR residual export, a low-false-positive temporal
+dynamic-point classifier, and a scheduler-triggered ICP/NDT recovery experiment
+using the admitted static keyframe database.
 The online backend still requires manifold SE(3) relinearization and proper
 bias covariance propagation before a final fixed-vs-dynamic claim. See
 `docs/stage5_temporal_map_report_20260725.md`,

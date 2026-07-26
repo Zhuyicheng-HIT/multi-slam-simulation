@@ -49,6 +49,36 @@ class SlidingWindowBackendTest(unittest.TestCase):
             backend.add_state()
         self.assertEqual(backend.state_count, 2)
 
+    def test_marginal_prior_keeps_disabled_lidar_interval_observable(self):
+        backend = SlidingWindowBackend(max_states=2, solver="dense")
+        backend.add_state()
+        backend.add_state()
+        backend.add_prior(0, np.zeros(STATE_SIZE), covariance=1.0e-4)
+        backend.add_imu_delta(
+            0, 1, [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], covariance=0.01
+        )
+        backend.optimize()
+
+        backend.add_state()
+        backend.add_imu_delta(
+            0, 1, [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], covariance=0.01
+        )
+        backend.add_lidar_pose(
+            1, [100.0, 0.0, 0.0], [0.0, 0.0, 0.0], covariance=0.01,
+            decision={
+                "factor_enabled": False,
+                "reliability_weight": 0.0,
+                "covariance_inflation": 20.0,
+            },
+        )
+        estimate = backend.optimize()[1]
+
+        self.assertAlmostEqual(estimate[0], 2.0, places=2)
+        self.assertTrue(np.all(np.isfinite(estimate)))
+        summaries = backend.factor_summary()
+        self.assertTrue(any(record.name == "marginal_prior" for record in summaries))
+        self.assertFalse(summaries[-1].enabled)
+
     @unittest.skipUnless(SPARSE_SOLVER_AVAILABLE, "scipy sparse solver unavailable")
     def test_sparse_and_dense_solvers_agree_when_available(self):
         dense = SlidingWindowBackend(max_states=3, solver="dense")
@@ -88,6 +118,45 @@ class SlidingWindowBackendTest(unittest.TestCase):
         self.assertEqual(summary[-1].name, "imu_preintegrated")
         self.assertEqual(summary[-1].residual_dimension, 15)
         self.assertTrue(summary[-1].enabled)
+
+    def test_disabled_imu_factor_still_exports_nominal_residual_evidence(self):
+        backend = SlidingWindowBackend(max_states=3, solver="dense")
+        backend.add_state()
+        backend.add_state()
+        backend.add_prior(0, np.zeros(STATE_SIZE), covariance=1.0e-4)
+        backend.add_prior(1, np.zeros(STATE_SIZE), covariance=1.0e-4)
+        zero_jacobian = np.zeros(9)
+        backend.add_bias_aware_imu(
+            0, 1, 0.1,
+            delta_position=[1.0, 0.0, 0.0],
+            delta_velocity=[0.0, 0.0, 0.0],
+            delta_rotation=[0.0, 0.0, 0.0],
+            position_accel_bias_jacobian=zero_jacobian,
+            position_gyro_bias_jacobian=zero_jacobian,
+            velocity_accel_bias_jacobian=zero_jacobian,
+            velocity_gyro_bias_jacobian=zero_jacobian,
+            rotation_gyro_bias_jacobian=zero_jacobian,
+            gravity=[0.0, 0.0, 0.0],
+            covariance=[0.25] * 9,
+            bias_random_walk_covariance=[0.25] * 6,
+            decision={
+                "factor_enabled": False,
+                "reliability_weight": 0.0,
+                "covariance_inflation": 20.0,
+            },
+        )
+        backend.optimize()
+
+        residual = backend.latest_factor_residual("imu_preintegrated")
+
+        self.assertIsNotNone(residual)
+        self.assertFalse(residual.enabled)
+        self.assertEqual(residual.residual_dimension, 15)
+        self.assertAlmostEqual(residual.mahalanobis_squared, 4.0, places=2)
+        nominal = backend.latest_factor_residual(
+            "imu_preintegrated", covariance=[0.05] * 15
+        )
+        self.assertAlmostEqual(nominal.mahalanobis_squared, 20.0, places=2)
 
 
 if __name__ == "__main__":

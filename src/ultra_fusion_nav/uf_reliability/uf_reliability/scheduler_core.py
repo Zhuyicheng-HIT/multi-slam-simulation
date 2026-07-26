@@ -117,9 +117,11 @@ class ReliabilitySchedulerCore:
             valid = False
             value = 1.0
             sample_reasons = []
+            hard_gate_allowed = True
             if sample is not None:
                 value = clamp(sample.get("degradation_score", 1.0))
                 valid = bool(sample.get("valid", False))
+                hard_gate_allowed = bool(sample.get("hard_gate_allowed", True))
                 sample_age = max(0.0, now - float(sample.get("arrival_s", now)))
                 sample_reasons = list(sample.get("reasons", ()))
                 observation_count = max(0, int(sample.get("observation_count", 1)))
@@ -146,8 +148,15 @@ class ReliabilitySchedulerCore:
                     valid_count += 1
                     severity = max(severity, value)
             if self.factor_enabled[name]:
-                if stale or value >= self.config.factor_disable_threshold:
+                if stale or not valid:
                     self.factor_enabled[name] = False
+                elif value >= self.config.factor_disable_threshold:
+                    if hard_gate_allowed:
+                        self.factor_enabled[name] = False
+                    else:
+                        sample_reasons.append(
+                            "hard_gate_blocked_by_evidence_policy"
+                        )
             elif valid and value <= self.config.factor_enable_threshold:
                 self.factor_enabled[name] = True
             inflation[name] = (

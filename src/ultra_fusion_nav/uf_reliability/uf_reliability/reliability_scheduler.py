@@ -67,9 +67,16 @@ class ReliabilityScheduler(Node):
             f"active_modalities={','.join(self.core.active_modalities)}")
 
     def _score(self, modality, msg):
+        evidence = {
+            name: float(value)
+            for name, value in zip(msg.evidence_names, msg.evidence_values)
+        }
         self.scores[modality] = {
             "degradation_score": float(msg.degradation_score),
             "valid": bool(msg.valid),
+            "hard_gate_allowed": bool(
+                evidence.get("hard_gate_allowed", 1.0) >= 0.5
+            ),
             "observation_count": int(msg.observation_count),
             "minimum_observation_count": int(msg.minimum_observation_count),
             "reasons": tuple(msg.reasons),

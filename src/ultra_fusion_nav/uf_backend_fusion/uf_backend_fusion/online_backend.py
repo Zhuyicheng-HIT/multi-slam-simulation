@@ -131,6 +131,18 @@ def scheduler_decision(weight=1.0, enabled=True, inflation=1.0):
     }
 
 
+def lidar_bypass_allowed(
+        preserve_lio_anchor, lidar_score_fresh,
+        imu_score_fresh, imu_factor_enabled):
+    """Require explicit opt-in plus a live inertial orientation backup."""
+    return bool(
+        not preserve_lio_anchor
+        and lidar_score_fresh
+        and imu_score_fresh
+        and imu_factor_enabled
+    )
+
+
 def gnss_jump_rejected(current_position, gnss_position, gate_m=20.0):
     current = np.asarray(current_position, dtype=float)
     measurement = np.asarray(gnss_position, dtype=float)
@@ -139,6 +151,40 @@ def gnss_jump_rejected(current_position, gnss_position, gate_m=20.0):
     if not np.all(np.isfinite(current)) or not np.all(np.isfinite(measurement)):
         return True
     return float(np.linalg.norm(current - measurement)) > float(gate_m)
+
+
+def fused_motion_reference(previous_state, dt_s):
+    """Propagate a short-horizon gate reference without using current LIO."""
+    state = np.asarray(previous_state, dtype=float)
+    dt_s = float(dt_s)
+    if state.shape != (15,) or not np.all(np.isfinite(state)):
+        raise ValueError("previous fused state must be a finite 15-vector")
+    if not math.isfinite(dt_s) or dt_s <= 0.0:
+        raise ValueError("propagation interval must be finite and positive")
+    delta_position = state[6:9] * dt_s
+    return {
+        "position": state[:3] + delta_position,
+        "delta_position": delta_position,
+        "yaw": float(state[5]),
+    }
+
+
+def lidar_prediction_innovation(position, yaw, reference):
+    """Compare LIO with a short-horizon prediction formed before current LIO."""
+    current = np.asarray(position, dtype=float)
+    predicted = np.asarray(reference["position"], dtype=float)
+    if current.shape != (3,) or predicted.shape != (3,):
+        raise ValueError("LiDAR prediction innovation expects two 3-vectors")
+    if not np.all(np.isfinite(current)) or not np.all(np.isfinite(predicted)):
+        raise ValueError("LiDAR prediction innovation must be finite")
+    yaw_error = math.atan2(
+        math.sin(float(yaw) - float(reference["yaw"])),
+        math.cos(float(yaw) - float(reference["yaw"])),
+    )
+    return {
+        "position_m": float(np.linalg.norm(current - predicted)),
+        "yaw_rad": abs(float(yaw_error)),
+    }
 
 
 def flow_observation_delta(flow_records, yaw):
@@ -253,11 +299,18 @@ class UnifiedBackendNode(Node):
             "lidar_disabled": 0, "gnss_factors": 0, "gnss_jump_rejected": 0,
             "flow_factors": 0, "flow_disabled_quality": 0,
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
+            "lidar_anchor_overrides": 0, "imu_residual_updates": 0,
+            "imu_residual_errors": 0,
         }
         self.last_reason = "waiting_for_lio"
         self.last_callback_ms = 0.0
         self.last_imu_reason = "unavailable"
+        self.last_imu_preintegration_residual_mahalanobis = -1.0
+        self.last_imu_residual_error = "none"
+        self.last_exception = "none"
         self.last_flow_reason = "unavailable"
+        self.last_lidar_prediction_position_innovation_m = -1.0
+        self.last_lidar_prediction_yaw_innovation_rad = -1.0
         self.last_output = None
 
         self.odom_pub = self.create_publisher(
@@ -289,7 +342,8 @@ class UnifiedBackendNode(Node):
             )
         self.create_timer(1.0, self._diagnostics)
         self.get_logger().info(
-            "Unified backend active: LIO anchor + GNSS/flow factors; "
+            "Unified backend active: scheduler-gated LIO + GNSS/flow factors; "
+            f"preserve_lio_anchor={'on' if self.preserve_lio_anchor else 'off'}; "
             f"IMU bias-aware local factor={'on' if self.imu_factor_enabled else 'off'}")
 
     def _now_s(self):
@@ -325,32 +379,69 @@ class UnifiedBackendNode(Node):
         # LIO is the local estimator anchor. A missing/stale diagnostic must
         # not silently remove its pose factor and leave rotation unobservable.
         score_item = self.scores.get(modality)
-        score_fresh = (
-            score_item is not None
-            and score_item["valid"]
-            and now - score_item["stamp_mono"] <= self.scheduler_timeout_s
-        )
-        if modality == "lidar" and self.preserve_lio_anchor and not score_fresh:
+        score_fresh = self._score_is_fresh(modality, now)
+        if modality == "lidar" and not score_fresh:
             return scheduler_decision(1.0, default_enabled, 1.0)
         if self.scheduler_arrival is not None and now - self.scheduler_arrival <= self.scheduler_timeout_s:
             item = self.scheduler.get(modality)
             if item is not None:
                 decision = scheduler_decision(item[0], item[1], item[2])
-                if modality == "lidar" and self.preserve_lio_anchor and not decision["factor_enabled"]:
-                    decision["factor_enabled"] = True
-                    decision["reliability_weight"] = max(0.05, decision["reliability_weight"])
-                    decision["covariance_inflation"] = max(
-                        1.0, min(MAX_COVARIANCE_INFLATION, decision["covariance_inflation"])
-                    )
-                return decision
+                return self._protect_lidar_anchor(
+                    modality, decision, now, score_fresh
+                )
         item = self.scores.get(modality)
         if item is not None and now - item["stamp_mono"] <= self.scheduler_timeout_s:
             decision = scheduler_decision(item["weight"], item["valid"], 1.0)
-            if modality == "lidar" and self.preserve_lio_anchor and not decision["factor_enabled"]:
-                decision["factor_enabled"] = True
-                decision["reliability_weight"] = max(0.05, decision["reliability_weight"])
-            return decision
+            return self._protect_lidar_anchor(
+                modality, decision, now, score_fresh
+            )
         return scheduler_decision(1.0, default_enabled, 1.0)
+
+    def _score_is_fresh(self, modality, now):
+        item = self.scores.get(modality)
+        return bool(
+            item is not None
+            and item["valid"]
+            and now - item["stamp_mono"] <= self.scheduler_timeout_s
+        )
+
+    def _imu_backup_ready(self, now):
+        score_fresh = self._score_is_fresh("imu", now)
+        scheduler_fresh = (
+            self.scheduler_arrival is not None
+            and now - self.scheduler_arrival <= self.scheduler_timeout_s
+        )
+        if scheduler_fresh:
+            item = self.scheduler.get("imu")
+            factor_enabled = bool(
+                item is not None and item[1] and float(item[0]) > 0.0
+            )
+        else:
+            item = self.scores.get("imu")
+            factor_enabled = bool(
+                score_fresh and item is not None and item["weight"] > 0.0
+            )
+        return score_fresh, factor_enabled
+
+    def _protect_lidar_anchor(self, modality, decision, now, score_fresh):
+        if modality != "lidar" or decision["factor_enabled"]:
+            return decision
+        imu_score_fresh, imu_factor_enabled = self._imu_backup_ready(now)
+        if lidar_bypass_allowed(
+            self.preserve_lio_anchor, score_fresh,
+            imu_score_fresh, imu_factor_enabled,
+        ):
+            return decision
+        decision["factor_enabled"] = True
+        decision["reliability_weight"] = max(
+            0.05, decision["reliability_weight"]
+        )
+        decision["anchor_override"] = True
+        decision["covariance_inflation"] = max(
+            1.0,
+            min(MAX_COVARIANCE_INFLATION, decision["covariance_inflation"]),
+        )
+        return decision
 
     def _imu(self, msg):
         stamp = stamp_seconds(msg.header.stamp)
@@ -417,7 +508,10 @@ class UnifiedBackendNode(Node):
 
     def _imu_factor(self, previous_stamp, current_stamp, previous_yaw, previous_index, current_index):
         if not self.imu_factor_enabled or len(self.imu_buffer) < 2:
-            return
+            self.last_imu_reason = (
+                "disabled" if not self.imu_factor_enabled else "insufficient_samples"
+            )
+            return None
         samples = list(self.imu_buffer)
         stamps = [sample.stamp_s for sample in samples]
         start = max(0, bisect_left(stamps, previous_stamp) - 1)
@@ -426,7 +520,7 @@ class UnifiedBackendNode(Node):
         self.last_imu_reason = result.reason
         if not result.valid:
             self.counts["imu_invalid"] += 1
-            return
+            return None
         world_position = rotate_planar(
             result.delta_position[0], result.delta_position[1], previous_yaw)
         world_velocity = rotate_planar(
@@ -452,8 +546,15 @@ class UnifiedBackendNode(Node):
             result.jacobian_delta_velocity_gyro_bias).reshape(3, 3)
         rotation_gyro_jacobian = map_rotation @ np.asarray(
             result.jacobian_delta_rotation_gyro_bias).reshape(3, 3)
-        covariance = np.asarray(result.covariance, dtype=float)
-        covariance = np.maximum(covariance * self.imu_covariance_scale, 1.0e-6)
+        nominal_covariance = np.maximum(
+            np.asarray(result.covariance, dtype=float), 1.0e-6
+        )
+        optimization_covariance = np.maximum(
+            nominal_covariance * self.imu_covariance_scale, 1.0e-6
+        )
+        bias_random_walk_covariance = np.full(
+            6, self.imu_bias_random_walk_variance
+        )
         decision = self._decision("imu", default_enabled=True)
         self.backend.add_bias_aware_imu(
             previous_index, current_index, result.dt_s,
@@ -465,11 +566,12 @@ class UnifiedBackendNode(Node):
             # zero vector here avoids adding it twice; the eventual manifold
             # implementation will carry gravity outside the delta instead.
             gravity=(0.0, 0.0, 0.0),
-            covariance=covariance,
-            bias_random_walk_covariance=np.full(6, self.imu_bias_random_walk_variance),
+            covariance=optimization_covariance,
+            bias_random_walk_covariance=bias_random_walk_covariance,
             decision=decision,
         )
         self.counts["imu_factors"] += 1
+        return np.concatenate((nominal_covariance, bias_random_walk_covariance))
 
     def _gnss_factor(self, stamp, position, index):
         if self.latest_gnss is None or self.projector is None or self.lio_origin is None:
@@ -522,7 +624,7 @@ class UnifiedBackendNode(Node):
             [item for item in self.flow_buffer if item["stamp_s"] > current_stamp],
             maxlen=3000,
         )
-        observation = flow_observation_delta(records, self.last_lio_yaw)
+        observation = flow_observation_delta(records, previous_yaw)
         if observation is None:
             self.last_flow_reason = "no_valid_observation"
             return
@@ -567,8 +669,21 @@ class UnifiedBackendNode(Node):
         )
         wrapped_yaw = quaternion_to_yaw(pose.orientation)
         yaw = unwrap_yaw(self.last_lio_yaw if self.last_lio_stamp is not None else None, wrapped_yaw)
-        current_index = self.backend.add_state()
+        previous_state = (
+            self.backend.state(-1) if self.backend.state_count > 0 else None
+        )
+        current_index = self.backend.add_state(previous_state)
         rotation = [0.0, 0.0, yaw]
+        reference = None
+        if self.last_lio_stamp is not None:
+            reference = fused_motion_reference(
+                previous_state, stamp - self.last_lio_stamp,
+            )
+            innovation = lidar_prediction_innovation(position, yaw, reference)
+            self.last_lidar_prediction_position_innovation_m = innovation[
+                "position_m"
+            ]
+            self.last_lidar_prediction_yaw_innovation_rad = innovation["yaw_rad"]
         if self.last_lio_stamp is None:
             self.lio_origin = position.copy()
             self.backend.add_prior(
@@ -577,6 +692,8 @@ class UnifiedBackendNode(Node):
                 covariance=np.full(15, 1.0e-4),
             )
         lidar_decision = self._decision("lidar", default_enabled=True)
+        if lidar_decision.get("anchor_override", False):
+            self.counts["lidar_anchor_overrides"] += 1
         self.counts["lidar_factors"] += 1
         if not lidar_decision["factor_enabled"]:
             self.counts["lidar_disabled"] += 1
@@ -585,20 +702,42 @@ class UnifiedBackendNode(Node):
             covariance=[0.05 ** 2] * 3 + [0.03 ** 2] * 3,
             decision=lidar_decision,
         )
+        imu_diagnostic_covariance = None
         if self.last_lio_stamp is not None:
             previous_index = current_index - 1
-            lio_delta = position - self.last_lio_position
-            self._gnss_factor(stamp, position, current_index)
+            self._gnss_factor(stamp, reference["position"], current_index)
             self._flow_factor(
-                self.last_lio_stamp, stamp, self.last_lio_yaw,
-                previous_index, current_index, lio_delta,
+                self.last_lio_stamp, stamp, reference["yaw"],
+                previous_index, current_index, reference["delta_position"],
             )
-            self._imu_factor(
-                self.last_lio_stamp, stamp, self.last_lio_yaw,
+            imu_diagnostic_covariance = self._imu_factor(
+                self.last_lio_stamp, stamp, reference["yaw"],
                 previous_index, current_index,
             )
         try:
             self.backend.optimize()
+            if imu_diagnostic_covariance is not None:
+                try:
+                    residual = self.backend.latest_factor_residual(
+                        "imu_preintegrated", covariance=imu_diagnostic_covariance
+                    )
+                    if residual is not None:
+                        self.last_imu_preintegration_residual_mahalanobis = (
+                            residual.mahalanobis_squared
+                        )
+                        self.counts["imu_residual_updates"] += 1
+                        self.last_imu_residual_error = "none"
+                    else:
+                        self.last_imu_preintegration_residual_mahalanobis = -1.0
+                        self.last_imu_residual_error = "factor_not_found"
+                except (ValueError, IndexError) as error:
+                    self.last_imu_preintegration_residual_mahalanobis = -1.0
+                    self.last_imu_residual_error = (
+                        f"{type(error).__name__}:{error}"
+                    )
+                    self.counts["imu_residual_errors"] += 1
+            else:
+                self.last_imu_preintegration_residual_mahalanobis = -1.0
             estimate = self.backend.state(current_index)
             self._publish(msg.header, estimate)
             self.counts["lio"] += 1
@@ -606,6 +745,7 @@ class UnifiedBackendNode(Node):
         except (np.linalg.LinAlgError, ValueError, IndexError) as error:
             self.counts["optimization_errors"] += 1
             self.last_reason = f"optimization_error:{type(error).__name__}"
+            self.last_exception = f"{type(error).__name__}:{error}"
         self.last_lio_stamp = stamp
         self.last_lio_position = position
         self.last_lio_yaw = yaw
@@ -669,6 +809,20 @@ class UnifiedBackendNode(Node):
             self._key("window_factors", self.backend.factor_count),
             self._key("callback_ms", f"{self.last_callback_ms:.3f}"),
             self._key("last_imu_reason", self.last_imu_reason),
+            self._key("last_imu_residual_error", self.last_imu_residual_error),
+            self._key("last_exception", self.last_exception),
+            self._key(
+                "imu_preintegration_residual_mahalanobis",
+                f"{self.last_imu_preintegration_residual_mahalanobis:.9g}",
+            ),
+            self._key(
+                "lidar_prediction_position_innovation_m",
+                f"{self.last_lidar_prediction_position_innovation_m:.9g}",
+            ),
+            self._key(
+                "lidar_prediction_yaw_innovation_rad",
+                f"{self.last_lidar_prediction_yaw_innovation_rad:.9g}",
+            ),
             self._key("last_flow_reason", self.last_flow_reason),
         ]
         diagnostic.values.extend(

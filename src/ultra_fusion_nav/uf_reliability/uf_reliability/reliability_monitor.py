@@ -6,6 +6,7 @@ import time
 
 import numpy as np
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray
 from mavros_msgs.msg import GPSRAW, OpticalFlowRad
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
@@ -15,10 +16,12 @@ from sensor_msgs.msg import Image, Imu, NavSatFix
 from uf_interfaces.msg import GnssIntegrity, LioDiagnostics, ReliabilityScore
 
 from .scoring import (
-    augment_lidar_score,
     gnss_integrity_quality,
     gnss_score,
     imu_score,
+    lidar_factor_score,
+    lidar_innovation_score,
+    lidar_map_score,
     lidar_score,
     optical_flow_displacement_frd,
     optical_flow_score,
@@ -41,6 +44,22 @@ def distance_m(a, b):
     dy = (a.latitude - b.latitude) * lat_scale
     dz = a.altitude - b.altitude
     return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def nonnegative_diagnostic_value(message, status_name, key):
+    """Read one finite non-negative scalar from a DiagnosticArray-like message."""
+    for status in message.status:
+        if str(status.name) != str(status_name):
+            continue
+        for item in status.values:
+            if str(item.key) != str(key):
+                continue
+            try:
+                value = float(item.value)
+            except (TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) and value >= 0.0 else None
+    return None
 
 
 def yaw_from_quaternion(quaternion):
@@ -128,6 +147,16 @@ class ReliabilityMonitor(Node):
             "lidar.extension.reference": 0.35,
             "lidar.extension.paper_weight": 0.70,
             "lidar.extension.weights": [0.20, 0.15, 0.20, 0.10, 0.15, 0.20],
+            "lidar.factor.approximate_geometry_weight": 0.20,
+            "lidar.factor.native_geometry_weight": 0.60,
+            "lidar.factor.tau_position_innovation_m": 0.50,
+            "lidar.factor.tau_yaw_innovation_rad": 0.35,
+            "lidar.factor.innovation_weights": [0.70, 0.30],
+            "lidar.factor.innovation_timeout_s": 2.0,
+            "lidar.map.tau_residual_m": 0.15,
+            "lidar.map.tau_dynamic_ratio": 0.20,
+            "lidar.map.tau_uncertain_ratio": 0.25,
+            "lidar.map.weights": [0.25, 0.20, 0.20, 0.15, 0.20],
             "gnss.tau_covariance": 25.0,
             "gnss.tau_innovation": 5.0,
             "gnss.weights": [0.25, 0.20, 0.55],
@@ -144,6 +173,8 @@ class ReliabilityMonitor(Node):
             "imu.gyro_saturation": 10.0,
             "imu.weights": [0.35, 0.45, 0.20],
             "imu.minimum_window_samples": 20,
+            "imu.backend_diagnostic_topic": "/fusion/unified/diagnostics",
+            "imu.preintegration_residual_timeout_s": 2.0,
             "optical_flow.tau_translation": 0.30,
             "optical_flow.weights": [0.60, 0.25, 0.15],
             "optical_flow.lio_max_gap_s": 0.5,
@@ -157,13 +188,20 @@ class ReliabilityMonitor(Node):
             self.declare_parameter(name, value)
         self.score_publishers = {
             name: self.create_publisher(ReliabilityScore, f"/reliability/{name}_score", 20)
-            for name in ("lidar", "gnss", "imu", "optical_flow", "vision")
+            for name in (
+                "lidar", "lidar_map", "gnss", "imu", "optical_flow", "vision"
+            )
         }
         self.gnss_integrity_pub = self.create_publisher(GnssIntegrity, "/reliability/gnss_integrity", 20)
         self.last_imu = None
         self.last_imu_ns = None
         self.last_imu_publish_ns = None
         self.imu_window = deque(maxlen=100)
+        self.imu_preintegration_residual = None
+        self.imu_preintegration_residual_arrival = None
+        self.lidar_innovation_position = None
+        self.lidar_innovation_yaw = None
+        self.lidar_innovation_arrival = None
         self.last_gnss = None
         self.last_gnss_ns = None
         self.last_gnss_arrival_ns = None
@@ -186,6 +224,12 @@ class ReliabilityMonitor(Node):
             self._gps_raw, qos_profile_sensor_data,
         )
         self.create_subscription(Imu, "/sensors/imu", self._imu, qos_profile_sensor_data)
+        self.create_subscription(
+            DiagnosticArray,
+            str(self.get_parameter("imu.backend_diagnostic_topic").value),
+            self._backend_diagnostics,
+            10,
+        )
         self.create_subscription(OpticalFlowRad, "/sensors/optical_flow/rad", self._flow, qos_profile_sensor_data)
         self.create_subscription(Image, "/sensors/rgbd/depth", self._depth, qos_profile_sensor_data)
         self.create_subscription(Image, "/sensors/rgbd/color", self._color, qos_profile_sensor_data)
@@ -227,24 +271,34 @@ class ReliabilityMonitor(Node):
             self.get_parameter("lidar.tau_normal").value,
             tuple(self.get_parameter("lidar.weights").value),
         )
-        result = augment_lidar_score(
-            paper_result,
-            msg.residual_p95_m,
-            msg.spatial_coverage,
-            msg.dynamic_ratio,
-            msg.uncertain_ratio,
-            msg.feature_repeatability,
-            msg.map_quality,
-            self.get_parameter("lidar.extension.tau_residual_m").value,
-            self.get_parameter("lidar.extension.tau_dynamic_ratio").value,
-            self.get_parameter("lidar.extension.tau_uncertain_ratio").value,
-            self.get_parameter("lidar.extension.reference").value,
-            self.get_parameter("lidar.extension.paper_weight").value,
-            tuple(self.get_parameter("lidar.extension.weights").value),
+        innovation_position = self.lidar_innovation_position
+        innovation_yaw = self.lidar_innovation_yaw
+        innovation_age_s = -1.0
+        if self.lidar_innovation_arrival is not None:
+            innovation_age_s = max(
+                0.0, time.monotonic() - self.lidar_innovation_arrival
+            )
+            if innovation_age_s > float(
+                self.get_parameter("lidar.factor.innovation_timeout_s").value
+            ):
+                innovation_position = None
+                innovation_yaw = None
+        innovation_result = lidar_innovation_score(
+            innovation_position,
+            innovation_yaw,
+            self.get_parameter("lidar.factor.tau_position_innovation_m").value,
+            self.get_parameter("lidar.factor.tau_yaw_innovation_rad").value,
+            tuple(self.get_parameter("lidar.factor.innovation_weights").value),
         )
-        result[1]["residual_mean_m_extension"] = float(msg.residual_mean_m)
-        if msg.approximate:
-            result[2].append("approximate_external_geometry")
+        result = lidar_factor_score(
+            paper_result,
+            innovation_result,
+            bool(msg.approximate),
+            self.get_parameter("lidar.factor.approximate_geometry_weight").value,
+            self.get_parameter("lidar.factor.native_geometry_weight").value,
+        )
+        result[1]["lidar_innovation_age_s"] = innovation_age_s
+        result[1]["residual_mean_m_diagnostic"] = float(msg.residual_mean_m)
         self._publish(
             "lidar",
             msg.header,
@@ -252,6 +306,26 @@ class ReliabilityMonitor(Node):
             msg.input_points > 0,
             msg.matched_points,
             self.get_parameter("lidar.minimum_matches").value,
+        )
+        map_result = lidar_map_score(
+            msg.residual_p95_m,
+            msg.spatial_coverage,
+            msg.dynamic_ratio,
+            msg.uncertain_ratio,
+            msg.feature_repeatability,
+            self.get_parameter("lidar.map.tau_residual_m").value,
+            self.get_parameter("lidar.map.tau_dynamic_ratio").value,
+            self.get_parameter("lidar.map.tau_uncertain_ratio").value,
+            tuple(self.get_parameter("lidar.map.weights").value),
+            map_quality_diagnostic=msg.map_quality,
+        )
+        self._publish(
+            "lidar_map",
+            msg.header,
+            map_result,
+            msg.input_points > 0,
+            msg.input_points,
+            1,
         )
 
     def _odom(self, msg):
@@ -270,6 +344,34 @@ class ReliabilityMonitor(Node):
     def _gps_raw(self, msg):
         self.last_gps_raw = copy.deepcopy(msg)
         self.last_gps_raw_arrival_ns = self.get_clock().now().nanoseconds
+
+    def _backend_diagnostics(self, msg):
+        value = nonnegative_diagnostic_value(
+            msg,
+            "unified_backend_fusion",
+            "imu_preintegration_residual_mahalanobis",
+        )
+        self.imu_preintegration_residual = value
+        self.imu_preintegration_residual_arrival = (
+            time.monotonic() if value is not None else None
+        )
+        position_innovation = nonnegative_diagnostic_value(
+            msg,
+            "unified_backend_fusion",
+            "lidar_prediction_position_innovation_m",
+        )
+        yaw_innovation = nonnegative_diagnostic_value(
+            msg,
+            "unified_backend_fusion",
+            "lidar_prediction_yaw_innovation_rad",
+        )
+        self.lidar_innovation_position = position_innovation
+        self.lidar_innovation_yaw = yaw_innovation
+        self.lidar_innovation_arrival = (
+            time.monotonic()
+            if position_innovation is not None and yaw_innovation is not None
+            else None
+        )
 
     def _gnss(self, msg):
         now_ns = self.get_clock().now().nanoseconds
@@ -376,15 +478,30 @@ class ReliabilityMonitor(Node):
             accel_norm >= self.get_parameter("imu.accel_saturation").value
             or gyro_norm >= self.get_parameter("imu.gyro_saturation").value
         )
+        residual = -1.0
+        residual_age_s = -1.0
+        if self.imu_preintegration_residual_arrival is not None:
+            residual_age_s = max(
+                0.0, time.monotonic() - self.imu_preintegration_residual_arrival
+            )
+            if residual_age_s <= float(
+                self.get_parameter("imu.preintegration_residual_timeout_s").value
+            ):
+                residual = float(self.imu_preintegration_residual)
         result = imu_score(
-            excitation, -1.0, saturation,
+            excitation, residual, saturation,
             self.get_parameter("imu.tau_preintegration").value,
             tuple(self.get_parameter("imu.weights").value),
         )
         result[1]["accel_norm_mps2"] = accel_norm
         result[1]["gyro_norm_radps"] = gyro_norm
         result[1]["jerk_mps3_diagnostic"] = jerk
-        result[1]["preintegration_residual_unavailable"] = -1.0
+        result[1]["preintegration_residual_age_s"] = residual_age_s
+        result[1]["preintegration_residual_available"] = (
+            1.0 if residual >= 0.0 else 0.0
+        )
+        if residual < 0.0:
+            result[2].append("preintegration_residual_unavailable_eq21")
         self._publish(
             "imu",
             msg.header,
