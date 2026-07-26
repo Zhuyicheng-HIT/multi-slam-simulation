@@ -41,9 +41,13 @@ The backend must apply `measurement_variance` when forming information. The
 and reliability diagnostics only; it must not be added as an independent
 LiDAR measurement covariance.
 
-The packet is a scan-local linearization. It is not yet a complete reusable
-sliding-window factor: a later backend must decide when to relinearize the
-correspondences and how to eliminate or retain FAST-LIO state variables.
+The packet is a scan-local linearization. The current Stage 7 backend consumes
+its fixed-extrinsic six-DoF pose block as a condensed tangent-space normal
+equation and pairs it to `/lio/odom` by header timestamp. The backend does not
+add a same-state LIO pose proxy when the native packet is present, and it does
+not consume `pose_covariance` as another factor. Relinearization, independent
+map ownership, and elimination/retention of FAST-LIO state variables remain
+open work for the later manifold backend.
 
 ## Runtime switch
 
@@ -115,3 +119,8 @@ The 2026-07-26 nominal, 75% dropout, and 90% dropout matrix is documented in
 `docs/native_lidar_factor_test_report.md`. The strongest run validated 1404 of
 1404 packets with the independent pose-Jacobian geometry check enabled and
 showed scheduler continuous down-weighting, binary disable, and recovery.
+
+The first online consumer result is recorded in
+`src/ultra_fusion_nav/docs/stage7_native_lidar_backend_report_20260726.md`.
+In that fixed-route run, 692 native packets were inserted into the backend,
+with zero invalid packets and three startup-only pose fallbacks.

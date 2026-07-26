@@ -113,6 +113,25 @@ class ReliabilityTimelineRecorder(Node):
                 "imu_residual_updates": int(values.get("imu_residual_updates", 0)),
                 "imu_residual_errors": int(values.get("imu_residual_errors", 0)),
                 "lidar_anchor_overrides": int(values.get("lidar_anchor_overrides", 0)),
+                "native_lidar_received": int(values.get("native_lidar_received", 0)),
+                "native_lidar_invalid": int(values.get("native_lidar_invalid", 0)),
+                "native_lidar_factors": int(values.get("native_lidar_factors", 0)),
+                "native_lidar_hard_disabled": int(
+                    values.get("native_lidar_hard_disabled", 0)
+                ),
+                "native_lidar_pose_fallbacks": int(
+                    values.get("native_lidar_pose_fallbacks", 0)
+                ),
+                "native_lidar_pair_timeouts": int(
+                    values.get("native_lidar_pair_timeouts", 0)
+                ),
+                "lidar_factor_source": str(
+                    values.get("lidar_factor_source", "unavailable")
+                ),
+                "native_lidar_matches": int(values.get("native_lidar_matches", 0)),
+                "native_lidar_stamp_error_ms": float(
+                    values.get("native_lidar_stamp_error_ms", -1.0)
+                ),
                 "lidar_prediction_position_innovation_m": float(
                     values.get("lidar_prediction_position_innovation_m", -1.0)
                 ),
@@ -197,6 +216,33 @@ def summarize(events):
         "backend_lidar_anchor_overrides_max": max(
             (event["lidar_anchor_overrides"] for event in backend), default=0
         ),
+        "backend_native_lidar_received_max": max(
+            (event["native_lidar_received"] for event in backend), default=0
+        ),
+        "backend_native_lidar_invalid_max": max(
+            (event["native_lidar_invalid"] for event in backend), default=0
+        ),
+        "backend_native_lidar_factors_max": max(
+            (event["native_lidar_factors"] for event in backend), default=0
+        ),
+        "backend_native_lidar_hard_disabled_max": max(
+            (event["native_lidar_hard_disabled"] for event in backend), default=0
+        ),
+        "backend_native_lidar_pose_fallbacks_max": max(
+            (event["native_lidar_pose_fallbacks"] for event in backend), default=0
+        ),
+        "backend_native_lidar_pair_timeouts_max": max(
+            (event["native_lidar_pair_timeouts"] for event in backend), default=0
+        ),
+        "backend_native_lidar_matches_median": backend_nonnegative_median(
+            "native_lidar_matches"
+        ),
+        "backend_native_lidar_stamp_error_ms_median": backend_nonnegative_median(
+            "native_lidar_stamp_error_ms"
+        ),
+        "backend_lidar_factor_sources": sorted({
+            event["lidar_factor_source"] for event in backend
+        }),
         "backend_lidar_prediction_position_innovation_m_median": (
             backend_nonnegative_median("lidar_prediction_position_innovation_m")
         ),

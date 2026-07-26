@@ -8,7 +8,7 @@ OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/logs/uf_stage2_${RUN_ID}}
 ANALYSIS_DURATION_S=${ANALYSIS_DURATION_S:-125}
 ENABLE_LIO_ADAPTER=${ENABLE_LIO_ADAPTER:-1}
 ENABLE_UNIFIED_BACKEND=${ENABLE_UNIFIED_BACKEND:-0}
-PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-true}
+PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-false}
 ENABLE_RELIABILITY=${ENABLE_RELIABILITY:-0}
 ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
 FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
@@ -27,6 +27,14 @@ FAULT_MAGNITUDE=${FAULT_MAGNITUDE:-0}
 FAULT_SECONDARY_MAGNITUDE=${FAULT_SECONDARY_MAGNITUDE:-0}
 FAULT_DELIVERY_MODE=${FAULT_DELIVERY_MODE:-runtime}
 
+if [[ "$ENABLE_UNIFIED_BACKEND" == "1" \
+      && -z "${FASTLIO_NATIVE_FACTOR_EXPORT:-}" ]]; then
+  # A unified run must exercise the native factor path by default. Set this to
+  # 0 explicitly only for the documented pose-fallback ablation.
+  FASTLIO_NATIVE_FACTOR_EXPORT=1
+  export FASTLIO_NATIVE_FACTOR_EXPORT
+fi
+
 if [[ "$FAULT_DELIVERY_MODE" != "runtime" && "$FAULT_DELIVERY_MODE" != "startup" ]]; then
   printf 'FAULT_DELIVERY_MODE must be runtime or startup, got %s\n' \
     "$FAULT_DELIVERY_MODE" >&2
@@ -44,10 +52,12 @@ export MKL_NUM_THREADS="$NUMPY_NUM_THREADS"
 export NUMEXPR_NUM_THREADS="$NUMPY_NUM_THREADS"
 set +u
 source /opt/ros/humble/setup.bash
+source "$REPO_ROOT/install/setup.bash"
 if [[ -f "$HOME/multi-slam-deps/mid360_ws/install/setup.bash" ]]; then
+  # Keep the patched FAST-LIO message overlay on top so the backend can import
+  # NativeLidarFactor at runtime while still seeing this workspace's packages.
   source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
 fi
-source "$REPO_ROOT/install/setup.bash"
 set -u
 
 pids=()

@@ -1,6 +1,7 @@
 unified_backend_fusion:
   ros__parameters:
     lio_topic: /lio/odom
+    native_lidar_factor_topic: /fast_lio/native_lidar_factor
     gnss_topic: /sensors/gnss/fix
     flow_topic: /sensors/optical_flow/rad
     imu_topic: /sensors/imu
@@ -20,7 +21,11 @@ unified_backend_fusion:
     gnss_default_variance_m2: 4.0
     gnss_jump_gate_m: 20.0
     imu_factor_enabled: true
-    preserve_lio_anchor: true
+    preserve_lio_anchor: false
+    native_lidar_factor_enabled: true
+    native_lidar_factor_tolerance_s: 0.005
+    native_lidar_factor_wait_s: 0.030
+    native_lidar_minimum_matches: 50
     imu_covariance_scale: 50.0
     scheduler_timeout_s: 1.0
     publish_path_length: 2000

@@ -15,8 +15,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "preserve_lio_anchor",
-            default_value="true",
-            description="Keep a minimum LIO pose anchor when the scheduler disables LiDAR",
+            default_value="false",
+            description="Override LiDAR disable only when no independent inertial backup is ready",
         ),
         Node(
             package="uf_reliability",

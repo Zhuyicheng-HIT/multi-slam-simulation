@@ -1,11 +1,10 @@
 """Online first-pass Ultra-Fusion-style local backend.
 
-The node keeps the estimator boundary explicit: LIO is the local pose anchor,
-raw GNSS and optical-flow are optional observation factors, and the scheduler
-controls factor weights. It intentionally does not subscribe to FCU fused
-local position or Gazebo truth. The current backend is linear/tangent-space;
-the IMU factor is therefore marked approximate until the bias-aware SE(3)
-backend replaces it.
+The node keeps the estimator boundary explicit: FAST-LIO supplies point-to-plane
+data association and a state initial guess, raw IMU/GNSS/optical-flow supply
+independent factors, and the scheduler controls factor weights. It intentionally
+does not subscribe to FCU fused local position or Gazebo truth. The current
+backend remains a tangent-space prototype pending a manifold fixed-lag solver.
 """
 
 from bisect import bisect_left, bisect_right
@@ -27,12 +26,26 @@ from geometry_msgs.msg import PoseStamped
 from uf_interfaces.msg import ReliabilityScore, SchedulerState
 
 from .imu_preintegration import ImuSample, _quat_to_rotvec, preintegrate
+from .native_lidar import (
+    NativeFactorBuffer,
+    native_factor_from_message,
+    quaternion_xyzw_to_rpy,
+    right_perturbation_jacobian_rpy,
+    rpy_to_quaternion_xyzw,
+    rpy_to_rotation_matrix,
+    with_yaw_reference,
+)
 from .window import SlidingWindowBackend
 from uf_reliability.scoring import (
     gnss_score,
     optical_flow_displacement_frd,
     optical_flow_score,
 )
+
+try:
+    from fast_lio.msg import NativeLidarFactor
+except ImportError:  # pragma: no cover - unit tests run without the external overlay
+    NativeLidarFactor = None
 
 
 WGS84_A_M = 6378137.0
@@ -165,6 +178,7 @@ def fused_motion_reference(previous_state, dt_s):
     return {
         "position": state[:3] + delta_position,
         "delta_position": delta_position,
+        "orientation": state[3:6].copy(),
         "yaw": float(state[5]),
     }
 
@@ -224,6 +238,7 @@ class UnifiedBackendNode(Node):
         super().__init__("unified_backend_fusion")
         defaults = {
             "lio_topic": "/lio/odom",
+            "native_lidar_factor_topic": "/fast_lio/native_lidar_factor",
             "gnss_topic": "/sensors/gnss/fix",
             "flow_topic": "/sensors/optical_flow/rad",
             "imu_topic": "/sensors/imu",
@@ -246,7 +261,11 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("gnss_default_variance_m2", 4.0)
         self.declare_parameter("gnss_jump_gate_m", 20.0)
         self.declare_parameter("imu_factor_enabled", True)
-        self.declare_parameter("preserve_lio_anchor", True)
+        self.declare_parameter("preserve_lio_anchor", False)
+        self.declare_parameter("native_lidar_factor_enabled", True)
+        self.declare_parameter("native_lidar_factor_tolerance_s", 0.005)
+        self.declare_parameter("native_lidar_factor_wait_s", 0.030)
+        self.declare_parameter("native_lidar_minimum_matches", 50)
         self.declare_parameter("imu_covariance_scale", 50.0)
         self.declare_parameter("imu_bias_random_walk_variance", 1.0e-4)
         self.declare_parameter("scheduler_timeout_s", 1.0)
@@ -268,6 +287,23 @@ class UnifiedBackendNode(Node):
             self.get_parameter("gnss_jump_gate_m").value)
         self.imu_factor_enabled = bool(self.get_parameter("imu_factor_enabled").value)
         self.preserve_lio_anchor = bool(self.get_parameter("preserve_lio_anchor").value)
+        native_requested = bool(
+            self.get_parameter("native_lidar_factor_enabled").value
+        )
+        self.native_lidar_enabled = bool(native_requested and NativeLidarFactor is not None)
+        self.native_lidar_tolerance_s = float(
+            self.get_parameter("native_lidar_factor_tolerance_s").value
+        )
+        self.native_lidar_wait_s = float(
+            self.get_parameter("native_lidar_factor_wait_s").value
+        )
+        self.native_lidar_minimum_matches = int(
+            self.get_parameter("native_lidar_minimum_matches").value
+        )
+        if self.native_lidar_tolerance_s < 0.0 or self.native_lidar_wait_s < 0.0:
+            raise ValueError("native LiDAR timing limits must be non-negative")
+        if self.native_lidar_minimum_matches < 1:
+            raise ValueError("native LiDAR minimum matches must be positive")
         self.imu_covariance_scale = float(
             self.get_parameter("imu_covariance_scale").value)
         self.imu_bias_random_walk_variance = float(
@@ -283,6 +319,8 @@ class UnifiedBackendNode(Node):
         self.path.poses = []
         self.imu_buffer = deque(maxlen=10000)
         self.flow_buffer = deque(maxlen=3000)
+        self.native_lidar_buffer = NativeFactorBuffer(max_size=128)
+        self.pending_lio = deque(maxlen=32)
         self.latest_gnss = None
         self.projector = None
         self.lio_origin = None
@@ -301,6 +339,9 @@ class UnifiedBackendNode(Node):
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
             "lidar_anchor_overrides": 0, "imu_residual_updates": 0,
             "imu_residual_errors": 0,
+            "native_lidar_received": 0, "native_lidar_invalid": 0,
+            "native_lidar_factors": 0, "native_lidar_hard_disabled": 0,
+            "native_lidar_pose_fallbacks": 0, "native_lidar_pair_timeouts": 0,
         }
         self.last_reason = "waiting_for_lio"
         self.last_callback_ms = 0.0
@@ -311,6 +352,10 @@ class UnifiedBackendNode(Node):
         self.last_flow_reason = "unavailable"
         self.last_lidar_prediction_position_innovation_m = -1.0
         self.last_lidar_prediction_yaw_innovation_rad = -1.0
+        self.last_lidar_source = "unavailable"
+        self.last_native_sequence = -1
+        self.last_native_matches = 0
+        self.last_native_stamp_error_ms = -1.0
         self.last_output = None
 
         self.odom_pub = self.create_publisher(
@@ -322,6 +367,14 @@ class UnifiedBackendNode(Node):
         self.create_subscription(
             Odometry, str(self.get_parameter("lio_topic").value),
             self._lio, 20)
+        if self.native_lidar_enabled:
+            self.create_subscription(
+                NativeLidarFactor,
+                str(self.get_parameter("native_lidar_factor_topic").value),
+                self._native_lidar,
+                qos_profile_sensor_data,
+            )
+            self.create_timer(0.010, self._drain_pending_lio)
         self.create_subscription(
             NavSatFix, str(self.get_parameter("gnss_topic").value),
             self._gnss, qos_profile_sensor_data)
@@ -341,8 +394,14 @@ class UnifiedBackendNode(Node):
                 qos_profile_sensor_data,
             )
         self.create_timer(1.0, self._diagnostics)
+        if native_requested and NativeLidarFactor is None:
+            self.get_logger().warning(
+                "FAST-LIO NativeLidarFactor is unavailable; using LIO pose fallback. "
+                "Source the patched FAST-LIO overlay before launching the backend."
+            )
         self.get_logger().info(
-            "Unified backend active: scheduler-gated LIO + GNSS/flow factors; "
+            "Unified backend active: scheduler-gated native LiDAR + GNSS/flow factors; "
+            f"native_lidar={'on' if self.native_lidar_enabled else 'fallback'}; "
             f"preserve_lio_anchor={'on' if self.preserve_lio_anchor else 'off'}; "
             f"IMU bias-aware local factor={'on' if self.imu_factor_enabled else 'off'}")
 
@@ -506,7 +565,10 @@ class UnifiedBackendNode(Node):
             "status": int(msg.status.status),
         }
 
-    def _imu_factor(self, previous_stamp, current_stamp, previous_yaw, previous_index, current_index):
+    def _imu_factor(
+        self, previous_stamp, current_stamp, previous_orientation,
+        previous_index, current_index,
+    ):
         if not self.imu_factor_enabled or len(self.imu_buffer) < 2:
             self.last_imu_reason = (
                 "disabled" if not self.imu_factor_enabled else "insufficient_samples"
@@ -521,21 +583,15 @@ class UnifiedBackendNode(Node):
         if not result.valid:
             self.counts["imu_invalid"] += 1
             return None
-        world_position = rotate_planar(
-            result.delta_position[0], result.delta_position[1], previous_yaw)
-        world_velocity = rotate_planar(
-            result.delta_velocity[0], result.delta_velocity[1], previous_yaw)
-        yaw_cosine, yaw_sine = math.cos(previous_yaw), math.sin(previous_yaw)
-        map_rotation = np.array([
-            [yaw_cosine, -yaw_sine, 0.0],
-            [yaw_sine, yaw_cosine, 0.0],
-            [0.0, 0.0, 1.0],
-        ], dtype=float)
-        delta_position = np.asarray(
-            [world_position[0], world_position[1], result.delta_position[2]], dtype=float)
-        delta_velocity = np.asarray(
-            [world_velocity[0], world_velocity[1], result.delta_velocity[2]], dtype=float)
-        delta_rotation = map_rotation @ _quat_to_rotvec(np.asarray(result.delta_quaternion))
+        map_rotation = rpy_to_rotation_matrix(previous_orientation)
+        delta_position = map_rotation @ np.asarray(result.delta_position, dtype=float)
+        delta_velocity = map_rotation @ np.asarray(result.delta_velocity, dtype=float)
+        right_to_rpy = np.linalg.inv(
+            right_perturbation_jacobian_rpy(previous_orientation)
+        )
+        delta_rotation = right_to_rpy @ _quat_to_rotvec(
+            np.asarray(result.delta_quaternion)
+        )
         position_accel_jacobian = map_rotation @ np.asarray(
             result.jacobian_delta_position_accel_bias).reshape(3, 3)
         position_gyro_jacobian = map_rotation @ np.asarray(
@@ -544,7 +600,7 @@ class UnifiedBackendNode(Node):
             result.jacobian_delta_velocity_accel_bias).reshape(3, 3)
         velocity_gyro_jacobian = map_rotation @ np.asarray(
             result.jacobian_delta_velocity_gyro_bias).reshape(3, 3)
-        rotation_gyro_jacobian = map_rotation @ np.asarray(
+        rotation_gyro_jacobian = right_to_rpy @ np.asarray(
             result.jacobian_delta_rotation_gyro_bias).reshape(3, 3)
         nominal_covariance = np.maximum(
             np.asarray(result.covariance, dtype=float), 1.0e-6
@@ -654,7 +710,53 @@ class UnifiedBackendNode(Node):
         )
         self.counts["flow_factors"] += 1
 
+    def _native_lidar(self, msg):
+        self.counts["native_lidar_received"] += 1
+        try:
+            factor = native_factor_from_message(msg)
+        except (ValueError, TypeError) as error:
+            self.counts["native_lidar_invalid"] += 1
+            self.last_reason = f"invalid_native_lidar:{type(error).__name__}"
+            self.last_exception = f"{type(error).__name__}:{error}"
+            return
+        self.native_lidar_buffer.push(factor)
+        self._drain_pending_lio()
+
     def _lio(self, msg):
+        if not self.native_lidar_enabled:
+            self._process_lio(msg, None)
+            return
+        stamp = stamp_seconds(msg.header.stamp)
+        if stamp <= 0.0:
+            stamp = self._now_s()
+        factor = self.native_lidar_buffer.pop_nearest(
+            stamp, self.native_lidar_tolerance_s
+        )
+        if factor is not None:
+            self._process_lio(msg, factor)
+            return
+        self.pending_lio.append((time.monotonic(), msg))
+
+    def _drain_pending_lio(self):
+        if not self.pending_lio:
+            return
+        now = time.monotonic()
+        while self.pending_lio:
+            arrival, msg = self.pending_lio[0]
+            stamp = stamp_seconds(msg.header.stamp)
+            if stamp <= 0.0:
+                stamp = self._now_s()
+            factor = self.native_lidar_buffer.pop_nearest(
+                stamp, self.native_lidar_tolerance_s
+            )
+            if factor is None and now - arrival < self.native_lidar_wait_s:
+                break
+            self.pending_lio.popleft()
+            if factor is None:
+                self.counts["native_lidar_pair_timeouts"] += 1
+            self._process_lio(msg, factor)
+
+    def _process_lio(self, msg, native_factor):
         started = time.perf_counter_ns()
         stamp = stamp_seconds(msg.header.stamp)
         if stamp <= 0.0:
@@ -667,13 +769,25 @@ class UnifiedBackendNode(Node):
             [float(pose.position.x), float(pose.position.y), float(pose.position.z)],
             dtype=float,
         )
-        wrapped_yaw = quaternion_to_yaw(pose.orientation)
-        yaw = unwrap_yaw(self.last_lio_yaw if self.last_lio_stamp is not None else None, wrapped_yaw)
+        orientation = quaternion_xyzw_to_rpy([
+            float(pose.orientation.x), float(pose.orientation.y),
+            float(pose.orientation.z), float(pose.orientation.w),
+        ])
+        orientation[2] = unwrap_yaw(
+            self.last_lio_yaw if self.last_lio_stamp is not None else None,
+            float(orientation[2]),
+        )
+        yaw = float(orientation[2])
         previous_state = (
             self.backend.state(-1) if self.backend.state_count > 0 else None
         )
-        current_index = self.backend.add_state(previous_state)
-        rotation = [0.0, 0.0, yaw]
+        initial_state = (
+            previous_state.copy() if previous_state is not None
+            else np.zeros(15, dtype=float)
+        )
+        initial_state[:3] = position
+        initial_state[3:6] = orientation
+        current_index = self.backend.add_state(initial_state)
         reference = None
         if self.last_lio_stamp is not None:
             reference = fused_motion_reference(
@@ -688,20 +802,47 @@ class UnifiedBackendNode(Node):
             self.lio_origin = position.copy()
             self.backend.add_prior(
                 current_index,
-                np.concatenate((position, rotation, np.zeros(9, dtype=float))),
+                np.concatenate((position, orientation, np.zeros(9, dtype=float))),
                 covariance=np.full(15, 1.0e-4),
             )
         lidar_decision = self._decision("lidar", default_enabled=True)
         if lidar_decision.get("anchor_override", False):
             self.counts["lidar_anchor_overrides"] += 1
         self.counts["lidar_factors"] += 1
+        if native_factor is not None:
+            native_factor = with_yaw_reference(native_factor, yaw)
+            self.last_native_sequence = int(native_factor.scan_sequence)
+            self.last_native_matches = int(native_factor.matched_points)
+            self.last_native_stamp_error_ms = abs(
+                native_factor.stamp_s - stamp
+            ) * 1000.0
+            if native_factor.matched_points < self.native_lidar_minimum_matches:
+                lidar_decision["factor_enabled"] = False
+                lidar_decision["reliability_weight"] = 0.0
+                lidar_decision["covariance_inflation"] = MAX_COVARIANCE_INFLATION
+                self.counts["native_lidar_hard_disabled"] += 1
+            self.backend.add_native_lidar_normal(
+                current_index,
+                native_factor.linearization_pose,
+                native_factor.pose_hessian,
+                native_factor.pose_gradient,
+                native_factor.measurement_variance,
+                native_factor.matched_points,
+                native_factor.residual_squared,
+                decision=lidar_decision,
+            )
+            self.counts["native_lidar_factors"] += 1
+            self.last_lidar_source = "native_point_to_plane"
+        else:
+            self.backend.add_lidar_pose(
+                current_index, position, orientation,
+                covariance=[0.05 ** 2] * 3 + [0.03 ** 2] * 3,
+                decision=lidar_decision,
+            )
+            self.counts["native_lidar_pose_fallbacks"] += 1
+            self.last_lidar_source = "lio_pose_fallback"
         if not lidar_decision["factor_enabled"]:
             self.counts["lidar_disabled"] += 1
-        self.backend.add_lidar_pose(
-            current_index, position, rotation,
-            covariance=[0.05 ** 2] * 3 + [0.03 ** 2] * 3,
-            decision=lidar_decision,
-        )
         imu_diagnostic_covariance = None
         if self.last_lio_stamp is not None:
             previous_index = current_index - 1
@@ -711,7 +852,7 @@ class UnifiedBackendNode(Node):
                 previous_index, current_index, reference["delta_position"],
             )
             imu_diagnostic_covariance = self._imu_factor(
-                self.last_lio_stamp, stamp, reference["yaw"],
+                self.last_lio_stamp, stamp, reference["orientation"],
                 previous_index, current_index,
             )
         try:
@@ -752,8 +893,11 @@ class UnifiedBackendNode(Node):
         self.last_callback_ms = (time.perf_counter_ns() - started) * 1.0e-6
 
     def _publish(self, header, state):
-        yaw = float(state[5])
-        qx, qy, qz, qw = yaw_to_quaternion(yaw)
+        orientation = np.asarray(state[3:6], dtype=float)
+        qx, qy, qz, qw = rpy_to_quaternion_xyzw(orientation)
+        body_velocity = rpy_to_rotation_matrix(orientation).T @ np.asarray(
+            state[6:9], dtype=float
+        )
         output = Odometry()
         output.header = copy.deepcopy(header)
         output.header.frame_id = self.map_frame
@@ -765,11 +909,9 @@ class UnifiedBackendNode(Node):
         output.pose.pose.orientation.y = qy
         output.pose.pose.orientation.z = qz
         output.pose.pose.orientation.w = qw
-        output.twist.twist.linear.x = float(
-            math.cos(yaw) * state[6] + math.sin(yaw) * state[7])
-        output.twist.twist.linear.y = float(
-            -math.sin(yaw) * state[6] + math.cos(yaw) * state[7])
-        output.twist.twist.linear.z = float(state[8])
+        output.twist.twist.linear.x = float(body_velocity[0])
+        output.twist.twist.linear.y = float(body_velocity[1])
+        output.twist.twist.linear.z = float(body_velocity[2])
         output.pose.covariance[0] = 0.05 ** 2
         output.pose.covariance[7] = 0.05 ** 2
         output.pose.covariance[14] = 0.10 ** 2
@@ -823,6 +965,14 @@ class UnifiedBackendNode(Node):
                 "lidar_prediction_yaw_innovation_rad",
                 f"{self.last_lidar_prediction_yaw_innovation_rad:.9g}",
             ),
+            self._key("lidar_factor_source", self.last_lidar_source),
+            self._key("native_lidar_sequence", self.last_native_sequence),
+            self._key("native_lidar_matches", self.last_native_matches),
+            self._key(
+                "native_lidar_stamp_error_ms",
+                f"{self.last_native_stamp_error_ms:.9g}",
+            ),
+            self._key("pending_lio_messages", len(self.pending_lio)),
             self._key("last_flow_reason", self.last_flow_reason),
         ]
         diagnostic.values.extend(

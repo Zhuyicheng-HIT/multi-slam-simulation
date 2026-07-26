@@ -17,7 +17,7 @@ setup(
     zip_safe=True,
     maintainer="zyc",
     maintainer_email="zyc@example.com",
-    description="Scheduler-weighted online and offline sliding-window fusion prototype.",
+    description="Scheduler-weighted native LiDAR/IMU/GNSS/flow sliding-window prototype.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

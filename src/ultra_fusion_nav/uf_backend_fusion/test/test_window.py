@@ -119,6 +119,51 @@ class SlidingWindowBackendTest(unittest.TestCase):
         self.assertEqual(summary[-1].residual_dimension, 15)
         self.assertTrue(summary[-1].enabled)
 
+    def test_native_lidar_normal_recovers_pose_without_pose_proxy(self):
+        backend = SlidingWindowBackend(max_states=2, solver="dense")
+        backend.add_state()
+        linearization = np.asarray([1.0, -2.0, 0.5, 0.1, -0.2, 0.3])
+        gradient = np.asarray([0.2, -0.1, 0.0, 0.05, 0.0, -0.02])
+        backend.add_native_lidar_normal(
+            0,
+            linearization,
+            np.eye(6),
+            gradient,
+            measurement_variance=0.01,
+            residual_dimension=80,
+            residual_squared=1.0,
+        )
+
+        estimate = backend.optimize()[0]
+
+        np.testing.assert_allclose(estimate[:6], linearization - gradient, atol=1.0e-7)
+        record = backend.factor_summary()[-1]
+        self.assertEqual(record.name, "lidar_point_plane")
+        self.assertEqual(record.residual_dimension, 80)
+
+    def test_lidar_pose_and_native_factor_cannot_coexist_on_one_state(self):
+        backend = SlidingWindowBackend(max_states=2, solver="dense")
+        backend.add_state()
+        backend.add_native_lidar_normal(
+            0, np.zeros(6), np.eye(6), np.zeros(6),
+            measurement_variance=0.01,
+            residual_dimension=50,
+            residual_squared=0.0,
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate information"):
+            backend.add_lidar_pose(0, np.zeros(3), np.zeros(3), covariance=0.1)
+
+        second = SlidingWindowBackend(max_states=2, solver="dense")
+        second.add_state()
+        second.add_lidar_pose(0, np.zeros(3), np.zeros(3), covariance=0.1)
+        with self.assertRaisesRegex(ValueError, "duplicate information"):
+            second.add_native_lidar_normal(
+                0, np.zeros(6), np.eye(6), np.zeros(6),
+                measurement_variance=0.01,
+                residual_dimension=50,
+                residual_squared=0.0,
+            )
+
     def test_disabled_imu_factor_still_exports_nominal_residual_evidence(self):
         backend = SlidingWindowBackend(max_states=3, solver="dense")
         backend.add_state()
