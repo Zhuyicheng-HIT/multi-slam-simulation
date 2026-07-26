@@ -136,11 +136,17 @@ class ReliabilityTimelineRecorder(Node):
             "matched_points": int(msg.matched_points),
             "residual_mean_m": float(msg.residual_mean_m),
             "residual_p95_m": float(msg.residual_p95_m),
+            "hessian_min_eigenvalue": float(min(msg.hessian_eigenvalues)),
+            "hessian_condition": float(msg.hessian_condition),
+            "normal_min_eigenvalue": float(min(msg.normal_covariance_eigenvalues)),
+            "axial_penalty": float(msg.axial_penalty),
             "spatial_coverage": float(msg.spatial_coverage),
             "dynamic_ratio": float(msg.dynamic_ratio),
             "uncertain_ratio": float(msg.uncertain_ratio),
             "feature_repeatability": float(msg.feature_repeatability),
             "map_quality": float(msg.map_quality),
+            "approximate": bool(msg.approximate),
+            "source": str(msg.source),
         })
         self.events.append(event)
 
@@ -206,10 +212,17 @@ def summarize(events):
         "lio_samples": len(lio),
         "lio_matched_points_median": finite_median("matched_points"),
         "lio_residual_p95_m_median": finite_median("residual_p95_m"),
+        "lio_hessian_min_eigenvalue_median": finite_median("hessian_min_eigenvalue"),
+        "lio_hessian_condition_median": finite_median("hessian_condition"),
+        "lio_normal_min_eigenvalue_median": finite_median("normal_min_eigenvalue"),
+        "lio_axial_penalty_median": finite_median("axial_penalty"),
         "lio_dynamic_ratio_median": finite_median("dynamic_ratio"),
         "lio_uncertain_ratio_median": finite_median("uncertain_ratio"),
         "lio_feature_repeatability_median": finite_median("feature_repeatability"),
         "lio_map_quality_median": finite_median("map_quality"),
+        "lio_native_samples": sum(not event["approximate"] for event in lio),
+        "lio_approximate_samples": sum(event["approximate"] for event in lio),
+        "lio_sources": sorted({event["source"] for event in lio}),
     }
 
 

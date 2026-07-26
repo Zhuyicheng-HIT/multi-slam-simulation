@@ -8,6 +8,9 @@ lio_adapter:
     local_map_output_topic: /lio/local_map
     deskewed_output_topic: /lidar/points_deskewed
     diagnostics_topic: /lio/diagnostics
+    native_factor_topic: /fast_lio/native_lidar_factor
+    prefer_native_factor_diagnostics: true
+    native_factor_timeout_s: 2.0
     voxel_size_m: 0.50
     max_diagnostic_points: 1200
     local_map_frames: 20

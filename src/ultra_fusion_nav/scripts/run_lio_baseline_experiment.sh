@@ -14,6 +14,8 @@ ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
 FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
 ENABLE_PERFORMANCE_MONITOR=${ENABLE_PERFORMANCE_MONITOR:-1}
 ENABLE_RELIABILITY_TIMELINE=${ENABLE_RELIABILITY_TIMELINE:-0}
+ENABLE_NATIVE_FACTOR_VALIDATOR=${ENABLE_NATIVE_FACTOR_VALIDATOR:-0}
+NUMPY_NUM_THREADS=${NUMPY_NUM_THREADS:-1}
 SIM_WORLD_NAME=${SIM_WORLD_NAME:-simple_apm_rgbd_mid360}
 FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-filtered_pointcloud}
 ALLOW_MISSING_RELIABILITY=${ALLOW_MISSING_RELIABILITY:-0}
@@ -37,8 +39,14 @@ if [[ "$PRESERVE_LIO_ANCHOR" != "true" && "$PRESERVE_LIO_ANCHOR" != "false" ]]; 
 fi
 
 mkdir -p "$OUTPUT_DIR"
+export OPENBLAS_NUM_THREADS="$NUMPY_NUM_THREADS"
+export MKL_NUM_THREADS="$NUMPY_NUM_THREADS"
+export NUMEXPR_NUM_THREADS="$NUMPY_NUM_THREADS"
 set +u
 source /opt/ros/humble/setup.bash
+if [[ -f "$HOME/multi-slam-deps/mid360_ws/install/setup.bash" ]]; then
+  source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
+fi
 source "$REPO_ROOT/install/setup.bash"
 set -u
 
@@ -112,6 +120,24 @@ setsid env RVIZ=0 LOG_DIR="$OUTPUT_DIR/lio" FASTLIO_INPUT_MODE="$FASTLIO_INPUT_M
 pids+=("$!")
 wait_for_message /Odometry 90
 wait_for_message /sensors/imu 30
+
+native_factor_validator_pid=""
+if [[ "$ENABLE_NATIVE_FACTOR_VALIDATOR" == "1" ]]; then
+  if [[ "${FASTLIO_NATIVE_FACTOR_EXPORT:-0}" != "1" \
+        && "${FASTLIO_NATIVE_FACTOR_EXPORT:-0}" != "true" ]]; then
+    printf 'ENABLE_NATIVE_FACTOR_VALIDATOR=1 requires FASTLIO_NATIVE_FACTOR_EXPORT=1\n' >&2
+    exit 2
+  fi
+  setsid ros2 run uf_lio_adapter native_factor_validator --ros-args \
+    --params-file "$REPO_ROOT/install/uf_lio_adapter/share/uf_lio_adapter/config/native_factor_validator.yaml" \
+    -p output_path:="$OUTPUT_DIR/native_factor_metrics.jsonl" \
+    -p summary_path:="$OUTPUT_DIR/native_factor_summary.json" \
+    >"$OUTPUT_DIR/native_factor_validator.stdout.log" \
+    2>"$OUTPUT_DIR/native_factor_validator.stderr.log" &
+  native_factor_validator_pid=$!
+  pids+=("$native_factor_validator_pid")
+  wait_for_message /fast_lio/native_lidar_factor 30
+fi
 
 performance_monitor_pid=""
 if [[ "$ENABLE_PERFORMANCE_MONITOR" == "1" ]]; then
@@ -283,6 +309,14 @@ if [[ -n "$timeline_pid" ]]; then
   timeline_status=$?
 fi
 set -e
+
+if [[ -n "$native_factor_validator_pid" ]]; then
+  kill -INT "$native_factor_validator_pid" 2>/dev/null || true
+  kill -INT -- "-$native_factor_validator_pid" 2>/dev/null || true
+  set +e
+  timeout 15s tail --pid="$native_factor_validator_pid" -f /dev/null
+  set -e
+fi
 
 python3 "$SCRIPT_DIR/evaluate_lio_trajectory.py" \
   --estimate "$OUTPUT_DIR/trajectory/estimate.tum" \

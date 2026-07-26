@@ -20,5 +20,10 @@ setup(
     maintainer_email="zyc@example.com",
     description="Stable LIO namespace and external diagnostic proxy.",
     license="Apache-2.0",
-    entry_points={"console_scripts": ["lio_adapter = uf_lio_adapter.lio_adapter:main"]},
+    entry_points={
+        "console_scripts": [
+            "lio_adapter = uf_lio_adapter.lio_adapter:main",
+            "native_factor_validator = uf_lio_adapter.native_factor_validator:main",
+        ]
+    },
 )

@@ -10,6 +10,18 @@ LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/mid360_fastlio_mapping_$(date +%Y%m%d_%H%M%S)}
 RVIZ=${RVIZ:-1}
 FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-pointcloud}
 FASTLIO_CLOUD_TOPIC=/sim/mid360/points_raw
+FASTLIO_NATIVE_FACTOR_EXPORT=${FASTLIO_NATIVE_FACTOR_EXPORT:-0}
+FASTLIO_NATIVE_FACTOR_TOPIC=${FASTLIO_NATIVE_FACTOR_TOPIC:-/fast_lio/native_lidar_factor}
+FASTLIO_NATIVE_FACTOR_SENSOR_FRAME=${FASTLIO_NATIVE_FACTOR_SENSOR_FRAME:-mid360_link}
+FASTLIO_NATIVE_FACTOR_EXPORT_BOOL=false
+case "$FASTLIO_NATIVE_FACTOR_EXPORT" in
+  1|true|TRUE|yes|YES) FASTLIO_NATIVE_FACTOR_EXPORT_BOOL=true ;;
+  0|false|FALSE|no|NO) FASTLIO_NATIVE_FACTOR_EXPORT_BOOL=false ;;
+  *)
+    printf 'Unsupported FASTLIO_NATIVE_FACTOR_EXPORT=%s. Use 0/1 or true/false.\n' "$FASTLIO_NATIVE_FACTOR_EXPORT" >&2
+    exit 2
+    ;;
+esac
 
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
@@ -59,6 +71,7 @@ Outputs:
   /cloud_registered_reliable
   /fastlio_denoised_map
   /fastlio_occupancy_grid
+  native factor export: $FASTLIO_NATIVE_FACTOR_EXPORT -> $FASTLIO_NATIVE_FACTOR_TOPIC
 
 EOF
 
@@ -99,6 +112,9 @@ setsid ros2 launch fast_lio mapping.launch.py \
   config_path:="$PKG_SHARE/config" \
   config_file:="$FASTLIO_CONFIG" \
   rviz:="$RVIZ" \
+  native_factor_export_enable:="$FASTLIO_NATIVE_FACTOR_EXPORT_BOOL" \
+  native_factor_export_topic:="$FASTLIO_NATIVE_FACTOR_TOPIC" \
+  native_factor_sensor_frame:="$FASTLIO_NATIVE_FACTOR_SENSOR_FRAME" \
   >"$LOG_DIR/fast_lio.log" 2>&1 &
 pids+=("$!")
 

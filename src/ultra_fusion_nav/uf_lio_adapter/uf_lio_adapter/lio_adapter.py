@@ -1,5 +1,12 @@
 import copy
+import os
+import time
 from collections import deque
+
+# Native-factor diagnostics use many small matrix products. Avoid creating one
+# large BLAS worker pool per ROS Python process.
+for _thread_env in ("OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[_thread_env] = "1"
 
 import numpy as np
 import rclpy
@@ -11,6 +18,11 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
 from uf_interfaces.msg import LioDiagnostics
 
+try:
+    from fast_lio.msg import NativeLidarFactor
+except ImportError:
+    NativeLidarFactor = None
+
 from .geometry import (
     TemporalVoxelFilter,
     cloud_xyz,
@@ -18,6 +30,7 @@ from .geometry import (
     voxel_centroids,
     xyz_cloud,
 )
+from .native_factor_validator import analyze_factor
 
 
 class LioAdapter(Node):
@@ -32,6 +45,7 @@ class LioAdapter(Node):
             "local_map_output_topic": "/lio/local_map",
             "deskewed_output_topic": "/lidar/points_deskewed",
             "diagnostics_topic": "/lio/diagnostics",
+            "native_factor_topic": "/fast_lio/native_lidar_factor",
             "static_cloud_output_topic": "/lidar/static_cloud",
             "dynamic_cloud_output_topic": "/lidar/dynamic_cloud",
             "uncertain_cloud_output_topic": "/lidar/uncertain_cloud",
@@ -43,6 +57,8 @@ class LioAdapter(Node):
         self.declare_parameter("local_map_frames", 20)
         self.declare_parameter("local_map_publish_period_s", 1.0)
         self.declare_parameter("diagnostics_period_s", 1.0)
+        self.declare_parameter("prefer_native_factor_diagnostics", True)
+        self.declare_parameter("native_factor_timeout_s", 2.0)
         self.declare_parameter("temporal_window_frames", 5)
         self.declare_parameter("temporal_min_static_support", 2)
         self.declare_parameter("temporal_neighbor_radius", 1)
@@ -57,6 +73,23 @@ class LioAdapter(Node):
         self.map_frames = deque(maxlen=int(self.get_parameter("local_map_frames").value))
         self.last_cloud_header = None
         self.last_diagnostic_ns = None
+        self.last_native_diagnostic_ns = None
+        self.last_native_arrival = None
+        self.prefer_native_factor_diagnostics = bool(
+            self.get_parameter("prefer_native_factor_diagnostics").value
+        )
+        self.native_factor_timeout_s = float(
+            self.get_parameter("native_factor_timeout_s").value
+        )
+        self.latest_map_metrics = {
+            "dynamic_ratio": 0.0,
+            "uncertain_ratio": 1.0,
+            "feature_repeatability": 0.0,
+            "static_points": 0,
+            "dynamic_points": 0,
+            "uncertain_points": 0,
+            "map_quality": 0.0,
+        }
         self.temporal_filter = TemporalVoxelFilter(
             window_frames=int(self.get_parameter("temporal_window_frames").value),
             min_static_support=int(self.get_parameter("temporal_min_static_support").value),
@@ -107,6 +140,22 @@ class LioAdapter(Node):
             self._deskewed,
             qos_profile_sensor_data,
         )
+        native_factor_topic = str(self.get_parameter("native_factor_topic").value)
+        if self.prefer_native_factor_diagnostics and native_factor_topic:
+            if NativeLidarFactor is None:
+                raise RuntimeError(
+                    "native factor diagnostics requested but fast_lio/NativeLidarFactor "
+                    "is unavailable; source the patched FAST-LIO overlay"
+                )
+            self.create_subscription(
+                NativeLidarFactor,
+                native_factor_topic,
+                self._native_factor,
+                qos_profile_sensor_data,
+            )
+            self.get_logger().info(
+                f"preferring native FAST-LIO diagnostics from {native_factor_topic}"
+            )
         self.create_timer(float(self.get_parameter("local_map_publish_period_s").value), self._publish_map)
         self.create_timer(float(self.get_parameter("path_publish_period_s").value), self._publish_path)
 
@@ -126,6 +175,52 @@ class LioAdapter(Node):
 
     def _deskewed(self, msg):
         self.deskewed_pub.publish(msg)
+
+    def _native_factor(self, msg):
+        self.last_native_arrival = time.monotonic()
+        stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        if self.last_native_diagnostic_ns is not None:
+            elapsed_ns = stamp_ns - self.last_native_diagnostic_ns
+            if 0 <= elapsed_ns < self.diagnostics_period_ns:
+                return
+        self.last_native_diagnostic_ns = stamp_ns
+
+        metrics = analyze_factor(msg)
+        if not metrics["valid"]:
+            self.get_logger().error(
+                f"rejecting native LiDAR factor sequence={int(msg.scan_sequence)}: "
+                + "; ".join(metrics["errors"])
+            )
+            return
+
+        diagnostic = LioDiagnostics()
+        diagnostic.header = copy.deepcopy(msg.header)
+        diagnostic.input_points = int(msg.candidate_points)
+        diagnostic.matched_points = int(msg.matched_points)
+        diagnostic.residual_mean_m = float(metrics["residual_mean_m"])
+        diagnostic.residual_median_m = float(metrics["residual_median_m"])
+        diagnostic.residual_p95_m = float(metrics["residual_p95_m"])
+        diagnostic.hessian_eigenvalues = [
+            float(value) for value in metrics["pose_hessian_eigenvalues"]
+        ]
+        diagnostic.hessian_condition = float(metrics["pose_hessian_condition_number"])
+        diagnostic.normal_covariance_eigenvalues = [
+            float(value) for value in metrics["normal_covariance_eigenvalues"]
+        ]
+        diagnostic.axial_penalty = float(metrics["axial_penalty"])
+        diagnostic.spatial_coverage = float(metrics["spatial_coverage"])
+        diagnostic.dynamic_ratio = float(self.latest_map_metrics["dynamic_ratio"])
+        diagnostic.uncertain_ratio = float(self.latest_map_metrics["uncertain_ratio"])
+        diagnostic.feature_repeatability = float(
+            self.latest_map_metrics["feature_repeatability"]
+        )
+        diagnostic.static_points = int(self.latest_map_metrics["static_points"])
+        diagnostic.dynamic_points = int(self.latest_map_metrics["dynamic_points"])
+        diagnostic.uncertain_points = int(self.latest_map_metrics["uncertain_points"])
+        diagnostic.map_quality = float(self.latest_map_metrics["map_quality"])
+        diagnostic.approximate = False
+        diagnostic.source = f"{msg.source}_native_point_to_plane"
+        self.diagnostic_pub.publish(diagnostic)
 
     def _registered(self, msg):
         stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
@@ -168,7 +263,22 @@ class LioAdapter(Node):
         diagnostic.map_quality = float(metrics["map_quality"] * temporal_quality)
         diagnostic.approximate = True
         diagnostic.source = "external_voxel_point_to_plane_temporal_persistence_proxy"
-        self.diagnostic_pub.publish(diagnostic)
+        self.latest_map_metrics = {
+            "dynamic_ratio": dynamic_ratio,
+            "uncertain_ratio": uncertain_ratio,
+            "feature_repeatability": repeatability,
+            "static_points": static_count,
+            "dynamic_points": dynamic_count,
+            "uncertain_points": uncertain_count,
+            "map_quality": diagnostic.map_quality,
+        }
+        native_recent = (
+            self.prefer_native_factor_diagnostics
+            and self.last_native_arrival is not None
+            and time.monotonic() - self.last_native_arrival <= self.native_factor_timeout_s
+        )
+        if not native_recent:
+            self.diagnostic_pub.publish(diagnostic)
         self.static_cloud_pub.publish(xyz_cloud(temporal["static_points"], msg.header))
         self.dynamic_cloud_pub.publish(xyz_cloud(temporal["dynamic_points"], msg.header))
         self.uncertain_cloud_pub.publish(xyz_cloud(temporal["uncertain_points"], msg.header))
