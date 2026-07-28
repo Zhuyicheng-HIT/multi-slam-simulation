@@ -3,7 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -13,6 +13,7 @@ def generate_launch_description():
     config = LaunchConfiguration("config")
     use_sim_time = LaunchConfiguration("use_sim_time")
     enable_fcu_observation_bridge = LaunchConfiguration("enable_fcu_observation_bridge")
+    enable_vision = LaunchConfiguration("enable_vision")
     scheduled_fault_modality = os.environ.get("UF_FAULT_MODALITY", "").strip()
     scheduled_fault = {}
     if scheduled_fault_modality:
@@ -51,6 +52,11 @@ def generate_launch_description():
                 name=f"fault_injector_{modality}",
                 parameters=[config, fault_parameters, {"use_sim_time": use_sim_time}],
                 output="screen",
+                condition=(
+                    IfCondition(enable_vision)
+                    if modality in ("depth", "color")
+                    else None
+                ),
             )
         )
     nodes.append(
@@ -60,11 +66,31 @@ def generate_launch_description():
             name="sensor_contract_monitor",
             parameters=[config, {"use_sim_time": use_sim_time}],
             output="screen",
+            condition=IfCondition(enable_vision),
+        )
+    )
+    nodes.append(
+        Node(
+            package="uf_sensor_pipeline",
+            executable="sensor_contract_monitor",
+            name="sensor_contract_monitor",
+            parameters=[
+                config,
+                {
+                    "use_sim_time": use_sim_time,
+                    "active_modalities": [
+                        "lidar", "imu", "gnss", "optical_flow"
+                    ],
+                },
+            ],
+            output="screen",
+            condition=UnlessCondition(enable_vision),
         )
     )
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
+        DeclareLaunchArgument("enable_vision", default_value="true"),
         *nodes,
     ])

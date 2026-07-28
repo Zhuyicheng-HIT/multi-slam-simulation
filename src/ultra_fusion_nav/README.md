@@ -33,13 +33,13 @@ remain open.
 | M4 BDS/GNSS and optical flow | single-fault acceptance complete | GNSS jump/outage and flow quality gates pass fixed-route simulation |
 | M5 dynamic map protection | deterministic moving-cluster injection and metric ablation complete | clean/fault classifier separation is insufficient for default hard exclusion |
 | M6 ReliabilityScheduler | implementation and online factor changes pass | concurrent degradation and relocalization recovery remain |
-| M7 unified backend | manifold native LiDAR + GNSS/IMU/flow co-window milestone validated | fixed route ATE 0.055 m; 1,035 native LiDAR and 1,032 IMU factors; no optimization/queue errors; marginal covariance and ablation matrix remain |
+| M7 unified backend | manifold native LiDAR + GNSS/IMU/flow co-window milestone validated | historical best fixed-route ATE 0.055 m; four-source-only profile runs at 0.139/0.131 m with no optimization/queue errors; marginal covariance remains |
 | M8 relocalization | registration core started | PCL ICP/NDT synthetic transform tests pass; keyframes, retrieval, and online recovery remain |
 
-The next gates are online marginal covariance, FCU startup-attitude source
-validation, fixed-weight versus scheduler-weighted comparison, a
-low-false-positive temporal dynamic-point classifier, and a scheduler-triggered
-ICP/NDT recovery experiment using the admitted static keyframe database. See
+The next gates are online marginal covariance followed by an EKF3 ExternalNav
+source-selection flight. FCU startup-attitude source validation, fixed-weight
+ablation, temporal dynamic-point classification, and relocalization remain
+behind that four-source closed-loop milestone. See
 `docs/stage5_temporal_map_report_20260725.md`,
 `docs/stage7_online_backend_report_20260725.md`, and the earlier formula and
 sensor reports.

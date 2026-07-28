@@ -36,6 +36,21 @@ class SchedulerCoreTest(unittest.TestCase):
         self.assertAlmostEqual(result.reliability_weights["gnss"], 0.90)
         self.assertAlmostEqual(result.covariance_inflation["gnss"], 1.0 / 0.90)
 
+    def test_inactive_modalities_are_neutral_and_cannot_enable_factors(self):
+        result = self.core.update({
+            "lidar": score(0.0, arrival_s=0.0),
+            "imu": score(0.0, arrival_s=0.0),
+            "vision": score(0.0, arrival_s=0.0),
+            "gnss": score(0.10, arrival_s=0.0),
+            "optical_flow": score(0.20, arrival_s=0.0),
+        }, 0.1)
+
+        for name in ("lidar", "imu", "vision"):
+            self.assertEqual(result.degradation_scores[name], 0.0)
+            self.assertEqual(result.reliability_weights[name], 0.0)
+            self.assertFalse(result.factor_enabled[name])
+            self.assertEqual(result.reasons[name], ("inactive_modality",))
+
     def test_one_degraded_aiding_factor_does_not_fail_complete_system(self):
         result = self.core.update({
             "gnss": score(0.75, arrival_s=0.0),

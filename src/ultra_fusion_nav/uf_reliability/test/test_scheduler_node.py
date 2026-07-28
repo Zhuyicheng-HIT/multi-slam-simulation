@@ -102,7 +102,15 @@ class SchedulerNodeTest(unittest.TestCase):
     def test_runtime_state_and_factor_sequence(self):
         healthy = self.drive({}, 0.30)
         self.assertEqual(healthy.health_state, "NORMAL")
-        self.assertTrue(all(healthy.factor_enabled))
+        active_indices = [
+            list(healthy.modality_names).index(name)
+            for name in ("lidar", "gnss", "imu", "optical_flow")
+        ]
+        self.assertTrue(all(healthy.factor_enabled[index] for index in active_indices))
+        vision_index = list(healthy.modality_names).index("vision")
+        self.assertFalse(healthy.factor_enabled[vision_index])
+        self.assertEqual(healthy.degradation_scores[vision_index], 0.0)
+        self.assertEqual(healthy.reasons[vision_index], "inactive_modality")
 
         risk = self.drive({"gnss": 0.70}, 0.25)
         self.assertEqual(risk.health_state, "DEGRADED")

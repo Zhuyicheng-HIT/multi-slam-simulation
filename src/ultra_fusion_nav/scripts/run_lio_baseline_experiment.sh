@@ -19,8 +19,18 @@ ENABLE_ROSBAG_RECORDING=${ENABLE_ROSBAG_RECORDING:-0}
 NUMPY_NUM_THREADS=${NUMPY_NUM_THREADS:-1}
 SIM_WORLD_NAME=${SIM_WORLD_NAME:-simple_apm_rgbd_mid360}
 FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-filtered_pointcloud}
+ENABLE_VISION_PIPELINE=${ENABLE_VISION_PIPELINE:-${ENABLE_D435_BRIDGE:-1}}
+case "$ENABLE_VISION_PIPELINE" in
+  1|true) ENABLE_VISION_PIPELINE=true ;;
+  0|false) ENABLE_VISION_PIPELINE=false ;;
+  *)
+    printf 'ENABLE_VISION_PIPELINE must be true/false or 1/0, got %s\n' \
+      "$ENABLE_VISION_PIPELINE" >&2
+    exit 2
+    ;;
+esac
 if [[ -z "${ALLOW_MISSING_RELIABILITY+x}" ]]; then
-  if [[ "${ENABLE_D435_BRIDGE:-1}" == "0" ]]; then
+  if [[ "$ENABLE_VISION_PIPELINE" == "false" ]]; then
     ALLOW_MISSING_RELIABILITY=1
   else
     ALLOW_MISSING_RELIABILITY=0
@@ -67,8 +77,27 @@ if [[ "$PRESERVE_LIO_ANCHOR" != "true" && "$PRESERVE_LIO_ANCHOR" != "false" ]]; 
     "$PRESERVE_LIO_ANCHOR" >&2
   exit 2
 fi
+if [[ "$ENABLE_VISION_PIPELINE" == "false" \
+      && "$FAULT_TYPE" != "none" \
+      && ("$FAULT_MODALITY" == "depth" || "$FAULT_MODALITY" == "color") ]]; then
+  printf 'Vision fault injection requires ENABLE_VISION_PIPELINE=true\n' >&2
+  exit 2
+fi
 
 mkdir -p "$OUTPUT_DIR"
+profile_name=full_sensor
+if [[ "$ENABLE_VISION_PIPELINE" == "false" ]]; then
+  profile_name=four_source
+fi
+{
+  printf 'profile=%s\n' "$profile_name"
+  printf 'active_modalities=lidar,imu,gnss,optical_flow\n'
+  printf 'vision_pipeline=%s\n' "$ENABLE_VISION_PIPELINE"
+  printf 'fault_modality=%s\n' "${FAULT_MODALITY:-none}"
+  printf 'fault_type=%s\n' "$FAULT_TYPE"
+  printf 'flow_use_physics=%s\n' "$FLOW_USE_PHYSICS"
+  printf 'flow_restamp_output=%s\n' "$FLOW_RESTAMP_OUTPUT"
+} >"$OUTPUT_DIR/experiment_profile.txt"
 export OPENBLAS_NUM_THREADS="$NUMPY_NUM_THREADS"
 export MKL_NUM_THREADS="$NUMPY_NUM_THREADS"
 export NUMEXPR_NUM_THREADS="$NUMPY_NUM_THREADS"
@@ -142,6 +171,7 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
   )
 fi
 setsid env "${fault_launch_env[@]}" ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
+  enable_vision:="$ENABLE_VISION_PIPELINE" \
   >"$OUTPUT_DIR/sensor_pipeline.stdout.log" 2>"$OUTPUT_DIR/sensor_pipeline.stderr.log" &
 pids+=("$!")
 if [[ "$FASTLIO_INPUT_MODE" == "filtered_pointcloud" ]]; then

@@ -9,6 +9,30 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2
 
 
+SENSOR_SPECS = (
+    ("lidar", PointCloud2, "lidar_topic", 3.0),
+    ("imu", Imu, "imu_topic", 30.0),
+    ("gnss", NavSatFix, "gnss_topic", 0.5),
+    ("optical_flow", OpticalFlowRad, "optical_flow_topic", 3.0),
+    ("depth", Image, "depth_topic", 3.0),
+    ("color", Image, "color_topic", 3.0),
+)
+
+
+def normalize_modalities(values):
+    known = {spec[0] for spec in SENSOR_SPECS}
+    active = []
+    for value in values:
+        name = str(value).strip()
+        if name not in known:
+            raise ValueError(f"unknown sensor-contract modality: {name}")
+        if name not in active:
+            active.append(name)
+    if not active:
+        raise ValueError("at least one sensor-contract modality is required")
+    return tuple(active)
+
+
 class SensorContractMonitor(Node):
     def __init__(self):
         super().__init__("sensor_contract_monitor")
@@ -22,21 +46,21 @@ class SensorContractMonitor(Node):
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
+        self.declare_parameter(
+            "active_modalities", [spec[0] for spec in SENSOR_SPECS]
+        )
         self.declare_parameter("startup_grace_s", 12.0)
         self.declare_parameter("stale_after_s", 3.0)
 
         self.started = time.monotonic()
         self.stale_after = float(self.get_parameter("stale_after_s").value)
         self.streams = {}
-        specs = [
-            ("lidar", PointCloud2, "lidar_topic", 3.0),
-            ("imu", Imu, "imu_topic", 30.0),
-            ("gnss", NavSatFix, "gnss_topic", 0.5),
-            ("optical_flow", OpticalFlowRad, "optical_flow_topic", 3.0),
-            ("depth", Image, "depth_topic", 3.0),
-            ("color", Image, "color_topic", 3.0),
-        ]
-        for modality, msg_type, parameter, minimum_rate in specs:
+        active_modalities = normalize_modalities(
+            self.get_parameter("active_modalities").value
+        )
+        for modality, msg_type, parameter, minimum_rate in SENSOR_SPECS:
+            if modality not in active_modalities:
+                continue
             self.streams[modality] = {
                 "count": 0,
                 "last_stamp": 0,
@@ -55,6 +79,9 @@ class SensorContractMonitor(Node):
                 lambda msg, key=modality: self._record(key, msg),
                 qos_profile_sensor_data,
             )
+        self.get_logger().info(
+            "Sensor contract active: " + ",".join(active_modalities)
+        )
         self.publisher = self.create_publisher(
             DiagnosticArray, "/sensor_contract/diagnostics", 10
         )

@@ -154,6 +154,13 @@ class ReliabilitySchedulerCore:
         valid_count = 0
         valid_active_scores = {}
         for name in MODALITIES:
+            if name not in self.active_modalities:
+                self.factor_enabled[name] = False
+                degradation[name] = 0.0
+                weights[name] = 0.0
+                inflation[name] = self.config.maximum_covariance_inflation
+                reasons[name] = ("inactive_modality",)
+                continue
             sample = scores.get(name)
             sample_age = float("inf")
             valid = False
