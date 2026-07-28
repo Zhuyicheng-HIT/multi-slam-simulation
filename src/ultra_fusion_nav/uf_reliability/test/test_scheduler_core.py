@@ -36,14 +36,78 @@ class SchedulerCoreTest(unittest.TestCase):
         self.assertAlmostEqual(result.reliability_weights["gnss"], 0.90)
         self.assertAlmostEqual(result.covariance_inflation["gnss"], 1.0 / 0.90)
 
-    def test_high_score_disables_factor_and_enters_risk(self):
+    def test_one_degraded_aiding_factor_does_not_fail_complete_system(self):
         result = self.core.update({
             "gnss": score(0.75, arrival_s=0.0),
             "optical_flow": score(0.10, arrival_s=0.0),
         }, 0.1)
-        self.assertEqual(result.health_state, "RISK")
+        self.assertEqual(result.health_state, "DEGRADED")
         self.assertFalse(result.factor_enabled["gnss"])
         self.assertEqual(result.covariance_inflation["gnss"], 20.0)
+
+    def test_required_imu_failure_is_failsafe(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "gnss", "imu", "optical_flow"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            stale_after_s=1.0,
+            transition_dwell_s=0.0,
+        ))
+        result = core.update({
+            "lidar": score(0.10),
+            "gnss": score(0.10),
+            "imu": score(0.90),
+            "optical_flow": score(0.10),
+        }, 0.1)
+        self.assertEqual(result.health_state, "FAILSAFE")
+
+    def test_rotation_gated_flow_only_degrades_four_source_system(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "gnss", "imu", "optical_flow"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            stale_after_s=1.0,
+            transition_dwell_s=0.0,
+        ))
+        result = core.update({
+            "lidar": score(0.10),
+            "gnss": score(0.10),
+            "imu": score(0.10),
+            "optical_flow": score(1.0, valid=False),
+        }, 0.1)
+        self.assertEqual(result.health_state, "DEGRADED")
+        self.assertTrue(result.factor_enabled["lidar"])
+        self.assertTrue(result.factor_enabled["gnss"])
+        self.assertTrue(result.factor_enabled["imu"])
+        self.assertFalse(result.factor_enabled["optical_flow"])
+
+    def test_one_required_plus_one_aiding_modality_is_risk(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "gnss", "imu", "optical_flow"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            stale_after_s=1.0,
+            transition_dwell_s=0.0,
+        ))
+        result = core.update({
+            "lidar": score(1.0, valid=False),
+            "gnss": score(0.10),
+            "imu": score(0.10),
+            "optical_flow": score(1.0, valid=False),
+        }, 0.1)
+        self.assertEqual(result.health_state, "RISK")
+
+    def test_configuration_rejects_unobservable_requirements(self):
+        with self.assertRaises(ValueError):
+            ReliabilitySchedulerCore(SchedulerConfig(
+                active_modalities=("gnss",),
+                required_modalities=("imu",),
+            ))
+        with self.assertRaises(ValueError):
+            ReliabilitySchedulerCore(SchedulerConfig(
+                active_modalities=("gnss",),
+                minimum_usable_modalities=2,
+            ))
 
     def test_hysteresis_prevents_reenable_until_lower_threshold(self):
         self.core.update({
@@ -89,7 +153,7 @@ class SchedulerCoreTest(unittest.TestCase):
         }, 2.1, relocalization_requested=True)
         self.assertEqual(result.health_state, "RELOCALIZING")
 
-    def test_one_missing_optional_modality_degrades_without_disabling_valid_factor(self):
+    def test_missing_optional_modality_degrades_without_disabling_valid_factor(self):
         result = self.core.update({
             "gnss": score(0.10, arrival_s=0.0),
         }, 0.1)

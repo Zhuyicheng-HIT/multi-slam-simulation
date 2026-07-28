@@ -66,7 +66,7 @@ class GazeboOpticalFlowToMavros(Node):
         self.declare_parameter("gazebo_world_name", "simple_apm_rgbd_mid360")
         self.declare_parameter("gazebo_height_model", "apm_iris")
         self.declare_parameter("ground_z_m", 0.0)
-        self.declare_parameter("use_physics_flow", True)
+        self.declare_parameter("use_physics_flow", False)
         self.declare_parameter("sensor_offset_z_down_m", 0.35)
         self.declare_parameter("physics_flow_noise_std_rad_s", 0.002)
         self.declare_parameter("noise_seed", 29)

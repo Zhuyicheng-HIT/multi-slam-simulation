@@ -308,6 +308,52 @@ class SlidingWindowBackend:
             "optical_flow", [(current, plus), (previous, minus)],
             delta_position, covariance, decision)
 
+    def add_optical_flow_body(
+        self,
+        previous: int,
+        current: int,
+        delta_body: Sequence[float],
+        linearization_yaw: float,
+        covariance=1.0,
+        decision: Mapping[str, object] | None = None,
+    ) -> None:
+        """Add a body-frame optical-flow displacement with yaw sensitivity.
+
+        With ``d_map = Rz(yaw) d_body``, the first-order residual is
+        ``p_k-p_{k-1}-d_map-dRz*d_yaw``.  Keeping the yaw derivative makes
+        optical flow useful for heading correction while LiDAR is degraded.
+        """
+        delta_body = np.asarray(delta_body, dtype=float)
+        if delta_body.shape != (3,) or np.any(~np.isfinite(delta_body)):
+            raise ValueError("optical-flow body displacement must be a finite 3-vector")
+        linearization_yaw = float(linearization_yaw)
+        if not np.isfinite(linearization_yaw):
+            raise ValueError("optical-flow yaw linearization must be finite")
+        cosine, sine = np.cos(linearization_yaw), np.sin(linearization_yaw)
+        rotation = np.asarray([
+            [cosine, -sine, 0.0],
+            [sine, cosine, 0.0],
+            [0.0, 0.0, 1.0],
+        ], dtype=float)
+        yaw_derivative = np.asarray([
+            [-sine, -cosine, 0.0],
+            [cosine, -sine, 0.0],
+            [0.0, 0.0, 0.0],
+        ], dtype=float) @ delta_body
+        plus = self._block(3, POSITION)
+        minus = -plus
+        previous_block = minus.copy()
+        previous_block[:, ROTATION] = 0.0
+        previous_block[:, ROTATION.start + 2] = -yaw_derivative
+        measurement = rotation @ delta_body - yaw_derivative * linearization_yaw
+        self._append_factor(
+            "optical_flow_body",
+            [(current, plus), (previous, previous_block)],
+            measurement,
+            covariance,
+            decision,
+        )
+
     def add_imu_delta(
         self, previous: int, current: int, delta_position: Sequence[float],
         delta_velocity: Sequence[float], covariance=1.0,
@@ -424,6 +470,47 @@ class SlidingWindowBackend:
             np.concatenate((np.asarray(position, dtype=float), np.asarray(rotation, dtype=float))),
             covariance, decision)
 
+    def _factor_normal_contribution(self, factor, state_count):
+        """Return one factor's canonical ``H x = b`` contribution."""
+        dimension = int(state_count) * STATE_SIZE
+        hessian = np.zeros((dimension, dimension), dtype=float)
+        rhs = np.zeros(dimension, dtype=float)
+        if not bool(factor["enabled"]):
+            return hessian, rhs
+        if factor["kind"] == "normal":
+            index = int(factor["blocks"][0][0])
+            start = index * STATE_SIZE
+            indices = np.arange(start, start + 6)
+            scale = float(factor["effective_weight"]) / float(
+                factor["measurement_variance"]
+            )
+            hessian[np.ix_(indices, indices)] += (
+                scale * np.asarray(factor["normal_hessian"], dtype=float)
+            )
+            rhs[indices] += scale * np.asarray(factor["normal_rhs"], dtype=float)
+            return hessian, rhs
+        if factor["kind"] == "marginal_normal":
+            indices = np.concatenate([
+                np.arange(index * STATE_SIZE, (index + 1) * STATE_SIZE)
+                for index, _ in factor["blocks"]
+            ])
+            hessian[np.ix_(indices, indices)] += np.asarray(
+                factor["normal_hessian"], dtype=float
+            )
+            rhs[indices] += np.asarray(factor["normal_rhs"], dtype=float)
+            return hessian, rhs
+        measurement = np.asarray(factor["measurement"], dtype=float)
+        matrix = np.zeros((measurement.size, dimension), dtype=float)
+        for index, block in factor["blocks"]:
+            start = index * STATE_SIZE
+            matrix[:, start:start + STATE_SIZE] += np.asarray(block, dtype=float)
+        information = float(factor["effective_weight"]) / np.asarray(
+            factor["variance"], dtype=float
+        )
+        hessian += matrix.T @ (information[:, None] * matrix)
+        rhs += matrix.T @ (information * measurement)
+        return hessian, rhs
+
     def optimize(self) -> list[np.ndarray]:
         if not self._states:
             return []
@@ -434,6 +521,24 @@ class SlidingWindowBackend:
         state_vector = np.concatenate(self._states)
         for factor in self._factors:
             if not bool(factor["enabled"]):
+                continue
+            if factor["kind"] == "marginal_normal":
+                indices = np.concatenate([
+                    np.arange(index * STATE_SIZE, (index + 1) * STATE_SIZE)
+                    for index, _ in factor["blocks"]
+                ])
+                local_hessian = np.asarray(
+                    factor["normal_hessian"], dtype=float
+                )
+                local_rhs = np.asarray(factor["normal_rhs"], dtype=float)
+                hessian[np.ix_(indices, indices)] += local_hessian
+                gradient[indices] += local_rhs
+                local_state = state_vector[indices]
+                cost += max(
+                    0.0,
+                    float(local_state @ local_hessian @ local_state)
+                    - 2.0 * float(local_rhs @ local_state),
+                )
                 continue
             if factor["kind"] == "normal":
                 index = int(factor["blocks"][0][0])
@@ -515,6 +620,23 @@ class SlidingWindowBackend:
         for factor in reversed(self._factors):
             if factor["name"] != name:
                 continue
+            if factor["kind"] == "marginal_normal":
+                indices = [index for index, _ in factor["blocks"]]
+                local_state = np.concatenate([self._states[index] for index in indices])
+                hessian = np.asarray(factor["normal_hessian"], dtype=float)
+                rhs = np.asarray(factor["normal_rhs"], dtype=float)
+                quadratic = max(
+                    0.0,
+                    float(local_state @ hessian @ local_state)
+                    - 2.0 * float(rhs @ local_state),
+                )
+                return FactorResidual(
+                    name=str(factor["name"]),
+                    state_indices=tuple(indices),
+                    residual_dimension=int(factor["residual_dimension"]),
+                    enabled=bool(factor["enabled"]),
+                    mahalanobis_squared=quadratic,
+                )
             if factor["kind"] == "normal":
                 index = int(factor["blocks"][0][0])
                 delta = self._states[index][:6] - np.asarray(
@@ -566,7 +688,44 @@ class SlidingWindowBackend:
         excess = len(self._states) - self.max_states
         if excess <= 0:
             return
-        boundary_state = self._states[excess].copy()
+        state_count = len(self._states)
+        removed_dimension = excess * STATE_SIZE
+        retained_dimension = (state_count - excess) * STATE_SIZE
+        eliminated_factors = [
+            factor for factor in self._factors
+            if any(index < excess for index, _ in factor["blocks"])
+        ]
+        schur_hessian = None
+        schur_rhs = None
+        if self.carry_marginal_prior and eliminated_factors:
+            joint_hessian = np.zeros(
+                (state_count * STATE_SIZE, state_count * STATE_SIZE), dtype=float
+            )
+            joint_rhs = np.zeros(state_count * STATE_SIZE, dtype=float)
+            for factor in eliminated_factors:
+                factor_hessian, factor_rhs = self._factor_normal_contribution(
+                    factor, state_count
+                )
+                joint_hessian += factor_hessian
+                joint_rhs += factor_rhs
+            h_oo = joint_hessian[:removed_dimension, :removed_dimension]
+            h_or = joint_hessian[:removed_dimension, removed_dimension:]
+            h_ro = joint_hessian[removed_dimension:, :removed_dimension]
+            h_rr = joint_hessian[removed_dimension:, removed_dimension:]
+            b_o = joint_rhs[:removed_dimension]
+            b_r = joint_rhs[removed_dimension:]
+            regularized_h_oo = h_oo + self.damping * np.eye(removed_dimension)
+            try:
+                solved_cross = np.linalg.solve(regularized_h_oo, h_or)
+                solved_rhs = np.linalg.solve(regularized_h_oo, b_o)
+            except np.linalg.LinAlgError:
+                inverse = np.linalg.pinv(regularized_h_oo)
+                solved_cross = inverse @ h_or
+                solved_rhs = inverse @ b_o
+            schur_hessian = h_rr - h_ro @ solved_cross
+            schur_hessian = 0.5 * (schur_hessian + schur_hessian.T)
+            schur_rhs = b_r - h_ro @ solved_rhs
+
         self._states = self._states[excess:]
         retained = []
         for factor in self._factors:
@@ -576,11 +735,31 @@ class SlidingWindowBackend:
             factor["blocks"] = [(index - excess, block) for index, block in blocks]
             retained.append(factor)
         self._factors = retained
-        if self.carry_marginal_prior:
-            self._append_factor(
-                "marginal_prior",
-                [(0, np.eye(STATE_SIZE, dtype=float))],
-                boundary_state,
-                self.marginal_prior_variance,
-                None,
-            )
+        if schur_hessian is None or schur_rhs is None:
+            return
+        active_states = []
+        for index in range(retained_dimension // STATE_SIZE):
+            block = slice(index * STATE_SIZE, (index + 1) * STATE_SIZE)
+            if (
+                np.linalg.norm(schur_hessian[block, :]) > 1.0e-12
+                or np.linalg.norm(schur_rhs[block]) > 1.0e-12
+            ):
+                active_states.append(index)
+        if not active_states:
+            return
+        active_indices = np.concatenate([
+            np.arange(index * STATE_SIZE, (index + 1) * STATE_SIZE)
+            for index in active_states
+        ])
+        self._factors.append({
+            "name": "marginal_prior",
+            "kind": "marginal_normal",
+            "blocks": [(index, None) for index in active_states],
+            "normal_hessian": schur_hessian[np.ix_(active_indices, active_indices)],
+            "normal_rhs": schur_rhs[active_indices],
+            "residual_dimension": int(active_indices.size),
+            "enabled": True,
+            "reliability_weight": 1.0,
+            "covariance_inflation": 1.0,
+            "effective_weight": 1.0,
+        })

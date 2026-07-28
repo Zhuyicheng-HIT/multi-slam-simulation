@@ -29,6 +29,9 @@ if ! git -C "$FAST_LIO_SRC" diff --quiet; then
   exit 4
 fi
 
-git -C "$FAST_LIO_SRC" apply --check "$PATCH_FILE"
-git -C "$FAST_LIO_SRC" apply "$PATCH_FILE"
+# The packaged diff intentionally has zero context because a patch stored
+# inside Git otherwise trips whitespace checks on blank context markers. The
+# exact upstream commit gate above keeps this application deterministic.
+git -C "$FAST_LIO_SRC" apply --unidiff-zero --check "$PATCH_FILE"
+git -C "$FAST_LIO_SRC" apply --unidiff-zero "$PATCH_FILE"
 echo "Applied native LiDAR factor export patch to $FAST_LIO_SRC"

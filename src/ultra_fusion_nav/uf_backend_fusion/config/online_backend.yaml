@@ -9,23 +9,85 @@ unified_backend_fusion:
     output_topic: /fusion/unified/odom
     path_topic: /fusion/unified/path
     diagnostic_topic: /fusion/unified/diagnostics
-    map_frame: map
-    body_frame: base_link
+    # These names are part of the FAST-LIO factor contract. Use an explicit TF
+    # before exposing a differently named navigation frame.
+    map_frame: camera_init
+    body_frame: body
     window_size: 8
+    # The nonlinear backend owns p/R/v/ba/bg and raw-IMU preintegration.
+    # Set to linear only for controlled rollback comparisons.
+    backend_solver_mode: manifold
+    nonlinear_max_iterations: 4
+    nonlinear_damping: 1.0e-6
+    nonlinear_convergence_threshold: 1.0e-5
+    # Huber threshold is expressed in point-plane residual standard deviations.
+    lidar_huber_delta: 2.5
+    lm_max_trials: 6
+    lm_damping_up: 10.0
+    lm_damping_down: 0.3
+    # A full FAST-LIO pose contains its internal IMU update. Keeping this false
+    # prevents that correlated information from being counted a second time.
+    allow_lio_pose_fallback: false
     gnss_max_age_s: 2.0
     flow_max_age_s: 1.0
     imu_buffer_s: 5.0
+    # Cross-topic callbacks may deliver LIO before the final FCU IMU sample.
+    # Wait briefly for timestamp coverage instead of silently dropping IMU.
+    imu_factor_wait_s: 0.080
+    imu_max_gap_s: 0.10
+    # Use only a short, observably stationary FCU raw-IMU window to initialize
+    # b_a/b_g. This is a one-time seed, not continuous FCU EKF pose feedback.
+    imu_startup_bias_initialization_enabled: true
+    imu_startup_window_s: 1.5
+    imu_startup_minimum_samples: 40
+    imu_startup_minimum_span_s: 0.8
+    imu_startup_maximum_mean_gyro_radps: 0.08
+    imu_startup_maximum_gyro_residual_rms_radps: 0.03
+    imu_startup_gravity_tolerance_mps2: 0.60
+    imu_startup_maximum_accel_residual_rms_mps2: 0.40
     minimum_flow_quality: 20
     minimum_flow_distance_m: 0.08
     maximum_flow_distance_m: 12.0
     gnss_default_variance_m2: 4.0
     gnss_jump_gate_m: 20.0
+    gnss_jump_speed_mps: 15.0
+    # Experimental: this regressed the July 2026 LiDAR-dropout route because
+    # short-interval flow scale/timing errors leaked into yaw. Keep disabled
+    # until a nonlinear factor can be relinearized against global position.
+    optical_flow_yaw_coupling_enabled: false
+    flow_rotation_lower_yaw_rate_radps: 0.08
+    flow_rotation_upper_yaw_rate_radps: 0.30
+    flow_rotation_recovery_dwell_s: 0.8
+    flow_rotation_recovery_ramp_s: 1.5
+    flow_rotation_minimum_translation_m: 0.01
+    flow_rotation_recovery_max_base_score: 0.55
+    flow_rotation_imu_max_gap_s: 0.12
     imu_factor_enabled: true
-    preserve_lio_anchor: false
+    # Until an independently validated visual heading factor is present, IMU
+    # alone only propagates relative yaw. Keep a weak native LiDAR anchor.
+    preserve_lio_anchor: true
+    lidar_anchor_minimum_effective_weight: 0.10
+    lidar_anchor_maximum_covariance_inflation: 5.0
     native_lidar_factor_enabled: true
+    # The native packet is the keyframe clock. /lio/odom is not consumed in
+    # this mode, which removes cross-topic pairing and fused-pose duplication.
+    input_trigger_mode: native_factor
     native_lidar_factor_tolerance_s: 0.005
     native_lidar_factor_wait_s: 0.030
     native_lidar_minimum_matches: 50
+    # Best-effort is retained, but preintegration cannot discard intermediate
+    # IMU samples while the nonlinear solver owns the Python executor thread.
+    native_lidar_qos_depth: 32
+    # ROS callbacks remain lightweight; one ordered worker owns all window
+    # mutations while IMU callbacks continue filling the preintegration buffer.
+    native_worker_queue_size: 64
+    imu_qos_depth: 64
     imu_covariance_scale: 50.0
     scheduler_timeout_s: 1.0
+    reliability_mode: dynamic
+    fixed_lidar_weight: 1.0
+    fixed_gnss_weight: 1.0
+    fixed_imu_weight: 1.0
+    fixed_optical_flow_weight: 1.0
+    fixed_covariance_inflation: 1.0
     publish_path_length: 2000

@@ -15,6 +15,11 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu, NavSatFix
 from uf_interfaces.msg import GnssIntegrity, LioDiagnostics, ReliabilityScore
 
+from .flow_rotation_gate import (
+    FlowRotationGateConfig,
+    OpticalFlowRotationGate,
+    interval_mean_absolute_yaw_rate,
+)
 from .scoring import (
     gnss_integrity_quality,
     gnss_score,
@@ -60,6 +65,14 @@ def nonnegative_diagnostic_value(message, status_name, key):
                 return None
             return value if math.isfinite(value) and value >= 0.0 else None
     return None
+
+
+def flow_observation_valid(gyro_available, yaw_rate, rotation_gate):
+    return bool(
+        gyro_available
+        and yaw_rate is not None
+        and not rotation_gate.hard_disabled
+    )
 
 
 def yaw_from_quaternion(quaternion):
@@ -179,6 +192,13 @@ class ReliabilityMonitor(Node):
             "optical_flow.weights": [0.60, 0.25, 0.15],
             "optical_flow.lio_max_gap_s": 0.5,
             "optical_flow.lio_wait_s": 0.4,
+            "optical_flow.rotation_gate.lower_yaw_rate_radps": 0.08,
+            "optical_flow.rotation_gate.upper_yaw_rate_radps": 0.30,
+            "optical_flow.rotation_gate.recovery_dwell_s": 0.8,
+            "optical_flow.rotation_gate.recovery_ramp_s": 1.5,
+            "optical_flow.rotation_gate.minimum_translation_m": 0.01,
+            "optical_flow.rotation_gate.recovery_max_base_score": 0.55,
+            "optical_flow.rotation_gate.imu_max_gap_s": 0.12,
             "vision.feature_reference": 150,
             "vision.tau_reprojection_px": 3.0,
             "vision.weights": [0.30, 0.25, 0.25, 0.20],
@@ -197,6 +217,7 @@ class ReliabilityMonitor(Node):
         self.last_imu_ns = None
         self.last_imu_publish_ns = None
         self.imu_window = deque(maxlen=100)
+        self.flow_imu_yaw_samples = deque(maxlen=2000)
         self.imu_preintegration_residual = None
         self.imu_preintegration_residual_arrival = None
         self.lidar_innovation_position = None
@@ -211,6 +232,20 @@ class ReliabilityMonitor(Node):
         self.lio_position = None
         self.lio_samples = deque(maxlen=1000)
         self.pending_flows = deque(maxlen=100)
+        self.flow_rotation_gate = OpticalFlowRotationGate(
+            FlowRotationGateConfig(
+                lower_yaw_rate_radps=float(self.get_parameter(
+                    "optical_flow.rotation_gate.lower_yaw_rate_radps").value),
+                upper_yaw_rate_radps=float(self.get_parameter(
+                    "optical_flow.rotation_gate.upper_yaw_rate_radps").value),
+                recovery_dwell_s=float(self.get_parameter(
+                    "optical_flow.rotation_gate.recovery_dwell_s").value),
+                recovery_ramp_s=float(self.get_parameter(
+                    "optical_flow.rotation_gate.recovery_ramp_s").value),
+                minimum_translation_m=float(self.get_parameter(
+                    "optical_flow.rotation_gate.minimum_translation_m").value),
+            )
+        )
         self.latest_depth_ratio = -1.0
         self.latest_blur_energy = -1.0
         self.latest_feature_count = 0
@@ -460,6 +495,14 @@ class ReliabilityMonitor(Node):
         gyro = np.asarray([
             msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z
         ], dtype=float)
+        timestamp_s = current_ns * 1.0e-9
+        self.flow_imu_yaw_samples.append((timestamp_s, float(gyro[2])))
+        cutoff_s = timestamp_s - 5.0
+        while (
+            self.flow_imu_yaw_samples
+            and self.flow_imu_yaw_samples[0][0] < cutoff_s
+        ):
+            self.flow_imu_yaw_samples.popleft()
         self.imu_window.append((accel, gyro))
         if self.last_imu_publish_ns is not None and current_ns - self.last_imu_publish_ns < 100_000_000:
             return
@@ -548,11 +591,54 @@ class ReliabilityMonitor(Node):
             msg.integrated_xgyro, msg.integrated_ygyro,
             msg.distance,
         )
-        result = optical_flow_score(
+        score, evidence, reasons = optical_flow_score(
             flow_displacement, prediction, msg.quality, msg.distance,
             self.get_parameter("optical_flow.tau_translation").value,
             tuple(self.get_parameter("optical_flow.weights").value),
         )
+        integration_s = float(msg.integration_time_us) * 1.0e-6
+        end_s = stamp_ns(msg.header) * 1.0e-9
+        yaw_rate = interval_mean_absolute_yaw_rate(
+            self.flow_imu_yaw_samples,
+            end_s - integration_s,
+            end_s,
+            float(self.get_parameter(
+                "optical_flow.rotation_gate.imu_max_gap_s").value),
+        )
+        translation_norm = (
+            None if flow_displacement is None
+            else math.hypot(float(flow_displacement[0]), float(flow_displacement[1]))
+        )
+        recovery_healthy = (
+            flow_displacement is not None
+            and prediction is not None
+            and score <= float(self.get_parameter(
+                "optical_flow.rotation_gate.recovery_max_base_score").value)
+        )
+        rotation_gate = self.flow_rotation_gate.update(
+            end_s,
+            yaw_rate,
+            translation_norm,
+            recovery_healthy,
+        )
+        rotation_term = 1.0 - rotation_gate.weight
+        score = max(float(score), rotation_term)
+        evidence.update({
+            "fcu_yaw_rate_abs_radps": rotation_gate.yaw_rate_abs_radps,
+            "rotation_gate_weight": rotation_gate.weight,
+            "rotation_gate_term": rotation_term,
+            "rotation_gate_phase_code": OpticalFlowRotationGate.PHASE_CODES[
+                rotation_gate.phase
+            ],
+            "rotation_gate_translation_ready": (
+                1.0 if rotation_gate.translation_ready else 0.0
+            ),
+        })
+        if rotation_gate.phase != "ACTIVE":
+            reasons.append(rotation_gate.reason)
+        if rotation_gate.hard_disabled:
+            reasons.append("flow_rotation_gate_marks_observation_unavailable")
+        result = score, evidence, reasons
         gyro_available = flow_displacement is not None
         result[1]["gyro_compensation_available"] = 1.0 if gyro_available else 0.0
         result[1]["lio_increment_available"] = 0.0 if prediction is None else 1.0
@@ -560,7 +646,8 @@ class ReliabilityMonitor(Node):
         if not gyro_available:
             result[2].append("gyro_compensation_unavailable")
         self._publish(
-            "optical_flow", msg.header, result, gyro_available
+            "optical_flow", msg.header, result,
+            flow_observation_valid(gyro_available, yaw_rate, rotation_gate),
         )
 
     def _depth(self, msg):

@@ -8,17 +8,24 @@ OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/logs/uf_stage2_${RUN_ID}}
 ANALYSIS_DURATION_S=${ANALYSIS_DURATION_S:-125}
 ENABLE_LIO_ADAPTER=${ENABLE_LIO_ADAPTER:-1}
 ENABLE_UNIFIED_BACKEND=${ENABLE_UNIFIED_BACKEND:-0}
-PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-false}
+PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-true}
 ENABLE_RELIABILITY=${ENABLE_RELIABILITY:-0}
 ENABLE_FLOW_CALIBRATION=${ENABLE_FLOW_CALIBRATION:-0}
 FLOW_CALIBRATION_REQUIRE_PASS=${FLOW_CALIBRATION_REQUIRE_PASS:-0}
 ENABLE_PERFORMANCE_MONITOR=${ENABLE_PERFORMANCE_MONITOR:-1}
 ENABLE_RELIABILITY_TIMELINE=${ENABLE_RELIABILITY_TIMELINE:-0}
 ENABLE_NATIVE_FACTOR_VALIDATOR=${ENABLE_NATIVE_FACTOR_VALIDATOR:-0}
+ENABLE_ROSBAG_RECORDING=${ENABLE_ROSBAG_RECORDING:-0}
 NUMPY_NUM_THREADS=${NUMPY_NUM_THREADS:-1}
 SIM_WORLD_NAME=${SIM_WORLD_NAME:-simple_apm_rgbd_mid360}
 FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-filtered_pointcloud}
-ALLOW_MISSING_RELIABILITY=${ALLOW_MISSING_RELIABILITY:-0}
+if [[ -z "${ALLOW_MISSING_RELIABILITY+x}" ]]; then
+  if [[ "${ENABLE_D435_BRIDGE:-1}" == "0" ]]; then
+    ALLOW_MISSING_RELIABILITY=1
+  else
+    ALLOW_MISSING_RELIABILITY=0
+  fi
+fi
 FAULT_MODALITY=${FAULT_MODALITY:-}
 FAULT_TYPE=${FAULT_TYPE:-none}
 FAULT_TRIGGER_DELAY_S=${FAULT_TRIGGER_DELAY_S:-0}
@@ -26,6 +33,21 @@ FAULT_DURATION_S=${FAULT_DURATION_S:-0}
 FAULT_MAGNITUDE=${FAULT_MAGNITUDE:-0}
 FAULT_SECONDARY_MAGNITUDE=${FAULT_SECONDARY_MAGNITUDE:-0}
 FAULT_DELIVERY_MODE=${FAULT_DELIVERY_MODE:-runtime}
+FLOW_USE_PHYSICS=${FLOW_USE_PHYSICS:-false}
+FLOW_RESTAMP_OUTPUT=${FLOW_RESTAMP_OUTPUT:-true}
+
+if [[ "$FLOW_USE_PHYSICS" != "false" && "$FLOW_USE_PHYSICS" != "0" ]]; then
+  printf '%s\n' \
+    'run_lio_baseline_experiment.sh rejects Gazebo-pose synthesized flow.' \
+    'Set FLOW_USE_PHYSICS=false for algorithm-quality evaluation.' >&2
+  exit 2
+fi
+if [[ "$FLOW_RESTAMP_OUTPUT" != "true" && "$FLOW_RESTAMP_OUTPUT" != "1" ]]; then
+  printf '%s\n' \
+    'The current non-use_sim_time stack requires FLOW_RESTAMP_OUTPUT=true.' \
+    'integration_time_us still preserves the source exposure interval.' >&2
+  exit 2
+fi
 
 if [[ "$ENABLE_UNIFIED_BACKEND" == "1" \
       && -z "${FASTLIO_NATIVE_FACTOR_EXPORT:-}" ]]; then
@@ -97,7 +119,9 @@ wait_for_message() {
 
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 
-setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" LOG_DIR="$OUTPUT_DIR/sim" \
+setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" \
+  FLOW_USE_PHYSICS=false FLOW_RESTAMP_OUTPUT="$FLOW_RESTAMP_OUTPUT" \
+  LOG_DIR="$OUTPUT_DIR/sim" \
   bash "$REPO_ROOT/tools/run_sim_with_flow.sh" \
   >"$OUTPUT_DIR/sim.stdout.log" 2>"$OUTPUT_DIR/sim.stderr.log" &
 pids+=("$!")
@@ -151,9 +175,17 @@ fi
 
 performance_monitor_pid=""
 if [[ "$ENABLE_PERFORMANCE_MONITOR" == "1" ]]; then
+  performance_fusion_topic=/fusion/gps_flow/odom
+  performance_fusion_diagnostic_topic=/fusion/gps_flow/diagnostics
+  if [[ "$ENABLE_UNIFIED_BACKEND" == "1" ]]; then
+    performance_fusion_topic=/fusion/unified/odom
+    performance_fusion_diagnostic_topic=/fusion/unified/diagnostics
+  fi
   ros2 run multi_slam_uav_sim simulation_performance_monitor --ros-args \
     -p world_name:="$SIM_WORLD_NAME" \
     -p output_path:="$OUTPUT_DIR/simulation_performance.json" \
+    -p fusion_topic:="$performance_fusion_topic" \
+    -p fusion_diagnostic_topic:="$performance_fusion_diagnostic_topic" \
     -p flow_truth_assistance:=false \
     -p minimum_external_nav_rate_hz:=0.0 \
     >"$OUTPUT_DIR/simulation_performance.stdout.log" \
@@ -180,6 +212,31 @@ if [[ "$ENABLE_UNIFIED_BACKEND" == "1" ]]; then
   pids+=("$unified_backend_pid")
   wait_for_message /fusion/unified/odom 45
   estimate_topic=/fusion/unified/odom
+fi
+
+rosbag_pid=""
+if [[ "$ENABLE_ROSBAG_RECORDING" == "1" ]]; then
+  rosbag_dir="$OUTPUT_DIR/rosbag_inputs"
+  setsid ros2 bag record --storage sqlite3 --output "$rosbag_dir" \
+    /lio/odom \
+    /lio/diagnostics \
+    /fast_lio/native_lidar_factor \
+    /sensors/gnss/fix \
+    /mavros/gpsstatus/gps1/raw \
+    /sensors/imu \
+    /sensors/optical_flow/rad \
+    /fault/state \
+    /reliability/scheduler_state \
+    /reliability/lidar_score \
+    /reliability/gnss_score \
+    /reliability/imu_score \
+    /reliability/optical_flow_score \
+    /sim/mid360/ground_truth_odom \
+    >"$OUTPUT_DIR/rosbag_record.stdout.log" \
+    2>"$OUTPUT_DIR/rosbag_record.stderr.log" &
+  rosbag_pid=$!
+  pids+=("$rosbag_pid")
+  sleep 2
 fi
 
 timeline_pid=""
@@ -320,6 +377,22 @@ if [[ -n "$timeline_pid" ]]; then
 fi
 set -e
 
+rosbag_status=0
+if [[ -n "$rosbag_pid" ]]; then
+  kill -INT "$rosbag_pid" 2>/dev/null || true
+  kill -INT -- "-$rosbag_pid" 2>/dev/null || true
+  set +e
+  timeout 20s tail --pid="$rosbag_pid" -f /dev/null
+  rosbag_wait_status=$?
+  set -e
+  if [[ "$rosbag_wait_status" != "0" \
+        || ! -f "$OUTPUT_DIR/rosbag_inputs/metadata.yaml" ]]; then
+    printf 'rosbag2 did not finalize cleanly in %s\n' \
+      "$OUTPUT_DIR/rosbag_inputs" >&2
+    rosbag_status=1
+  fi
+fi
+
 if [[ -n "$native_factor_validator_pid" ]]; then
   kill -INT "$native_factor_validator_pid" 2>/dev/null || true
   kill -INT -- "-$native_factor_validator_pid" 2>/dev/null || true
@@ -356,11 +429,12 @@ if [[ -n "$flow_calibration_pid" ]]; then
   set -e
 fi
 
-printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s flow_calibration_status=%s flow_gate_status=%s fault_status=%s timeline_status=%s\n' \
+printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s flow_calibration_status=%s flow_gate_status=%s fault_status=%s timeline_status=%s rosbag_status=%s\n' \
   "$rectangle_status" "$analyzer_status" "$recorder_status" "$score_status" \
-  "$flow_calibration_status" "$flow_gate_status" "$fault_status" "$timeline_status"
+  "$flow_calibration_status" "$flow_gate_status" "$fault_status" "$timeline_status" \
+  "$rosbag_status"
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 (( rectangle_status == 0 && analyzer_status == 0 && recorder_status == 0 \
    && score_status == 0 && flow_calibration_status == 0 && flow_gate_status == 0 \
    && fault_status == 0 \
-   && timeline_status == 0 ))
+   && timeline_status == 0 && rosbag_status == 0 ))

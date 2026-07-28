@@ -1,13 +1,37 @@
 import math
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
 from multi_slam_uav_sim.external_nav_accuracy import ExternalNavAccuracy
-from multi_slam_uav_sim.simulation_performance_monitor import TopicWindow
+from multi_slam_uav_sim.simulation_performance_monitor import (
+    TopicWindow,
+    diagnostic_timing_values,
+)
 
 
 class ExternalNavAccuracyTest(unittest.TestCase):
+    def test_performance_monitor_accepts_backend_timing_diagnostics(self):
+        message = SimpleNamespace(status=[SimpleNamespace(
+            name="unified_backend_fusion",
+            values=[
+                SimpleNamespace(key="backend_solve_mean_ms", value="16.5"),
+                SimpleNamespace(key="backend_solve_max_ms", value="25.0"),
+                SimpleNamespace(key="callback_ms", value="18.2"),
+                SimpleNamespace(key="window_states", value="8"),
+                SimpleNamespace(key="backend_solve_ms", value="not-a-number"),
+            ],
+        )])
+
+        values = diagnostic_timing_values(message)
+
+        self.assertEqual(values, {
+            "unified_backend_fusion/backend_solve_mean_ms": 16.5,
+            "unified_backend_fusion/backend_solve_max_ms": 25.0,
+            "unified_backend_fusion/callback_ms": 18.2,
+        })
+
     def test_topic_window_exposes_source_to_arrival_rate_mismatch(self):
         window = TopicWindow()
         for index in range(10):

@@ -65,6 +65,51 @@ class NativeFactorValidatorTest(unittest.TestCase):
         self.assertGreaterEqual(result["axial_penalty"], 0.0)
         self.assertLessEqual(result["axial_penalty"], 1.0)
         self.assertGreater(result["spatial_coverage"], 0.0)
+        self.assertTrue(result["debug_jacobian_available"])
+        self.assertEqual(result["jacobian_model"], "fixed_extrinsic")
+
+    def test_optional_debug_jacobian_is_reconstructed_from_geometry(self):
+        msg = make_factor()
+        msg.jacobian = []
+
+        result = analyze_factor(msg)
+
+        self.assertTrue(result["valid"], result["errors"])
+        self.assertFalse(result["debug_jacobian_available"])
+        self.assertEqual(result["jacobian_model"], "fixed_extrinsic")
+        self.assertLess(result["hessian_relative_error"], 1.0e-12)
+        self.assertLess(result["gradient_relative_error"], 1.0e-12)
+
+    def test_reconstructs_online_extrinsic_jacobian_branch(self):
+        msg = make_factor()
+        points = np.asarray(msg.lidar_points_xyz).reshape(-1, 3)
+        normals = np.asarray(msg.plane_normals_xyz).reshape(-1, 3)
+        translation = np.asarray(msg.lidar_to_body_translation)
+        points_body = points + translation
+        jacobian = np.concatenate((
+            normals,
+            np.cross(points_body, normals),
+            np.cross(points, normals),
+            normals,
+        ), axis=1)
+        residuals = np.asarray(msg.residuals)
+        msg.jacobian = []
+        msg.state_hessian = (jacobian.T @ jacobian).reshape(-1).tolist()
+        msg.state_gradient = (jacobian.T @ residuals).tolist()
+
+        result = analyze_factor(msg)
+
+        self.assertTrue(result["valid"], result["errors"])
+        self.assertEqual(result["jacobian_model"], "estimated_extrinsic")
+
+    def test_rejects_nonempty_partial_debug_jacobian(self):
+        msg = make_factor()
+        msg.jacobian = msg.jacobian[:-1]
+
+        result = analyze_factor(msg)
+
+        self.assertFalse(result["valid"])
+        self.assertIn("jacobian length mismatch", result["errors"])
 
     def test_rejects_corrupted_hessian(self):
         msg = make_factor()

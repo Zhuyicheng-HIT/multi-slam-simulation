@@ -79,6 +79,47 @@ class SlidingWindowBackendTest(unittest.TestCase):
         self.assertTrue(any(record.name == "marginal_prior" for record in summaries))
         self.assertFalse(summaries[-1].enabled)
 
+    def test_schur_marginalization_matches_unbounded_window(self):
+        full = SlidingWindowBackend(max_states=3, solver="dense")
+        bounded = SlidingWindowBackend(max_states=2, solver="dense")
+
+        for backend in (full, bounded):
+            backend.add_state()
+            backend.add_state()
+            backend.add_prior(0, np.zeros(STATE_SIZE), covariance=1.0e-4)
+            backend.add_optical_flow(
+                0, 1, [0.8, -0.1, 0.0], covariance=[0.01, 0.01, 1.0]
+            )
+            backend.add_lidar_pose(
+                1, [0.9, -0.05, 0.0], [0.0, 0.0, 0.1], covariance=0.05
+            )
+
+        full.add_state()
+        full.add_optical_flow(
+            1, 2, [0.7, 0.2, 0.0], covariance=[0.01, 0.01, 1.0]
+        )
+        full.add_lidar_pose(
+            2, [1.55, 0.1, 0.0], [0.0, 0.0, 0.2], covariance=0.05
+        )
+        full_states = full.optimize()
+
+        bounded.add_state()
+        bounded.add_optical_flow(
+            0, 1, [0.7, 0.2, 0.0], covariance=[0.01, 0.01, 1.0]
+        )
+        bounded.add_lidar_pose(
+            1, [1.55, 0.1, 0.0], [0.0, 0.0, 0.2], covariance=0.05
+        )
+        bounded_states = bounded.optimize()
+
+        np.testing.assert_allclose(bounded_states, full_states[1:], atol=1.0e-6)
+        marginal = [
+            record for record in bounded.factor_summary()
+            if record.name == "marginal_prior"
+        ]
+        self.assertEqual(len(marginal), 1)
+        self.assertEqual(marginal[0].state_indices, (0,))
+
     @unittest.skipUnless(SPARSE_SOLVER_AVAILABLE, "scipy sparse solver unavailable")
     def test_sparse_and_dense_solvers_agree_when_available(self):
         dense = SlidingWindowBackend(max_states=3, solver="dense")
@@ -140,6 +181,21 @@ class SlidingWindowBackendTest(unittest.TestCase):
         record = backend.factor_summary()[-1]
         self.assertEqual(record.name, "lidar_point_plane")
         self.assertEqual(record.residual_dimension, 80)
+
+    def test_body_optical_flow_factor_records_yaw_sensitive_rows(self):
+        backend = SlidingWindowBackend(max_states=2, solver="dense")
+        backend.add_state()
+        backend.add_state()
+        backend.add_prior(0, np.zeros(STATE_SIZE), covariance=1.0e-4)
+        backend.add_optical_flow_body(
+            0, 1, [1.0, 0.0, 0.0], 0.0,
+            covariance=[0.01, 0.01, 1.0],
+        )
+        summary = backend.factor_summary()[-1]
+        self.assertEqual(summary.name, "optical_flow_body")
+        self.assertEqual(summary.residual_dimension, 3)
+        estimate = backend.optimize()[1]
+        np.testing.assert_allclose(estimate[:2], [1.0, 0.0], atol=1.0e-6)
 
     def test_lidar_pose_and_native_factor_cannot_coexist_on_one_state(self):
         backend = SlidingWindowBackend(max_states=2, solver="dense")

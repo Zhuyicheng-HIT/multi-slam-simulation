@@ -69,6 +69,14 @@ printf 'Logs: %s\n' "$LOG_DIR"
 printf 'World: %s\n' "$WORLD"
 printf 'World name: %s\n' "$WORLD_NAME"
 
+GPU_REPORT="$LOG_DIR/gpu_acceleration.log"
+if ! bash "$PKG_SHARE/scripts/check_gpu_acceleration.sh" >"$GPU_REPORT" 2>&1; then
+  cat "$GPU_REPORT" >&2
+  printf 'GPU validation failed. Set REQUIRE_GAZEBO_GPU=0 only for an intentional CPU fallback.\n' >&2
+  exit 3
+fi
+cat "$GPU_REPORT"
+
 if [[ "${HEADLESS:-0}" == "1" ]]; then
   setsid gz sim -s -r --headless-rendering -v 2 "$WORLD" >"$LOG_DIR/gazebo.log" 2>&1 &
 else
@@ -117,13 +125,13 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
     -p imu_topic:=/mavros/imu/data_raw
     -p max_rate_hz:=30.0
     -p angular_scale:=1.0
-    -p use_physics_flow:=${FLOW_USE_PHYSICS:-true}
+    -p use_physics_flow:=${FLOW_USE_PHYSICS:-false}
     -p use_gazebo_height:=false
     -p gazebo_world_name:="$WORLD_NAME"
     -p gazebo_height_model:=apm_iris
     -p publish_to_fcu:="$publish_to_fcu"
     -p fcu_flow_topic:=/mavros/optical_flow/raw/send
-    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-true}
+    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-false}
     -p debug:=${FLOW_DEBUG:-false}
   )
   if [[ -n "$fcu_range_topic" ]]; then
@@ -218,7 +226,7 @@ fi
 if [[ "${ENABLE_EXTERNALNAV_FUSION:-0}" == "1" ]]; then
   setsid ros2 launch uf_sensor_pipeline gps_flow_externalnav.launch.py \
     world_name:="$WORLD_NAME" \
-    flow_truth_assistance:=${FLOW_USE_PHYSICS:-true} \
+    flow_truth_assistance:=${FLOW_USE_PHYSICS:-false} \
     performance_output_path:="$LOG_DIR/simulation_performance.json" \
     accuracy_output_path:="$LOG_DIR/externalnav_accuracy.json" \
     >"$LOG_DIR/gps_flow_externalnav.log" 2>&1 &
@@ -272,6 +280,11 @@ Optional companion GPS/flow ExternalNav:
   ENABLE_D435_BRIDGE=0 and ENABLE_MID360_BRIDGE=0 disable unused ROS conversion bridges
   Performance report: $LOG_DIR/simulation_performance.json
   Accuracy report: $LOG_DIR/externalnav_accuracy.json
+
+GPU diagnostics:
+  Renderer selection and OpenCV backend: $GPU_REPORT
+  REQUIRE_GAZEBO_GPU=1 rejects an unexpected adapter or software rendering
+  HEADLESS=1 uses Gazebo OGRE2 EGL rendering without the GUI process
 
 Optical-flow viewer:
   run_sim_with_flow.sh

@@ -12,6 +12,8 @@ def clamp(value, low=0.0, high=1.0):
 @dataclass(frozen=True)
 class SchedulerConfig:
     active_modalities: tuple = MODALITIES
+    required_modalities: tuple = ()
+    minimum_usable_modalities: int = 1
     stale_after_s: float = 1.0
     degraded_threshold: float = 0.35
     risk_threshold: float = 0.60
@@ -44,6 +46,27 @@ class ReliabilitySchedulerCore:
         self.active_modalities = tuple(
             name for name in self.config.active_modalities if name in MODALITIES
         )
+        if not self.active_modalities:
+            raise ValueError("at least one active modality is required")
+        unknown_required = set(self.config.required_modalities).difference(
+            self.active_modalities
+        )
+        if unknown_required:
+            raise ValueError(
+                "required modalities must also be active: "
+                + ",".join(sorted(unknown_required))
+            )
+        if not 1 <= self.config.minimum_usable_modalities <= len(
+            self.active_modalities
+        ):
+            raise ValueError(
+                "minimum usable modalities must be within active modalities"
+            )
+        self.required_modalities = tuple(
+            name
+            for name in self.config.required_modalities
+            if name in self.active_modalities
+        )
         self.health_state = "FAILSAFE"
         self.state_since = None
         self.candidate_state = None
@@ -53,16 +76,35 @@ class ReliabilitySchedulerCore:
         self.has_valid_state = False
         self.factor_enabled = {name: False for name in MODALITIES}
 
-    def _target_state(self, severity, valid_count, relocalization_requested):
+    def _target_state(
+        self,
+        operational_severity,
+        valid_count,
+        usable_count,
+        required_usable,
+        degraded_or_missing,
+        relocalization_requested,
+    ):
         if relocalization_requested:
             return "RELOCALIZING"
-        if valid_count == 0 or severity >= self.config.failsafe_threshold:
+        if (
+            valid_count == 0
+            or not required_usable
+            or usable_count < self.config.minimum_usable_modalities
+        ):
             return "FAILSAFE"
-        if severity >= self.config.risk_threshold:
+        if operational_severity >= self.config.risk_threshold:
             return "RISK"
         if (
-            severity >= self.config.degraded_threshold
-            or valid_count < len(self.active_modalities)
+            self.config.minimum_usable_modalities > 1
+            and
+            usable_count == self.config.minimum_usable_modalities
+            and usable_count < len(self.active_modalities)
+        ):
+            return "RISK"
+        if (
+            operational_severity >= self.config.degraded_threshold
+            or degraded_or_missing
         ):
             return "DEGRADED"
         if self.health_state == "RECOVERED":
@@ -110,7 +152,7 @@ class ReliabilitySchedulerCore:
         inflation = {}
         reasons = {}
         valid_count = 0
-        severity = 0.0
+        valid_active_scores = {}
         for name in MODALITIES:
             sample = scores.get(name)
             sample_age = float("inf")
@@ -146,7 +188,7 @@ class ReliabilitySchedulerCore:
             if name in self.active_modalities:
                 if valid:
                     valid_count += 1
-                    severity = max(severity, value)
+                    valid_active_scores[name] = value
             if self.factor_enabled[name]:
                 if stale or not valid:
                     self.factor_enabled[name] = False
@@ -166,16 +208,55 @@ class ReliabilitySchedulerCore:
                 else self.config.maximum_covariance_inflation
             )
             reasons[name] = tuple(sample_reasons)
+        usable_active_scores = {
+            name: value
+            for name, value in valid_active_scores.items()
+            if self.factor_enabled[name]
+            and value < self.config.failsafe_threshold
+        }
+        usable_count = len(usable_active_scores)
+        required_usable = all(
+            name in usable_active_scores for name in self.required_modalities
+        )
+        required_scores = [
+            usable_active_scores[name]
+            for name in self.required_modalities
+            if name in usable_active_scores
+        ]
+        aiding_scores = [
+            value
+            for name, value in usable_active_scores.items()
+            if name not in self.required_modalities
+        ]
+        operational_scores = required_scores[:]
+        if aiding_scores:
+            operational_scores.append(min(aiding_scores))
+        operational_severity = max(operational_scores, default=0.0)
+        degraded_or_missing = (
+            usable_count < len(self.active_modalities)
+            or any(
+                value >= self.config.degraded_threshold
+                for value in valid_active_scores.values()
+            )
+        )
         first_healthy_observation = (
             not self.has_valid_state
             and valid_count > 0
             and valid_count == len(self.active_modalities)
-            and severity < self.config.degraded_threshold
+            and usable_count == len(self.active_modalities)
+            and operational_severity < self.config.degraded_threshold
+            and not degraded_or_missing
             and not relocalization_requested
         )
         target = (
             "NORMAL" if first_healthy_observation else self._target_state(
-                severity, valid_count, bool(relocalization_requested))
+                operational_severity,
+                valid_count,
+                usable_count,
+                required_usable,
+                degraded_or_missing,
+                bool(relocalization_requested),
+            )
         )
         if valid_count > 0:
             self.has_valid_state = True

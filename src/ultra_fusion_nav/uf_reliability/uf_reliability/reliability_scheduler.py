@@ -18,6 +18,8 @@ class ReliabilityScheduler(Node):
             parameter_overrides=parameter_overrides or [],
         )
         self.declare_parameter("active_modalities", list(MODALITIES))
+        self.declare_parameter("required_modalities", [""])
+        self.declare_parameter("minimum_usable_modalities", 1)
         self.declare_parameter("score_timeout_s", 1.0)
         self.declare_parameter("degraded_threshold", 0.35)
         self.declare_parameter("risk_threshold", 0.60)
@@ -31,8 +33,17 @@ class ReliabilityScheduler(Node):
         self.declare_parameter("recovered_hold_s", 1.0)
         self.declare_parameter("publish_rate_hz", 10.0)
         active = tuple(self.get_parameter("active_modalities").value)
+        required = tuple(
+            name
+            for name in self.get_parameter("required_modalities").value
+            if name
+        )
         self.core = ReliabilitySchedulerCore(SchedulerConfig(
             active_modalities=active,
+            required_modalities=required,
+            minimum_usable_modalities=max(
+                1, int(self.get_parameter("minimum_usable_modalities").value)
+            ),
             stale_after_s=float(self.get_parameter("score_timeout_s").value),
             degraded_threshold=float(self.get_parameter("degraded_threshold").value),
             risk_threshold=float(self.get_parameter("risk_threshold").value),
@@ -64,7 +75,10 @@ class ReliabilityScheduler(Node):
         self.create_timer(1.0 / rate, self._publish)
         self.get_logger().info(
             "ReliabilityScheduler active: "
-            f"active_modalities={','.join(self.core.active_modalities)}")
+            f"active_modalities={','.join(self.core.active_modalities)} "
+            f"required_modalities={','.join(self.core.required_modalities)} "
+            f"minimum_usable_modalities="
+            f"{self.core.config.minimum_usable_modalities}")
 
     def _score(self, modality, msg):
         evidence = {

@@ -1,6 +1,13 @@
 reliability_scheduler:
   ros__parameters:
-    active_modalities: [lidar, gnss, imu, optical_flow, vision]
+    # RGB-D is disabled in the current four-source milestone. Add vision here
+    # only when its frontend and score publisher are launched.
+    active_modalities: [lidar, gnss, imu, optical_flow]
+    # IMU propagation is mandatory. The remaining active modalities are
+    # alternative pose/position constraints, so one bad optional factor cannot
+    # by itself declare the complete estimator unavailable.
+    required_modalities: [imu]
+    minimum_usable_modalities: 2
     score_timeout_s: 1.0
     degraded_threshold: 0.35
     risk_threshold: 0.60

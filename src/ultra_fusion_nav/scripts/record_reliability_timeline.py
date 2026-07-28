@@ -12,7 +12,12 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from diagnostic_msgs.msg import DiagnosticArray
-from uf_interfaces.msg import FaultState, LioDiagnostics, SchedulerState
+from uf_interfaces.msg import (
+    FaultState,
+    LioDiagnostics,
+    ReliabilityScore,
+    SchedulerState,
+)
 
 
 def stamp_seconds(stamp):
@@ -48,6 +53,12 @@ class ReliabilityTimelineRecorder(Node):
             self._lio,
             20,
         )
+        self.create_subscription(
+            ReliabilityScore,
+            "/reliability/optical_flow_score",
+            self._flow_score,
+            qos_profile_sensor_data,
+        )
 
     def _relative_event(self, kind, msg):
         return {
@@ -65,6 +76,10 @@ class ReliabilityTimelineRecorder(Node):
                 name: float(weight)
                 for name, weight in zip(msg.modality_names, msg.reliability_weights)
             },
+            "degradation_scores": {
+                name: float(score)
+                for name, score in zip(msg.modality_names, msg.degradation_scores)
+            },
             "factor_enabled": {
                 name: bool(enabled)
                 for name, enabled in zip(msg.modality_names, msg.factor_enabled)
@@ -72,6 +87,10 @@ class ReliabilityTimelineRecorder(Node):
             "covariance_inflation": {
                 name: float(value)
                 for name, value in zip(msg.modality_names, msg.covariance_inflation)
+            },
+            "reasons": {
+                name: str(reason)
+                for name, reason in zip(msg.modality_names, msg.reasons)
             },
         })
         self.events.append(event)
@@ -85,6 +104,32 @@ class ReliabilityTimelineRecorder(Node):
             "magnitude": float(msg.magnitude),
             "affected_messages": int(msg.affected_messages),
             "timestamp_repairs": int(msg.timestamp_repairs),
+        })
+        self.events.append(event)
+
+    def _flow_score(self, msg):
+        event = self._relative_event("flow_score", msg)
+        evidence = {
+            name: float(value)
+            for name, value in zip(msg.evidence_names, msg.evidence_values)
+        }
+        event.update({
+            "degradation_score": float(msg.degradation_score),
+            "reliability_weight": float(msg.reliability_weight),
+            "valid": bool(msg.valid),
+            "reasons": list(msg.reasons),
+            "fcu_yaw_rate_abs_radps": float(
+                evidence.get("fcu_yaw_rate_abs_radps", -1.0)
+            ),
+            "rotation_gate_weight": float(
+                evidence.get("rotation_gate_weight", -1.0)
+            ),
+            "rotation_gate_phase_code": float(
+                evidence.get("rotation_gate_phase_code", -1.0)
+            ),
+            "rotation_gate_translation_ready": float(
+                evidence.get("rotation_gate_translation_ready", -1.0)
+            ),
         })
         self.events.append(event)
 
@@ -106,12 +151,74 @@ class ReliabilityTimelineRecorder(Node):
                 "lidar_disabled": int(values.get("lidar_disabled", 0)),
                 "gnss_factors": int(values.get("gnss_factors", 0)),
                 "gnss_jump_rejected": int(values.get("gnss_jump_rejected", 0)),
+                "reliability_mode": str(values.get("reliability_mode", "unknown")),
+                "flow_factor_attempts": int(
+                    values.get("flow_factor_attempts", 0)
+                ),
                 "flow_factors": int(values.get("flow_factors", 0)),
                 "flow_disabled_quality": int(values.get("flow_disabled_quality", 0)),
+                "flow_disabled_rotation": int(
+                    values.get("flow_disabled_rotation", 0)
+                ),
+                "flow_rotation_phase": str(
+                    values.get("flow_rotation_phase", "unavailable")
+                ),
+                "flow_rotation_weight": float(
+                    values.get("flow_rotation_weight", -1.0)
+                ),
+                "flow_yaw_rate_abs_radps": float(
+                    values.get("flow_yaw_rate_abs_radps", -1.0)
+                ),
+                "last_flow_reason": str(
+                    values.get("last_flow_reason", "unavailable")
+                ),
+                "last_flow_factor_type": str(
+                    values.get("last_flow_factor_type", "unavailable")
+                ),
                 "published": int(values.get("published", 0)),
                 "optimization_errors": int(values.get("optimization_errors", 0)),
+                "backend_solve_ms": float(values.get("backend_solve_ms", 0.0)),
+                "backend_solve_mean_ms": float(
+                    values.get("backend_solve_mean_ms", 0.0)
+                ),
+                "backend_solve_max_ms": float(
+                    values.get("backend_solve_max_ms", 0.0)
+                ),
+                "callback_ms": float(values.get("callback_ms", 0.0)),
+                "pending_native_worker_frames": int(
+                    values.get("pending_native_worker_frames", 0)
+                ),
+                "imu_factors": int(values.get("imu_factors", 0)),
+                "native_worker_queue_overflow": int(
+                    values.get("native_worker_queue_overflow", 0)
+                ),
                 "imu_residual_updates": int(values.get("imu_residual_updates", 0)),
                 "imu_residual_errors": int(values.get("imu_residual_errors", 0)),
+                "imu_startup_reason": str(
+                    values.get("imu_startup_reason", "not_attempted")
+                ),
+                "imu_startup_sample_count": int(
+                    values.get("imu_startup_sample_count", 0)
+                ),
+                "imu_startup_span_s": float(
+                    values.get("imu_startup_span_s", 0.0)
+                ),
+                "imu_startup_accel_bias": [
+                    float(value) for value in values.get(
+                        "imu_startup_accel_bias", "0,0,0"
+                    ).split(",")
+                ],
+                "imu_startup_gyro_bias": [
+                    float(value) for value in values.get(
+                        "imu_startup_gyro_bias", "0,0,0"
+                    ).split(",")
+                ],
+                "imu_startup_bias_accepted": int(
+                    values.get("imu_startup_bias_accepted", 0)
+                ),
+                "imu_startup_bias_rejected": int(
+                    values.get("imu_startup_bias_rejected", 0)
+                ),
                 "lidar_anchor_overrides": int(values.get("lidar_anchor_overrides", 0)),
                 "native_lidar_received": int(values.get("native_lidar_received", 0)),
                 "native_lidar_invalid": int(values.get("native_lidar_invalid", 0)),
@@ -175,6 +282,7 @@ def summarize(events):
     faults = [event for event in events if event["kind"] == "fault"]
     backend = [event for event in events if event["kind"] == "backend"]
     lio = [event for event in events if event["kind"] == "lio"]
+    flow_scores = [event for event in events if event["kind"] == "flow_score"]
 
     def finite_median(name):
         values = [event[name] for event in lio if math.isfinite(event[name])]
@@ -186,17 +294,32 @@ def summarize(events):
             if math.isfinite(event[name]) and event[name] >= 0.0
         ]
         return statistics.median(values) if values else None
+
+    def flow_nonnegative_median(name):
+        values = [
+            event[name] for event in flow_scores
+            if math.isfinite(event[name]) and event[name] >= 0.0
+        ]
+        return statistics.median(values) if values else None
     states = []
     for event in scheduler:
         state = event["health_state"]
         if not states or states[-1] != state:
             states.append(state)
     active_faults = [event for event in faults if event["active"]]
+    state_counts = {
+        state: sum(event["health_state"] == state for event in scheduler)
+        for state in (
+            "NORMAL", "DEGRADED", "RISK", "RELOCALIZING", "RECOVERED",
+            "FAILSAFE",
+        )
+    }
     return {
         "event_count": len(events),
         "scheduler_samples": len(scheduler),
         "fault_samples": len(faults),
         "scheduler_state_sequence": states,
+        "scheduler_state_counts": state_counts,
         "active_fault_samples": len(active_faults),
         "fault_modalities": sorted({event["modality"] for event in faults}),
         "fault_types": sorted({event["fault_type"] for event in faults}),
@@ -207,9 +330,56 @@ def summarize(events):
         "backend_optimization_errors_max": max(
             (event["optimization_errors"] for event in backend), default=0
         ),
+        "backend_solve_ms_median": backend_nonnegative_median(
+            "backend_solve_ms"
+        ),
+        "backend_solve_mean_ms_last": (
+            backend[-1]["backend_solve_mean_ms"] if backend else None
+        ),
+        "backend_solve_max_ms_max": max(
+            (event["backend_solve_max_ms"] for event in backend), default=0.0
+        ),
+        "backend_callback_ms_median": backend_nonnegative_median(
+            "callback_ms"
+        ),
+        "backend_pending_native_worker_frames_max": max(
+            (event["pending_native_worker_frames"] for event in backend),
+            default=0,
+        ),
+        "backend_imu_factors_max": max(
+            (event["imu_factors"] for event in backend), default=0
+        ),
+        "backend_native_worker_queue_overflow_max": max(
+            (event["native_worker_queue_overflow"] for event in backend),
+            default=0,
+        ),
+        "backend_reliability_modes": sorted({
+            event["reliability_mode"] for event in backend
+        }),
+        "backend_flow_factor_attempts_max": max(
+            (event["flow_factor_attempts"] for event in backend), default=0
+        ),
+        "backend_flow_factors_enabled_max": max(
+            (event["flow_factors"] for event in backend), default=0
+        ),
         "backend_flow_disabled_quality_max": max(
             (event["flow_disabled_quality"] for event in backend), default=0
         ),
+        "backend_flow_disabled_rotation_max": max(
+            (event["flow_disabled_rotation"] for event in backend), default=0
+        ),
+        "backend_flow_rotation_phases": sorted({
+            event["flow_rotation_phase"] for event in backend
+        }),
+        "backend_flow_rotation_weight_median": backend_nonnegative_median(
+            "flow_rotation_weight"
+        ),
+        "backend_flow_yaw_rate_abs_radps_median": backend_nonnegative_median(
+            "flow_yaw_rate_abs_radps"
+        ),
+        "backend_flow_factor_types": sorted({
+            event["last_flow_factor_type"] for event in backend
+        }),
         "backend_lidar_disabled_max": max(
             (event["lidar_disabled"] for event in backend), default=0
         ),
@@ -255,6 +425,41 @@ def summarize(events):
         "backend_imu_residual_errors_max": max(
             (event["imu_residual_errors"] for event in backend), default=0
         ),
+        "backend_imu_startup_reasons": list(dict.fromkeys(
+            event["imu_startup_reason"] for event in backend
+        )),
+        "backend_imu_startup_bias_accepted_max": max(
+            (event["imu_startup_bias_accepted"] for event in backend), default=0
+        ),
+        "backend_imu_startup_bias_rejected_max": max(
+            (event["imu_startup_bias_rejected"] for event in backend), default=0
+        ),
+        "backend_imu_startup_sample_count_max": max(
+            (event["imu_startup_sample_count"] for event in backend), default=0
+        ),
+        "backend_imu_startup_span_s_max": max(
+            (event["imu_startup_span_s"] for event in backend), default=0.0
+        ),
+        "backend_imu_startup_accel_bias_last": (
+            backend[-1]["imu_startup_accel_bias"] if backend else None
+        ),
+        "backend_imu_startup_gyro_bias_last": (
+            backend[-1]["imu_startup_gyro_bias"] if backend else None
+        ),
+        "flow_score_samples": len(flow_scores),
+        "flow_score_degradation_median": flow_nonnegative_median(
+            "degradation_score"
+        ),
+        "flow_score_rotation_weight_median": flow_nonnegative_median(
+            "rotation_gate_weight"
+        ),
+        "flow_score_yaw_rate_abs_radps_median": flow_nonnegative_median(
+            "fcu_yaw_rate_abs_radps"
+        ),
+        "flow_score_rotation_phase_codes": sorted({
+            event["rotation_gate_phase_code"] for event in flow_scores
+            if event["rotation_gate_phase_code"] >= 0.0
+        }),
         "lio_samples": len(lio),
         "lio_matched_points_median": finite_median("matched_points"),
         "lio_residual_p95_m_median": finite_median("residual_p95_m"),

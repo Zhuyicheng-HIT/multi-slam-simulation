@@ -1,11 +1,9 @@
-"""Small, testable IMU preintegration primitive for the Stage 7 backend.
+"""Testable IMU preintegration primitives for both backend implementations.
 
-The delta is expressed in the frame at the start of an interval.  The
-preintegrator also exports first-order bias Jacobians so the local backend can
-apply a bias-aware factor without pretending to be a complete manifold
-optimizer.  The Jacobians are propagated alongside the midpoint state using
-SO(3) exponential-map recurrences; a full manifold relinearization remains a
-later milestone.
+The manifold delta contains body specific force in the interval start frame;
+global gravity is applied exactly once by the propagation and residual models.
+First-order bias Jacobians are propagated with the midpoint SO(3) integration.
+The original tangent-space result remains available for controlled rollback.
 """
 
 from bisect import bisect_left
@@ -39,6 +37,26 @@ class PreintegratedImu:
     jacobian_delta_velocity_accel_bias: tuple[float, ...] = (0.0,) * 9
     jacobian_delta_velocity_gyro_bias: tuple[float, ...] = (0.0,) * 9
     jacobian_delta_rotation_gyro_bias: tuple[float, ...] = (0.0,) * 9
+
+
+@dataclass(frozen=True)
+class ManifoldPreintegratedImu:
+    valid: bool
+    reason: str
+    dt_s: float
+    delta_position: tuple[float, float, float]
+    delta_velocity: tuple[float, float, float]
+    delta_quaternion: tuple[float, float, float, float]
+    covariance: tuple[float, ...]
+    sample_count: int
+    max_gap_s: float
+    accel_bias_linearization: tuple[float, float, float]
+    gyro_bias_linearization: tuple[float, float, float]
+    jacobian_delta_position_accel_bias: tuple[float, ...]
+    jacobian_delta_position_gyro_bias: tuple[float, ...]
+    jacobian_delta_velocity_accel_bias: tuple[float, ...]
+    jacobian_delta_velocity_gyro_bias: tuple[float, ...]
+    jacobian_delta_rotation_gyro_bias: tuple[float, ...]
 
 
 def _quat_normalize(value: np.ndarray) -> np.ndarray:
@@ -244,7 +262,7 @@ def _integrate_interval_with_jacobians(
         rotation = next_rotation
         rotation_gyro_derivative = next_derivative
     rotation_jacobian = np.stack(
-        [_vee(rotation_gyro_derivative[:, :, axis] @ rotation.T) for axis in range(3)],
+        [_vee(rotation.T @ rotation_gyro_derivative[:, :, axis]) for axis in range(3)],
         axis=1,
     )
     return (
@@ -257,6 +275,82 @@ def _integrate_interval_with_jacobians(
         velocity_gyro_jacobian,
         rotation_jacobian,
     )
+
+
+def _propagate_manifold_covariance(
+    interval_samples: Sequence[ImuSample],
+    accel_noise_density: float,
+    gyro_noise_density: float,
+    accel_bias_random_walk: float,
+    gyro_bias_random_walk: float,
+) -> np.ndarray:
+    """Propagate the coupled [dp,dv,dtheta,dba,dbg] covariance.
+
+    The discrete model follows the same right-local rotation convention as the
+    manifold residual. Continuous white acceleration/gyro noise is integrated
+    over each sample interval; bias random walks remain explicit states.
+    """
+    noise_values = np.asarray([
+        accel_noise_density,
+        gyro_noise_density,
+        accel_bias_random_walk,
+        gyro_bias_random_walk,
+    ], dtype=float)
+    if np.any(~np.isfinite(noise_values)) or np.any(noise_values < 0.0):
+        raise ValueError("IMU noise densities must be finite and non-negative")
+
+    covariance = np.zeros((15, 15), dtype=float)
+    rotation = np.eye(3, dtype=float)
+    identity = np.eye(3, dtype=float)
+    accel_variance = float(accel_noise_density) ** 2
+    gyro_variance = float(gyro_noise_density) ** 2
+    accel_bias_variance = float(accel_bias_random_walk) ** 2
+    gyro_bias_variance = float(gyro_bias_random_walk) ** 2
+    for first, second in zip(interval_samples[:-1], interval_samples[1:]):
+        dt = float(second.stamp_s - first.stamp_s)
+        acceleration = 0.5 * (
+            np.asarray(first.acceleration, dtype=float)
+            + np.asarray(second.acceleration, dtype=float)
+        )
+        angular_velocity = 0.5 * (
+            np.asarray(first.angular_velocity, dtype=float)
+            + np.asarray(second.angular_velocity, dtype=float)
+        )
+        rotation_vector = angular_velocity * dt
+        increment = _so3_exp(rotation_vector)
+        right_jacobian = _so3_right_jacobian(rotation_vector)
+
+        transition = np.eye(15, dtype=float)
+        transition[0:3, 3:6] = identity * dt
+        transition[0:3, 6:9] = (
+            -0.5 * rotation @ _skew(acceleration) * dt * dt
+        )
+        transition[0:3, 9:12] = -0.5 * rotation * dt * dt
+        transition[3:6, 6:9] = -rotation @ _skew(acceleration) * dt
+        transition[3:6, 9:12] = -rotation * dt
+        transition[6:9, 6:9] = increment.T
+        transition[6:9, 12:15] = -right_jacobian * dt
+
+        process = np.zeros((15, 15), dtype=float)
+        rotated_accel_covariance = accel_variance * (rotation @ rotation.T)
+        process[0:3, 0:3] = rotated_accel_covariance * dt ** 3 / 3.0
+        process[0:3, 3:6] = rotated_accel_covariance * dt * dt / 2.0
+        process[3:6, 0:3] = process[0:3, 3:6].T
+        process[3:6, 3:6] = rotated_accel_covariance * dt
+        process[6:9, 6:9] = (
+            gyro_variance * dt * right_jacobian @ right_jacobian.T
+        )
+        process[9:12, 9:12] = accel_bias_variance * dt * identity
+        process[12:15, 12:15] = gyro_bias_variance * dt * identity
+
+        covariance = transition @ covariance @ transition.T + process
+        covariance = 0.5 * (covariance + covariance.T)
+        rotation = rotation @ increment
+
+    # A tiny floor protects the Cholesky whitening from round-off without
+    # masking the propagated cross-correlation structure.
+    covariance += np.eye(15, dtype=float) * 1.0e-12
+    return covariance
 
 
 def preintegrate(
@@ -346,6 +440,126 @@ def preintegrate(
         tuple(float(value) for value in delta_velocity),
         tuple(float(value) for value in quaternion),
         covariance, len(interior), largest_gap,
+        tuple(float(value) for value in accel_position_jacobian.ravel()),
+        tuple(float(value) for value in gyro_position_jacobian.ravel()),
+        tuple(float(value) for value in accel_velocity_jacobian.ravel()),
+        tuple(float(value) for value in gyro_velocity_jacobian.ravel()),
+        tuple(float(value) for value in gyro_rotation_jacobian.ravel()),
+    )
+
+
+def preintegrate_manifold(
+    samples: Sequence[ImuSample],
+    start_s: float,
+    end_s: float,
+    accel_bias: Sequence[float] = (0.0, 0.0, 0.0),
+    gyro_bias: Sequence[float] = (0.0, 0.0, 0.0),
+    max_gap_s: float = 0.10,
+    accel_noise_density: float = 0.10,
+    gyro_noise_density: float = 0.02,
+    accel_bias_random_walk: float = 0.001,
+    gyro_bias_random_walk: float = 0.0001,
+) -> ManifoldPreintegratedImu:
+    """Preintegrate body specific force without embedding global gravity.
+
+    The returned deltas are expressed in the start IMU frame. Gravity is
+    applied exactly once by the propagation and residual equations.
+    """
+    accel_bias = np.asarray(accel_bias, dtype=float)
+    gyro_bias = np.asarray(gyro_bias, dtype=float)
+    if (
+        accel_bias.shape != (3,)
+        or gyro_bias.shape != (3,)
+        or np.any(~np.isfinite(accel_bias))
+        or np.any(~np.isfinite(gyro_bias))
+    ):
+        raise ValueError("IMU bias linearization must contain finite 3-vectors")
+    start_s, end_s = float(start_s), float(end_s)
+    ordered = sorted(samples, key=lambda sample: sample.stamp_s)
+    deduplicated = []
+    for sample in ordered:
+        if deduplicated and abs(sample.stamp_s - deduplicated[-1].stamp_s) <= 1.0e-9:
+            previous = deduplicated[-1]
+            deduplicated[-1] = ImuSample(
+                previous.stamp_s,
+                tuple(0.5 * (np.asarray(previous.acceleration) + np.asarray(sample.acceleration))),
+                tuple(0.5 * (np.asarray(previous.angular_velocity) + np.asarray(sample.angular_velocity))),
+            )
+        else:
+            deduplicated.append(sample)
+    invalid_reason = None
+    if not math.isfinite(start_s) or not math.isfinite(end_s) or end_s <= start_s:
+        invalid_reason = "invalid_interval"
+    elif len(deduplicated) < 2:
+        invalid_reason = "insufficient_samples"
+    elif any(
+        not math.isfinite(sample.stamp_s)
+        or not np.all(np.isfinite(sample.acceleration))
+        or not np.all(np.isfinite(sample.angular_velocity))
+        for sample in deduplicated
+    ):
+        invalid_reason = "nonfinite_sample"
+    before = None if invalid_reason else _sample_at(deduplicated, start_s)
+    after = None if invalid_reason else _sample_at(deduplicated, end_s)
+    if invalid_reason is None and (before is None or after is None):
+        invalid_reason = "interval_not_covered"
+    interior = (
+        [] if invalid_reason else [
+            sample for sample in deduplicated if start_s < sample.stamp_s < end_s
+        ]
+    )
+    interval_samples = [] if invalid_reason else [before, *interior, after]
+    gaps = np.diff([sample.stamp_s for sample in interval_samples])
+    largest_gap = float(np.max(gaps)) if len(gaps) else 0.0
+    if invalid_reason is None and (len(gaps) == 0 or np.any(gaps <= 0.0)):
+        invalid_reason = "nonincreasing_samples"
+    if invalid_reason is None and largest_gap > float(max_gap_s):
+        invalid_reason = "sample_gap_exceeds_limit"
+    if invalid_reason is not None:
+        return ManifoldPreintegratedImu(
+            False, invalid_reason, max(0.0, end_s - start_s),
+            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0, 0.0), tuple(np.eye(15).ravel()),
+            len(interior), largest_gap,
+            tuple(accel_bias), tuple(gyro_bias),
+            (0.0,) * 9, (0.0,) * 9, (0.0,) * 9, (0.0,) * 9,
+            (0.0,) * 9,
+        )
+    corrected = [
+        ImuSample(
+            sample.stamp_s,
+            tuple(np.asarray(sample.acceleration) - accel_bias),
+            tuple(np.asarray(sample.angular_velocity) - gyro_bias),
+        )
+        for sample in interval_samples
+    ]
+    (
+        delta_position,
+        delta_velocity,
+        quaternion,
+        accel_position_jacobian,
+        gyro_position_jacobian,
+        accel_velocity_jacobian,
+        gyro_velocity_jacobian,
+        gyro_rotation_jacobian,
+    ) = _integrate_interval_with_jacobians(corrected, np.zeros(3))
+    dt_s = end_s - start_s
+    covariance = _propagate_manifold_covariance(
+        corrected,
+        accel_noise_density,
+        gyro_noise_density,
+        accel_bias_random_walk,
+        gyro_bias_random_walk,
+    )
+    return ManifoldPreintegratedImu(
+        True, "ok", dt_s,
+        tuple(float(value) for value in delta_position),
+        tuple(float(value) for value in delta_velocity),
+        tuple(float(value) for value in quaternion),
+        tuple(float(value) for value in covariance.ravel()),
+        len(interior), largest_gap,
+        tuple(float(value) for value in accel_bias),
+        tuple(float(value) for value in gyro_bias),
         tuple(float(value) for value in accel_position_jacobian.ravel()),
         tuple(float(value) for value in gyro_position_jacobian.ravel()),
         tuple(float(value) for value in accel_velocity_jacobian.ravel()),

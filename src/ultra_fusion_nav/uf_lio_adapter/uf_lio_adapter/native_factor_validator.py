@@ -58,7 +58,6 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
         "plane_normals_xyz": matched * 3,
         "plane_points_xyz": matched * 3,
         "residuals": matched,
-        "jacobian": matched * 12,
         "state_hessian": 144,
         "state_gradient": 12,
         "pose_covariance": 36,
@@ -66,6 +65,10 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
     for field, expected in expected_lengths.items():
         if len(getattr(msg, field)) != expected:
             result["errors"].append(f"{field} length mismatch")
+    jacobian_length = len(msg.jacobian)
+    expected_jacobian_length = matched * 12
+    if jacobian_length not in (0, expected_jacobian_length):
+        result["errors"].append("jacobian length mismatch")
     if result["errors"]:
         return result
 
@@ -73,7 +76,10 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
     normals = np.asarray(msg.plane_normals_xyz, dtype=np.float64).reshape(matched, 3)
     plane_points = np.asarray(msg.plane_points_xyz, dtype=np.float64).reshape(matched, 3)
     residuals = np.asarray(msg.residuals, dtype=np.float64)
-    jacobian = np.asarray(msg.jacobian, dtype=np.float64).reshape(matched, 12)
+    debug_jacobian = (
+        np.asarray(msg.jacobian, dtype=np.float64).reshape(matched, 12)
+        if jacobian_length else None
+    )
     hessian = np.asarray(msg.state_hessian, dtype=np.float64).reshape(12, 12)
     gradient = np.asarray(msg.state_gradient, dtype=np.float64)
     covariance = np.asarray(msg.pose_covariance, dtype=np.float64).reshape(6, 6)
@@ -81,9 +87,11 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
     quaternion = np.asarray(msg.linearization_quaternion, dtype=np.float64)
     sensor_translation = np.asarray(msg.lidar_to_body_translation, dtype=np.float64)
     sensor_quaternion = np.asarray(msg.lidar_to_body_quaternion, dtype=np.float64)
-    arrays = (points, normals, plane_points, residuals, jacobian, hessian,
-              gradient, covariance, position, quaternion, sensor_translation,
+    arrays = (points, normals, plane_points, residuals, hessian, gradient,
+              covariance, position, quaternion, sensor_translation,
               sensor_quaternion)
+    if debug_jacobian is not None:
+        arrays = (*arrays, debug_jacobian)
     if not all(np.all(np.isfinite(array)) for array in arrays):
         result["errors"].append("factor contains non-finite values")
         return result
@@ -122,7 +130,37 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
     expected_pose_jacobian = np.concatenate(
         (normals, np.cross(points_body, normals_body)), axis=1
     )
-    pose_jacobian = jacobian[:, :6]
+    # FAST-LIO either keeps its LiDAR-body extrinsic fixed (last six columns
+    # zero) or estimates it online. Reconstruct both exact source branches and
+    # choose the one matching the exported normal equation. This keeps the
+    # per-point debug Jacobian optional without weakening J^T J / J^T r checks.
+    normals_sensor = (sensor_rotation.T @ normals_body.T).T
+    estimated_extrinsic_jacobian = np.concatenate((
+        expected_pose_jacobian,
+        np.cross(points, normals_sensor),
+        normals_body,
+    ), axis=1)
+    fixed_extrinsic_jacobian = np.concatenate((
+        expected_pose_jacobian,
+        np.zeros((matched, 6), dtype=np.float64),
+    ), axis=1)
+    candidates = {
+        "fixed_extrinsic": fixed_extrinsic_jacobian,
+        "estimated_extrinsic": estimated_extrinsic_jacobian,
+    }
+    candidate_errors = {
+        name: (
+            _relative_error(candidate.T @ candidate, hessian)
+            + _relative_error(candidate.T @ residuals, gradient)
+        )
+        for name, candidate in candidates.items()
+    }
+    jacobian_model = min(candidate_errors, key=candidate_errors.get)
+    reconstructed_jacobian = candidates[jacobian_model]
+    pose_jacobian = (
+        debug_jacobian[:, :6]
+        if debug_jacobian is not None else reconstructed_jacobian[:, :6]
+    )
     pose_jacobian_relative_error = _relative_error(
         pose_jacobian, expected_pose_jacobian
     )
@@ -130,8 +168,12 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
         np.max(np.abs(pose_jacobian - expected_pose_jacobian))
     ) if matched else 0.0
 
-    expected_hessian = jacobian.T @ jacobian
-    expected_gradient = jacobian.T @ residuals
+    debug_jacobian_relative_error = (
+        _relative_error(debug_jacobian, reconstructed_jacobian)
+        if debug_jacobian is not None else 0.0
+    )
+    expected_hessian = reconstructed_jacobian.T @ reconstructed_jacobian
+    expected_gradient = reconstructed_jacobian.T @ residuals
     hessian_relative_error = _relative_error(hessian, expected_hessian)
     gradient_relative_error = _relative_error(gradient, expected_gradient)
     hessian_symmetry_error = _relative_error(hessian, hessian.T)
@@ -174,7 +216,10 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
         "geometry_residual_abs_max": geometry_error,
         "pose_jacobian_relative_error": pose_jacobian_relative_error,
         "pose_jacobian_abs_max": pose_jacobian_abs_max,
-        "jacobian_frobenius": float(np.linalg.norm(jacobian)),
+        "jacobian_frobenius": float(np.linalg.norm(reconstructed_jacobian)),
+        "debug_jacobian_available": debug_jacobian is not None,
+        "debug_jacobian_relative_error": debug_jacobian_relative_error,
+        "jacobian_model": jacobian_model,
         "hessian_trace": float(np.trace(hessian)),
         "hessian_min_eigenvalue": float(hessian_eigenvalues[0]),
         "pose_hessian_min_eigenvalue": pose_min_eigenvalue,
@@ -200,6 +245,8 @@ def analyze_factor(msg, *, geometry_tolerance=1.0e-7, normal_equation_tolerance=
         result["errors"].append("point-to-plane residual geometry mismatch")
     if pose_jacobian_relative_error > jacobian_tolerance:
         result["errors"].append("pose Jacobian does not match point-to-plane geometry")
+    if debug_jacobian_relative_error > jacobian_tolerance:
+        result["errors"].append("debug Jacobian does not match reconstructed geometry")
     if hessian_relative_error > normal_equation_tolerance:
         result["errors"].append("state_hessian != J^T J")
     if gradient_relative_error > normal_equation_tolerance:

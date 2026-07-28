@@ -73,6 +73,30 @@ class TopicWindow:
         }
 
 
+BACKEND_TIMING_KEYS = frozenset({
+    "backend_solve_ms",
+    "backend_solve_mean_ms",
+    "backend_solve_max_ms",
+    "callback_ms",
+})
+
+
+def diagnostic_timing_values(message):
+    values = {}
+    for status in message.status:
+        for item in status.values:
+            if not (
+                item.key.startswith("timing_")
+                or item.key in BACKEND_TIMING_KEYS
+            ):
+                continue
+            try:
+                values[f"{status.name}/{item.key}"] = float(item.value)
+            except ValueError:
+                continue
+    return values
+
+
 class SimulationPerformanceMonitor(Node):
     """Measure simulation RTF, topic rates, and approximate pipeline-stage latency."""
 
@@ -87,6 +111,10 @@ class SimulationPerformanceMonitor(Node):
         self.declare_parameter("minimum_gnss_rate_hz", 4.0)
         self.declare_parameter("minimum_external_nav_rate_hz", 10.0)
         self.declare_parameter("flow_truth_assistance", False)
+        self.declare_parameter("fusion_topic", "/fusion/gps_flow/odom")
+        self.declare_parameter(
+            "fusion_diagnostic_topic", "/fusion/gps_flow/diagnostics"
+        )
         self.world_name = str(self.get_parameter("world_name").value)
         self.window_s = float(self.get_parameter("window_s").value)
         self.output_path = str(self.get_parameter("output_path").value)
@@ -98,6 +126,10 @@ class SimulationPerformanceMonitor(Node):
         }
         self.flow_truth_assistance = bool(
             self.get_parameter("flow_truth_assistance").value)
+        self.fusion_topic = str(self.get_parameter("fusion_topic").value)
+        self.fusion_diagnostic_topic = str(
+            self.get_parameter("fusion_diagnostic_topic").value
+        )
         self.started_s = time.monotonic()
         self.lock = threading.Lock()
         self.topics = {
@@ -137,7 +169,7 @@ class SimulationPerformanceMonitor(Node):
             NavSatFix, "/sensors/gnss/fix",
             lambda msg: self._record("gnss", msg), qos_profile_sensor_data)
         self.create_subscription(
-            Odometry, "/fusion/gps_flow/odom", self._fusion, 20)
+            Odometry, self.fusion_topic, self._fusion, 20)
         self.create_subscription(
             Odometry, "/mavros/odometry/out",
             lambda msg: self._record(
@@ -152,7 +184,8 @@ class SimulationPerformanceMonitor(Node):
             Image, "/front/d435i/depth/image_rect_raw",
             lambda msg: self._record("d435_depth", msg), qos_profile_sensor_data)
         self.create_subscription(
-            DiagnosticArray, "/fusion/gps_flow/diagnostics", self._node_diagnostics, 10)
+            DiagnosticArray, self.fusion_diagnostic_topic,
+            self._node_diagnostics, 10)
         self.create_subscription(
             DiagnosticArray, "/external_nav/diagnostics", self._node_diagnostics, 10)
         self.diagnostic_pub = self.create_publisher(
@@ -165,6 +198,7 @@ class SimulationPerformanceMonitor(Node):
             self._publish_report)
         self.get_logger().info(
             f"Simulation performance monitor active for world={self.world_name}; "
+            f"fusion={self.fusion_topic}; "
             f"report={self.output_path or 'diagnostics_only'}")
 
     @staticmethod
@@ -217,13 +251,7 @@ class SimulationPerformanceMonitor(Node):
 
     def _node_diagnostics(self, msg):
         with self.lock:
-            for status in msg.status:
-                for value in status.values:
-                    if value.key.startswith("timing_"):
-                        try:
-                            self.node_timings_ms[f"{status.name}/{value.key}"] = float(value.value)
-                        except ValueError:
-                            pass
+            self.node_timings_ms.update(diagnostic_timing_values(msg))
 
     def _build_report(self):
         now = time.monotonic()
@@ -287,6 +315,8 @@ class SimulationPerformanceMonitor(Node):
         algorithm_accuracy_valid = live_timing_valid and not self.flow_truth_assistance
         return {
             "schema_version": 1,
+            "fusion_topic": self.fusion_topic,
+            "fusion_diagnostic_topic": self.fusion_diagnostic_topic,
             "wall_duration_s": now - self.started_s,
             "simulation": {
                 "world": self.world_name,

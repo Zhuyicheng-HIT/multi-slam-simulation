@@ -18,6 +18,47 @@ from rclpy.qos import qos_profile_sensor_data
 from multi_slam_uav_sim.optical_flow_model import sensor_displacement_frd
 
 
+def stamp_seconds(stamp):
+    """Return a ROS/Gazebo stamp in seconds, or zero when unavailable."""
+    try:
+        value = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+    except AttributeError:
+        try:
+            value = float(stamp.sec) + float(stamp.nsec) * 1.0e-9
+        except AttributeError:
+            return 0.0
+    return value if math.isfinite(value) and value > 0.0 else 0.0
+
+
+def accuracy_row_arrays(rows):
+    """Decode captured rows without relying on positional fields at call sites."""
+    estimates = np.asarray([[row[6], row[7]] for row in rows], dtype=float)
+    truth = np.asarray([[row[4], row[5]] for row in rows], dtype=float)
+    integration = np.asarray([row[2] for row in rows], dtype=float)
+    arrival_intervals = np.asarray([row[3] for row in rows], dtype=float)
+    quality = np.asarray([row[8] for row in rows], dtype=float)
+    distance = np.asarray([row[9] for row in rows], dtype=float)
+    return estimates, truth, integration, arrival_intervals, quality, distance
+
+
+def select_association_basis(pose_source_times, flow_source_times,
+                             maximum_clock_offset_s=1.0):
+    """Choose source stamps only when both streams share one clock domain."""
+    pose_times = np.asarray(pose_source_times, dtype=float)
+    flow_times = np.asarray(flow_source_times, dtype=float)
+    if pose_times.size < 2 or flow_times.size < 2:
+        return "arrival"
+    if np.any(~np.isfinite(pose_times)) or np.any(~np.isfinite(flow_times)):
+        return "arrival"
+    pose_mid = float(np.median(pose_times))
+    flow_mid = float(np.median(flow_times))
+    if abs(pose_mid - flow_mid) > float(maximum_clock_offset_s):
+        return "arrival"
+    overlap_start = max(float(np.min(pose_times)), float(np.min(flow_times)))
+    overlap_end = min(float(np.max(pose_times)), float(np.max(flow_times)))
+    return "source_stamp" if overlap_end > overlap_start else "arrival"
+
+
 class FlowGazeboAccuracy(Node):
     """Evaluate compensated flow displacement against the simulated sensor pose."""
 
@@ -33,6 +74,8 @@ class FlowGazeboAccuracy(Node):
         self.declare_parameter("max_truth_speed_mps", 2.0)
         self.declare_parameter("max_vertical_speed_mps", 0.35)
         self.declare_parameter("max_pose_gap_s", 0.20)
+        self.declare_parameter("association_basis", "auto")
+        self.declare_parameter("maximum_clock_offset_s", 1.0)
         self.declare_parameter("sensor_offset_z_down_m", 0.35)
         self.declare_parameter("csv_path", "")
 
@@ -46,6 +89,13 @@ class FlowGazeboAccuracy(Node):
         self.max_truth_speed_mps = float(self.get_parameter("max_truth_speed_mps").value)
         self.max_vertical_speed_mps = float(self.get_parameter("max_vertical_speed_mps").value)
         self.max_pose_gap_s = float(self.get_parameter("max_pose_gap_s").value)
+        self.association_basis = str(
+            self.get_parameter("association_basis").value).lower()
+        if self.association_basis not in {"auto", "source_stamp", "arrival"}:
+            raise ValueError(
+                "association_basis must be auto, source_stamp, or arrival")
+        self.maximum_clock_offset_s = float(
+            self.get_parameter("maximum_clock_offset_s").value)
         self.lever_arm_frd = (
             0.0,
             0.0,
@@ -76,18 +126,24 @@ class FlowGazeboAccuracy(Node):
         )
 
     def _flow_cb(self, msg):
-        now = time.monotonic()
+        arrival_time = time.monotonic()
         arrival_interval = (
-            0.0 if self.last_flow_arrival is None else now - self.last_flow_arrival
+            0.0
+            if self.last_flow_arrival is None
+            else arrival_time - self.last_flow_arrival
         )
-        self.last_flow_arrival = now
+        self.last_flow_arrival = arrival_time
+        flow_stamp = stamp_seconds(msg.header.stamp)
+        if flow_stamp <= 0.0:
+            flow_stamp = arrival_time
         integration_s = float(msg.integration_time_us) * 1.0e-6
         distance = float(msg.distance)
         estimated_dx = (float(msg.integrated_y) - float(msg.integrated_ygyro)) * distance
         estimated_dy = -(float(msg.integrated_x) - float(msg.integrated_xgyro)) * distance
         with self.lock:
             self.flow_samples.append((
-                now,
+                flow_stamp,
+                arrival_time,
                 integration_s,
                 arrival_interval,
                 estimated_dx,
@@ -97,11 +153,15 @@ class FlowGazeboAccuracy(Node):
             ))
 
     def _gz_pose_cb(self, msg):
-        now = time.monotonic()
+        arrival_time = time.monotonic()
+        source_stamp = stamp_seconds(msg.header.stamp)
+        if source_stamp <= 0.0:
+            source_stamp = arrival_time
         for pose in msg.pose:
             if pose.name == self.model_name or pose.name.endswith(f"::{self.model_name}"):
                 sample = (
-                    now,
+                    source_stamp,
+                    arrival_time,
                     (
                         float(pose.position.x),
                         float(pose.position.y),
@@ -115,7 +175,7 @@ class FlowGazeboAccuracy(Node):
                     ),
                 )
                 with self.lock:
-                    if not self.pose_samples or now > self.pose_samples[-1][0]:
+                    if not self.pose_samples or source_stamp > self.pose_samples[-1][0]:
                         self.pose_samples.append(sample)
                 return
 
@@ -126,7 +186,10 @@ class FlowGazeboAccuracy(Node):
             with self.lock:
                 pose_count = len(self.pose_samples)
                 flow_count = len(self.flow_samples)
-                recent_quality = [sample[5] for sample in self.flow_samples[-50:]]
+                recent_quality = [
+                    quality
+                    for (_, _, _, _, _, _, quality, _) in self.flow_samples[-50:]
+                ]
             quality_median = float(np.median(recent_quality)) if recent_quality else 0.0
             self.get_logger().info(
                 f"accuracy capture elapsed={elapsed:.1f}s pose_samples={pose_count} "
@@ -195,16 +258,29 @@ class FlowGazeboAccuracy(Node):
         with self.lock:
             poses = list(self.pose_samples)
             flows = list(self.flow_samples)
+        basis = self.association_basis
+        if basis == "auto":
+            basis = select_association_basis(
+                [sample[0] for sample in poses],
+                [sample[0] for sample in flows],
+                self.maximum_clock_offset_s,
+            )
+        pose_time_index = 0 if basis == "source_stamp" else 1
+        poses = [
+            (sample[pose_time_index], sample[2], sample[3])
+            for sample in poses
+        ]
         pose_times = [sample[0] for sample in poses]
         rows = []
-        for (stamp, integration_s, arrival_interval, estimated_dx, estimated_dy,
-             quality, distance) in flows:
+        for (source_stamp, arrival_time, integration_s, arrival_interval, estimated_dx,
+             estimated_dy, quality, distance) in flows:
             if (
                 integration_s <= 1.0e-4
                 or quality < self.min_quality
                 or distance < self.min_ground_distance_m
             ):
                 continue
+            stamp = source_stamp if basis == "source_stamp" else arrival_time
             start_pose = self._pose_at(poses, pose_times, stamp - integration_s)
             end_pose = self._pose_at(poses, pose_times, stamp)
             if start_pose is None or end_pose is None:
@@ -218,6 +294,7 @@ class FlowGazeboAccuracy(Node):
                 continue
             rows.append((
                 stamp,
+                arrival_time,
                 integration_s,
                 arrival_interval,
                 truth[0],
@@ -231,8 +308,7 @@ class FlowGazeboAccuracy(Node):
         if not rows:
             self.get_logger().error("FLOW_ACCURACY no aligned displacement samples")
             return
-        estimates = np.asarray([[row[5], row[6]] for row in rows])
-        truth = np.asarray([[row[3], row[4]] for row in rows])
+        estimates, truth, integration, arrival_intervals, quality, distance = accuracy_row_arrays(rows)
         mappings = [
             self._evaluate_mapping(estimates, truth, swap, sign_x, sign_y)
             for swap in (False, True)
@@ -249,20 +325,21 @@ class FlowGazeboAccuracy(Node):
         )
         self.get_logger().info(
             "FLOW_ACCURACY "
-            f"matched={len(rows)} poses={len(poses)} flows={len(flows)} "
+            f"association_basis={basis} matched={len(rows)} "
+            f"poses={len(poses)} flows={len(flows)} "
             f"mapping=[swap={best['swap']},sx={best['sign_x']:+.0f},sy={best['sign_y']:+.0f}] "
             f"expected_mapping={expected_mapping} scale={best['scale']:.3f} "
             f"rmse_m={best['rmse_m']:.4f} normalized_rmse={best['normalized_rmse']:.3f} "
-            f"corr={best['correlation']:.3f} quality_median={float(np.median([r[7] for r in rows])):.1f} "
-            f"distance_median={float(np.median([r[8] for r in rows])):.2f}m "
-            f"arrival_gap_outliers={sum(r[2] > max(0.20, 3.0 * r[1]) for r in rows)} "
+            f"corr={best['correlation']:.3f} quality_median={float(np.median(quality)):.1f} "
+            f"distance_median={float(np.median(distance)):.2f}m "
+            f"arrival_gap_outliers={int(np.count_nonzero(arrival_intervals > np.maximum(0.20, 3.0 * integration)))} "
             f"passed={passed}"
         )
 
         if self.csv_path:
             with open(self.csv_path, "w", encoding="utf-8") as stream:
                 stream.write(
-                    "t,integration_time_s,arrival_interval_s,truth_dx,truth_dy,"
+                    "t,arrival_time_s,integration_time_s,arrival_interval_s,truth_dx,truth_dy,"
                     "flow_dx,flow_dy,quality,distance\n"
                 )
                 for row in rows:

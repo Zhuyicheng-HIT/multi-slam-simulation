@@ -7,9 +7,11 @@ from uf_backend_fusion.native_lidar import (
     EXPECTED_POSE_STATE_ORDER,
     NativeFactorBuffer,
     native_factor_from_message,
+    point_plane_residual_jacobian,
     quaternion_xyzw_to_rpy,
     right_perturbation_jacobian_rpy,
     rpy_to_quaternion_xyzw,
+    validate_native_frame_contract,
     with_yaw_reference,
 )
 
@@ -44,6 +46,12 @@ def make_message(stamp_s=10.0):
         source="fast_lio_ikfom",
         map_frame="camera_init",
         state_frame="body",
+        sensor_frame="lidar",
+        lidar_points_xyz=[],
+        plane_normals_xyz=[],
+        plane_points_xyz=[],
+        lidar_to_body_translation=[0.0, 0.0, 0.0],
+        lidar_to_body_quaternion=[0.0, 0.0, 0.0, 1.0],
     )
 
 
@@ -58,6 +66,28 @@ class NativeLidarConversionTest(unittest.TestCase):
         np.testing.assert_allclose(factor.pose_gradient, expected_gradient)
         np.testing.assert_allclose(factor.linearization_pose, [1, 2, 3, 0, 0, 0])
         self.assertAlmostEqual(factor.residual_squared, 0.0525)
+        self.assertEqual(factor.stamp_ns, 10_000_000_000)
+        self.assertTrue(factor.correspondences_valid)
+
+    def test_trigger_only_frame_is_valid_without_a_lidar_factor(self):
+        msg = make_message(10.125)
+        msg.correspondences_valid = False
+        msg.matched_points = 0
+        msg.residuals = []
+        factor = native_factor_from_message(msg)
+
+        self.assertFalse(factor.correspondences_valid)
+        self.assertEqual(factor.stamp_ns, 10_125_000_000)
+        self.assertEqual(factor.matched_points, 0)
+        np.testing.assert_array_equal(factor.pose_hessian, np.zeros((6, 6)))
+
+    def test_frame_contract_rejects_silent_coordinate_relabeling(self):
+        factor = native_factor_from_message(make_message())
+        validate_native_frame_contract(factor, "camera_init", "body")
+        with self.assertRaisesRegex(ValueError, "map frame"):
+            validate_native_frame_contract(factor, "map", "body")
+        with self.assertRaisesRegex(ValueError, "state frame"):
+            validate_native_frame_contract(factor, "camera_init", "base_link")
 
     def test_rpy_quaternion_round_trip_and_yaw_unwrap(self):
         original = np.asarray([0.2, -0.3, 3.10])
@@ -84,6 +114,8 @@ class NativeLidarConversionTest(unittest.TestCase):
         np.testing.assert_allclose(
             factor.pose_gradient, transform.T @ right_gradient
         )
+        np.testing.assert_allclose(factor.pose_hessian_right, right_hessian)
+        np.testing.assert_allclose(factor.pose_gradient_right, right_gradient)
 
     def test_buffer_pairs_nearest_stamp_and_drops_stale_packets(self):
         first = native_factor_from_message(make_message(10.000))
@@ -98,6 +130,22 @@ class NativeLidarConversionTest(unittest.TestCase):
         self.assertAlmostEqual(matched.stamp_s, 10.0)
         self.assertIsNone(buffer.pop_nearest(10.200, 0.005))
         self.assertEqual(len(buffer), 0)
+
+    def test_raw_correspondences_relinearize_at_backend_pose(self):
+        msg = make_message()
+        msg.lidar_points_xyz = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]
+        msg.plane_normals_xyz = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        msg.plane_points_xyz = [2.0, 0.0, 0.0, 1.0, 3.0, 0.0, 1.0, 2.0, 4.0]
+        msg.residuals = [0.0, 1.0, 2.0]
+        factor = native_factor_from_message(msg)
+
+        residual, jacobian = point_plane_residual_jacobian(
+            factor, [1.0, 2.0, 3.0, 0.0, 0.0, 0.0]
+        )
+
+        np.testing.assert_allclose(residual, [0.0, 1.0, 2.0])
+        np.testing.assert_allclose(jacobian[:, :3], np.eye(3))
+        self.assertEqual(jacobian.shape, (3, 6))
 
     def test_rejects_incompatible_pose_state_order(self):
         msg = make_message()

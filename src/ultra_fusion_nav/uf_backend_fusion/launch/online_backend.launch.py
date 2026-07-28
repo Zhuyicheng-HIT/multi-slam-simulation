@@ -15,8 +15,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "preserve_lio_anchor",
-            default_value="false",
-            description="Override LiDAR disable only when no independent inertial backup is ready",
+            default_value="true",
+            description="Retain a weak LiDAR yaw anchor until an independent heading source is ready",
         ),
         Node(
             package="uf_reliability",
@@ -57,8 +57,10 @@ def generate_launch_description():
             parameters=[{
                 "input_topic": "/fusion/unified/odom",
                 "output_topic": "/mavros/odometry/out",
-                "expected_map_frame": "map",
-                "expected_body_frame": "base_link",
+                # Match the native FAST-LIO factor contract. This gate validates
+                # frames but does not perform a coordinate transformation.
+                "expected_map_frame": "camera_init",
+                "expected_body_frame": "body",
                 "maximum_input_age_s": 0.25,
                 "minimum_rate_hz": 4.0,
                 "enabled": True,

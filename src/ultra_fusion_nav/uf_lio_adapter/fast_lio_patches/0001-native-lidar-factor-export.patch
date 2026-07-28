@@ -2,23 +2,11 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index be3040b..f4cee09 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -85,10 +85,12 @@ message(STATUS "PCL: ${PCL_INCLUDE_DIRS}")
- 
- set(msg_files
-   "msg/Pose6D.msg"
+@@ -87,0 +88 @@ set(msg_files
 +  "msg/NativeLidarFactor.msg"
- )
- 
- rosidl_generate_interfaces(${PROJECT_NAME}
-   ${msg_files}
+@@ -91,0 +93 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 +  DEPENDENCIES std_msgs
- )
- ament_export_dependencies(rosidl_default_runtime)
- 
-@@ -125,4 +127,4 @@ install(
-   DESTINATION share/${PROJECT_NAME}
- )
- 
+@@ -128 +130 @@ install(
 -ament_package()
 \ No newline at end of file
 +ament_package()
@@ -26,20 +14,11 @@ diff --git a/launch/mapping.launch.py b/launch/mapping.launch.py
 index b76313d..2b6e425 100644
 --- a/launch/mapping.launch.py
 +++ b/launch/mapping.launch.py
-@@ -21,6 +21,9 @@ def generate_launch_description():
-     config_file = LaunchConfiguration('config_file')
-     rviz_use = LaunchConfiguration('rviz')
-     rviz_cfg = LaunchConfiguration('rviz_cfg')
+@@ -23,0 +24,3 @@ def generate_launch_description():
 +    native_factor_export_enable = LaunchConfiguration('native_factor_export_enable')
 +    native_factor_export_topic = LaunchConfiguration('native_factor_export_topic')
 +    native_factor_sensor_frame = LaunchConfiguration('native_factor_sensor_frame')
- 
-     declare_use_sim_time_cmd = DeclareLaunchArgument(
-         'use_sim_time', default_value='false',
-@@ -42,12 +45,27 @@ def generate_launch_description():
-         'rviz_cfg', default_value=default_rviz_config_path,
-         description='RViz config file path'
-     )
+@@ -44,0 +48,12 @@ def generate_launch_description():
 +    declare_native_factor_export_enable_cmd = DeclareLaunchArgument(
 +        'native_factor_export_enable', default_value='false',
 +        description='Export native point-to-plane factors for a downstream backend'
@@ -52,109 +31,120 @@ index b76313d..2b6e425 100644
 +        'native_factor_sensor_frame', default_value='lidar',
 +        description='Frame of the points stored in the native factor packet'
 +    )
- 
-     fast_lio_node = Node(
-         package='fast_lio',
-         executable='fastlio_mapping',
-         parameters=[PathJoinSubstitution([config_path, config_file]),
+@@ -50 +65,4 @@ def generate_launch_description():
 -                    {'use_sim_time': use_sim_time}],
 +                    {'use_sim_time': use_sim_time,
 +                     'native_factor_export.enable': native_factor_export_enable,
 +                     'native_factor_export.topic': native_factor_export_topic,
 +                     'native_factor_export.sensor_frame': native_factor_sensor_frame}],
-         output='screen'
-     )
-     rviz_node = Node(
-@@ -63,6 +81,9 @@ def generate_launch_description():
-     ld.add_action(decalre_config_file_cmd)
-     ld.add_action(declare_rviz_cmd)
-     ld.add_action(declare_rviz_config_path_cmd)
+@@ -65,0 +84,3 @@ def generate_launch_description():
 +    ld.add_action(declare_native_factor_export_enable_cmd)
 +    ld.add_action(declare_native_factor_export_topic_cmd)
 +    ld.add_action(declare_native_factor_sensor_frame_cmd)
- 
-     ld.add_action(fast_lio_node)
-     ld.add_action(rviz_node)
+diff --git a/msg/NativeLidarFactor.msg b/msg/NativeLidarFactor.msg
+new file mode 100755
+index 0000000..e10cc3b
+--- /dev/null
++++ b/msg/NativeLidarFactor.msg
+@@ -0,0 +1,40 @@
++std_msgs/Header header
++
++# Identity of the linearized factor and coordinate frames.
++string source
++string map_frame
++string sensor_frame
++uint64 scan_sequence
++
++# The arrays below are row-major and use one row per accepted point-to-plane match.
++uint32 candidate_points
++uint32 matched_points
++uint32 jacobian_columns
++float64[3] linearization_position
++float64[4] linearization_quaternion
++
++# The pose above is map_T_body (FAST-LIO's IMU/body state). Points below are
++# expressed in sensor_frame; this transform is T_body_sensor.
++string state_frame
++string[] jacobian_state_order
++float64[3] lidar_to_body_translation
++float64[4] lidar_to_body_quaternion
++
++float64[] lidar_points_xyz
++float64[] plane_normals_xyz
++float64[] plane_points_xyz
++float64[] residuals
++
++# Optional per-point debug payload. It is empty by default; consumers must use
++# the raw geometry plus state_hessian/state_gradient for the runtime contract.
++float64[] jacobian
++
++# Unscaled normal matrix and gradient: H = J^T J, g = J^T r.
++float64[144] state_hessian
++float64[12] state_gradient
++float64 measurement_variance
++
++# FAST-LIO posterior pose covariance for diagnostics only; it is not measurement R.
++float64[36] pose_covariance
++bool approximate
++bool correspondences_valid
 diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
-index e5d9950..172fa3a 100644
+index e5d9950..5d3001d 100644
 --- a/src/laserMapping.cpp
 +++ b/src/laserMapping.cpp
-@@ -60,6 +60,7 @@
- #include <geometry_msgs/msg/transform_stamped.hpp>
- #include <geometry_msgs/msg/vector3.hpp>
- #include <livox_ros_driver2/msg/custom_msg.hpp>
+@@ -62,0 +63 @@
 +#include "fast_lio/msg/native_lidar_factor.hpp"
- #include "preprocess.h"
- #include <ikd-Tree/ikd_Tree.h>
- 
-@@ -98,6 +99,10 @@ bool   point_selected_surf[100000] = {0};
- bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
- bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
- bool    is_first_lidar = true;
+@@ -100,0 +102,5 @@ bool    is_first_lidar = true;
 +bool native_factor_export_en = false;
++bool native_factor_debug_jacobian_en = false;
 +string native_factor_topic = "/fast_lio/native_lidar_factor";
 +string native_factor_sensor_frame = "lidar";
 +uint64_t native_factor_sequence = 0;
- 
- vector<vector<int>>  pointSearchInd_surf; 
- vector<BoxPointType> cub_needrm;
-@@ -142,6 +147,8 @@ geometry_msgs::msg::PoseStamped msg_body_pose;
- 
- shared_ptr<Preprocess> p_pre(new Preprocess());
- shared_ptr<ImuProcess> p_imu(new ImuProcess());
+@@ -144,0 +151,2 @@ shared_ptr<ImuProcess> p_imu(new ImuProcess());
 +rclcpp::Publisher<fast_lio::msg::NativeLidarFactor>::SharedPtr pubNativeLidarFactor;
 +fast_lio::msg::NativeLidarFactor native_factor_msg;
- 
- void SigHandle(int sig)
- {
-@@ -681,6 +688,43 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
-     corr_normvect->clear(); 
-     total_residual = 0.0; 
- 
-+    if (native_factor_export_en)
-+    {
-+        native_factor_msg = fast_lio::msg::NativeLidarFactor();
-+        native_factor_msg.header.stamp = get_ros_time(lidar_end_time);
-+        native_factor_msg.header.frame_id = "camera_init";
-+        native_factor_msg.source = "fast_lio_ikfom";
-+        native_factor_msg.map_frame = "camera_init";
-+        native_factor_msg.sensor_frame = native_factor_sensor_frame;
-+        native_factor_msg.state_frame = "body";
-+        native_factor_msg.jacobian_state_order = {
-+            "map_position_x", "map_position_y", "map_position_z",
-+            "body_rotation_x", "body_rotation_y", "body_rotation_z",
-+            "lidar_to_body_rotation_x", "lidar_to_body_rotation_y", "lidar_to_body_rotation_z",
-+            "lidar_to_body_translation_x", "lidar_to_body_translation_y", "lidar_to_body_translation_z"
-+        };
-+        native_factor_msg.scan_sequence = native_factor_sequence;
-+        native_factor_msg.candidate_points = static_cast<uint32_t>(feats_down_size);
-+        native_factor_msg.jacobian_columns = 12;
-+        native_factor_msg.linearization_position[0] = s.pos(0);
-+        native_factor_msg.linearization_position[1] = s.pos(1);
-+        native_factor_msg.linearization_position[2] = s.pos(2);
-+        native_factor_msg.linearization_quaternion[0] = s.rot.coeffs()[0];
-+        native_factor_msg.linearization_quaternion[1] = s.rot.coeffs()[1];
-+        native_factor_msg.linearization_quaternion[2] = s.rot.coeffs()[2];
-+        native_factor_msg.linearization_quaternion[3] = s.rot.coeffs()[3];
-+        native_factor_msg.lidar_to_body_translation[0] = s.offset_T_L_I(0);
-+        native_factor_msg.lidar_to_body_translation[1] = s.offset_T_L_I(1);
-+        native_factor_msg.lidar_to_body_translation[2] = s.offset_T_L_I(2);
-+        native_factor_msg.lidar_to_body_quaternion[0] = s.offset_R_L_I.coeffs()[0];
-+        native_factor_msg.lidar_to_body_quaternion[1] = s.offset_R_L_I.coeffs()[1];
-+        native_factor_msg.lidar_to_body_quaternion[2] = s.offset_R_L_I.coeffs()[2];
-+        native_factor_msg.lidar_to_body_quaternion[3] = s.offset_R_L_I.coeffs()[3];
-+        native_factor_msg.measurement_variance = LASER_POINT_COV;
-+        native_factor_msg.approximate = false;
-+        native_factor_msg.correspondences_valid = false;
-+    }
+@@ -676,0 +685,37 @@ void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
++void reset_native_lidar_factor(const state_ikfom &s)
++{
++    native_factor_msg = fast_lio::msg::NativeLidarFactor();
++    native_factor_msg.header.stamp = get_ros_time(lidar_end_time);
++    native_factor_msg.header.frame_id = "camera_init";
++    native_factor_msg.source = "fast_lio_ikfom";
++    native_factor_msg.map_frame = "camera_init";
++    native_factor_msg.sensor_frame = native_factor_sensor_frame;
++    native_factor_msg.state_frame = "body";
++    native_factor_msg.jacobian_state_order = {
++        "map_position_x", "map_position_y", "map_position_z",
++        "body_rotation_x", "body_rotation_y", "body_rotation_z",
++        "lidar_to_body_rotation_x", "lidar_to_body_rotation_y", "lidar_to_body_rotation_z",
++        "lidar_to_body_translation_x", "lidar_to_body_translation_y", "lidar_to_body_translation_z"
++    };
++    native_factor_msg.scan_sequence = native_factor_sequence;
++    native_factor_msg.candidate_points = static_cast<uint32_t>(feats_down_size);
++    native_factor_msg.jacobian_columns = 12;
++    native_factor_msg.linearization_position[0] = s.pos(0);
++    native_factor_msg.linearization_position[1] = s.pos(1);
++    native_factor_msg.linearization_position[2] = s.pos(2);
++    native_factor_msg.linearization_quaternion[0] = s.rot.coeffs()[0];
++    native_factor_msg.linearization_quaternion[1] = s.rot.coeffs()[1];
++    native_factor_msg.linearization_quaternion[2] = s.rot.coeffs()[2];
++    native_factor_msg.linearization_quaternion[3] = s.rot.coeffs()[3];
++    native_factor_msg.lidar_to_body_translation[0] = s.offset_T_L_I(0);
++    native_factor_msg.lidar_to_body_translation[1] = s.offset_T_L_I(1);
++    native_factor_msg.lidar_to_body_translation[2] = s.offset_T_L_I(2);
++    native_factor_msg.lidar_to_body_quaternion[0] = s.offset_R_L_I.coeffs()[0];
++    native_factor_msg.lidar_to_body_quaternion[1] = s.offset_R_L_I.coeffs()[1];
++    native_factor_msg.lidar_to_body_quaternion[2] = s.offset_R_L_I.coeffs()[2];
++    native_factor_msg.lidar_to_body_quaternion[3] = s.offset_R_L_I.coeffs()[3];
++    native_factor_msg.measurement_variance = LASER_POINT_COV;
++    native_factor_msg.approximate = false;
++    native_factor_msg.correspondences_valid = false;
++}
 +
-     /** closest surface search and residual computation **/
-     #ifdef MP_EN
-         omp_set_num_threads(MP_PROC_NUM);
-@@ -790,9 +834,78 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
-         /*** Measuremnt: distance to the closest surface/corner ***/
-         ekfom_data.h(i) = -norm_p.intensity;
-     }
+@@ -683,0 +729,3 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
++    if (native_factor_export_en)
++        reset_native_lidar_factor(s);
++
+@@ -792,0 +841,53 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 +
 +    if (native_factor_export_en)
 +    {
@@ -163,7 +153,8 @@ index e5d9950..172fa3a 100644
 +        native_factor_msg.plane_normals_xyz.reserve(static_cast<size_t>(effct_feat_num) * 3);
 +        native_factor_msg.plane_points_xyz.reserve(static_cast<size_t>(effct_feat_num) * 3);
 +        native_factor_msg.residuals.reserve(static_cast<size_t>(effct_feat_num));
-+        native_factor_msg.jacobian.reserve(static_cast<size_t>(effct_feat_num) * 12);
++        if (native_factor_debug_jacobian_en)
++            native_factor_msg.jacobian.reserve(static_cast<size_t>(effct_feat_num) * 12);
 +
 +        MatrixXd normal_matrix = ekfom_data.h_x.transpose() * ekfom_data.h_x;
 +        VectorXd residual_vector(effct_feat_num);
@@ -191,8 +182,11 @@ index e5d9950..172fa3a 100644
 +            native_factor_msg.plane_points_xyz.push_back(plane_point(2));
 +            native_factor_msg.residuals.push_back(static_cast<double>(norm_p.intensity));
 +            residual_vector(i) = static_cast<double>(norm_p.intensity);
-+            for (int j = 0; j < 12; j++)
-+                native_factor_msg.jacobian.push_back(ekfom_data.h_x(i, j));
++            if (native_factor_debug_jacobian_en)
++            {
++                for (int j = 0; j < 12; j++)
++                    native_factor_msg.jacobian.push_back(ekfom_data.h_x(i, j));
++            }
 +        }
 +
 +        VectorXd gradient = ekfom_data.h_x.transpose() * residual_vector;
@@ -204,113 +198,45 @@ index e5d9950..172fa3a 100644
 +        }
 +        native_factor_msg.correspondences_valid = true;
 +    }
-     solve_time += omp_get_wtime() - solve_start_;
- }
- 
+@@ -795,0 +897,16 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 +void publish_native_lidar_factor()
 +{
-+    if (!native_factor_export_en || !pubNativeLidarFactor || !native_factor_msg.correspondences_valid)
++    if (!native_factor_export_en || !pubNativeLidarFactor)
 +        return;
 +
 +    auto P = kf.get_P();
 +    for (int i = 0; i < 6; i++)
 +    {
-+        int k = i < 3 ? i + 3 : i - 3;
 +        for (int j = 0; j < 6; j++)
-+        {
-+            int l = j < 3 ? j + 3 : j - 3;
-+            native_factor_msg.pose_covariance[i * 6 + j] = P(k, l);
-+        }
++            native_factor_msg.pose_covariance[i * 6 + j] = P(i, j);
 +    }
 +    native_factor_msg.header.stamp = get_ros_time(lidar_end_time);
 +    pubNativeLidarFactor->publish(native_factor_msg);
 +    native_factor_sequence++;
 +}
 +
- class LaserMappingNode : public rclcpp::Node
- {
- public:
-@@ -833,6 +946,9 @@ public:
-         this->declare_parameter<int>("pcd_save.interval", -1);
-         this->declare_parameter<vector<double>>("mapping.extrinsic_T", vector<double>());
-         this->declare_parameter<vector<double>>("mapping.extrinsic_R", vector<double>());
+@@ -835,0 +953,4 @@ public:
 +        this->declare_parameter<bool>("native_factor_export.enable", false);
++        this->declare_parameter<bool>("native_factor_export.include_debug_jacobian", false);
 +        this->declare_parameter<string>("native_factor_export.topic", "/fast_lio/native_lidar_factor");
 +        this->declare_parameter<string>("native_factor_export.sensor_frame", "lidar");
- 
-         this->get_parameter_or<bool>("publish.path_en", path_en, true);
-         this->get_parameter_or<bool>("publish.effect_map_en", effect_pub_en, false);
-@@ -869,6 +985,9 @@ public:
-         this->get_parameter_or<int>("pcd_save.interval", pcd_save_interval, -1);
-         this->get_parameter_or<vector<double>>("mapping.extrinsic_T", extrinT, vector<double>());
-         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
+@@ -871,0 +993,4 @@ public:
 +        this->get_parameter_or<bool>("native_factor_export.enable", native_factor_export_en, false);
++        this->get_parameter_or<bool>("native_factor_export.include_debug_jacobian", native_factor_debug_jacobian_en, false);
 +        this->get_parameter_or<string>("native_factor_export.topic", native_factor_topic, "/fast_lio/native_lidar_factor");
 +        this->get_parameter_or<string>("native_factor_export.sensor_frame", native_factor_sensor_frame, "lidar");
- 
-         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
- 
-@@ -933,6 +1052,11 @@ public:
-         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
-         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
-         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
+@@ -935,0 +1061,5 @@ public:
 +        if (native_factor_export_en)
 +        {
 +            pubNativeLidarFactor = this->create_publisher<fast_lio::msg::NativeLidarFactor>(native_factor_topic, rclcpp::SensorDataQoS());
 +            RCLCPP_INFO(this->get_logger(), "Native LiDAR factor export enabled on %s", native_factor_topic.c_str());
 +        }
-         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
- 
-         //------------------------------------------------------------------------------------------------------
-@@ -1060,6 +1184,8 @@ private:
- 
-             double t_update_end = omp_get_wtime();
- 
+@@ -1023,0 +1154,5 @@ private:
++                if (native_factor_export_en)
++                {
++                    reset_native_lidar_factor(state_point);
++                    publish_native_lidar_factor();
++                }
+@@ -1062,0 +1198,2 @@ private:
 +            publish_native_lidar_factor();
 +
-             /******* Publish odometry *******/
-             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
- 
-diff --git a/msg/NativeLidarFactor.msg b/msg/NativeLidarFactor.msg
-new file mode 100755
-index 0000000..f9fab8e
---- /dev/null
-+++ b/msg/NativeLidarFactor.msg
-@@ -0,0 +1,37 @@
-+std_msgs/Header header
-+
-+# Identity of the linearized factor and coordinate frames.
-+string source
-+string map_frame
-+string sensor_frame
-+uint64 scan_sequence
-+
-+# The arrays below are row-major and use one row per accepted point-to-plane match.
-+uint32 candidate_points
-+uint32 matched_points
-+uint32 jacobian_columns
-+float64[3] linearization_position
-+float64[4] linearization_quaternion
-+
-+# The pose above is map_T_body (FAST-LIO's IMU/body state). Points below are
-+# expressed in sensor_frame; this transform is T_body_sensor.
-+string state_frame
-+string[] jacobian_state_order
-+float64[3] lidar_to_body_translation
-+float64[4] lidar_to_body_quaternion
-+
-+float64[] lidar_points_xyz
-+float64[] plane_normals_xyz
-+float64[] plane_points_xyz
-+float64[] residuals
-+float64[] jacobian
-+
-+# Unscaled normal matrix and gradient: H = J^T J, g = J^T r.
-+float64[144] state_hessian
-+float64[12] state_gradient
-+float64 measurement_variance
-+
-+# FAST-LIO posterior pose covariance for diagnostics only; it is not measurement R.
-+float64[36] pose_covariance
-+bool approximate
-+bool correspondences_valid

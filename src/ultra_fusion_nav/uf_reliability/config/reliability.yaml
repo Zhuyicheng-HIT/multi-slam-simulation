@@ -42,6 +42,13 @@ reliability_monitor:
     optical_flow.weights: [0.60, 0.25, 0.15]
     optical_flow.lio_max_gap_s: 0.5
     optical_flow.lio_wait_s: 0.4
+    optical_flow.rotation_gate.lower_yaw_rate_radps: 0.08
+    optical_flow.rotation_gate.upper_yaw_rate_radps: 0.30
+    optical_flow.rotation_gate.recovery_dwell_s: 0.8
+    optical_flow.rotation_gate.recovery_ramp_s: 1.5
+    optical_flow.rotation_gate.minimum_translation_m: 0.01
+    optical_flow.rotation_gate.recovery_max_base_score: 0.55
+    optical_flow.rotation_gate.imu_max_gap_s: 0.12
     vision.feature_reference: 150
     vision.tau_reprojection_px: 3.0
     vision.weights: [0.30, 0.25, 0.25, 0.20]

@@ -63,6 +63,12 @@ class SchedulerNodeTest(unittest.TestCase):
 
     def setUp(self):
         overrides = [
+            Parameter(
+                "active_modalities",
+                value=["lidar", "gnss", "imu", "optical_flow"],
+            ),
+            Parameter("required_modalities", value=["imu"]),
+            Parameter("minimum_usable_modalities", value=2),
             Parameter("score_timeout_s", value=1.0),
             Parameter("transition_dwell_s", value=0.0),
             Parameter("recovery_dwell_s", value=0.15),
@@ -99,15 +105,16 @@ class SchedulerNodeTest(unittest.TestCase):
         self.assertTrue(all(healthy.factor_enabled))
 
         risk = self.drive({"gnss": 0.70}, 0.25)
-        self.assertEqual(risk.health_state, "RISK")
+        self.assertEqual(risk.health_state, "DEGRADED")
         gnss_index = list(risk.modality_names).index("gnss")
         self.assertTrue(risk.factor_enabled[gnss_index])
         self.assertGreater(risk.covariance_inflation[gnss_index], 3.0)
 
-        failed = self.drive({"gnss": 0.90}, 0.25)
+        failed = self.drive({"imu": 0.90}, 0.25)
         self.assertEqual(failed.health_state, "FAILSAFE")
-        self.assertFalse(failed.factor_enabled[gnss_index])
-        self.assertEqual(failed.covariance_inflation[gnss_index], 20.0)
+        imu_index = list(failed.modality_names).index("imu")
+        self.assertFalse(failed.factor_enabled[imu_index])
+        self.assertEqual(failed.covariance_inflation[imu_index], 20.0)
 
         self.drive({}, 0.20)
         recovered = self.drive({}, 0.10)
