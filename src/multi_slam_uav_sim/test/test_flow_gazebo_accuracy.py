@@ -1,3 +1,4 @@
+import math
 from types import SimpleNamespace
 import unittest
 
@@ -5,6 +6,7 @@ from multi_slam_uav_sim.flow_gazebo_accuracy import (
     accuracy_row_arrays,
     select_association_basis,
     stamp_seconds,
+    yaw_rate_from_quaternions,
 )
 
 
@@ -43,6 +45,16 @@ class FlowGazeboAccuracyTest(unittest.TestCase):
                 [10.0, 10.1, 10.2], [1_785_160_000.0, 1_785_160_000.1]
             ),
             "arrival",
+        )
+
+    def test_yaw_rate_uses_shortest_wrapped_angle(self):
+        start_yaw = math.radians(179.0)
+        end_yaw = math.radians(-179.0)
+        start = (0.0, 0.0, math.sin(start_yaw * 0.5), math.cos(start_yaw * 0.5))
+        end = (0.0, 0.0, math.sin(end_yaw * 0.5), math.cos(end_yaw * 0.5))
+        self.assertAlmostEqual(
+            yaw_rate_from_quaternions(start, end, 0.1),
+            math.radians(2.0) / 0.1,
         )
 
 

@@ -31,6 +31,35 @@ def pixel_flow_to_radians(dx_px, dy_px, fx_px, fy_px):
     return math.atan2(float(dx_px), float(fx_px)), math.atan2(float(dy_px), float(fy_px))
 
 
+def gazebo_downward_image_flow_to_mavlink(dx_px, dy_px, fx_px, fy_px):
+    """Convert the Gazebo downward-camera image axes to OPTICAL_FLOW_RAD.
+
+    Gazebo's rendered image column increases opposite to MAVLink integrated_x
+    for the camera mount used by this model. The image row and MAVLink
+    integrated_y directions agree. The matching horizontal gyro projection is
+    applied by :func:`gazebo_downward_gyro_to_mavlink`.
+    """
+    image_x, image_y = pixel_flow_to_radians(dx_px, dy_px, fx_px, fy_px)
+    return -image_x, image_y
+
+
+def gazebo_downward_gyro_to_mavlink(gyro_frd):
+    """Apply the same horizontal-axis mount transform to gyro integrals."""
+    gx, gy, gz = (float(value) for value in gyro_frd)
+    return -gx, gy, gz
+
+
+def scale_mavlink_translation(raw_flow_rad, gyro_rad, scale):
+    """Scale only the translational remainder of OPTICAL_FLOW_RAD fields."""
+    scale = float(scale)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("optical-flow translation scale must be positive")
+    return tuple(
+        float(gyro) + scale * (float(raw) - float(gyro))
+        for raw, gyro in zip(raw_flow_rad, gyro_rad)
+    )
+
+
 def compensated_planar_velocity(raw_flow_rad, gyro_rad, integration_s, distance_m):
     """Return sensor-FRD planar velocity from MAVLink OPTICAL_FLOW_RAD fields."""
     if integration_s <= 0.0 or distance_m <= 0.0:

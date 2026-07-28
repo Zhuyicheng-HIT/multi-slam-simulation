@@ -1,8 +1,9 @@
 # Optical-Flow Sensor Report
 
-Status: image-LK optical flow accepted on three repeated simple-map flights;
-companion GPS/flow aiding is active through one ExternalNav output, while direct
-FCU optical-flow injection remains disabled.
+Status: image-LK optical flow passes the independent full-route and
+translation-segment gates in the current unified-window simulation. Companion
+GNSS/flow aiding is active through one ExternalNav output, while direct FCU
+optical-flow injection remains disabled.
 
 ## Sensor Boundary
 
@@ -46,6 +47,33 @@ ground-truth topics remain evaluator-only.
 | 20b | image-LK ExternalNav, corrected interval, repeat 2 | 0.935 | 0.974 | 0.363 | passed |
 | 20c | image-LK ExternalNav, corrected interval, repeat 3 | 0.933 | 0.974 | 0.294 | passed |
 
+### 2026-07-28 unified-window iteration
+
+The later unified-window route exposed two errors that the earlier standalone
+sensor runs did not isolate:
+
+- the Gazebo downward camera image-x and horizontal gyro-x axes needed one
+  explicit conversion at the simulator/MAVLink boundary;
+- the scheduler recovery gate used displacement per sample, so correct 30 Hz
+  motion below `0.01 m/sample` was rejected even when vehicle speed was valid.
+
+The gate now uses translation speed (`0.08 m/s`) with each message's actual
+integration interval. A fixed simulator-only `translation_scale=0.683` scales
+only gyro-compensated image translation; it does not scale the gyro integral.
+The value is the mean fit from two unscaled fixed-route runs and is never read
+from truth online. Real hardware does not execute this Gazebo bridge.
+
+| Run | Translation scale | Full scale/corr/NRMSE | No-turn scale/corr/NRMSE | Enabled flow factors | Unified ATE |
+| --- | ---: | --- | --- | ---: | ---: |
+| v8 | 1.000 | 0.641 / 0.851 / 0.499 | 0.686 / 0.868 / 0.471 | 385 / 716 | 0.055881 m |
+| v9 | 1.000 | 0.632 / 0.842 / 0.527 | 0.680 / 0.863 / 0.488 | 330 / 717 | 0.057889 m |
+| v10 | 0.683 | 0.931 / 0.859 / 0.494 | 1.000 / 0.875 / 0.462 | 233 / 714 | 0.055385 m |
+
+The no-turn segment requires `|yaw_rate| <= 0.08 rad/s`. Both v10 segments pass
+the existing mapping, scale, correlation, and normalized-RMSE thresholds. The
+v8/v9 pair establishes repeatable rate-gate coverage; v10 is one calibrated
+verification run, so the trajectory delta is not yet a statistical claim.
+
 Run 19 used 455 observable Gazebo displacement samples and recovered the identity sensor-axis mapping. The concurrent LIO cross-check produced scale `0.937` and correlation `0.735`, but normalized RMSE `0.889`; its LIO reference was independently invalid (`position_rmse=0.142 m`, `yaw_rmse=1.11 deg`, coupling reference false). The combined gate therefore reports `sensor_passed_lio_crosscheck_inconclusive`, not a false LIO pass.
 
 Acceptance thresholds for an observable-motion segment are:
@@ -63,3 +91,7 @@ Acceptance thresholds for an observable-motion segment are:
 - Do not feed `/uav/local_pose`, `/uav/local_odom`, or Gazebo ground-truth topics into the navigation algorithm.
 - Companion GPS/flow aiding is enabled through `/mavros/odometry/out`; direct FCU optical-flow injection remains disabled to avoid double fusion.
 - `D_OF` consumes quality, range validity, timing diagnostics, and a vector-increment residual. Live scheduler admission still requires an independent LIO increment.
+- During sustained yaw, the scheduler continuously lowers the flow factor
+  weight and hard-disables it above the configured upper yaw-rate threshold.
+  Recovery requires low yaw rate plus translational motion for a dwell period,
+  then ramps the factor weight instead of switching it on in one step.

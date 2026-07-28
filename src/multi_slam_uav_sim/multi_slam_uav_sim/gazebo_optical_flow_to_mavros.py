@@ -22,9 +22,12 @@ from sensor_msgs.msg import CameraInfo, Image, Imu, Range
 
 from multi_slam_uav_sim.optical_flow_model import (
     compensated_planar_velocity,
+    gazebo_downward_gyro_to_mavlink,
+    gazebo_downward_image_flow_to_mavlink,
     integrate_gyro,
     pixel_flow_to_radians,
     ros_flu_gyro_to_sensor_frd,
+    scale_mavlink_translation,
     sensor_displacement_frd,
     synthesize_optical_flow_from_displacement,
     track_lk_flow,
@@ -80,6 +83,7 @@ class GazeboOpticalFlowToMavros(Node):
         self.declare_parameter("mtf_max_speed_at_1m_mps", 7.0)
         self.declare_parameter("max_vertical_speed_for_quality_mps", 1.5)
         self.declare_parameter("angular_scale", 1.0)
+        self.declare_parameter("translation_scale", 1.0)
         self.declare_parameter("restamp_output", False)
         self.declare_parameter("max_imu_gap_s", 0.12)
         self.declare_parameter("debug", False)
@@ -145,6 +149,9 @@ class GazeboOpticalFlowToMavros(Node):
             self.get_parameter("max_vertical_speed_for_quality_mps").value
         )
         self.angular_scale = float(self.get_parameter("angular_scale").value)
+        self.translation_scale = float(self.get_parameter("translation_scale").value)
+        if not math.isfinite(self.translation_scale) or self.translation_scale <= 0.0:
+            raise ValueError("translation_scale must be positive")
         self.restamp_output = bool(self.get_parameter("restamp_output").value)
         self.max_imu_gap = float(self.get_parameter("max_imu_gap_s").value)
         self.debug = bool(self.get_parameter("debug").value)
@@ -437,6 +444,9 @@ class GazeboOpticalFlowToMavros(Node):
         image_flow = pixel_flow_to_radians(
             tracking.dx_px, tracking.dy_px, fx_small, fy_small
         )
+        raw_flow = gazebo_downward_image_flow_to_mavlink(
+            tracking.dx_px, tracking.dy_px, fx_small, fy_small
+        )
         use_gazebo_imu = (
             self.latest_gazebo_imu_monotonic is not None
             and time.monotonic() - self.latest_gazebo_imu_monotonic <= 0.25
@@ -447,8 +457,8 @@ class GazeboOpticalFlowToMavros(Node):
         gyro_valid = gyro is not None
         if gyro is None:
             gyro = (float("nan"), float("nan"), float("nan"))
+        mavlink_gyro = gazebo_downward_gyro_to_mavlink(gyro)
         distance, distance_age_s = self._distance()
-        raw_flow = image_flow
         flow_source = "image_lk"
         start_pose = self._pose_at(start_s)
         end_pose = self._pose_at(end_s)
@@ -461,7 +471,7 @@ class GazeboOpticalFlowToMavros(Node):
             )
             synthesized = synthesize_optical_flow_from_displacement(
                 displacement_frd,
-                gyro,
+                mavlink_gyro,
                 distance,
             )
             if synthesized is not None:
@@ -473,8 +483,11 @@ class GazeboOpticalFlowToMavros(Node):
                 )
                 flow_source = "gazebo_physics"
         raw_flow = (raw_flow[0] * self.angular_scale, raw_flow[1] * self.angular_scale)
+        raw_flow = scale_mavlink_translation(
+            raw_flow, mavlink_gyro[:2], self.translation_scale
+        )
         velocity = compensated_planar_velocity(
-            raw_flow, gyro[:2], integration_s, distance
+            raw_flow, mavlink_gyro[:2], integration_s, distance
         ) if gyro_valid else (float("nan"), float("nan"))
         quality = tracking.quality
         if not gyro_valid:
@@ -515,9 +528,9 @@ class GazeboOpticalFlowToMavros(Node):
             rad.integration_time_us = int(max(1, round(integration_s * 1.0e6)))
             rad.integrated_x = float(raw_flow[0])
             rad.integrated_y = float(raw_flow[1])
-            rad.integrated_xgyro = float(gyro[0])
-            rad.integrated_ygyro = float(gyro[1])
-            rad.integrated_zgyro = float(gyro[2])
+            rad.integrated_xgyro = float(mavlink_gyro[0])
+            rad.integrated_ygyro = float(mavlink_gyro[1])
+            rad.integrated_zgyro = float(mavlink_gyro[2])
             rad.temperature = 2500
             rad.quality = legacy.quality
             rad.time_delta_distance_us = (
@@ -532,7 +545,10 @@ class GazeboOpticalFlowToMavros(Node):
                 f"flow_debug q={legacy.quality} tracks={tracking.inlier_count}/"
                 f"{tracking.detected_count} source={flow_source} "
                 f"image_rad=({image_flow[0]:.5f},{image_flow[1]:.5f}) "
-                f"output_rad=({raw_flow[0]:.5f},{raw_flow[1]:.5f}) dt={integration_s:.4f}s "
+                f"mavlink_rad=({raw_flow[0]:.5f},{raw_flow[1]:.5f}) "
+                f"mavlink_gyro=({mavlink_gyro[0]:.5f},{mavlink_gyro[1]:.5f},{mavlink_gyro[2]:.5f}) "
+                f"translation_scale={self.translation_scale:.3f} "
+                f"dt={integration_s:.4f}s "
                 f"range={distance:.2f}m gyro={gyro_source} gyro_valid={gyro_valid}"
             )
             self.last_debug_time = time.monotonic()

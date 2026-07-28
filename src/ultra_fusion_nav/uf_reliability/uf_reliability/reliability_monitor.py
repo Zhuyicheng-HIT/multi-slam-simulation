@@ -197,6 +197,7 @@ class ReliabilityMonitor(Node):
             "optical_flow.rotation_gate.recovery_dwell_s": 0.8,
             "optical_flow.rotation_gate.recovery_ramp_s": 1.5,
             "optical_flow.rotation_gate.minimum_translation_m": 0.01,
+            "optical_flow.rotation_gate.minimum_translation_speed_mps": 0.08,
             "optical_flow.rotation_gate.recovery_max_base_score": 0.55,
             "optical_flow.rotation_gate.imu_max_gap_s": 0.12,
             "vision.feature_reference": 150,
@@ -244,6 +245,8 @@ class ReliabilityMonitor(Node):
                     "optical_flow.rotation_gate.recovery_ramp_s").value),
                 minimum_translation_m=float(self.get_parameter(
                     "optical_flow.rotation_gate.minimum_translation_m").value),
+                minimum_translation_speed_mps=float(self.get_parameter(
+                    "optical_flow.rotation_gate.minimum_translation_speed_mps").value),
             )
         )
         self.latest_depth_ratio = -1.0
@@ -620,6 +623,7 @@ class ReliabilityMonitor(Node):
             yaw_rate,
             translation_norm,
             recovery_healthy,
+            translation_interval_s=integration_s,
         )
         rotation_term = 1.0 - rotation_gate.weight
         score = max(float(score), rotation_term)
@@ -632,6 +636,11 @@ class ReliabilityMonitor(Node):
             ],
             "rotation_gate_translation_ready": (
                 1.0 if rotation_gate.translation_ready else 0.0
+            ),
+            "rotation_gate_translation_speed_mps": (
+                -1.0
+                if translation_norm is None or integration_s <= 0.0
+                else translation_norm / integration_s
             ),
         })
         if rotation_gate.phase != "ACTIVE":

@@ -12,13 +12,15 @@ The implementation order is deliberate:
 6. Add relocalization and the full fault-injection evaluation matrix.
 
 The online backend accepts native FAST-LIO point-to-plane LiDAR information,
-raw IMU preintegration, GNSS, and optical-flow factors in one bounded window.
+preintegration of FCU-calibrated HIGHRES_IMU measurements, GNSS, and
+optical-flow factors in one bounded window.
 The native LiDAR factor replaces the same-state LIO pose proxy and is validated
 against FAST-LIO's exported residual/Jacobian/normal equation. This is the first
-runtime native-coupling milestone, not a final Ultra-Fusion estimator: the
-window is still tangent-space, FAST-LIO still owns correspondence/map
-construction, and manifold relinearization plus frontend/backend correlation
-handling remain open.
+runtime native-coupling milestone, not a final Ultra-Fusion estimator. The
+window now uses SO(3) manifold updates and relinearizes raw point-plane
+correspondences; FAST-LIO still owns correspondence/map construction, and
+online spatiotemporal calibration plus full frontend/backend independence
+remain open.
 
 ## Current Status
 
@@ -31,15 +33,13 @@ handling remain open.
 | M4 BDS/GNSS and optical flow | single-fault acceptance complete | GNSS jump/outage and flow quality gates pass fixed-route simulation |
 | M5 dynamic map protection | deterministic moving-cluster injection and metric ablation complete | clean/fault classifier separation is insufficient for default hard exclusion |
 | M6 ReliabilityScheduler | implementation and online factor changes pass | concurrent degradation and relocalization recovery remain |
-| M7 unified backend | native LiDAR + GNSS/IMU/flow co-window milestone validated | 863/863 native packets valid; 692/692 backend insertions; 3 startup pairing fallbacks; manifold backend and fault-matrix comparison remain |
+| M7 unified backend | manifold native LiDAR + GNSS/IMU/flow co-window milestone validated | fixed route ATE 0.055 m; 1,035 native LiDAR and 1,032 IMU factors; no optimization/queue errors; marginal covariance and ablation matrix remain |
 | M8 relocalization | registration core started | PCL ICP/NDT synthetic transform tests pass; keyframes, retrieval, and online recovery remain |
 
-The next gates are low-match/GNSS/flow fault replay, fixed-weight versus
-scheduler-weighted comparison, a low-false-positive temporal dynamic-point
-classifier, and a scheduler-triggered ICP/NDT recovery experiment using the
-admitted static keyframe database.
-The online backend still requires manifold SE(3) relinearization and proper
-bias covariance propagation before a final fixed-vs-dynamic claim. See
+The next gates are online marginal covariance, FCU startup-attitude source
+validation, fixed-weight versus scheduler-weighted comparison, a
+low-false-positive temporal dynamic-point classifier, and a scheduler-triggered
+ICP/NDT recovery experiment using the admitted static keyframe database. See
 `docs/stage5_temporal_map_report_20260725.md`,
 `docs/stage7_online_backend_report_20260725.md`, and the earlier formula and
 sensor reports.
@@ -73,7 +73,12 @@ The umbrella directory is not a ROS package. Each ROS package will be created at
 
 - Gazebo ground truth is evaluator-only and is never an estimator input.
 - MAVROS local position is a comparison signal, not a correction for FAST-LIO or the future backend.
-- `/mavros/imu/data_raw` remains the main LiDAR-IMU input; D435i IMU is a separate visual-inertial experiment input.
+- `/mavros/imu/data_raw` remains the main LiDAR-IMU input. It is the FCU-scaled
+  HIGHRES_IMU measurement, not an uncalibrated ADC stream; D435i IMU is a
+  separate visual-inertial experiment input.
+- FCU fused local position never enters the estimator. FCU fused attitude may
+  be considered for startup roll/pitch only after its source, frame, timestamp,
+  and covariance have been validated.
 - Sensor algorithms use message timestamps and declared frames, not callback arrival time.
 - Dynamic or uncertain points cannot enter the static relocalization map without an explicit admission decision.
 - Every retained parameter change must beat or explain the saved baseline using the same route and metrics.

@@ -3,7 +3,7 @@
 日期：2026-07-28
 工作区：`/home/zyc/multi-slam-github-staging`
 分支：`feature/ultra-fusion-stage3`
-当前远端基线：`3831ee3 feat: consume native FAST-LIO factors in unified backend`
+本轮起点：`d823dd4 feat: validate manifold multi-sensor fusion backend`
 
 ## 1. 当前结论
 
@@ -15,27 +15,41 @@ LiDAR、FCU IMU、GNSS/BDS 和下视光流已经作为独立观测进入同一�
 这已经是可运行的第一版紧耦合后端，但还不能称为完整复现 Ultra-Fusion：
 
 - LiDAR 使用 FAST-LIO 原生点到面对应点，在后端当前状态处重线性化；
-- FCU `/mavros/imu/data_raw` 只用于一次启动偏置估计和相邻 LiDAR 关键帧间预积分；
+- FCU `/mavros/imu/data_raw` 是飞控已标定、已换算为 SI 单位的高频测量，只用于
+  一次残余偏置初始化和相邻 LiDAR 关键帧间预积分；
 - GNSS 和光流是独立因子，因子开关、权重和协方差膨胀由 ReliabilityScheduler 控制；
 - 后端使用 SO(3) 右扰动、解析 IMU Jacobian、Huber 点面核和 LM 接受/拒绝；
 - 仍缺少在线时空标定、视觉因子、重定位、可靠的输出边缘协方差和完整退化矩阵。
 
 ## 2. IMU 数据所有权
 
-飞控已经负责驱动、标定、单位换算和 MAVLink/MAVROS 传输，因此项目不从
-ADC 或传感器驱动层重新计算 IMU。估计器边界是：
+飞控已经负责驱动、温度/尺度标定、单位换算和 MAVLink/MAVROS 传输，因此项目
+不是从 ADC 原始计数重新解算 IMU。`data_raw` 这个 ROS 话题名容易引起误解；在
+当前链路中，它表示 HIGHRES_IMU 的瞬时加速度和角速度，而不是未标定电信号。
+估计器边界是：
 
 ```text
 ArduPilot HIGHRES_IMU
   -> /mavros/imu/data_raw
   -> /sensors/imu
-  -> 一次静止短窗 b_a/b_g 初始化
+  -> 一次静止短窗残余 b_a/b_g 初始化
   -> 相邻 LiDAR 关键帧间预积分
   -> 统一滑窗 IMUFactor
 ```
 
 飞控 EKF 的 local position、GNSS/光流融合位置和 Gazebo truth 不进入窗口。
 否则同一 GNSS/光流信息会先被飞控融合，再被统一后端重复计数。
+
+飞控还提供 `/mavros/imu/data` 姿态。它可以用于首状态的重力方向和姿态初始化，
+但不能未经来源审计就作为连续强姿态因子：该姿态可能已经包含磁罗盘、GNSS、
+光流或 ExternalNav 的 EKF 修正，连续回灌会形成相关信息重复计算。当前版本保留
+FAST-LIO 首帧姿态作为窗口先验；下一轮先验证 `/mavros/imu/data` 的 frame、时间戳
+和 covariance，再只替换启动 roll/pitch 候选，yaw 仍保持 SLAM 地图的任意基准。
+
+关键帧间预积分仍然需要保留。HIGHRES_IMU 没有直接给出两个关键帧之间的
+`delta_R/delta_v/delta_p`、偏置 Jacobian 和 15 x 15 协方差；除非修改 ArduPilot
+导出这些量，否则统一后端必须从飞控已处理的瞬时测量构造 IMUFactor。窗口中的
+`b_a/b_g` 表示飞控标定后残留的慢变误差，不是重新做整套飞控 IMU 标定。
 
 启动初始化只有在以下条件同时满足时才接受：样本数和时间跨度足够、平均角速度
 低、角速度波动低、平均比力接近重力、比力波动低。运动中启动会记录拒绝原因，
@@ -146,45 +160,50 @@ source set、innovation 和状态标志。
 第一次完整运行暴露并修复了“可选 debug Jacobian 被误判为必需”的接口问题，之后
 两次 125 s 固定矩形航线均完成，所有主进程退出码为 0。
 
-第三次运行目录：`/tmp/uf_manifold_fullcov_nominal_20260728_v3`
+完整协方差基线目录：`/tmp/uf_manifold_fullcov_nominal_20260728_v3`。修正光流
+坐标、旋转补偿、按速度恢复门和仿真传感器离线尺度后，最终目录为
+`/tmp/uf_flow_scaled_rate_gate_nominal_20260728_v10`。
 
-| 指标 | 第三次固定航线 |
-|---|---:|
-| 统一后端匹配位姿 | 994 |
-| 统一后端 ATE RMSE | 0.073166 m |
-| 统一后端 ATE 最大值 | 0.253387 m |
-| 统一后端 RPE 平移 RMSE | 0.028589 m |
-| 统一后端 RPE 旋转 RMSE | 0.414357 deg |
-| FAST-LIO 独立位置 RMSE | 0.032462 m |
-| FAST-LIO 偏航 RMSE | 0.096896 deg |
-| FAST-LIO 偏航/FCU 陀螺相关系数 | 0.938056 |
-| 估计 FCU IMU 链路延迟 | 20 ms |
-| 原始云/注册云/IMU 时间戳回退 | 0 / 0 / 0 |
-| 原生 LiDAR 因子校验 | 1255 / 1255，有效率 1.0 |
-| 仿真实时率中位数 | 0.9851 |
-| 统一后端输出频率 | 7.8877 Hz |
-| ExternalNav 输出频率 | 7.8873 Hz |
-| 后端求解耗时中位数/均值/最大值 | 19.882 / 20.160 / 62.002 ms |
-| 原生因子工作队列最大深度/溢出 | 1 / 0 |
+| 指标 | 完整协方差基线 v3 | 光流修正 v10 |
+|---|---:|---:|
+| 统一后端匹配位姿 | 994 | 1004 |
+| 统一后端 ATE RMSE | 0.073166 m | 0.055385 m |
+| 统一后端 ATE 最大值 | 0.253387 m | 0.199914 m |
+| 统一后端 RPE 平移 RMSE | 0.028589 m | 0.027267 m |
+| 统一后端 RPE 旋转 RMSE | 0.414357 deg | 0.427888 deg |
+| 原生 LiDAR 因子 | 1255，有效 1255 | 1035，无效 0 |
+| IMU 因子/残差错误 | 1025 / 0 | 1032 / 0 |
+| 光流因子启用/尝试 | 52 / 712 | 233 / 714 |
+| 仿真实时率中位数 | 0.9851 | 0.9988 |
+| 统一后端/ExternalNav 频率 | 7.8877 / 7.8873 Hz | 7.9449 / 7.9452 Hz |
+| 后端求解均值/最大值 | 20.160 / 62.002 ms | 19.726 / 91.561 ms |
+| 优化错误/工作队列溢出 | 0 / 0 | 0 / 0 |
 
-启动 IMU 偏置初始化接受 41 个飞控原始 IMU 样本、跨度 0.9082 s；累计形成
+启动 IMU 偏置初始化接受 41 个飞控 HIGHRES_IMU 样本、跨度 0.9082 s；累计形成
 1025 个 IMU 因子，残差更新错误和优化错误均为 0。原生 LiDAR 因子来源全部为
 `native_point_to_plane_relinearized`，没有 pose fallback。
 
-无故障注入时 `active_fault_samples=0`，但 scheduler 仍主要处于 DEGRADED/RISK：
-DEGRADED 956、RISK 272、RECOVERED 6、FAILSAFE 11、NORMAL 0。这不能直接解释成
-LiDAR/IMU 硬件严重退化；当前状态机把低激励可观测性、光流不可用和启动/降落期
-也计入全局健康状态。尤其光流独立评测仍为 `corr=0.851`、`NRMSE=0.506`、
-`passed=false`，动态调度只启用了 712 次尝试中的 52 个光流因子。统一后端因此
-保持稳定，但当前还不能宣称光流链路已经达到真实传感器等效精度。
+无故障注入时 `active_fault_samples=0`。v10 scheduler 统计为 NORMAL 51、
+DEGRADED 939、RISK 165、RECOVERED 95、FAILSAFE 0。它仍主要处于 DEGRADED，
+原因包括 RGB-D 未启用、低激励可观测性和起降/偏航阶段光流降权，不能直接解释
+成 LiDAR/IMU 硬件严重退化。
 
-第二次运行的统一后端 ATE 为 0.086976 m、RPE 平移 0.032597 m、RPE 旋转
-0.456012 deg，说明第三次结果不是单次启动才勉强通过；样本仍只有两次，不用于
-统计显著性结论。
+v10 光流全程独立评测为 `scale=0.931`、`corr=0.859`、`NRMSE=0.494`；剔除
+`|yaw_rate| > 0.08 rad/s` 的平移段为 `scale=1.000`、`corr=0.875`、
+`NRMSE=0.462`，两组都通过门槛。尺度 `0.683` 只作用于这个 Gazebo 100 x 100
+相机桥的平移分量，陀螺积分不缩放；它由两次未缩放固定路线离线拟合，既不在线
+读取真值，也不用于真实硬件。v8/v9 在未缩放条件下分别启用 385/716 和
+330/717 个因子，证明按速度恢复门的覆盖率提升可重复；v10 是尺度修正后的单次
+最终验证，尚不宣称轨迹改善具有统计显著性。
+
+完整协方差基线 v2 的统一后端 ATE 为 0.086976 m、RPE 平移 0.032597 m、
+RPE 旋转 0.456012 deg，说明 v3 不是单次启动才勉强通过；样本仍只有两次，
+不用于统计显著性结论。
 
 ## 9. 尚未完成
 
-1. 光流独立精度门槛仍未通过；起飞/降落低质量段、比例和坐标映射需继续修正。
+1. `/mavros/imu/data` 启动姿态候选的 frame、时间戳、covariance 和上游融合来源
+   尚未在线审计；当前不作为连续姿态因子。
 2. ArduPilot EKF3 已选择并实际使用统一 ExternalNav 的证据尚未取得。
 3. 输出 pose/twist covariance 仍是固定值，尚未从窗口边缘协方差导出。
 4. Schur 先验的 SO(3) 重线性化和秩阈值仍需加强；阻尼不应污染边缘先验。
@@ -196,9 +215,10 @@ LiDAR/IMU 硬件严重退化；当前状态机把低激励可观测性、光流�
 
 ## 10. 下一执行顺序
 
-1. 修正光流独立精度，先把名义平移段评测通过，再增加其融合权重或覆盖率。
-2. 配置并验证 ArduPilot EKF3 ExternalNav source，检查 innovation 和 source status，
+1. 在线审计 `/mavros/imu/data`，只在来源、坐标和 covariance 明确后把有效
+   roll/pitch 用于首状态初始化；保留 HIGHRES_IMU 关键帧间预积分和残余偏置状态。
+2. 从滑窗 Hessian/Schur 补空间导出在线 pose/twist covariance。
+3. 配置并验证 ArduPilot EKF3 ExternalNav source，检查 innovation 和 source status，
    但不把飞控融合位置反馈给统一后端。
-3. 从滑窗 Hessian/Schur 补空间导出在线 pose/twist covariance。
 4. 加强 SO(3) 边缘先验和偏置阈值重预积分，再做多次名义路线统计。
 5. 名义链路稳定后再做固定/动态权重消融；故障注入优先级保持靠后。

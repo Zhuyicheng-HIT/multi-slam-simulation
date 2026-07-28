@@ -14,7 +14,9 @@ unified_backend_fusion:
     map_frame: camera_init
     body_frame: body
     window_size: 8
-    # The nonlinear backend owns p/R/v/ba/bg and raw-IMU preintegration.
+    # The nonlinear backend owns p/R/v and residual ba/bg. The FCU already
+    # calibrates/scales HIGHRES_IMU; this backend only constructs keyframe
+    # preintegration and must not consume FCU-fused local position.
     # Set to linear only for controlled rollback comparisons.
     backend_solver_mode: manifold
     nonlinear_max_iterations: 4
@@ -35,8 +37,9 @@ unified_backend_fusion:
     # Wait briefly for timestamp coverage instead of silently dropping IMU.
     imu_factor_wait_s: 0.080
     imu_max_gap_s: 0.10
-    # Use only a short, observably stationary FCU raw-IMU window to initialize
-    # b_a/b_g. This is a one-time seed, not continuous FCU EKF pose feedback.
+    # Use only a short, observably stationary FCU HIGHRES_IMU window to
+    # initialize residual b_a/b_g. This is a one-time seed, not sensor
+    # calibration from ADC data and not continuous FCU EKF pose feedback.
     imu_startup_bias_initialization_enabled: true
     imu_startup_window_s: 1.5
     imu_startup_minimum_samples: 40

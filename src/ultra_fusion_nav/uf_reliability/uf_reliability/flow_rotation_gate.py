@@ -13,6 +13,7 @@ class FlowRotationGateConfig:
     recovery_dwell_s: float = 0.8
     recovery_ramp_s: float = 1.5
     minimum_translation_m: float = 0.01
+    minimum_translation_speed_mps: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,8 @@ class OpticalFlowRotationGate:
             raise ValueError("recovery ramp must be positive")
         if self.config.minimum_translation_m < 0.0:
             raise ValueError("minimum recovery translation must be non-negative")
+        if self.config.minimum_translation_speed_mps < 0.0:
+            raise ValueError("minimum recovery translation speed must be non-negative")
         self.phase = "ACTIVE"
         self.stable_since_s = None
         self.ramp_since_s = None
@@ -161,6 +164,7 @@ class OpticalFlowRotationGate:
         yaw_rate_radps,
         translation_norm_m,
         observation_healthy,
+        translation_interval_s=None,
     ):
         stamp_s = float(stamp_s)
         if not math.isfinite(stamp_s):
@@ -168,12 +172,28 @@ class OpticalFlowRotationGate:
         if self.last_stamp_s is not None and stamp_s < self.last_stamp_s:
             self.reset()
         self.last_stamp_s = stamp_s
-        translation_ready = (
+        translation_available = (
             bool(observation_healthy)
             and translation_norm_m is not None
             and math.isfinite(float(translation_norm_m))
-            and float(translation_norm_m) >= self.config.minimum_translation_m
         )
+        if self.config.minimum_translation_speed_mps > 0.0:
+            interval_valid = (
+                translation_interval_s is not None
+                and math.isfinite(float(translation_interval_s))
+                and float(translation_interval_s) > 0.0
+            )
+            translation_ready = bool(
+                translation_available
+                and interval_valid
+                and float(translation_norm_m) / float(translation_interval_s)
+                >= self.config.minimum_translation_speed_mps
+            )
+        else:
+            translation_ready = bool(
+                translation_available
+                and float(translation_norm_m) >= self.config.minimum_translation_m
+            )
         if yaw_rate_radps is None or not math.isfinite(float(yaw_rate_radps)):
             self.phase = "YAW_RATE_UNAVAILABLE"
             self.stable_since_s = None

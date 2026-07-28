@@ -59,6 +59,22 @@ def select_association_basis(pose_source_times, flow_source_times,
     return "source_stamp" if overlap_end > overlap_start else "arrival"
 
 
+def yaw_rate_from_quaternions(start_xyzw, end_xyzw, interval_s):
+    """Return the shortest absolute yaw rate between two body poses."""
+    if not math.isfinite(float(interval_s)) or float(interval_s) <= 0.0:
+        return float("nan")
+
+    def yaw(quaternion):
+        x, y, z, w = (float(value) for value in quaternion)
+        sin_yaw = 2.0 * (w * z + x * y)
+        cos_yaw = 1.0 - 2.0 * (y * y + z * z)
+        return math.atan2(sin_yaw, cos_yaw)
+
+    delta = yaw(end_xyzw) - yaw(start_xyzw)
+    delta = math.atan2(math.sin(delta), math.cos(delta))
+    return abs(delta) / float(interval_s)
+
+
 class FlowGazeboAccuracy(Node):
     """Evaluate compensated flow displacement against the simulated sensor pose."""
 
@@ -73,6 +89,8 @@ class FlowGazeboAccuracy(Node):
         self.declare_parameter("min_truth_speed_mps", 0.06)
         self.declare_parameter("max_truth_speed_mps", 2.0)
         self.declare_parameter("max_vertical_speed_mps", 0.35)
+        self.declare_parameter("no_turn_max_yaw_rate_radps", 0.08)
+        self.declare_parameter("no_turn_min_samples", 50)
         self.declare_parameter("max_pose_gap_s", 0.20)
         self.declare_parameter("association_basis", "auto")
         self.declare_parameter("maximum_clock_offset_s", 1.0)
@@ -88,6 +106,12 @@ class FlowGazeboAccuracy(Node):
         self.min_truth_speed_mps = float(self.get_parameter("min_truth_speed_mps").value)
         self.max_truth_speed_mps = float(self.get_parameter("max_truth_speed_mps").value)
         self.max_vertical_speed_mps = float(self.get_parameter("max_vertical_speed_mps").value)
+        self.no_turn_max_yaw_rate = float(
+            self.get_parameter("no_turn_max_yaw_rate_radps").value
+        )
+        self.no_turn_min_samples = int(
+            self.get_parameter("no_turn_min_samples").value
+        )
         self.max_pose_gap_s = float(self.get_parameter("max_pose_gap_s").value)
         self.association_basis = str(
             self.get_parameter("association_basis").value).lower()
@@ -115,10 +139,12 @@ class FlowGazeboAccuracy(Node):
             OpticalFlowRad, self.flow_topic, self._flow_cb, qos_profile_sensor_data
         )
         self.gz_node = GzNode()
-        self.gz_node.subscribe(
-            Pose_V, f"/world/{self.world_name}/dynamic_pose/info", self._gz_pose_cb
+        self.gz_pose_topics = (
+            f"/world/{self.world_name}/dynamic_pose/info",
+            f"/world/{self.world_name}/pose/info",
         )
-        self.gz_node.subscribe(Pose_V, f"/world/{self.world_name}/pose/info", self._gz_pose_cb)
+        for topic in self.gz_pose_topics:
+            self.gz_node.subscribe(Pose_V, topic, self._gz_pose_cb)
         self.create_timer(1.0, self._timer_cb)
         self.get_logger().info(
             f"Recording compensated flow displacement for {self.duration_s:.1f}s: "
@@ -199,6 +225,16 @@ class FlowGazeboAccuracy(Node):
         if elapsed >= self.duration_s:
             self._finish()
 
+    def close_gazebo_transport(self):
+        """Stop pybind callbacks before Python begins interpreter teardown."""
+        for topic in self.gz_pose_topics:
+            try:
+                self.gz_node.unsubscribe(topic)
+            except Exception as exc:
+                self.get_logger().warning(
+                    f"Gazebo pose unsubscribe failed for {topic}: {exc}"
+                )
+
     def _pose_at(self, poses, times, timestamp_s):
         index = bisect.bisect_left(times, timestamp_s)
         if index == 0 or index >= len(poses):
@@ -251,6 +287,28 @@ class FlowGazeboAccuracy(Node):
             "correlation": correlation,
         }
 
+    def _mapping_summary(self, rows):
+        estimates, truth, _, _, _, _ = accuracy_row_arrays(rows)
+        mappings = [
+            self._evaluate_mapping(estimates, truth, swap, sign_x, sign_y)
+            for swap in (False, True)
+            for sign_x in (-1.0, 1.0)
+            for sign_y in (-1.0, 1.0)
+        ]
+        best = min(mappings, key=lambda value: value["normalized_rmse"])
+        expected_mapping = (
+            not best["swap"]
+            and best["sign_x"] == 1.0
+            and best["sign_y"] == 1.0
+        )
+        passed = bool(
+            expected_mapping
+            and 0.70 <= best["scale"] <= 1.30
+            and best["correlation"] >= 0.50
+            and best["normalized_rmse"] <= 0.75
+        )
+        return best, expected_mapping, passed
+
     def _finish(self):
         if self.done:
             return
@@ -292,6 +350,9 @@ class FlowGazeboAccuracy(Node):
                 continue
             if vertical_speed > self.max_vertical_speed_mps:
                 continue
+            yaw_rate = yaw_rate_from_quaternions(
+                start_pose[1], end_pose[1], integration_s
+            )
             rows.append((
                 stamp,
                 arrival_time,
@@ -303,25 +364,34 @@ class FlowGazeboAccuracy(Node):
                 estimated_dy,
                 quality,
                 distance,
+                yaw_rate,
             ))
 
         if not rows:
             self.get_logger().error("FLOW_ACCURACY no aligned displacement samples")
             return
         estimates, truth, integration, arrival_intervals, quality, distance = accuracy_row_arrays(rows)
-        mappings = [
-            self._evaluate_mapping(estimates, truth, swap, sign_x, sign_y)
-            for swap in (False, True)
-            for sign_x in (-1.0, 1.0)
-            for sign_y in (-1.0, 1.0)
+        best, expected_mapping, passed = self._mapping_summary(rows)
+        no_turn_rows = [
+            row for row in rows
+            if math.isfinite(row[10]) and row[10] <= self.no_turn_max_yaw_rate
         ]
-        best = min(mappings, key=lambda value: value["normalized_rmse"])
-        expected_mapping = not best["swap"] and best["sign_x"] == 1.0 and best["sign_y"] == 1.0
-        passed = bool(
-            expected_mapping
-            and 0.70 <= best["scale"] <= 1.30
-            and best["correlation"] >= 0.50
-            and best["normalized_rmse"] <= 0.75
+        no_turn_best = None
+        no_turn_expected_mapping = False
+        no_turn_passed = False
+        if len(no_turn_rows) >= self.no_turn_min_samples:
+            no_turn_best, no_turn_expected_mapping, no_turn_passed = (
+                self._mapping_summary(no_turn_rows)
+            )
+        no_turn_text = (
+            "no_turn_scale=nan no_turn_rmse_m=nan no_turn_normalized_rmse=nan "
+            "no_turn_corr=nan no_turn_expected_mapping=False"
+            if no_turn_best is None else
+            f"no_turn_scale={no_turn_best['scale']:.3f} "
+            f"no_turn_rmse_m={no_turn_best['rmse_m']:.4f} "
+            f"no_turn_normalized_rmse={no_turn_best['normalized_rmse']:.3f} "
+            f"no_turn_corr={no_turn_best['correlation']:.3f} "
+            f"no_turn_expected_mapping={no_turn_expected_mapping}"
         )
         self.get_logger().info(
             "FLOW_ACCURACY "
@@ -333,14 +403,16 @@ class FlowGazeboAccuracy(Node):
             f"corr={best['correlation']:.3f} quality_median={float(np.median(quality)):.1f} "
             f"distance_median={float(np.median(distance)):.2f}m "
             f"arrival_gap_outliers={int(np.count_nonzero(arrival_intervals > np.maximum(0.20, 3.0 * integration)))} "
-            f"passed={passed}"
+            f"passed={passed} no_turn_matched={len(no_turn_rows)} "
+            f"no_turn_yaw_rate_max_radps={self.no_turn_max_yaw_rate:.3f} "
+            f"{no_turn_text} no_turn_passed={no_turn_passed}"
         )
 
         if self.csv_path:
             with open(self.csv_path, "w", encoding="utf-8") as stream:
                 stream.write(
                     "t,arrival_time_s,integration_time_s,arrival_interval_s,truth_dx,truth_dy,"
-                    "flow_dx,flow_dy,quality,distance\n"
+                    "flow_dx,flow_dy,quality,distance,yaw_rate_radps\n"
                 )
                 for row in rows:
                     stream.write(",".join(str(value) for value in row) + "\n")
@@ -355,6 +427,7 @@ def main(args=None):
     except (KeyboardInterrupt, ExternalShutdownException):
         node._finish()
     finally:
+        node.close_gazebo_transport()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

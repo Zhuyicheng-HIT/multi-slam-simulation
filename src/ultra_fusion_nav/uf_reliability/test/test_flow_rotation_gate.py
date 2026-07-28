@@ -69,6 +69,28 @@ class FlowRotationGateTest(unittest.TestCase):
         self.assertEqual(result.phase, "YAW_RATE_UNAVAILABLE")
         self.assertTrue(result.hard_disabled)
 
+    def test_speed_threshold_is_independent_of_flow_sample_period(self):
+        gate = OpticalFlowRotationGate(FlowRotationGateConfig(
+            lower_yaw_rate_radps=0.08,
+            upper_yaw_rate_radps=0.30,
+            recovery_dwell_s=0.8,
+            recovery_ramp_s=1.5,
+            minimum_translation_m=0.01,
+            minimum_translation_speed_mps=0.08,
+        ))
+        gate.update(0.0, 0.4, 0.006, True, translation_interval_s=0.034)
+        recovering = gate.update(
+            0.1, 0.01, 0.006, True, translation_interval_s=0.034
+        )
+        self.assertTrue(recovering.translation_ready)
+        self.assertEqual(recovering.phase, "RECOVERY_DWELL")
+
+        too_slow = gate.update(
+            0.2, 0.01, 0.002, True, translation_interval_s=0.034
+        )
+        self.assertFalse(too_slow.translation_ready)
+        self.assertEqual(too_slow.reason, "waiting_for_consistent_translation")
+
 
 if __name__ == "__main__":
     unittest.main()

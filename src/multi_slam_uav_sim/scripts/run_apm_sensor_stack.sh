@@ -125,6 +125,9 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
     -p imu_topic:=/mavros/imu/data_raw
     -p max_rate_hz:=30.0
     -p angular_scale:=1.0
+    # Fixed offline calibration for this 100x100 Gazebo camera model. It is
+    # applied only after gyro compensation and is not used for real hardware.
+    -p translation_scale:=${FLOW_TRANSLATION_SCALE:-0.683}
     -p use_physics_flow:=${FLOW_USE_PHYSICS:-false}
     -p use_gazebo_height:=false
     -p gazebo_world_name:="$WORLD_NAME"
