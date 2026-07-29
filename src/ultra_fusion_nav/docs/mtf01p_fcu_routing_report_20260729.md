@@ -4,10 +4,13 @@ Date: 2026-07-29
 
 ## Decision
 
-The default algorithm input is rolled back to the direct companion-computer path:
+The default algorithm input is rolled back to the direct companion-computer path.
+After the physical COM17 inspection, the direct path includes the MicoLink wire
+boundary documented in `mtf01_micolink_hardware_report_20260729.md`:
 
 ```text
-MTF01P-like observation -> /sim/optical_flow/rad -> sensor pipeline -> fusion
+Gazebo native flow -> MicoLink encode/decode -> /sim/optical_flow/rad
+  -> sensor pipeline -> fusion
 ```
 
 The ArduPilot routing implementation remains available only as an opt-in experiment:

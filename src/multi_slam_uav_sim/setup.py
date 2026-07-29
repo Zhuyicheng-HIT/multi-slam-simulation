@@ -50,6 +50,7 @@ setup(
             "livox_mid360_bridge = multi_slam_uav_sim.livox_mid360_bridge:main",
             "flow_gazebo_accuracy = multi_slam_uav_sim.flow_gazebo_accuracy:main",
             "mavros_stream_requester = multi_slam_uav_sim.mavros_stream_requester:main",
+            "mtf01_micolink_bridge = multi_slam_uav_sim.mtf01_micolink_bridge:main",
             "mtf01p_mavlink_sensor = multi_slam_uav_sim.mtf01p_mavlink_sensor:main",
             "optical_flow_viewer = multi_slam_uav_sim.optical_flow_viewer:main",
             "rectangle_flow_test = multi_slam_uav_sim.rectangle_flow_test:main",

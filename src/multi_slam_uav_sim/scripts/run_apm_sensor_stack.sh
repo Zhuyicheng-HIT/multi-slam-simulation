@@ -122,6 +122,8 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p camera_info_topic:=/camera/camera/color/camera_info
     -p depth_topic:=/camera/camera/depth/image_rect_raw
     -p flow_topic:=/sim/optical_flow/raw
+    -p rad_topic:=/sim/optical_flow/rad_native
+    -p range_topic:=/sim/optical_flow/range_native
     -p gazebo_range_topic:=/flow/range
     -p gazebo_imu_topic:=/flow/imu
     -p imu_topic:=/mavros/imu/data_raw
@@ -145,6 +147,18 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
   setsid ros2 run multi_slam_uav_sim gazebo_optical_flow_to_mavros --ros-args \
     "${flow_args[@]}" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
+  pids+=("$!")
+
+  setsid ros2 run multi_slam_uav_sim mtf01_micolink_bridge --ros-args \
+    -p mode:=sim \
+    -p input_topic:=/sim/optical_flow/rad_native \
+    -p flow_topic:=/sim/optical_flow/rad \
+    -p range_topic:=/sim/optical_flow/range \
+    -p raw_frame_topic:=/sim/mtf01/micolink_frame \
+    -p imu_topic:=/mavros/imu/data_raw \
+    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-false} \
+    -p report_path:="$LOG_DIR/mtf01_micolink_bridge.json" \
+    >"$LOG_DIR/mtf01_micolink_bridge.log" 2>&1 &
   pids+=("$!")
 
   if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then

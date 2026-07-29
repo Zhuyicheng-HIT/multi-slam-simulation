@@ -7,12 +7,20 @@ optical-flow injection remains disabled.
 
 ## Sensor Boundary
 
-The estimator-facing observation is `/sensors/optical_flow/rad`. The Gazebo source publishes `/sim/optical_flow/rad` with MAVLink `OPTICAL_FLOW_RAD` semantics:
+The estimator-facing observation is `/sensors/optical_flow/rad`. Gazebo publishes
+an internal `/sim/optical_flow/rad_native` observation. It is quantized into the
+same 27-byte MicoLink `0x51` frame measured from the physical MTF-01 and decoded
+back to `/sim/optical_flow/rad` before entering the sensor pipeline:
 
 - `integrated_x/y`: raw angular image flow over one sensor integration window;
 - `integrated_x/y/zgyro`: co-timed internal gyro integration in sensor FRD axes;
 - `distance`: noisy downward single-beam range;
 - `quality`: image-derived texture, LK survival, forward/backward consistency, spatial coverage, range, and motion-limit score.
+
+The physical direct-computer path uses the same decoder on
+`/hardware/mtf01/optical_flow/rad`. MicoLink does not carry gyro integrals, so
+both simulation and hardware paths associate FCU HIGHRES_IMU at the companion
+computer before reliability scoring and fusion.
 
 The default ExternalNav profile derives the vector from rendered 100 by 100 images
 using LK tracking and the flow-module gyro. The optional physics-derived vector is
@@ -32,6 +40,9 @@ ground-truth topics remain evaluator-only.
 - Added a dual-clock policy: Gazebo source time defines image/gyro/pose integration, while the published ROS header uses wall time for association with the current non-`use_sim_time` LIO stack.
 - Added independent Gazebo sensor and LIO cross-check gates.
 - Corrected the evaluator to align truth with `integration_time_us`, while reporting callback arrival gaps separately.
+- Added the hardware-matched MicoLink frame boundary: `0xEF`, device `0x0F`,
+  message `0x51`, 20-byte payload, 27-byte frame, additive checksum, and sensor
+  time-derived integration interval.
 
 ## Iteration Evidence
 
