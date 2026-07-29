@@ -19,14 +19,14 @@ WINDOWS_HOST_IP=${WINDOWS_HOST_IP:-127.0.0.1}
 MTF01_TCP_PORT=${MTF01_TCP_PORT:-5764}
 MTF01_FLOW_TOPIC=${MTF01_FLOW_TOPIC:-/hardware/mtf01/optical_flow/rad}
 MTF01_RANGE_TOPIC=${MTF01_RANGE_TOPIC:-/hardware/mtf01/range}
-MTF01_RAW_TOPIC=${MTF01_RAW_TOPIC:-/hardware/mtf01/micolink_frame}
+MTF01_RAW_TOPIC=${MTF01_RAW_TOPIC:-/hardware/mtf01/mavlink_frame}
 MTF01_IMU_TOPIC=${MTF01_IMU_TOPIC:-/mavros/imu/data_raw}
 MTF01_REPORT_PATH=${MTF01_REPORT_PATH:-/tmp/mtf01_hardware_bridge.json}
 
 printf 'MTF-01 TCP source: %s:%s\n' "$WINDOWS_HOST_IP" "$MTF01_TCP_PORT"
 printf 'ROS flow output: %s\n' "$MTF01_FLOW_TOPIC"
 
-exec ros2 run multi_slam_uav_sim mtf01_micolink_bridge --ros-args \
+exec ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
   -p mode:=tcp \
   -p tcp_host:="$WINDOWS_HOST_IP" \
   -p tcp_port:="$MTF01_TCP_PORT" \

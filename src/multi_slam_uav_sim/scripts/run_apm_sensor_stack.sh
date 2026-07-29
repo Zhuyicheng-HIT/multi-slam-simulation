@@ -149,16 +149,17 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
   pids+=("$!")
 
-  setsid ros2 run multi_slam_uav_sim mtf01_micolink_bridge --ros-args \
+  setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
     -p mode:=sim \
     -p input_topic:=/sim/optical_flow/rad_native \
     -p flow_topic:=/sim/optical_flow/rad \
     -p range_topic:=/sim/optical_flow/range \
-    -p raw_frame_topic:=/sim/mtf01/micolink_frame \
+    -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
     -p imu_topic:=/mavros/imu/data_raw \
+    -p nominal_rate_hz:=30.0 \
     -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-false} \
-    -p report_path:="$LOG_DIR/mtf01_micolink_bridge.json" \
-    >"$LOG_DIR/mtf01_micolink_bridge.log" 2>&1 &
+    -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
+    >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
   pids+=("$!")
 
   if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
