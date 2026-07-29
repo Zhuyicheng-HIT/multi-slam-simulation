@@ -774,7 +774,7 @@
     </joint>
 
     <link name="mid360_link">
-      <pose>0.0 0.0 0.0 0 0 0</pose>
+      <pose>0.0 0.0 0.0 0 0.174532925199433 0</pose>
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>

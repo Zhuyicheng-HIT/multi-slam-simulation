@@ -25,7 +25,21 @@ def _read_scalar(data, base, field, bigendian):
     return struct.unpack_from(prefix + fmt, data, base + int(field.offset))[0]
 
 
-def filter_cloud(msg, bounds, min_range_m=0.1, max_range_m=100.0):
+def _finite_tuple(values, length, name):
+    values = tuple(float(value) for value in values)
+    if len(values) != length or not all(math.isfinite(value) for value in values):
+        raise ValueError(f"{name} must contain {length} finite values")
+    return values
+
+
+def filter_cloud(
+    msg,
+    bounds,
+    min_range_m=0.1,
+    max_range_m=100.0,
+    lidar_to_body_rotation=None,
+    lidar_to_body_translation=None,
+):
     fields = {field.name: field for field in msg.fields}
     if not {"x", "y", "z"}.issubset(fields) or msg.point_step <= 0:
         raise ValueError("PointCloud2 must contain x/y/z fields and a positive point_step")
@@ -34,6 +48,18 @@ def filter_cloud(msg, bounds, min_range_m=0.1, max_range_m=100.0):
     removed_body = 0
     removed_range = 0
     min_x, max_x, min_y, max_y, min_z, max_z = bounds
+    rotation = _finite_tuple(
+        (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        if lidar_to_body_rotation is None else lidar_to_body_rotation,
+        9,
+        "lidar_to_body_rotation",
+    )
+    translation = _finite_tuple(
+        (0.0, 0.0, 0.0)
+        if lidar_to_body_translation is None else lidar_to_body_translation,
+        3,
+        "lidar_to_body_translation",
+    )
     for index in range(count):
         base = index * int(msg.point_step)
         x = float(_read_scalar(msg.data, base, fields["x"], msg.is_bigendian))
@@ -43,7 +69,10 @@ def filter_cloud(msg, bounds, min_range_m=0.1, max_range_m=100.0):
         if not math.isfinite(distance) or distance < min_range_m or distance > max_range_m:
             removed_range += 1
             continue
-        if min_x <= x <= max_x and min_y <= y <= max_y and min_z <= z <= max_z:
+        body_x = rotation[0] * x + rotation[1] * y + rotation[2] * z + translation[0]
+        body_y = rotation[3] * x + rotation[4] * y + rotation[5] * z + translation[1]
+        body_z = rotation[6] * x + rotation[7] * y + rotation[8] * z + translation[2]
+        if min_x <= body_x <= max_x and min_y <= body_y <= max_y and min_z <= body_z <= max_z:
             removed_body += 1
             continue
         kept.append(msg.data[base:base + int(msg.point_step)])

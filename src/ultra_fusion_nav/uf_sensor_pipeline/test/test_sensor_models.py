@@ -43,6 +43,21 @@ class SensorModelsTest(unittest.TestCase):
         self.assertEqual(output.width, 1)
         self.assertEqual(struct.unpack("<ffff", output.data), (1.0, 0.0, 0.0, 20.0))
 
+    def test_body_filter_applies_lidar_to_body_rotation(self):
+        msg = cloud([(1.0, 0.0, 0.0, 10.0)])
+
+        output, removed_body, removed_range, total = filter_cloud(
+            msg,
+            (0.90, 1.10, -0.10, 0.10, -0.20, -0.10),
+            0.1,
+            40.0,
+            (0.984807753, 0.0, 0.173648178, 0.0, 1.0, 0.0, -0.173648178, 0.0, 0.984807753),
+            (0.0, 0.0, 0.0),
+        )
+
+        self.assertEqual((removed_body, removed_range, total), (1, 0, 1))
+        self.assertEqual(output.width, 0)
+
     def test_stamp_offset_handles_second_boundary(self):
         stamp = Time(sec=10, nanosec=900_000_000)
 

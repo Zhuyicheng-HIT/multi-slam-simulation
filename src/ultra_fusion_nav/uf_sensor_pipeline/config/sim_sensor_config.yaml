@@ -25,6 +25,9 @@ pointcloud_body_filter:
     body_max_y_m: 0.45
     body_min_z_m: -0.35
     body_max_z_m: 0.15
+    # R_body_lidar: MID360 optical axis pitches 10 deg nose-down.
+    lidar_to_body_rotation: [0.984807753, 0.0, 0.173648178, 0.0, 1.0, 0.0, -0.173648178, 0.0, 0.984807753]
+    lidar_to_body_translation: [0.0, 0.0, 0.0]
     min_range_m: 0.10
     max_range_m: 40.0
 
