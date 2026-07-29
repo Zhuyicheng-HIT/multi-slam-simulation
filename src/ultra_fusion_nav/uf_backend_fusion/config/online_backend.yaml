@@ -81,9 +81,9 @@ unified_backend_fusion:
     # Best-effort is retained, but preintegration cannot discard intermediate
     # IMU samples while the nonlinear solver owns the Python executor thread.
     native_lidar_qos_depth: 32
-    # ROS callbacks remain lightweight; one ordered worker owns all window
-    # mutations while IMU callbacks continue filling the preintegration buffer.
-    native_worker_queue_size: 64
+    # The nonlinear worker owns all window mutations. Retain only the newest
+    # unprocessed LiDAR keyframe so a slow solve cannot build stale latency.
+    native_worker_queue_size: 1
     imu_qos_depth: 64
     imu_covariance_scale: 50.0
     scheduler_timeout_s: 1.0

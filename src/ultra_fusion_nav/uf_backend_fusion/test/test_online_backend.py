@@ -1,3 +1,4 @@
+import queue
 import unittest
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from uf_backend_fusion.online_backend import (
     imu_interval_covered,
     imu_interval_status,
     estimate_stationary_imu_bias,
+    enqueue_latest,
     inflate_manifold_imu_covariance,
     lidar_bypass_allowed,
     lidar_prediction_innovation,
@@ -162,6 +164,17 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(
             native_trigger_order_status(100, 7, 110, 10), ("accept", 2)
         )
+
+    def test_native_worker_queue_coalesces_to_newest_frame(self):
+        work_queue = queue.Queue(maxsize=2)
+        work_queue.put_nowait("older")
+        work_queue.put_nowait("stale")
+
+        discarded = enqueue_latest(work_queue, "newest")
+
+        self.assertEqual(discarded, 2)
+        self.assertEqual(work_queue.get_nowait(), "newest")
+        work_queue.task_done()
 
     def test_imu_interval_coverage_requires_sample_at_or_after_target(self):
         self.assertFalse(imu_interval_covered(None, 10.0))

@@ -72,6 +72,7 @@ class Mtf01pMavlinkBridge(Node):
         self.range_min = float(self.get_parameter("range_min_m").value)
         self.range_max = float(self.get_parameter("range_max_m").value)
         self.range_fov = float(self.get_parameter("range_fov_rad").value)
+        self.restamp_output = bool(self.get_parameter("restamp_output").value)
         self.report_path = str(self.get_parameter("report_path").value)
 
         self.focal_px = focal_length_px(MTF01P_WIDTH_PX, MTF01P_FOV_RAD)
@@ -231,6 +232,18 @@ class Mtf01pMavlinkBridge(Node):
             self.device_epoch_us, self.host_epoch_ns = source_time_us, now_ns
         return self.host_epoch_ns + (source_time_us - self.device_epoch_us) * 1000
 
+    def _output_stamp(self, source_time_us):
+        """Map decoded flow to the ROS time domain used by the fusion stack.
+
+        A direct MTF-01 has its own clock, while the FCU IMU is timestamped by
+        MAVROS. In simulation those clocks use unrelated epochs. Arrival-time
+        stamping is therefore the explicit simulation/default companion policy;
+        the original MAVLink bytes remain published for offline calibration.
+        """
+        if self.restamp_output:
+            return self.get_clock().now().to_msg()
+        return Time(nanoseconds=self._stamp_ns(source_time_us)).to_msg()
+
     def _on_range(self, message):
         self.counts["distance_sensor"] += 1
         source_time_us = int(message.time_boot_ms) * 1000
@@ -239,7 +252,7 @@ class Mtf01pMavlinkBridge(Node):
             return
         self.latest_range = (source_time_us, distance_m)
         output = Range()
-        output.header.stamp = Time(nanoseconds=self._stamp_ns(source_time_us)).to_msg()
+        output.header.stamp = self._output_stamp(source_time_us)
         output.header.frame_id = self.frame_id
         output.radiation_type = Range.INFRARED
         output.field_of_view = self.range_fov
@@ -295,7 +308,10 @@ class Mtf01pMavlinkBridge(Node):
             flow_data["flow_x"], flow_data["flow_y"], self.focal_px, self.focal_px
         )
         output = OpticalFlowRad()
-        output.header.stamp = Time(nanoseconds=flow_data["stamp_ns"]).to_msg()
+        if self.restamp_output:
+            output.header.stamp = self.get_clock().now().to_msg()
+        else:
+            output.header.stamp = Time(nanoseconds=flow_data["stamp_ns"]).to_msg()
         output.header.frame_id = self.frame_id
         output.integration_time_us = max(1, int(round(flow_data["integration_s"] * 1.0e6)))
         output.integrated_x, output.integrated_y = integrated_x, integrated_y

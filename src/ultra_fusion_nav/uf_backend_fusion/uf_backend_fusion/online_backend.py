@@ -75,6 +75,28 @@ MIN_FLOW_QUALITY = 20
 MAX_COVARIANCE_INFLATION = 20.0
 
 
+def enqueue_latest(work_queue, item):
+    """Keep only the newest unprocessed native frame when the worker lags."""
+    try:
+        work_queue.put_nowait(item)
+        return 0
+    except queue.Full:
+        pass
+    discarded = 0
+    while True:
+        try:
+            work_queue.get_nowait()
+            work_queue.task_done()
+            discarded += 1
+        except queue.Empty:
+            break
+    try:
+        work_queue.put_nowait(item)
+    except queue.Full:
+        return -1
+    return discarded
+
+
 @dataclass(frozen=True)
 class StationaryImuInitialization:
     valid: bool
@@ -696,7 +718,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("native_lidar_factor_wait_s", 0.030)
         self.declare_parameter("native_lidar_minimum_matches", 50)
         self.declare_parameter("native_lidar_qos_depth", 32)
-        self.declare_parameter("native_worker_queue_size", 64)
+        self.declare_parameter("native_worker_queue_size", 1)
         self.declare_parameter("imu_qos_depth", 64)
         self.declare_parameter("imu_covariance_scale", 50.0)
         self.declare_parameter("imu_bias_random_walk_variance", 1.0e-4)
@@ -960,6 +982,7 @@ class UnifiedBackendNode(Node):
             "native_trigger_sequence_gaps": 0,
             "native_trigger_waiting_for_initial_factor": 0,
             "native_worker_queue_overflow": 0,
+            "native_worker_queue_discarded": 0,
             "native_worker_errors": 0,
             "lio_pose_inputs_ignored": 0,
             "imu_propagated_initializations": 0,
@@ -1569,11 +1592,15 @@ class UnifiedBackendNode(Node):
         self.counts["native_trigger_sequence_gaps"] += gap
         self.last_native_input_stamp_ns = stamp_ns
         self.last_native_input_sequence = sequence
-        try:
-            self.native_work_queue.put_nowait((copy.deepcopy(header), factor))
-        except queue.Full:
+        discarded = enqueue_latest(
+            self.native_work_queue, (copy.deepcopy(header), factor)
+        )
+        if discarded < 0:
             self.counts["native_worker_queue_overflow"] += 1
-            self.last_reason = "native_worker_queue_overflow"
+            self.last_reason = "native_worker_queue_enqueue_failed"
+        elif discarded:
+            self.counts["native_worker_queue_overflow"] += 1
+            self.counts["native_worker_queue_discarded"] += discarded
 
     def _native_worker_loop(self):
         while not self.native_worker_stop.is_set():
@@ -2097,7 +2124,9 @@ class UnifiedBackendNode(Node):
             f"{self.imu_max_positive_arrival_gap_s:.6f};"
             f"native_pair_timeouts={self.counts['native_lidar_pair_timeouts']};"
             f"native_received={self.counts['native_lidar_received']};"
-            f"native_queue_overflow={self.counts['native_worker_queue_overflow']}",
+            f"native_queue_overflow={self.counts['native_worker_queue_overflow']};"
+            "native_queue_discarded="
+            f"{self.counts['native_worker_queue_discarded']}",
             flush=True,
         )
 

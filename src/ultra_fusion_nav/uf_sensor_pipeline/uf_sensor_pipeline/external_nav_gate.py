@@ -8,10 +8,21 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from uf_interfaces.msg import SchedulerState
 
 
 def stamp_seconds(stamp):
     return float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+
+
+def scheduler_state_allowed(health_state, allowed_states):
+    """Return whether a scheduler state permits an ExternalNav hand-off."""
+    normalized = str(health_state).strip().upper()
+    return normalized in {
+        str(state).strip().upper()
+        for state in allowed_states
+        if str(state).strip()
+    }
 
 
 class ExternalNavGate(Node):
@@ -26,32 +37,80 @@ class ExternalNavGate(Node):
         self.declare_parameter("maximum_input_age_s", 0.25)
         self.declare_parameter("minimum_rate_hz", 4.0)
         self.declare_parameter("enabled", True)
+        # Disabled by default for the legacy GPS/flow path. The unified backend
+        # explicitly enables this, so an unhealthy scheduler cannot be sent to
+        # the FCU just because the odometry packet itself is well formed.
+        self.declare_parameter("require_scheduler_health", False)
+        self.declare_parameter("scheduler_topic", "/reliability/scheduler_state")
+        self.declare_parameter("scheduler_timeout_s", 0.5)
+        self.declare_parameter("allowed_scheduler_states", ["NORMAL", "RECOVERED"])
         self.expected_map_frame = str(self.get_parameter("expected_map_frame").value)
         self.expected_body_frame = str(self.get_parameter("expected_body_frame").value)
         self.maximum_input_age = float(self.get_parameter("maximum_input_age_s").value)
         self.minimum_rate = float(self.get_parameter("minimum_rate_hz").value)
         self.enabled = bool(self.get_parameter("enabled").value)
+        self.require_scheduler_health = bool(
+            self.get_parameter("require_scheduler_health").value
+        )
+        self.scheduler_timeout_s = max(
+            0.01, float(self.get_parameter("scheduler_timeout_s").value)
+        )
+        self.allowed_scheduler_states = tuple(
+            str(state).strip().upper()
+            for state in self.get_parameter("allowed_scheduler_states").value
+            if str(state).strip()
+        )
         self.arrivals = deque(maxlen=500)
         self.callback_ms = deque(maxlen=500)
         self.accepted = 0
         self.rejected = 0
         self.last_arrival = None
         self.last_reason = "waiting_for_fusion"
+        self.last_scheduler_arrival = None
+        self.last_scheduler_state = "WAITING"
         self.publisher = self.create_publisher(
             Odometry, str(self.get_parameter("output_topic").value), 10)
         self.diagnostic_pub = self.create_publisher(
             DiagnosticArray, "/external_nav/diagnostics", 10)
         self.create_subscription(
             Odometry, str(self.get_parameter("input_topic").value), self._odom, 20)
+        if self.require_scheduler_health:
+            self.create_subscription(
+                SchedulerState,
+                str(self.get_parameter("scheduler_topic").value),
+                self._scheduler_state,
+                20,
+            )
         self.create_timer(1.0, self._diagnostics)
         self.get_logger().info(
             f"ExternalNav gate {'enabled' if self.enabled else 'disabled'}: "
             f"{self.get_parameter('input_topic').value} -> "
-            f"{self.get_parameter('output_topic').value}")
+            f"{self.get_parameter('output_topic').value}; "
+            f"scheduler_health={'required' if self.require_scheduler_health else 'not_required'}")
+
+    def _scheduler_state(self, msg):
+        self.last_scheduler_arrival = time.monotonic()
+        self.last_scheduler_state = str(msg.health_state).strip().upper() or "UNKNOWN"
+
+    def _scheduler_reason(self):
+        if not self.require_scheduler_health:
+            return "ok"
+        if self.last_scheduler_arrival is None:
+            return "missing_scheduler_state"
+        if time.monotonic() - self.last_scheduler_arrival > self.scheduler_timeout_s:
+            return "stale_scheduler_state"
+        if not scheduler_state_allowed(
+            self.last_scheduler_state, self.allowed_scheduler_states
+        ):
+            return f"scheduler_{self.last_scheduler_state.lower()}"
+        return "ok"
 
     def _validate(self, msg):
         if not self.enabled:
             return "disabled"
+        scheduler_reason = self._scheduler_reason()
+        if scheduler_reason != "ok":
+            return scheduler_reason
         if msg.header.frame_id != self.expected_map_frame:
             return "unexpected_map_frame"
         if msg.child_frame_id != self.expected_body_frame:
@@ -122,6 +181,11 @@ class ExternalNavGate(Node):
     def _diagnostics(self):
         rate = self._rate()
         age_s = math.inf if self.last_arrival is None else time.monotonic() - self.last_arrival
+        scheduler_age_s = (
+            math.inf
+            if self.last_scheduler_arrival is None
+            else time.monotonic() - self.last_scheduler_arrival
+        )
         healthy = self.last_reason == "ok" and age_s <= self.maximum_input_age * 2.0
         if len(self.arrivals) >= 5:
             healthy = healthy and rate >= self.minimum_rate
@@ -138,6 +202,10 @@ class ExternalNavGate(Node):
             self._value("input_rate_hz", f"{rate:.3f}"),
             self._value("input_age_s", f"{age_s:.3f}"),
             self._value("minimum_rate_hz", self.minimum_rate),
+            self._value("require_scheduler_health", self.require_scheduler_health),
+            self._value("scheduler_state", self.last_scheduler_state),
+            self._value("scheduler_age_s", f"{scheduler_age_s:.3f}"),
+            self._value("allowed_scheduler_states", ",".join(self.allowed_scheduler_states)),
             self._value(
                 "timing_callback_mean_ms",
                 f"{sum(self.callback_ms) / len(self.callback_ms):.4f}" if self.callback_ms else "0.0"),

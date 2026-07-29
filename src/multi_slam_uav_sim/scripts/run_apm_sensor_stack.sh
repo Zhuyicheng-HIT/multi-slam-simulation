@@ -149,6 +149,8 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
   pids+=("$!")
 
+  # The MTF device clock is kept in raw MAVLink frames. Its ROS observations
+  # must share MAVROS IMU's time domain for the companion fusion pipeline.
   setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
     -p mode:=sim \
     -p input_topic:=/sim/optical_flow/rad_native \
@@ -157,7 +159,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
     -p imu_topic:=/mavros/imu/data_raw \
     -p nominal_rate_hz:=30.0 \
-    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-false} \
+    -p restamp_output:=${MTF_RESTAMP_OUTPUT:-true} \
     -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
     >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
   pids+=("$!")
