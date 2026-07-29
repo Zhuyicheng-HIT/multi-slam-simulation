@@ -45,6 +45,27 @@ FAULT_SECONDARY_MAGNITUDE=${FAULT_SECONDARY_MAGNITUDE:-0}
 FAULT_DELIVERY_MODE=${FAULT_DELIVERY_MODE:-runtime}
 FLOW_USE_PHYSICS=${FLOW_USE_PHYSICS:-false}
 FLOW_RESTAMP_OUTPUT=${FLOW_RESTAMP_OUTPUT:-true}
+FLOW_TRANSPORT=${FLOW_TRANSPORT:-direct}
+ENABLE_FLOW_ROUTE_VALIDATION=${ENABLE_FLOW_ROUTE_VALIDATION:-1}
+FLOW_ROUTE_REQUIRE_PASS=${FLOW_ROUTE_REQUIRE_PASS:-1}
+
+case "$FLOW_TRANSPORT" in
+  direct)
+    enable_fcu_flow_router=0
+    enable_fcu_observation_bridge=false
+    optical_flow_input_topic=/sim/optical_flow/rad
+    ;;
+  fcu_router)
+    enable_fcu_flow_router=1
+    enable_fcu_observation_bridge=true
+    optical_flow_input_topic=/fcu/optical_flow/rad
+    ;;
+  *)
+    printf 'FLOW_TRANSPORT must be direct or fcu_router, got %s\n' \
+      "$FLOW_TRANSPORT" >&2
+    exit 2
+    ;;
+esac
 
 if [[ "$FLOW_USE_PHYSICS" != "false" && "$FLOW_USE_PHYSICS" != "0" ]]; then
   printf '%s\n' \
@@ -97,6 +118,12 @@ fi
   printf 'fault_type=%s\n' "$FAULT_TYPE"
   printf 'flow_use_physics=%s\n' "$FLOW_USE_PHYSICS"
   printf 'flow_restamp_output=%s\n' "$FLOW_RESTAMP_OUTPUT"
+  printf 'flow_transport=%s\n' "$FLOW_TRANSPORT"
+  if [[ "$FLOW_TRANSPORT" == "fcu_router" ]]; then
+    printf 'flow_wire_protocol=MAVLink1\n'
+    printf 'flow_message_ids=OPTICAL_FLOW:100,DISTANCE_SENSOR:132\n'
+    printf 'flow_route=SERIAL1->ArduPilot->SERIAL0->MAVROS_raw_source\n'
+  fi
 } >"$OUTPUT_DIR/experiment_profile.txt"
 export OPENBLAS_NUM_THREADS="$NUMPY_NUM_THREADS"
 export MKL_NUM_THREADS="$NUMPY_NUM_THREADS"
@@ -150,6 +177,7 @@ printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 
 setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" \
   FLOW_USE_PHYSICS=false FLOW_RESTAMP_OUTPUT="$FLOW_RESTAMP_OUTPUT" \
+  ENABLE_FCU_FLOW_ROUTER="$enable_fcu_flow_router" \
   LOG_DIR="$OUTPUT_DIR/sim" \
   bash "$REPO_ROOT/tools/run_sim_with_flow.sh" \
   >"$OUTPUT_DIR/sim.stdout.log" 2>"$OUTPUT_DIR/sim.stderr.log" &
@@ -157,6 +185,11 @@ pids+=("$!")
 wait_for_message /mavros/state 90
 wait_for_message /mavros/imu/data_raw 90
 wait_for_message /sim/mid360/points_raw 90
+if [[ "$FLOW_TRANSPORT" == "fcu_router" ]]; then
+  wait_for_message /fcu/mavlink/optical_flow 45
+  wait_for_message /fcu/mavlink/optical_flow_rad 45
+  wait_for_message /fcu/mavlink/range 45
+fi
 
 fault_launch_env=()
 if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
@@ -172,10 +205,33 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
 fi
 setsid env "${fault_launch_env[@]}" ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
   enable_vision:="$ENABLE_VISION_PIPELINE" \
+  enable_fcu_observation_bridge:="$enable_fcu_observation_bridge" \
+  optical_flow_input_topic:="$optical_flow_input_topic" \
+  fcu_flow_input_topic:=/fcu/mavlink/optical_flow \
+  fcu_flow_rad_input_topic:=/fcu/mavlink/optical_flow_rad \
+  fcu_range_input_topic:=/fcu/mavlink/range \
   >"$OUTPUT_DIR/sensor_pipeline.stdout.log" 2>"$OUTPUT_DIR/sensor_pipeline.stderr.log" &
 pids+=("$!")
+wait_for_message /sensors/optical_flow/rad 30
 if [[ "$FASTLIO_INPUT_MODE" == "filtered_pointcloud" ]]; then
   wait_for_message /sensors/lidar/points 30
+fi
+
+flow_route_validation_pid=""
+if [[ "$FLOW_TRANSPORT" == "fcu_router" \
+      && "$ENABLE_FLOW_ROUTE_VALIDATION" == "1" ]]; then
+  route_args=(
+    --duration "$ANALYSIS_DURATION_S"
+    --output "$OUTPUT_DIR/fcu_flow_roundtrip.json"
+  )
+  if [[ "$FLOW_ROUTE_REQUIRE_PASS" == "1" ]]; then
+    route_args+=(--require-pass)
+  fi
+  python3 "$SCRIPT_DIR/evaluate_fcu_flow_roundtrip.py" "${route_args[@]}" \
+    >"$OUTPUT_DIR/fcu_flow_roundtrip.stdout.log" \
+    2>"$OUTPUT_DIR/fcu_flow_roundtrip.stderr.log" &
+  flow_route_validation_pid=$!
+  pids+=("$flow_route_validation_pid")
 fi
 
 setsid env RVIZ=0 LOG_DIR="$OUTPUT_DIR/lio" FASTLIO_INPUT_MODE="$FASTLIO_INPUT_MODE" \
@@ -378,6 +434,7 @@ pids+=("$recorder_pid")
 
 set +e
 env LOG_DIR="$OUTPUT_DIR/rectangle" ACCURACY_DURATION_S="$ANALYSIS_DURATION_S" \
+  MAVLINK_TAKEOFF_URL=tcp:127.0.0.1:5763 \
   bash "$REPO_ROOT/tools/run_rectangle_state_machine.sh" \
   >"$OUTPUT_DIR/rectangle.stdout.log" 2>"$OUTPUT_DIR/rectangle.stderr.log"
 rectangle_status=$?
@@ -394,6 +451,11 @@ flow_calibration_status=0
 if [[ -n "$flow_calibration_pid" ]]; then
   wait "$flow_calibration_pid"
   flow_calibration_status=$?
+fi
+flow_route_validation_status=0
+if [[ -n "$flow_route_validation_pid" ]]; then
+  wait "$flow_route_validation_pid"
+  flow_route_validation_status=$?
 fi
 fault_status=0
 if [[ -n "$fault_trigger_pid" ]]; then
@@ -459,12 +521,14 @@ if [[ -n "$flow_calibration_pid" ]]; then
   set -e
 fi
 
-printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s flow_calibration_status=%s flow_gate_status=%s fault_status=%s timeline_status=%s rosbag_status=%s\n' \
+printf 'rectangle_status=%s analyzer_status=%s recorder_status=%s score_status=%s flow_calibration_status=%s flow_gate_status=%s flow_route_validation_status=%s fault_status=%s timeline_status=%s rosbag_status=%s\n' \
   "$rectangle_status" "$analyzer_status" "$recorder_status" "$score_status" \
-  "$flow_calibration_status" "$flow_gate_status" "$fault_status" "$timeline_status" \
+  "$flow_calibration_status" "$flow_gate_status" "$flow_route_validation_status" \
+  "$fault_status" "$timeline_status" \
   "$rosbag_status"
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 (( rectangle_status == 0 && analyzer_status == 0 && recorder_status == 0 \
    && score_status == 0 && flow_calibration_status == 0 && flow_gate_status == 0 \
+   && flow_route_validation_status == 0 \
    && fault_status == 0 \
    && timeline_status == 0 && rosbag_status == 0 ))

@@ -41,6 +41,7 @@ NAVIGATION_SOURCE=${NAVIGATION_SOURCE:-auto}
 FLOW_MIN_QUALITY=${FLOW_MIN_QUALITY:-0}
 ACCURACY_DURATION_S=${ACCURACY_DURATION_S:-150.0}
 ENABLE_FLOW_ACCURACY=${ENABLE_FLOW_ACCURACY:-1}
+MAVLINK_TAKEOFF_URL=${MAVLINK_TAKEOFF_URL:-tcp:127.0.0.1:5763}
 
 float_param() {
   case "$1" in
@@ -79,6 +80,7 @@ Parameters:
   flow_min_quality=$FLOW_MIN_QUALITY
   accuracy_duration_s=$ACCURACY_DURATION_S
   enable_flow_accuracy=$ENABLE_FLOW_ACCURACY
+  mavlink_takeoff_url=$MAVLINK_TAKEOFF_URL
 
 Required first-window stack:
   run_sim_with_flow.sh
@@ -111,6 +113,7 @@ ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
   -p navigation_stable_s:="$NAVIGATION_STABLE_S_PARAM" \
   -p navigation_source:="$NAVIGATION_SOURCE" \
   -p flow_min_quality:="$FLOW_MIN_QUALITY" \
+  -p mavlink_takeoff_url:="$MAVLINK_TAKEOFF_URL" \
   2>&1 | tee "$LOG_DIR/guided_rectangle_waypoints.log"
 state_status="${PIPESTATUS[0]}"
 

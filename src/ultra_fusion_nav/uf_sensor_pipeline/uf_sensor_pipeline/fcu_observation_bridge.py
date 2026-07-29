@@ -12,7 +12,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, NavSatFix, Range
 
 from .fcu_observation import (
-    integrate_flu_gyro_as_sensor_frd,
+    integrate_flu_gyro_with_arrival_fallback,
+    legacy_pixel_flow_to_sensor_frd,
     legacy_flow_rate_to_sensor_frd,
     stamp_seconds,
     valid_interval,
@@ -26,6 +27,7 @@ class FcuObservationBridge(Node):
         super().__init__("fcu_observation_bridge")
         defaults = {
             "flow_input_topic": "/mavros/optical_flow/raw/optical_flow",
+            "flow_rad_input_topic": "",
             "flow_output_topic": "/fcu/optical_flow/rad",
             "imu_input_topic": "/mavros/imu/data_raw",
             "range_input_topic": "/mavros/rangefinder/rangefinder",
@@ -42,6 +44,8 @@ class FcuObservationBridge(Node):
         self.declare_parameter("maximum_flow_wait_s", 0.3)
         self.declare_parameter("range_timeout_s", 0.5)
         self.declare_parameter("stale_after_s", 1.0)
+        self.declare_parameter("flow_focal_length_x_px", 130.254)
+        self.declare_parameter("flow_focal_length_y_px", 130.254)
 
         self.minimum_flow_interval = float(self.get_parameter("minimum_flow_interval_s").value)
         self.maximum_flow_interval = float(self.get_parameter("maximum_flow_interval_s").value)
@@ -49,12 +53,22 @@ class FcuObservationBridge(Node):
         self.maximum_flow_wait = float(self.get_parameter("maximum_flow_wait_s").value)
         self.range_timeout = float(self.get_parameter("range_timeout_s").value)
         self.stale_after = float(self.get_parameter("stale_after_s").value)
+        self.flow_focal_length_x = float(
+            self.get_parameter("flow_focal_length_x_px").value
+        )
+        self.flow_focal_length_y = float(
+            self.get_parameter("flow_focal_length_y_px").value
+        )
         self.imu_samples = deque(maxlen=2000)
+        self.imu_arrival_samples = deque(maxlen=2000)
         self.pending_flows = deque(maxlen=100)
         self.previous_flow_stamp_s = None
         self.latest_range = None
         self.latest_range_arrival = None
         self.counts = {"flow": 0, "flow_rejected": 0, "flow_without_gyro": 0,
+                       "flow_arrival_aligned_gyro": 0,
+                       "flow_rad_encoding": 0,
+                       "flow_pixel_encoding": 0, "flow_rate_encoding": 0,
                        "flow_range_fallback": 0, "range": 0,
                        "gnss_fix": 0, "gnss_raw": 0}
         self.last_arrival = {}
@@ -74,10 +88,19 @@ class FcuObservationBridge(Node):
         self.diagnostic_pub = self.create_publisher(
             DiagnosticArray, "/fcu_observation/diagnostics", 10
         )
-        self.create_subscription(
-            OpticalFlow, self.get_parameter("flow_input_topic").value,
-            self._flow, qos_profile_sensor_data,
-        )
+        flow_rad_input_topic = str(self.get_parameter("flow_rad_input_topic").value)
+        if flow_rad_input_topic:
+            self.create_subscription(
+                OpticalFlowRad,
+                flow_rad_input_topic,
+                self._flow_rad,
+                qos_profile_sensor_data,
+            )
+        else:
+            self.create_subscription(
+                OpticalFlow, self.get_parameter("flow_input_topic").value,
+                self._flow, qos_profile_sensor_data,
+            )
         self.create_subscription(
             Imu, self.get_parameter("imu_input_topic").value,
             self._imu, qos_profile_sensor_data,
@@ -106,15 +129,24 @@ class FcuObservationBridge(Node):
         timestamp_s = stamp_seconds(msg.header.stamp)
         if timestamp_s <= 0.0:
             return
-        self.imu_samples.append((
+        sample = (
             timestamp_s,
             float(msg.angular_velocity.x),
             float(msg.angular_velocity.y),
             float(msg.angular_velocity.z),
-        ))
+        )
+        arrival_sample = (time.monotonic(), *sample[1:])
+        self.imu_samples.append(sample)
+        self.imu_arrival_samples.append(arrival_sample)
         cutoff_s = timestamp_s - 2.0
         while self.imu_samples and self.imu_samples[0][0] < cutoff_s:
             self.imu_samples.popleft()
+        arrival_cutoff_s = arrival_sample[0] - 2.0
+        while (
+            self.imu_arrival_samples
+            and self.imu_arrival_samples[0][0] < arrival_cutoff_s
+        ):
+            self.imu_arrival_samples.popleft()
         self._flush_pending_flows()
 
     def _range(self, msg):
@@ -135,28 +167,88 @@ class FcuObservationBridge(Node):
             self.counts["flow_rejected"] += 1
             return
         start_s = end_s - interval_s
-        self.pending_flows.append((start_s, end_s, interval_s, time.monotonic(), msg))
+        arrival_s = time.monotonic()
+        self.pending_flows.append((start_s, end_s, interval_s, arrival_s, msg))
+        self._flush_pending_flows()
+
+    def _flow_rad(self, msg):
+        end_s = stamp_seconds(msg.header.stamp)
+        interval_s = float(msg.integration_time_us) * 1.0e-6
+        if (
+            end_s <= 0.0
+            or interval_s < self.minimum_flow_interval
+            or interval_s > self.maximum_flow_interval
+        ):
+            self.counts["flow_rejected"] += 1
+            return
+        arrival_s = time.monotonic()
+        self.pending_flows.append(
+            (end_s - interval_s, end_s, interval_s, arrival_s, msg)
+        )
         self._flush_pending_flows()
 
     def _flush_pending_flows(self):
-        latest_imu_s = self.imu_samples[-1][0] if self.imu_samples else -math.inf
         now = time.monotonic()
         while self.pending_flows:
             start_s, end_s, interval_s, queued_at, msg = self.pending_flows[0]
-            covered = latest_imu_s >= end_s
+            source_covered = bool(
+                self.imu_samples
+                and self.imu_samples[0][0] <= start_s
+                and self.imu_samples[-1][0] >= end_s
+            )
+            arrival_covered = bool(
+                self.imu_arrival_samples
+                and self.imu_arrival_samples[0][0] <= queued_at - interval_s
+                and self.imu_arrival_samples[-1][0] >= queued_at
+            )
+            covered = source_covered or arrival_covered
             expired = now - queued_at >= self.maximum_flow_wait
             if not covered and not expired:
                 break
             self.pending_flows.popleft()
-            self._publish_flow(msg, start_s, end_s, interval_s)
+            self._publish_flow(msg, start_s, end_s, interval_s, queued_at)
 
-    def _publish_flow(self, msg, start_s, end_s, interval_s):
-        integrated_x, integrated_y = legacy_flow_rate_to_sensor_frd(
-            msg.flow_rate.x, msg.flow_rate.y, interval_s
+    def _publish_flow(self, msg, start_s, end_s, interval_s, arrival_s):
+        if isinstance(msg, OpticalFlowRad):
+            integrated_x = float(msg.integrated_x)
+            integrated_y = float(msg.integrated_y)
+            quality = int(msg.quality)
+            embedded_distance = float(msg.distance)
+            self.counts["flow_rad_encoding"] += 1
+        else:
+            has_rate_extension = (
+                math.isfinite(float(msg.flow_rate.x))
+                and math.isfinite(float(msg.flow_rate.y))
+                and (
+                    abs(float(msg.flow_rate.x)) > 1.0e-9
+                    or abs(float(msg.flow_rate.y)) > 1.0e-9
+                )
+            )
+            if has_rate_extension:
+                integrated_x, integrated_y = legacy_flow_rate_to_sensor_frd(
+                    msg.flow_rate.x, msg.flow_rate.y, interval_s
+                )
+                self.counts["flow_rate_encoding"] += 1
+            else:
+                integrated_x, integrated_y = legacy_pixel_flow_to_sensor_frd(
+                    msg.flow.x,
+                    msg.flow.y,
+                    self.flow_focal_length_x,
+                    self.flow_focal_length_y,
+                )
+                self.counts["flow_pixel_encoding"] += 1
+            quality = int(msg.quality)
+            embedded_distance = float(msg.ground_distance)
+        gyro, used_arrival_clock = integrate_flu_gyro_with_arrival_fallback(
+            list(self.imu_samples),
+            list(self.imu_arrival_samples),
+            start_s,
+            end_s,
+            arrival_s,
+            self.maximum_imu_gap,
         )
-        gyro = integrate_flu_gyro_as_sensor_frd(
-            list(self.imu_samples), start_s, end_s, self.maximum_imu_gap
-        )
+        if used_arrival_clock:
+            self.counts["flow_arrival_aligned_gyro"] += 1
         if gyro is None:
             gyro = (float("nan"), float("nan"), float("nan"))
             self.counts["flow_without_gyro"] += 1
@@ -171,14 +263,14 @@ class FcuObservationBridge(Node):
         output.integrated_ygyro = float(gyro[1])
         output.integrated_zgyro = float(gyro[2])
         output.temperature = 0
-        output.quality = int(msg.quality)
+        output.quality = quality
         output.time_delta_distance_us = 0
         range_fresh = (
             self.latest_range is not None and self.latest_range_arrival is not None
             and time.monotonic() - self.latest_range_arrival <= self.range_timeout
         )
         output.distance = (
-            float(self.latest_range) if range_fresh else float(msg.ground_distance)
+            float(self.latest_range) if range_fresh else embedded_distance
         )
         if not range_fresh:
             self.counts["flow_range_fallback"] += 1
@@ -229,7 +321,14 @@ class FcuObservationBridge(Node):
                 status.values.extend([
                     self._value("rejected_intervals", self.counts["flow_rejected"]),
                     self._value("missing_gyro_integrals", self.counts["flow_without_gyro"]),
+                    self._value(
+                        "arrival_aligned_gyro_integrals",
+                        self.counts["flow_arrival_aligned_gyro"],
+                    ),
                     self._value("range_fallback_samples", self.counts["flow_range_fallback"]),
+                    self._value("mavlink1_pixel_samples", self.counts["flow_pixel_encoding"]),
+                    self._value("mavlink2_rate_samples", self.counts["flow_rate_encoding"]),
+                    self._value("routed_rad_samples", self.counts["flow_rad_encoding"]),
                     self._value("fused_local_position_used", "false"),
                 ])
             output.status.append(status)

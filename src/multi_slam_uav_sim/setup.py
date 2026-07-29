@@ -40,6 +40,7 @@ setup(
         "console_scripts": [
             "d435i_sim_bridge = multi_slam_uav_sim.d435i_sim_bridge:main",
             "external_nav_accuracy = multi_slam_uav_sim.external_nav_accuracy:main",
+            "fcu_mavlink_flow_receiver = multi_slam_uav_sim.fcu_mavlink_flow_receiver:main",
             "flight_state_bridge = multi_slam_uav_sim.flight_state_bridge:main",
             "gazebo_optical_flow_to_mavros = multi_slam_uav_sim.gazebo_optical_flow_to_mavros:main",
             "gz_mid360_pointcloud_bridge = multi_slam_uav_sim.gz_mid360_pointcloud_bridge:main",
@@ -49,6 +50,7 @@ setup(
             "livox_mid360_bridge = multi_slam_uav_sim.livox_mid360_bridge:main",
             "flow_gazebo_accuracy = multi_slam_uav_sim.flow_gazebo_accuracy:main",
             "mavros_stream_requester = multi_slam_uav_sim.mavros_stream_requester:main",
+            "mtf01p_mavlink_sensor = multi_slam_uav_sim.mtf01p_mavlink_sensor:main",
             "optical_flow_viewer = multi_slam_uav_sim.optical_flow_viewer:main",
             "rectangle_flow_test = multi_slam_uav_sim.rectangle_flow_test:main",
             "people_motion = multi_slam_uav_sim.people_motion:main",

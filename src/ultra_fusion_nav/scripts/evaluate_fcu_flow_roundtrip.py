@@ -9,6 +9,11 @@ import time
 import numpy as np
 import rclpy
 from mavros_msgs.msg import OpticalFlowRad
+from multi_slam_uav_sim.mtf01p_protocol import (
+    focal_length_px,
+    integrated_radians_to_pixels,
+    pixels_to_integrated_radians,
+)
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -53,6 +58,8 @@ class RoundtripRecorder(Node):
             "stamp": stamp_seconds(msg.header),
             "arrival": time.monotonic(),
             "integration_s": integration_s,
+            "integrated_x": float(msg.integrated_x),
+            "integrated_y": float(msg.integrated_y),
             "rate_x": float(msg.integrated_x) / max(1.0e-6, integration_s),
             "rate_y": float(msg.integrated_y) / max(1.0e-6, integration_s),
             "quality": int(msg.quality),
@@ -91,13 +98,22 @@ def match_samples(direct, fcu, lag_s, averaging_window_s):
         candidates = eligible_direct[start:end]
         if not candidates:
             continue
-        averaged = {
-            "rate_x": float(np.mean([sample["rate_x"] for sample in candidates])),
-            "rate_y": float(np.mean([sample["rate_y"] for sample in candidates])),
-            "quality": float(np.mean([sample["quality"] for sample in candidates])),
-            "distance": float(np.mean([sample["distance"] for sample in candidates])),
+        reference = min(candidates, key=lambda sample: abs(sample["arrival"] - center))
+        focal = focal_length_px()
+        pixel_x, pixel_y = integrated_radians_to_pixels(
+            reference["integrated_x"], reference["integrated_y"], focal, focal
+        )
+        quantized_x, quantized_y = pixels_to_integrated_radians(
+            pixel_x, pixel_y, focal, focal
+        )
+        integration_s = max(1.0e-6, reference["integration_s"])
+        encoded_reference = {
+            "rate_x": quantized_x / integration_s,
+            "rate_y": quantized_y / integration_s,
+            "quality": reference["quality"],
+            "distance": reference["distance"],
         }
-        pairs.append((averaged, returned))
+        pairs.append((encoded_reference, returned))
     return pairs
 
 
@@ -142,6 +158,42 @@ def pair_metrics(pairs):
     }
 
 
+def stream_metrics(samples):
+    arrivals = np.asarray([sample["arrival"] for sample in samples], dtype=float)
+    stamps = np.asarray([sample["stamp"] for sample in samples], dtype=float)
+    integrations = np.asarray(
+        [sample["integration_s"] for sample in samples], dtype=float
+    )
+    arrival_periods = np.diff(arrivals)
+    source_periods = np.diff(stamps)
+    elapsed_s = float(arrivals[-1] - arrivals[0]) if len(arrivals) >= 2 else 0.0
+    return {
+        "samples": len(samples),
+        "measured_rate_hz": (
+            float((len(samples) - 1) / elapsed_s) if elapsed_s > 0.0 else 0.0
+        ),
+        "arrival_period_median_s": (
+            float(np.median(arrival_periods)) if len(arrival_periods) else None
+        ),
+        "source_period_median_s": (
+            float(np.median(source_periods)) if len(source_periods) else None
+        ),
+        "integration_period_median_s": (
+            float(np.median(integrations)) if len(integrations) else None
+        ),
+        "valid_integration_ratio": (
+            float(np.mean(np.isfinite(integrations) & (integrations > 0.0)))
+            if len(integrations)
+            else 0.0
+        ),
+        "nonzero_source_stamp_ratio": (
+            float(np.mean(np.isfinite(stamps) & (stamps > 0.0)))
+            if len(stamps)
+            else 0.0
+        ),
+    }
+
+
 def summarize(node, maximum_lag_s, lag_step_s, averaging_window_s):
     candidates = []
     lag_s = 0.0
@@ -163,6 +215,23 @@ def summarize(node, maximum_lag_s, lag_step_s, averaging_window_s):
         sum(sample["gyro_valid"] for sample in node.fcu) / len(node.fcu)
         if node.fcu else 0.0
     )
+    direct_stream = stream_metrics(node.direct)
+    fcu_stream = stream_metrics(node.fcu)
+    rate_ratio = (
+        fcu_stream["measured_rate_hz"] / direct_stream["measured_rate_hz"]
+        if direct_stream["measured_rate_hz"] > 0.0
+        else 0.0
+    )
+    integration_ratio = 0.0
+    if (
+        direct_stream["integration_period_median_s"] is not None
+        and direct_stream["integration_period_median_s"] > 0.0
+        and fcu_stream["integration_period_median_s"] is not None
+    ):
+        integration_ratio = (
+            fcu_stream["integration_period_median_s"]
+            / direct_stream["integration_period_median_s"]
+        )
     passed = bool(
         best["matched_airborne_samples"] >= 80
         and math.isfinite(best["flow_rate_correlation"])
@@ -176,6 +245,13 @@ def summarize(node, maximum_lag_s, lag_step_s, averaging_window_s):
         and best["quality_median_abs_error"] is not None
         and best["quality_median_abs_error"] <= 10.0
         and gyro_coverage >= 0.95
+        and 0.80 <= rate_ratio <= 1.20
+        and 0.80 <= integration_ratio <= 1.20
+        and direct_stream["valid_integration_ratio"] >= 0.99
+        and fcu_stream["valid_integration_ratio"] >= 0.99
+        and direct_stream["nonzero_source_stamp_ratio"] >= 0.99
+        and fcu_stream["nonzero_source_stamp_ratio"] >= 0.99
+        and node.fcu_regressions == 0
     )
     return {
         "direct_samples": len(node.direct),
@@ -185,6 +261,11 @@ def summarize(node, maximum_lag_s, lag_step_s, averaging_window_s):
         "fcu_gyro_coverage": gyro_coverage,
         "direct_stamp_regressions": node.direct_regressions,
         "fcu_stamp_regressions": node.fcu_regressions,
+        "direct_stamp_regressions_are_reference_warning": True,
+        "direct_stream": direct_stream,
+        "fcu_routed_stream": fcu_stream,
+        "routed_to_direct_rate_ratio": rate_ratio,
+        "routed_to_direct_integration_ratio": integration_ratio,
         "passed": passed,
     }
 

@@ -1,0 +1,16 @@
+# SITL wiring used by the MTF01P routing test:
+#   SERIAL0 -> MAVROS (first MAVLink backend, MAV1_OPTIONS)
+#   SERIAL1 -> MTF01P mavlink_apm input (second backend, MAV2_OPTIONS)
+# The routed sensor packets are decoded from MAVROS /uas1/mavlink_source.
+SERIAL1_PROTOCOL 1
+SERIAL1_BAUD 115
+MAV1_OPTIONS 0
+MAV2_OPTIONS 0
+
+# Parse the MTF01P messages locally while also routing the original packets.
+FLOW_TYPE 5
+RNGFND1_TYPE 10
+RNGFND1_MIN 0.08
+RNGFND1_MAX 12.00
+RNGFND1_ORIENT 25
+SIM_FLOW_ENABLE 0

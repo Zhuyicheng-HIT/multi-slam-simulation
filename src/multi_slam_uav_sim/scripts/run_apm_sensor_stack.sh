@@ -97,7 +97,9 @@ if [[ "${ENABLE_D435_BRIDGE:-1}" == "1" ]]; then
   pids+=("$!")
 fi
 
-if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; then
+if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
+      || "${ENABLE_FCU_FLOW:-0}" == "1" \
+      || "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
   publish_to_fcu=false
   if [[ "${ENABLE_FCU_FLOW:-0}" == "1" ]]; then
     publish_to_fcu=true
@@ -170,6 +172,9 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
       sitl_defaults+=("$PKG_SHARE/params/apm_mavlink_optflow_gps.parm")
     fi
   fi
+  if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
+    sitl_defaults+=("$PKG_SHARE/params/apm_mtf01p_routing.parm")
+  fi
   if [[ "${ENABLE_EXTERNALNAV_FUSION:-0}" == "1" ]]; then
     sitl_defaults+=("$PKG_SHARE/params/apm_externalnav_gps_flow.parm")
   fi
@@ -178,9 +183,31 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
   if [[ "${WIPE_EEPROM:-0}" == "1" ]]; then
     WIPE_ARG="-w"
   fi
-  setsid bash -lc "cd '$ARDUPILOT_DIR' && build/sitl/bin/arducopter -S $WIPE_ARG --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
+  SITL_SERIAL_ARGS=""
+  if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
+    SITL_SERIAL_ARGS="--serial1 tcp:2"
+  fi
+  setsid bash -lc "cd '$ARDUPILOT_DIR' && build/sitl/bin/arducopter -S $WIPE_ARG $SITL_SERIAL_ARGS --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
   pids+=("$!")
   sleep 10
+fi
+
+if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
+  setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_sensor --ros-args \
+    -p input_topic:=/sim/optical_flow/rad \
+    -p connection_url:=tcp:127.0.0.1:5762 \
+    -p source_system:=200 \
+    -p report_path:="$LOG_DIR/mtf01p_mavlink_sensor.json" \
+    >"$LOG_DIR/mtf01p_mavlink_sensor.log" 2>&1 &
+  pids+=("$!")
+
+  setsid ros2 run multi_slam_uav_sim fcu_mavlink_flow_receiver --ros-args \
+    -p input_topic:=/uas1/mavlink_source \
+    -p sensor_system_id:=200 \
+    -p report_path:="$LOG_DIR/fcu_mavlink_flow_route.json" \
+    >"$LOG_DIR/fcu_mavlink_flow_receiver.log" 2>&1 &
+  pids+=("$!")
+  sleep 2
 fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
@@ -276,6 +303,12 @@ Optional FCU optical-flow injection:
   ENABLE_FCU_FLOW=1 publishes optical flow to /mavros/optical_flow/raw/send
   ENABLE_FCU_RANGE=1 publishes range to /mavros/rangefinder_sub
   ENABLE_NONGPS_FLOW=1 enables FCU range and loads the optical-flow EKF source parameters
+
+FCU-routed MTF01P observation path:
+  ENABLE_FCU_FLOW_ROUTER=1 sends MAVLink1 OPTICAL_FLOW(100) and DISTANCE_SENSOR(132)
+  MTF01P input: SERIAL1/tcp:5762 (MAV2_OPTIONS); companion link: SERIAL0/MAVROS (MAV1_OPTIONS)
+  /fcu/mavlink/optical_flow and /fcu/mavlink/range decode /uas1/mavlink_source after routing
+  Route report: $LOG_DIR/fcu_mavlink_flow_route.json
 
 Optional companion GPS/flow ExternalNav:
   ENABLE_EXTERNALNAV_FUSION=1 starts /fusion/gps_flow/odom -> /mavros/odometry/out

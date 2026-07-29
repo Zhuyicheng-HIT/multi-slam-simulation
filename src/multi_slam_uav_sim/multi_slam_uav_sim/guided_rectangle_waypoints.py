@@ -32,7 +32,9 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("flow_max_age_s", 1.0)
         self.declare_parameter("command_retry_s", 60.0)
         self.declare_parameter("land_at_end", True)
-        self.declare_parameter("mavlink_takeoff_url", "tcp:127.0.0.1:5762")
+        # SERIAL1/5762 is reserved for the MTF01P. Use the independent
+        # SERIAL2 MAVLink endpoint for direct COMMAND_INT acknowledgements.
+        self.declare_parameter("mavlink_takeoff_url", "tcp:127.0.0.1:5763")
         self.declare_parameter("mavlink_target_component", 1)
         self.declare_parameter("takeoff_param3", 1.0)
         self.declare_parameter("takeoff_free_climb_s", 14.0)
