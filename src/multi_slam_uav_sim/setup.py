@@ -40,6 +40,10 @@ setup(
     entry_points={
         "console_scripts": [
             "d435i_sim_bridge = multi_slam_uav_sim.d435i_sim_bridge:main",
+            "d435i_pipeline_profiler = multi_slam_uav_sim.d435i_pipeline_profiler:main",
+            "d435i_speed_envelope_comparison = multi_slam_uav_sim.d435i_speed_envelope_comparison:main",
+            "d435i_speed_envelope_motion = multi_slam_uav_sim.d435i_speed_envelope_motion:main",
+            "d435i_speed_envelope_profiler = multi_slam_uav_sim.d435i_speed_envelope_profiler:main",
             "flight_state_bridge = multi_slam_uav_sim.flight_state_bridge:main",
             "gazebo_ground_truth_bridge = multi_slam_uav_sim.gazebo_ground_truth_bridge:main",
             "gazebo_optical_flow_to_mavros = multi_slam_uav_sim.gazebo_optical_flow_to_mavros:main",
@@ -51,9 +55,14 @@ setup(
             "flow_gazebo_accuracy = multi_slam_uav_sim.flow_gazebo_accuracy:main",
             "mavros_stream_requester = multi_slam_uav_sim.mavros_stream_requester:main",
             "optical_flow_viewer = multi_slam_uav_sim.optical_flow_viewer:main",
+            "progressive_visual_motion = multi_slam_uav_sim.progressive_visual_motion:main",
             "rectangle_flow_test = multi_slam_uav_sim.rectangle_flow_test:main",
             "people_motion = multi_slam_uav_sim.people_motion:main",
             "rgbd_camera_follow = multi_slam_uav_sim.rgbd_camera_follow:main",
+            "rtabmap_robustness_profiler = multi_slam_uav_sim.rtabmap_robustness_profiler:main",
+            "rtabmap_database_diagnostics = multi_slam_uav_sim.rtabmap_database_diagnostics:main",
+            "robustness_comparison = multi_slam_uav_sim.robustness_comparison:main",
+            "visual_friendly_flight = multi_slam_uav_sim.visual_friendly_flight:main",
         ]
     },
 )
