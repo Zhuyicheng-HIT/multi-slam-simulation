@@ -22,6 +22,18 @@ def _text(value):
     return str(value)
 
 
+def _env_bool(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    normalized = raw.strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    raise RuntimeError(f"{name} must be a boolean value")
+
+
 def _parameter_arguments(parameters):
     arguments = []
     for name, value in parameters.items():
@@ -81,8 +93,10 @@ def _launch_setup(context):
         "approx_sync": "false",
         "qos": _text(qos_value),
         "visual_odometry": _text(launch.get("visual_odometry", True)),
-        "rtabmap_viz": _text(launch.get("rtabmap_viz", False)),
-        "rviz": _text(launch.get("rviz", False)),
+        "rtabmap_viz": _text(_env_bool(
+            "D435I_RTABMAP_VIZ", launch.get("rtabmap_viz", False))),
+        "rviz": _text(_env_bool(
+            "D435I_RVIZ", launch.get("rviz", False))),
         "database_path": str(database_path),
         "rtabmap_args": rtabmap_args.strip(),
         "odom_args": _parameter_arguments(odom_parameters),

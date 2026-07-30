@@ -17,6 +17,12 @@ WORLD_NAME=${WORLD_NAME:-simple_apm_rgbd_mid360}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/apm_sensor_stack_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
 LOCK_FILE=${LOCK_FILE:-/tmp/multi_slam_apm_sensor_stack.lock}
+PID_FILE=${PID_FILE:-}
+
+if [[ -n "$PID_FILE" ]]; then
+  mkdir -p "$(dirname "$PID_FILE")"
+  printf 'component\tpid\n' >"$PID_FILE"
+fi
 
 if [[ -f "$LOCK_FILE" ]]; then
   old_pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
@@ -39,17 +45,46 @@ fi
 printf '%s\n' "$$" > "$LOCK_FILE"
 
 pids=()
+bool_value() {
+  case "${1,,}" in
+    1|true|yes|on) printf 'true\n' ;;
+    *) printf 'false\n' ;;
+  esac
+}
+
+record_pid() {
+  local component=$1
+  local pid=$2
+  pids+=("$pid")
+  if [[ -n "$PID_FILE" ]]; then
+    printf '%s\t%s\n' "$component" "$pid" >>"$PID_FILE"
+  fi
+}
+
 cleanup() {
   printf '\nStopping APM sensor stack...\n'
   rm -f "$LOCK_FILE"
   for pid in "${pids[@]:-}"; do
-    kill "$pid" 2>/dev/null || true
-    kill -- "-$pid" 2>/dev/null || true
+    kill -INT -- "-$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
+  done
+  for _ in {1..20}; do
+    alive=0
+    for pid in "${pids[@]:-}"; do
+      if kill -0 -- "-$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null; then
+        alive=1
+      fi
+    done
+    if [[ "$alive" == "0" ]]; then return; fi
+    sleep 0.25
+  done
+  for pid in "${pids[@]:-}"; do
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   done
   sleep 1
   for pid in "${pids[@]:-}"; do
-    kill -TERM "$pid" 2>/dev/null || true
-    kill -TERM -- "-$pid" 2>/dev/null || true
+    if kill -0 -- "-$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null; then
+      kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    fi
   done
 }
 trap cleanup EXIT INT TERM
@@ -58,22 +93,113 @@ printf 'Logs: %s\n' "$LOG_DIR"
 printf 'World: %s\n' "$WORLD"
 printf 'World name: %s\n' "$WORLD_NAME"
 
-if [[ "${HEADLESS:-0}" == "1" ]]; then
-  setsid gz sim -s -r --headless-rendering -v 2 "$WORLD" >"$LOG_DIR/gazebo.log" 2>&1 &
+if [[ "${HEADLESS:-0}" == "1" || "${GAZEBO_GUI:-1}" == "0" ]]; then
+  gz_args=(sim -s -r -v 2)
+  if [[ "${HEADLESS_RENDERING:-1}" == "1" ]]; then
+    gz_args+=(--headless-rendering)
+  fi
+  setsid gz "${gz_args[@]}" "$WORLD" >"$LOG_DIR/gazebo.log" 2>&1 &
 else
   setsid gz sim -r -v 2 --render-engine-gui ogre2 "$WORLD" >"$LOG_DIR/gazebo.log" 2>&1 &
 fi
-pids+=("$!")
+record_pid gazebo "$!"
 sleep 6
 
-setsid ros2 run multi_slam_uav_sim d435i_sim_bridge --ros-args \
-  -p gz_prefix:=/front/d435i/gz \
-  -p ros_prefix:=/front/d435i \
-  -p publish_hz:=30.0 \
-  -p pointcloud_hz:=10.0 \
-  -p pointcloud_stride:=4 \
-  >"$LOG_DIR/d435i_sim_bridge.log" 2>&1 &
-pids+=("$!")
+if [[ "${ENABLE_D435I_BRIDGE:-1}" == "1" ]]; then
+  D435I_BRIDGE_IMPL=${D435I_BRIDGE_IMPL:-python}
+  D435I_DEPTH_ENCODING=${D435I_DEPTH_ENCODING:-16UC1}
+  D435I_QOS_RELIABILITY=${D435I_QOS_RELIABILITY:-best_effort}
+  D435I_QOS_DEPTH=${D435I_QOS_DEPTH:-1}
+  d435i_performance_args=(
+    -p performance_stats_enabled:="$(bool_value "${D435I_PERFORMANCE_STATS:-0}")"
+    -p performance_stats_period_s:="${D435I_STATS_PERIOD_S:-5.0}"
+  )
+  if [[ -n "${D435I_PERFORMANCE_CSV:-}" ]]; then
+    d435i_performance_args+=(
+      -p performance_csv_path:="$D435I_PERFORMANCE_CSV")
+  fi
+
+  start_ros_gz_topic() {
+    local component=$1
+    local gz_topic=$2
+    local ros_topic=$3
+    local ros_type=$4
+    local gz_type=$5
+    setsid ros2 run ros_gz_bridge parameter_bridge \
+      "${gz_topic}@${ros_type}[${gz_type}" --ros-args \
+      -r "${gz_topic}:=${ros_topic}" \
+      >"$LOG_DIR/${component}.log" 2>&1 &
+    record_pid "$component" "$!"
+  }
+
+  case "$D435I_BRIDGE_IMPL" in
+    python)
+      setsid ros2 run multi_slam_uav_sim d435i_sim_bridge --ros-args \
+        -p gz_prefix:=/front/d435i/gz \
+        -p ros_prefix:=/front/d435i \
+        -p publish_hz:="${D435I_PUBLISH_HZ:-30.0}" \
+        -p pointcloud_hz:="${D435I_POINTCLOUD_HZ:-10.0}" \
+        -p pointcloud_stride:="${D435I_POINTCLOUD_STRIDE:-4}" \
+        -p depth_encoding:="$D435I_DEPTH_ENCODING" \
+        -p qos_reliability:="$D435I_QOS_RELIABILITY" \
+        -p qos_depth:="$D435I_QOS_DEPTH" \
+        -p enable_pointcloud:="$(bool_value "${ENABLE_D435I_POINTCLOUD:-1}")" \
+        "${d435i_performance_args[@]}" \
+        >"$LOG_DIR/d435i_sim_bridge.log" 2>&1 &
+      record_pid d435i_sim_bridge "$!"
+      ;;
+    cpp|hybrid)
+      if [[ "$D435I_BRIDGE_IMPL" == "hybrid" ]]; then
+        start_ros_gz_topic d435i_ros_gz_color \
+          /front/d435i/gz/image /front/d435i/transport/color_raw \
+          sensor_msgs/msg/Image gz.msgs.Image
+      fi
+      setsid ros2 run d435i_rgbd_bridge_cpp d435i_rgbd_bridge --ros-args \
+        -p gz_prefix:=/front/d435i/gz \
+        -p ros_prefix:=/front/d435i \
+        -p mode:="$D435I_BRIDGE_IMPL" \
+        -p depth_encoding:="$D435I_DEPTH_ENCODING" \
+        -p sync_queue_depth:="${D435I_SYNC_QUEUE_DEPTH:-2}" \
+        -p qos_reliability:="$D435I_QOS_RELIABILITY" \
+        -p qos_depth:="$D435I_QOS_DEPTH" \
+        -p pointcloud_hz:="${D435I_POINTCLOUD_HZ:-10.0}" \
+        -p pointcloud_stride:="${D435I_POINTCLOUD_STRIDE:-4}" \
+        -p enable_pointcloud:="$(bool_value "${ENABLE_D435I_POINTCLOUD:-1}")" \
+        "${d435i_performance_args[@]}" \
+        >"$LOG_DIR/d435i_rgbd_bridge_cpp.log" 2>&1 &
+      record_pid d435i_rgbd_bridge_cpp "$!"
+      ;;
+    ros_gz)
+      if [[ "$D435I_DEPTH_ENCODING" != "32FC1" ]]; then
+        printf 'D435I_BRIDGE_IMPL=ros_gz preserves Gazebo depth as 32FC1; set D435I_DEPTH_ENCODING=32FC1.\n' >&2
+        exit 2
+      fi
+      start_ros_gz_topic d435i_ros_gz_color \
+        /front/d435i/gz/image /front/d435i/color/image_raw \
+        sensor_msgs/msg/Image gz.msgs.Image
+      start_ros_gz_topic d435i_ros_gz_depth \
+        /front/d435i/gz/depth_image /front/d435i/depth/image_rect_raw \
+        sensor_msgs/msg/Image gz.msgs.Image
+      start_ros_gz_topic d435i_ros_gz_aligned_depth \
+        /front/d435i/gz/depth_image /front/d435i/aligned_depth_to_color/image_raw \
+        sensor_msgs/msg/Image gz.msgs.Image
+      start_ros_gz_topic d435i_ros_gz_color_info \
+        /front/d435i/gz/camera_info /front/d435i/color/camera_info \
+        sensor_msgs/msg/CameraInfo gz.msgs.CameraInfo
+      start_ros_gz_topic d435i_ros_gz_depth_info \
+        /front/d435i/gz/camera_info /front/d435i/depth/camera_info \
+        sensor_msgs/msg/CameraInfo gz.msgs.CameraInfo
+      start_ros_gz_topic d435i_ros_gz_imu \
+        /front/d435i/gz/imu /front/d435i/imu \
+        sensor_msgs/msg/Imu gz.msgs.IMU
+      ;;
+    *)
+      printf 'Unknown D435I_BRIDGE_IMPL=%s (use python, ros_gz, hybrid, or cpp).\n' \
+        "$D435I_BRIDGE_IMPL" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 FLOW_STACK_STARTED=0
 if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; then
@@ -90,7 +216,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
     -p ros_prefix:=/camera/camera \
     -p publish_hz:=20.0 \
     >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
-  pids+=("$!")
+  record_pid flow_rgbd_bridge "$!"
 
   flow_args=(
     -p image_topic:=/camera/camera/color/image_raw
@@ -109,14 +235,14 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ]]; th
   setsid ros2 run multi_slam_uav_sim gazebo_optical_flow_to_mavros --ros-args \
     "${flow_args[@]}" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
-  pids+=("$!")
+  record_pid optical_flow "$!"
 
-  if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
+  if [[ "${SHOW_FLOW_WINDOW:-${ENABLE_FLOW_VIEWER:-0}}" == "1" ]]; then
     setsid ros2 run multi_slam_uav_sim optical_flow_viewer --ros-args \
       -p image_topic:=/camera/camera/color/image_raw \
       -p flow_topic:=/sim/optical_flow/raw \
       >"$LOG_DIR/optical_flow_viewer.log" 2>&1 &
-    pids+=("$!")
+    record_pid optical_flow_viewer "$!"
   fi
   FLOW_STACK_STARTED=1
 fi
@@ -143,7 +269,7 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
     WIPE_ARG="-w"
   fi
   setsid bash -lc "cd '$ARDUPILOT_DIR' && build/sitl/bin/arducopter -S $WIPE_ARG --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
-  pids+=("$!")
+  record_pid sitl "$!"
   sleep 10
 fi
 
@@ -153,7 +279,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     --params-file /opt/ros/humble/share/mavros/launch/apm_pluginlists.yaml \
     --params-file "$PKG_SHARE/config/mavros_apm_rgbd.yaml" \
     >"$LOG_DIR/mavros.log" 2>&1 &
-  pids+=("$!")
+  record_pid mavros "$!"
   sleep 4
 
   printf 'Waiting for MAVROS FCU connection...\n'
@@ -174,19 +300,23 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     >"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
 fi
 
-setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
-  -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
-pids+=("$!")
+if [[ "${ENABLE_FLIGHT_STATE_BRIDGE:-1}" == "1" ]]; then
+  setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
+    -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
+  record_pid flight_state_bridge "$!"
+fi
 
-setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
-  -p gz_topic:=/mid360/lidar \
-  -p raw_topic:=/sim/mid360/points_raw \
-  -p registered_topic:=/sim/mid360/cloud_registered \
-  -p odom_topic:=/sim/mid360/ground_truth_odom \
-  -p sensor_frame:=mid360_link \
-  -p map_frame:=camera_init \
-  >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
-pids+=("$!")
+if [[ "${ENABLE_MID360:-1}" == "1" ]]; then
+  setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
+    -p gz_topic:=/mid360/lidar \
+    -p raw_topic:=/sim/mid360/points_raw \
+    -p registered_topic:=/sim/mid360/cloud_registered \
+    -p odom_topic:=/sim/mid360/ground_truth_odom \
+    -p sensor_frame:=mid360_link \
+    -p map_frame:=camera_init \
+    >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
+  record_pid mid360_bridge "$!"
+fi
 
 if [[ "$FLOW_STACK_STARTED" != "1" && ( "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${ENABLE_FCU_FLOW:-0}" == "1" ) ]]; then
   publish_to_fcu=false
@@ -202,7 +332,7 @@ if [[ "$FLOW_STACK_STARTED" != "1" && ( "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${
     -p ros_prefix:=/camera/camera \
     -p publish_hz:=20.0 \
     >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
-  pids+=("$!")
+  record_pid flow_rgbd_bridge_late "$!"
 
   flow_args=(
     -p image_topic:=/camera/camera/color/image_raw
@@ -221,23 +351,23 @@ if [[ "$FLOW_STACK_STARTED" != "1" && ( "${ENABLE_GAZEBO_FLOW:-0}" == "1" || "${
   setsid ros2 run multi_slam_uav_sim gazebo_optical_flow_to_mavros --ros-args \
     "${flow_args[@]}" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
-  pids+=("$!")
+  record_pid optical_flow_late "$!"
 
-  if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
+  if [[ "${SHOW_FLOW_WINDOW:-${ENABLE_FLOW_VIEWER:-0}}" == "1" ]]; then
     setsid ros2 run multi_slam_uav_sim optical_flow_viewer --ros-args \
       -p image_topic:=/camera/camera/color/image_raw \
       -p flow_topic:=/sim/optical_flow/raw \
       >"$LOG_DIR/optical_flow_viewer.log" 2>&1 &
-    pids+=("$!")
+    record_pid optical_flow_viewer_late "$!"
   fi
 fi
 
 if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" ]]; then
   setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args -p takeoff_alt:=3.0 -p length_x:=6.0 -p length_y:=4.0 -p speed_mps:=0.8 -p land_at_end:=true" >"$LOG_DIR/guided_rectangle_waypoints.log" 2>&1 &
-  pids+=("$!")
+  record_pid rectangle_flow_test "$!"
 elif [[ "${AUTO_FLIGHT:-0}" == "1" ]]; then
   setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_flight --ros-args -p takeoff_alt:=4.0 -p side_length:=5.0 -p hold_time:=5.0" >"$LOG_DIR/guided_flight.log" 2>&1 &
-  pids+=("$!")
+  record_pid auto_flight "$!"
 fi
 
 cat <<EOF

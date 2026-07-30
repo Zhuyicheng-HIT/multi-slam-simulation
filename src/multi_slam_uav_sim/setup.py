@@ -41,6 +41,7 @@ setup(
         "console_scripts": [
             "d435i_sim_bridge = multi_slam_uav_sim.d435i_sim_bridge:main",
             "flight_state_bridge = multi_slam_uav_sim.flight_state_bridge:main",
+            "gazebo_ground_truth_bridge = multi_slam_uav_sim.gazebo_ground_truth_bridge:main",
             "gazebo_optical_flow_to_mavros = multi_slam_uav_sim.gazebo_optical_flow_to_mavros:main",
             "gz_mid360_pointcloud_bridge = multi_slam_uav_sim.gz_mid360_pointcloud_bridge:main",
             "gz_rgbd_latest_bridge = multi_slam_uav_sim.gz_rgbd_latest_bridge:main",
