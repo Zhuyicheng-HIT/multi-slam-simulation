@@ -13,7 +13,16 @@ __pycache__/
 *.log
 *.tmp
 *.bag
+*.db
 *.db3
+*.db-shm
+*.db-wal
+*.bak
+*.patch
+*.pid
+*.active
+*.orig
+*.rej
 *.mcap
 *.pcd
 *.ply
@@ -32,3 +41,6 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Visual SLAM generated graphs and run state
+/frames_*.gv
+/frames_*.pdf

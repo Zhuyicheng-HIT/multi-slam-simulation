@@ -157,7 +157,28 @@ source install/setup.bash
 python3 tools/analyze_slam_drift.py --duration 120
 ```
 
-## 9. 进一步阅读
+## 9. D435i RGB-D 视觉 SLAM（Draft）
+
+新增 D435i-only headless 视觉 SLAM 入口，默认使用 C++ RGB-D bridge 和
+RTAB-Map `feature_aligned` 配置，不改变原完整多传感器仿真的默认入口：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install \
+  --packages-select d435i_rgbd_bridge_cpp multi_slam_uav_sim
+source install/setup.bash
+RTABMAP_PROFILE=feature_aligned D435I_WORLD=textured \
+  bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_d435i_visual_slam_headless.sh
+```
+
+详细说明、当前状态和性能口径：
+
+- [D435i 视觉 SLAM 使用说明](docs/D435I_VISUAL_SLAM_README.md)
+- [D435i 视觉 SLAM 状态](docs/D435I_VISUAL_SLAM_STATUS.md)
+- [D435i 视觉 SLAM Benchmark](docs/D435I_VISUAL_SLAM_BENCHMARK.md)
+
+## 10. 进一步阅读
 
 - [详细配置教程](README_详细配置教程.md)
 - [安装与依赖说明](docs/INSTALL.md)
