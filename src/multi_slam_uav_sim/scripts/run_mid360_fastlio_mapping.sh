@@ -43,6 +43,23 @@ EOF
 fi
 source "$LIDAR_WS/install/setup.bash"
 
+START_LIVOX_POINTCLOUD_BRIDGE=${START_LIVOX_POINTCLOUD_BRIDGE:-auto}
+if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "auto" ]]; then
+  if [[ "$FASTLIO_INPUT_MODE" == "livox" ]] \
+      && ros2 topic info /livox/lidar 2>/dev/null | grep -Eq 'Publisher count: [1-9]'; then
+    START_LIVOX_POINTCLOUD_BRIDGE=0
+  else
+    START_LIVOX_POINTCLOUD_BRIDGE=1
+  fi
+fi
+case "$START_LIVOX_POINTCLOUD_BRIDGE" in
+  0|1) ;;
+  *)
+    printf 'START_LIVOX_POINTCLOUD_BRIDGE must be auto, 0, or 1.\n' >&2
+    exit 2
+    ;;
+esac
+
 mkdir -p "$LOG_DIR"
 pids=()
 cleanup() {
@@ -67,6 +84,7 @@ Inputs:
   $FASTLIO_CLOUD_TOPIC  -> /livox/lidar  (livox_ros_driver2/msg/CustomMsg, protocol reference)
   /mavros/imu/data_raw    -> /livox/imu    (FCU HIGHRES_IMU sensor_msgs/msg/Imu)
   FASTLIO_INPUT_MODE=$FASTLIO_INPUT_MODE
+  START_LIVOX_POINTCLOUD_BRIDGE=$START_LIVOX_POINTCLOUD_BRIDGE
 
 Outputs:
   /cloud_registered
@@ -95,18 +113,24 @@ case "$FASTLIO_INPUT_MODE" in
     ;;
 esac
 
-setsid ros2 run multi_slam_uav_sim livox_mid360_bridge --ros-args \
-  -p input_cloud_topic:="$FASTLIO_CLOUD_TOPIC" \
-  -p input_imu_topic:=/mavros/imu/data_raw \
-  -p livox_lidar_topic:=/livox/lidar \
-  -p livox_imu_topic:=/livox/imu \
-  -p lidar_frame_id:=mid360_link \
-  -p imu_frame_id:=base_link \
-  -p scan_lines:=4 \
-  -p frame_rate_hz:=10.0 \
-  -p max_points:=20000 \
-  >"$LOG_DIR/livox_mid360_bridge.log" 2>&1 &
-pids+=("$!")
+if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "1" ]]; then
+  setsid ros2 run multi_slam_uav_sim livox_mid360_bridge --ros-args \
+    -p input_cloud_topic:="$FASTLIO_CLOUD_TOPIC" \
+    -p input_imu_topic:=/mavros/imu/data_raw \
+    -p livox_lidar_topic:=/livox/lidar \
+    -p livox_imu_topic:=/livox/imu \
+    -p lidar_frame_id:=mid360_link \
+    -p imu_frame_id:=base_link \
+    -p scan_lines:=4 \
+    -p frame_rate_hz:=10.0 \
+    -p max_points:=20000 \
+    -p point_stride:=${MID360_POINT_STRIDE:-1} \
+    >"$LOG_DIR/livox_mid360_bridge.log" 2>&1 &
+  pids+=("$!")
+else
+  printf 'Using existing /livox/lidar and /livox/imu publishers; Python bridge is disabled.\n' \
+    >"$LOG_DIR/livox_mid360_bridge.log"
+fi
 
 setsid ros2 launch fast_lio mapping.launch.py \
   use_sim_time:=false \

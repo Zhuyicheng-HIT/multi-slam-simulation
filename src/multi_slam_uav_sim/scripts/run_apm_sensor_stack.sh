@@ -20,6 +20,31 @@ LOCK_FILE=${LOCK_FILE:-/tmp/multi_slam_apm_sensor_stack.lock}
 # ExternalNav. The legacy flag retains its original all-in-one behavior.
 ENABLE_EXTERNALNAV_EKF3=${ENABLE_EXTERNALNAV_EKF3:-${ENABLE_EXTERNALNAV_FUSION:-0}}
 ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=${ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV:-${ENABLE_EXTERNALNAV_FUSION:-0}}
+LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
+if [[ -z "${MID360_SIM_BRIDGE_MODE+x}" ]]; then
+  if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
+    MID360_SIM_BRIDGE_MODE=pointcloud_python
+  else
+    MID360_SIM_BRIDGE_MODE=disabled
+  fi
+fi
+case "$MID360_SIM_BRIDGE_MODE" in
+  direct_livox|pointcloud_python|disabled) ;;
+  *)
+    printf 'Unsupported MID360_SIM_BRIDGE_MODE=%s. Use direct_livox, pointcloud_python, or disabled.\n' \
+      "$MID360_SIM_BRIDGE_MODE" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
+  if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
+    printf 'Direct Livox simulation bridge requires %s/install/setup.bash\n' "$LIDAR_WS" >&2
+    exit 2
+  fi
+  source "$LIDAR_WS/install/setup.bash"
+  source "$WS_INSTALL/setup.bash"
+fi
 
 if [[ -f "$LOCK_FILE" ]]; then
   old_pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
@@ -43,6 +68,7 @@ printf '%s\n' "$$" > "$LOCK_FILE"
 mkdir -p "$LOG_DIR"
 
 pids=()
+SITL_PID_FILE="$LOG_DIR/arducopter.pid"
 cleanup_started=0
 cleanup() {
   if [[ "$cleanup_started" == "1" ]]; then
@@ -52,16 +78,28 @@ cleanup() {
   trap - EXIT INT TERM
   printf '\nStopping APM sensor stack...\n'
   rm -f "$LOCK_FILE"
+  if [[ -f "$SITL_PID_FILE" ]]; then
+    sitl_pid=$(cat "$SITL_PID_FILE" 2>/dev/null || true)
+    if [[ "$sitl_pid" =~ ^[0-9]+$ ]]; then
+      kill -INT "$sitl_pid" 2>/dev/null || true
+    fi
+  fi
   for pid in "${pids[@]:-}"; do
     kill -INT "$pid" 2>/dev/null || true
     kill -INT -- "-$pid" 2>/dev/null || true
   done
   sleep 1
+  if [[ -n "${sitl_pid:-}" ]] && [[ "$sitl_pid" =~ ^[0-9]+$ ]]; then
+    kill -TERM "$sitl_pid" 2>/dev/null || true
+  fi
   for pid in "${pids[@]:-}"; do
     kill -TERM "$pid" 2>/dev/null || true
     kill -TERM -- "-$pid" 2>/dev/null || true
   done
   sleep 1
+  if [[ -n "${sitl_pid:-}" ]] && [[ "$sitl_pid" =~ ^[0-9]+$ ]]; then
+    kill -KILL "$sitl_pid" 2>/dev/null || true
+  fi
   for pid in "${pids[@]:-}"; do
     kill -KILL "$pid" 2>/dev/null || true
     kill -KILL -- "-$pid" 2>/dev/null || true
@@ -72,6 +110,7 @@ trap cleanup EXIT INT TERM
 printf 'Logs: %s\n' "$LOG_DIR"
 printf 'World: %s\n' "$WORLD"
 printf 'World name: %s\n' "$WORLD_NAME"
+printf 'MID360 simulation bridge: %s\n' "$MID360_SIM_BRIDGE_MODE"
 
 GPU_REPORT="$LOG_DIR/gpu_acceleration.log"
 if ! bash "$PKG_SHARE/scripts/check_gpu_acceleration.sh" >"$GPU_REPORT" 2>&1; then
@@ -208,7 +247,7 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
   if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
     SITL_SERIAL_ARGS="--serial1 tcp:2"
   fi
-  setsid bash -lc "cd '$ARDUPILOT_DIR' && build/sitl/bin/arducopter -S $WIPE_ARG $SITL_SERIAL_ARGS --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
+  setsid bash -lc "cd '$ARDUPILOT_DIR' && echo \$\$ > '$SITL_PID_FILE' && exec build/sitl/bin/arducopter -S $WIPE_ARG $SITL_SERIAL_ARGS --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
   pids+=("$!")
   sleep 10
 fi
@@ -262,7 +301,7 @@ setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
   -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
 pids+=("$!")
 
-if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
+if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
   setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
     -p gz_topic:=/mid360/lidar \
     -p raw_topic:=/sim/mid360/points_raw \
@@ -270,7 +309,22 @@ if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
     -p odom_topic:=/sim/mid360/ground_truth_odom \
     -p sensor_frame:=mid360_link \
     -p map_frame:=camera_init \
+    -p point_stride:=${MID360_POINT_STRIDE:-1} \
+    -p publish_registered:=${MID360_PUBLISH_REGISTERED:-true} \
+    -p publish_tf:=${MID360_PUBLISH_TF:-true} \
     >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
+  pids+=("$!")
+elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
+  setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
+    -p gz_topic:=/mid360/lidar \
+    -p livox_lidar_topic:=/livox/lidar \
+    -p input_imu_topic:=/mavros/imu/data_raw \
+    -p livox_imu_topic:=/livox/imu \
+    -p lidar_frame_id:=mid360_link \
+    -p imu_frame_id:=base_link \
+    -p point_stride:=${MID360_POINT_STRIDE:-1} \
+    -p publish_ground_truth_odom:=true \
+    >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")
 fi
 
@@ -336,7 +390,12 @@ Optional companion GPS/flow ExternalNav:
   ENABLE_EXTERNALNAV_EKF3=1 configures EKF3 to consume ExternalNav without selecting a publisher
   ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=1 starts only the legacy GPS/flow publisher
   FLOW_USE_PHYSICS=false is required for algorithm-quality evaluation
-  ENABLE_D435_BRIDGE=0 and ENABLE_MID360_BRIDGE=0 disable unused ROS conversion bridges
+  MID360_SIM_BRIDGE_MODE=direct_livox uses C++: Gazebo LaserScan -> /livox/lidar CustomMsg
+  MID360_SIM_BRIDGE_MODE=pointcloud_python retains /sim/mid360/points_raw for legacy testing
+  MID360_SIM_BRIDGE_MODE=disabled starts no MID360 ROS adapter
+  Real MID-360S must use the official livox_ros_driver2 and the same /livox/* interface;
+  do not run the simulation adapter against real hardware.
+  ENABLE_D435_BRIDGE=0 disables the D435 ROS bridge; the Gazebo sensor is lazy
   Performance report: $LOG_DIR/simulation_performance.json
   Accuracy report: $LOG_DIR/externalnav_accuracy.json
 

@@ -71,9 +71,10 @@ def generate_launch_description():
                 "allowed_scheduler_states": [
                     "NORMAL", "RECOVERED", "DEGRADED", "RISK"
                 ],
-                "require_capability_support": True,
-                "required_capabilities": ["propagation", "horizontal_motion"],
-                "minimum_capability_support": 0.15,
+                # ReliabilityScheduler controls factor weights and covariance
+                # inside the estimator. A valid fused state must not disappear
+                # from the FCU link just because one capability is degraded.
+                "require_capability_support": False,
                 "maximum_propagation_age_s": 0.35,
             }],
             output="screen",

@@ -11,7 +11,14 @@ export ENABLE_EXTERNALNAV_EKF3=1
 export ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=0
 export ENABLE_D435_BRIDGE=${ENABLE_D435_BRIDGE:-0}
 export ENABLE_D435_POINTCLOUD=false
-export ENABLE_MID360_BRIDGE=${ENABLE_MID360_BRIDGE:-1}
+export ENABLE_MID360_BRIDGE=0
+export MID360_SIM_BRIDGE_MODE=${MID360_SIM_BRIDGE_MODE:-direct_livox}
+# Keep full-resolution protocol conversion by default. For CPU-load experiments
+# only, set MID360_POINT_STRIDE=2 (or higher); this does not change Gazebo's
+# gpu_lidar ray simulation, only companion-side serialization.
+export MID360_POINT_STRIDE=${MID360_POINT_STRIDE:-1}
+export MID360_PUBLISH_REGISTERED=${MID360_PUBLISH_REGISTERED:-true}
+export MID360_PUBLISH_TF=${MID360_PUBLISH_TF:-true}
 export SHOW_FLOW_WINDOW=${SHOW_FLOW_WINDOW:-0}
 export FLOW_DEBUG=${FLOW_DEBUG:-false}
 export FLOW_RESTAMP_OUTPUT=true

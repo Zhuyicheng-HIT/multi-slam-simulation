@@ -45,10 +45,11 @@ setsid env HEADLESS=1 REQUIRE_GAZEBO_GPU=1 ENABLE_D435_POINTCLOUD=false \
   LOG_DIR="$LOG_DIR/sim" bash "$REPO_ROOT/tools/run_sim_with_unified_externalnav.sh" \
   >"$LOG_DIR/sim_launcher.log" 2>&1 &
 pids+=("$!")
-wait_rate /sim/mid360/points_raw 2.0 90
+wait_rate /livox/lidar 2.0 90
 wait_rate /mavros/imu/data_raw 20.0 40
 
 setsid env LIDAR_WS="$LIDAR_WS" RVIZ=0 FASTLIO_INPUT_MODE=livox \
+  START_LIVOX_POINTCLOUD_BRIDGE=0 \
   LOG_DIR="$LOG_DIR/fastlio" bash "$REPO_ROOT/tools/run_fastlio_mapping.sh" \
   >"$LOG_DIR/fastlio_launcher.log" 2>&1 &
 pids+=("$!")

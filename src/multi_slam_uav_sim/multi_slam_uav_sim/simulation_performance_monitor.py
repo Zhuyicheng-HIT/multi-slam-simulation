@@ -17,6 +17,12 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, NavSatFix, PointCloud2
+from std_msgs.msg import Float64MultiArray
+
+try:
+    from livox_ros_driver2.msg import CustomMsg as LivoxCustomMsg
+except ImportError:  # Optional outside the MID360/FAST-LIO overlay.
+    LivoxCustomMsg = None
 
 
 def percentile(values, fraction):
@@ -103,6 +109,7 @@ class SimulationPerformanceMonitor(Node):
     def __init__(self):
         super().__init__("simulation_performance_monitor")
         self.declare_parameter("world_name", "simple_apm_rgbd_mid360")
+        self.declare_parameter("rtf_topic", "")
         self.declare_parameter("window_s", 10.0)
         self.declare_parameter("report_period_s", 5.0)
         self.declare_parameter("output_path", "")
@@ -116,6 +123,7 @@ class SimulationPerformanceMonitor(Node):
             "fusion_diagnostic_topic", "/fusion/gps_flow/diagnostics"
         )
         self.world_name = str(self.get_parameter("world_name").value)
+        self.rtf_topic = str(self.get_parameter("rtf_topic").value)
         self.window_s = float(self.get_parameter("window_s").value)
         self.output_path = str(self.get_parameter("output_path").value)
         self.minimum_live_rtf = float(self.get_parameter("minimum_live_rtf").value)
@@ -137,6 +145,7 @@ class SimulationPerformanceMonitor(Node):
             for name in (
                 "flow_image", "raw_flow", "sensor_flow", "gnss", "fusion",
                 "external_nav", "lidar", "d435_color", "d435_depth",
+                "fastlio_odom",
             )
         }
         self.latest_arrival = {}
@@ -148,6 +157,7 @@ class SimulationPerformanceMonitor(Node):
             )
         }
         self.rtf_samples = deque(maxlen=2000)
+        self.rtf_clock_samples = deque(maxlen=2000)
         self.sim_step_samples_ms = deque(maxlen=2000)
         self.flow_integration_ms = deque(maxlen=2000)
         self.node_timings_ms = {}
@@ -177,6 +187,13 @@ class SimulationPerformanceMonitor(Node):
         self.create_subscription(
             PointCloud2, "/sim/mid360/points_raw",
             lambda msg: self._record("lidar", msg), qos_profile_sensor_data)
+        if LivoxCustomMsg is not None:
+            self.create_subscription(
+                LivoxCustomMsg, "/livox/lidar",
+                lambda msg: self._record("lidar", msg), qos_profile_sensor_data)
+        self.create_subscription(
+            Odometry, "/Odometry",
+            lambda msg: self._record("fastlio_odom", msg), qos_profile_sensor_data)
         self.create_subscription(
             Image, "/front/d435i/color/image_raw",
             lambda msg: self._record("d435_color", msg), qos_profile_sensor_data)
@@ -190,9 +207,15 @@ class SimulationPerformanceMonitor(Node):
             DiagnosticArray, "/external_nav/diagnostics", self._node_diagnostics, 10)
         self.diagnostic_pub = self.create_publisher(
             DiagnosticArray, "/simulation/performance", 10)
-        self.gz_node = GzNode()
-        self.gz_node.subscribe(
-            WorldStatistics, f"/world/{self.world_name}/stats", self._world_stats)
+        self.gz_node = None
+        if self.rtf_topic:
+            self.create_subscription(
+                Float64MultiArray, self.rtf_topic,
+                self._ros_world_stats, qos_profile_sensor_data)
+        else:
+            self.gz_node = GzNode()
+            self.gz_node.subscribe(
+                WorldStatistics, f"/world/{self.world_name}/stats", self._world_stats)
         self.create_timer(
             max(1.0, float(self.get_parameter("report_period_s").value)),
             self._publish_report)
@@ -238,6 +261,7 @@ class SimulationPerformanceMonitor(Node):
                 self.flow_integration_ms.append(integration_ms)
 
     def _world_stats(self, msg):
+        arrival_s = time.monotonic()
         with self.lock:
             rtf = float(msg.real_time_factor)
             if math.isfinite(rtf) and rtf >= 0.0:
@@ -248,6 +272,23 @@ class SimulationPerformanceMonitor(Node):
             )
             if math.isfinite(step_ms) and step_ms >= 0.0:
                 self.sim_step_samples_ms.append(step_ms)
+            sim_s = float(msg.sim_time.sec) + float(msg.sim_time.nsec) * 1.0e-9
+            real_s = float(msg.real_time.sec) + float(msg.real_time.nsec) * 1.0e-9
+            self.rtf_clock_samples.append((arrival_s, sim_s, real_s))
+
+    def _ros_world_stats(self, msg):
+        if len(msg.data) < 2:
+            return
+        with self.lock:
+            rtf = float(msg.data[0])
+            if math.isfinite(rtf) and rtf >= 0.0:
+                self.rtf_samples.append(rtf)
+            step_ms = float(msg.data[1])
+            if math.isfinite(step_ms) and step_ms >= 0.0:
+                self.sim_step_samples_ms.append(step_ms)
+            if len(msg.data) >= 4:
+                self.rtf_clock_samples.append(
+                    (time.monotonic(), float(msg.data[2]), float(msg.data[3])))
 
     def _node_diagnostics(self, msg):
         with self.lock:
@@ -271,6 +312,10 @@ class SimulationPerformanceMonitor(Node):
                 for name, values in self.stage_latency_ms.items()
             }
             rtf = list(self.rtf_samples)
+            rtf_clock = [
+                sample for sample in self.rtf_clock_samples
+                if now - sample[0] <= self.window_s
+            ]
             step = list(self.sim_step_samples_ms)
             flow_integration = list(self.flow_integration_ms)
             node_timings = dict(self.node_timings_ms)
@@ -285,7 +330,13 @@ class SimulationPerformanceMonitor(Node):
         }
         compute_bottleneck = max(
             mean_timings, key=mean_timings.get, default="insufficient_samples")
-        rtf_median = percentile(rtf, 0.50)
+        instantaneous_rtf_median = percentile(rtf, 0.50)
+        rtf_median = instantaneous_rtf_median
+        if len(rtf_clock) >= 2:
+            sim_delta = rtf_clock[-1][1] - rtf_clock[0][1]
+            real_delta = rtf_clock[-1][2] - rtf_clock[0][2]
+            if sim_delta >= 0.0 and real_delta > 0.0:
+                rtf_median = sim_delta / real_delta
         rates_ok = all(
             topic_report[name]["rate_hz"] >= minimum
             for name, minimum in self.minimum_rates.items()
@@ -321,6 +372,8 @@ class SimulationPerformanceMonitor(Node):
             "simulation": {
                 "world": self.world_name,
                 "real_time_factor_median": rtf_median,
+                "real_time_factor_window_ratio": rtf_median,
+                "instantaneous_real_time_factor_median": instantaneous_rtf_median,
                 "real_time_factor_p10": percentile(rtf, 0.10),
                 "real_time_factor_min": min(rtf) if rtf else 0.0,
                 "step_size_median_ms": percentile(step, 0.50),

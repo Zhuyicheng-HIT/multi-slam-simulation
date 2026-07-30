@@ -635,7 +635,7 @@
       </inertial>
       <sensor name="optical_flow_mono_down" type="camera">
         <pose>0 0 0 0 1.57079632679 0</pose>
-        <always_on>1</always_on>
+        <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
         <topic>/camera/camera</topic>
@@ -659,7 +659,7 @@
       </sensor>
       <sensor name="optical_flow_range" type="gpu_lidar">
         <pose>0 0 0 0 1.57079632679 0</pose>
-        <always_on>1</always_on>
+        <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
         <topic>/flow/range</topic>
@@ -692,7 +692,7 @@
       </sensor>
       <sensor name="optical_flow_imu" type="imu">
         <pose>0 0 0 3.14159265359 0 0</pose>
-        <always_on>1</always_on>
+        <always_on>0</always_on>
         <update_rate>200</update_rate>
         <topic>/flow/imu</topic>
         <imu>
@@ -734,7 +734,8 @@
         </material>
       </visual>
       <sensor name="front_d435i_rgbd" type="rgbd_camera">
-        <always_on>1</always_on>
+        <!-- The Gazebo sensor wakes when its transport topics have subscribers. -->
+        <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
         <topic>/front/d435i/gz</topic>
@@ -751,7 +752,7 @@
         </camera>
       </sensor>
       <sensor name="front_d435i_imu" type="imu">
-        <always_on>1</always_on>
+        <always_on>0</always_on>
         <update_rate>200</update_rate>
         <topic>/front/d435i/gz/imu</topic>
         <imu>
