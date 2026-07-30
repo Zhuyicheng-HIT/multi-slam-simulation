@@ -15,6 +15,28 @@ fcu_observation_bridge:
     range_timeout_s: 0.5
     stale_after_s: 1.0
 
+nmea_gnss:
+  ros__parameters:
+    # C2 TESTRN output: RS232, 115200 baud, 8 data bits, no parity, 1 stop bit.
+    port: /dev/ttyUSB0
+    baudrate: 115200
+    frame_id: gnss_antenna_link
+    fix_topic: /gnss/direct/fix
+    raw_topic: /sensors/gnss/raw
+    time_reference_topic: /gnss/direct/time_reference
+    diagnostics_topic: /gnss/direct/diagnostics
+    strict_checksum: true
+    serial_timeout_s: 0.02
+    maximum_pair_age_s: 1.5
+    horizontal_uere_m: 3.0
+    vertical_uere_m: 5.0
+    stale_after_s: 2.0
+
+gnss_metadata_relay:
+  ros__parameters:
+    input_topic: /mavros/gpsstatus/gps1/raw
+    output_topic: /sensors/gnss/raw
+
 pointcloud_body_filter:
   ros__parameters:
     input_topic: /sim/mid360/points_raw

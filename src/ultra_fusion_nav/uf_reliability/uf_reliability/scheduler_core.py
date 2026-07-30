@@ -3,6 +3,15 @@ from typing import Dict, Optional
 
 
 MODALITIES = ("lidar", "gnss", "imu", "optical_flow", "vision")
+CAPABILITY_SOURCES = {
+    "propagation": ("imu",),
+    "horizontal_position": ("lidar", "gnss", "vision"),
+    "horizontal_velocity": ("lidar", "gnss", "optical_flow", "vision"),
+    "horizontal_motion": ("lidar", "gnss", "optical_flow", "vision"),
+    "vertical_position": ("lidar", "gnss", "vision"),
+    "yaw_tracking": ("lidar", "imu", "vision"),
+}
+CAPABILITIES = tuple(CAPABILITY_SOURCES)
 
 
 def clamp(value, low=0.0, high=1.0):
@@ -25,6 +34,7 @@ class SchedulerConfig:
     transition_dwell_s: float = 0.5
     recovery_dwell_s: float = 1.5
     recovered_hold_s: float = 1.0
+    capability_observable_threshold: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -35,6 +45,9 @@ class ScheduleResult:
     covariance_inflation: Dict[str, float]
     factor_enabled: Dict[str, bool]
     reasons: Dict[str, tuple]
+    capability_support: Dict[str, float]
+    capability_observable: Dict[str, bool]
+    estimator_support: float
     relocalization_requested: bool
 
 
@@ -246,6 +259,29 @@ class ReliabilitySchedulerCore:
                 for value in valid_active_scores.values()
             )
         )
+        capability_support = {
+            capability: max(
+                (
+                    weights[name]
+                    for name in sources
+                    if name in self.active_modalities and self.factor_enabled[name]
+                ),
+                default=0.0,
+            )
+            for capability, sources in CAPABILITY_SOURCES.items()
+        }
+        capability_observable = {
+            name: support >= self.config.capability_observable_threshold
+            for name, support in capability_support.items()
+        }
+        # A navigation solution remains useful when IMU propagation, horizontal
+        # motion and relative yaw are each supported. A failed optional sensor
+        # therefore cannot zero the complete estimator by itself.
+        estimator_support = min(
+            capability_support["propagation"],
+            capability_support["horizontal_motion"],
+            capability_support["yaw_tracking"],
+        )
         first_healthy_observation = (
             not self.has_valid_state
             and valid_count > 0
@@ -277,5 +313,8 @@ class ReliabilitySchedulerCore:
             covariance_inflation=inflation,
             factor_enabled=dict(self.factor_enabled),
             reasons=reasons,
+            capability_support=capability_support,
+            capability_observable=capability_observable,
+            estimator_support=estimator_support,
             relocalization_requested=bool(relocalization_requested),
         )

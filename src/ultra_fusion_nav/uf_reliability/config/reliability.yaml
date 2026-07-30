@@ -25,7 +25,7 @@ reliability_monitor:
     gnss.tau_covariance: 25.0
     gnss.tau_innovation: 5.0
     gnss.weights: [0.25, 0.20, 0.55]
-    gnss.raw_topic: /mavros/gpsstatus/gps1/raw
+    gnss.raw_topic: /sensors/gnss/raw
     gnss.raw_timeout_s: 1.0
     gnss.minimum_satellites: 5
     gnss.good_satellites: 10

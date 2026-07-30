@@ -95,6 +95,25 @@ class SchedulerCoreTest(unittest.TestCase):
         self.assertTrue(result.factor_enabled["gnss"])
         self.assertTrue(result.factor_enabled["imu"])
         self.assertFalse(result.factor_enabled["optical_flow"])
+        self.assertTrue(result.capability_observable["horizontal_motion"])
+        self.assertGreater(result.estimator_support, 0.0)
+
+    def test_flow_can_support_horizontal_motion_without_claiming_position(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("imu", "optical_flow"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            stale_after_s=1.0,
+            transition_dwell_s=0.0,
+        ))
+        result = core.update({
+            "imu": score(0.10),
+            "optical_flow": score(0.20),
+        }, 0.1)
+        self.assertAlmostEqual(result.capability_support["propagation"], 0.90)
+        self.assertAlmostEqual(result.capability_support["horizontal_motion"], 0.80)
+        self.assertEqual(result.capability_support["horizontal_position"], 0.0)
+        self.assertAlmostEqual(result.estimator_support, 0.80)
 
     def test_one_required_plus_one_aiding_modality_is_risk(self):
         core = ReliabilitySchedulerCore(SchedulerConfig(

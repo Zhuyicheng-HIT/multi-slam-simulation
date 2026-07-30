@@ -6,4 +6,8 @@ float32[] reliability_weights
 float32[] covariance_inflation
 bool[] factor_enabled
 string[] reasons
+string[] capability_names
+float32[] capability_support
+bool[] capability_observable
+float32 estimator_support
 bool relocalization_requested

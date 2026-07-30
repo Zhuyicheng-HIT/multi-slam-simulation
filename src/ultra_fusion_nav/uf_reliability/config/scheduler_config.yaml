@@ -19,4 +19,7 @@ reliability_scheduler:
     transition_dwell_s: 0.5
     recovery_dwell_s: 1.5
     recovered_hold_s: 1.0
+    # A capability is observable when at least one enabled factor can support
+    # it. This is deliberately independent from the global health state.
+    capability_observable_threshold: 0.15
     publish_rate_hz: 10.0

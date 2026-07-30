@@ -26,6 +26,8 @@ setup(
             "fcu_observation_bridge = uf_sensor_pipeline.fcu_observation_bridge:main",
             "fault_injector = uf_sensor_pipeline.fault_injector:main",
             "gps_flow_fusion = uf_sensor_pipeline.gps_flow_fusion_node:main",
+            "gnss_metadata_relay = uf_sensor_pipeline.gnss_metadata_relay:main",
+            "nmea_gnss = uf_sensor_pipeline.nmea_gnss_node:main",
             "pointcloud_body_filter = uf_sensor_pipeline.pointcloud_body_filter:main",
             "sensor_contract_monitor = uf_sensor_pipeline.sensor_contract_monitor:main",
         ]

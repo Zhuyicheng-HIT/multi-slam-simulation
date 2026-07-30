@@ -8,7 +8,10 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/mid360_fastlio_mapping_$(date +%Y%m%d_%H%M%S)}
 RVIZ=${RVIZ:-1}
-FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-pointcloud}
+# FAST-LIO requires per-point timing for MID360 de-skewing. The livox mode
+# consumes the CustomMsg produced by the protocol-compatible bridge and is the
+# default for simulation and hardware-aligned tests.
+FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-livox}
 FASTLIO_CLOUD_TOPIC=/sim/mid360/points_raw
 FASTLIO_NATIVE_FACTOR_EXPORT=${FASTLIO_NATIVE_FACTOR_EXPORT:-0}
 FASTLIO_NATIVE_FACTOR_TOPIC=${FASTLIO_NATIVE_FACTOR_TOPIC:-/fast_lio/native_lidar_factor}
@@ -99,10 +102,8 @@ setsid ros2 run multi_slam_uav_sim livox_mid360_bridge --ros-args \
   -p livox_imu_topic:=/livox/imu \
   -p lidar_frame_id:=mid360_link \
   -p imu_frame_id:=base_link \
-  -p scan_lines:=40 \
+  -p scan_lines:=4 \
   -p frame_rate_hz:=10.0 \
-  -p vertical_min_deg:=-7.0 \
-  -p vertical_max_deg:=52.0 \
   -p max_points:=20000 \
   >"$LOG_DIR/livox_mid360_bridge.log" 2>&1 &
 pids+=("$!")

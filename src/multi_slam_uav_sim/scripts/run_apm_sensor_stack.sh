@@ -16,6 +16,10 @@ WORLD=${WORLD:-$PKG_SHARE/worlds/simple_apm_rgbd_mid360.sdf}
 WORLD_NAME=${WORLD_NAME:-simple_apm_rgbd_mid360}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/apm_sensor_stack_$(date +%Y%m%d_%H%M%S)}
 LOCK_FILE=${LOCK_FILE:-/tmp/multi_slam_apm_sensor_stack.lock}
+# Keep FCU source configuration separate from the estimator that publishes
+# ExternalNav. The legacy flag retains its original all-in-one behavior.
+ENABLE_EXTERNALNAV_EKF3=${ENABLE_EXTERNALNAV_EKF3:-${ENABLE_EXTERNALNAV_FUSION:-0}}
+ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=${ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV:-${ENABLE_EXTERNALNAV_FUSION:-0}}
 
 if [[ -f "$LOCK_FILE" ]]; then
   old_pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
@@ -192,7 +196,7 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
   if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
     sitl_defaults+=("$PKG_SHARE/params/apm_mtf01p_routing.parm")
   fi
-  if [[ "${ENABLE_EXTERNALNAV_FUSION:-0}" == "1" ]]; then
+  if [[ "$ENABLE_EXTERNALNAV_EKF3" == "1" ]]; then
     sitl_defaults+=("$PKG_SHARE/params/apm_externalnav_gps_flow.parm")
   fi
   SITL_DEFAULTS=$(IFS=,; printf '%s' "${sitl_defaults[*]}")
@@ -270,7 +274,7 @@ if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
   pids+=("$!")
 fi
 
-if [[ "${ENABLE_EXTERNALNAV_FUSION:-0}" == "1" ]]; then
+if [[ "$ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV" == "1" ]]; then
   setsid ros2 launch uf_sensor_pipeline gps_flow_externalnav.launch.py \
     world_name:="$WORLD_NAME" \
     flow_truth_assistance:=${FLOW_USE_PHYSICS:-false} \
@@ -329,6 +333,8 @@ FCU-routed MTF01P observation path:
 
 Optional companion GPS/flow ExternalNav:
   ENABLE_EXTERNALNAV_FUSION=1 starts /fusion/gps_flow/odom -> /mavros/odometry/out
+  ENABLE_EXTERNALNAV_EKF3=1 configures EKF3 to consume ExternalNav without selecting a publisher
+  ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=1 starts only the legacy GPS/flow publisher
   FLOW_USE_PHYSICS=false is required for algorithm-quality evaluation
   ENABLE_D435_BRIDGE=0 and ENABLE_MID360_BRIDGE=0 disable unused ROS conversion bridges
   Performance report: $LOG_DIR/simulation_performance.json

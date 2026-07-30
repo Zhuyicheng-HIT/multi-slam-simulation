@@ -17,7 +17,8 @@
 
         preprocess:
             lidar_type: 1
-            scan_line: 40
+            # Livox SDK2 assigns Mid-360(S) points to four logical lines.
+            scan_line: 4
             blind: 0.10
             timestamp_unit: 3
             scan_rate: 10

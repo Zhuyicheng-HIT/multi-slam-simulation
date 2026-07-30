@@ -8,7 +8,12 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool
 from uf_interfaces.msg import ReliabilityScore, SchedulerState
 
-from .scheduler_core import MODALITIES, ReliabilitySchedulerCore, SchedulerConfig
+from .scheduler_core import (
+    CAPABILITIES,
+    MODALITIES,
+    ReliabilitySchedulerCore,
+    SchedulerConfig,
+)
 
 
 class ReliabilityScheduler(Node):
@@ -31,6 +36,7 @@ class ReliabilityScheduler(Node):
         self.declare_parameter("transition_dwell_s", 0.5)
         self.declare_parameter("recovery_dwell_s", 1.5)
         self.declare_parameter("recovered_hold_s", 1.0)
+        self.declare_parameter("capability_observable_threshold", 0.15)
         self.declare_parameter("publish_rate_hz", 10.0)
         active = tuple(self.get_parameter("active_modalities").value)
         required = tuple(
@@ -55,6 +61,9 @@ class ReliabilityScheduler(Node):
             transition_dwell_s=float(self.get_parameter("transition_dwell_s").value),
             recovery_dwell_s=float(self.get_parameter("recovery_dwell_s").value),
             recovered_hold_s=float(self.get_parameter("recovered_hold_s").value),
+            capability_observable_threshold=float(
+                self.get_parameter("capability_observable_threshold").value
+            ),
         ))
         self.scores = {}
         self.relocalization_requested = False
@@ -122,6 +131,13 @@ class ReliabilityScheduler(Node):
             msg.covariance_inflation.append(float(result.covariance_inflation[name]))
             msg.factor_enabled.append(bool(result.factor_enabled[name]))
             msg.reasons.append(",".join(result.reasons[name]))
+        for name in CAPABILITIES:
+            msg.capability_names.append(name)
+            msg.capability_support.append(float(result.capability_support[name]))
+            msg.capability_observable.append(
+                bool(result.capability_observable[name])
+            )
+        msg.estimator_support = float(result.estimator_support)
         msg.relocalization_requested = result.relocalization_requested
         self.state_pub.publish(msg)
 
@@ -144,6 +160,13 @@ class ReliabilityScheduler(Node):
         diagnostic.values.extend(
             self._key(f"{name}_enabled", result.factor_enabled[name])
             for name in MODALITIES
+        )
+        diagnostic.values.extend(
+            self._key(f"capability_{name}", f"{result.capability_support[name]:.3f}")
+            for name in CAPABILITIES
+        )
+        diagnostic.values.append(
+            self._key("estimator_support", f"{result.estimator_support:.3f}")
         )
         array = DiagnosticArray()
         array.header.stamp = stamp

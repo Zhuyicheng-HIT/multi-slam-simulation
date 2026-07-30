@@ -281,6 +281,7 @@ bash nano_flight/scripts/07_status_topics.sh
 
 ```bash
 ros2 topic hz /livox/lidar
+ros2 topic hz /livox/lidar_imu
 ros2 topic hz /livox/imu
 ros2 topic hz /cloud_registered_reliable
 ros2 topic hz /fastlio_occupancy_grid
@@ -301,7 +302,8 @@ DURATION=60 bash nano_flight/scripts/06_record_safety_bag.sh
 默认录制：
 
 - `/livox/lidar`
-- `/livox/imu`
+- `/livox/lidar_imu`（MID360S 内部 IMU，仅诊断）
+- `/livox/imu`（飞控 HIGHRES_IMU，FAST-LIO 主 IMU）
 - `/Odometry`
 - `/path`
 - `/cloud_registered`
@@ -345,7 +347,7 @@ ldconfig -p | grep livox
 真正飞行前至少确认：
 
 1. `ping 192.168.1.123` 正常。
-2. `/livox/lidar` 和 `/livox/imu` 频率稳定。
+2. `/livox/lidar`、`/livox/lidar_imu` 和飞控 `/livox/imu` 频率稳定。
 3. `/Odometry` 静止时不明显漂移。
 4. `/cloud_registered_reliable` 有输出。
 5. `/fastlio_occupancy_grid` 有输出。
