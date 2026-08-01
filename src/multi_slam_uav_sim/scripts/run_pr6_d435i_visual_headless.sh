@@ -5,15 +5,32 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PKG_SHARE=$(cd "$SCRIPT_DIR/.." && pwd)
 WS_INSTALL=$(cd "$PKG_SHARE/../../.." && pwd)
 WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
+LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
+if [[ -f "$LIDAR_WS/install/setup.bash" ]]; then
+  # Source the selected FAST-LIO overlay in this parent process as well as in
+  # the mapping wrapper.  The Python backend must be able to import the
+  # NativeLidarFactor type before its subscriptions are constructed.
+  source "$LIDAR_WS/install/setup.bash"
+fi
 source "$PKG_SHARE/scripts/d435i_active_run_lifecycle.sh"
 
-LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 RUN_ID=${RUN_ID:-pr6_d435i_visual_$(date +%Y%m%d_%H%M%S)}
 RUN_DIR=${RUN_DIR:-$WS_ROOT/logs/pr6_d435i_visual/$RUN_ID}
 ACTIVE_FILE=${ACTIVE_FILE:-$WS_ROOT/logs/d435i_visual_slam/.active_headless}
 RUN_SMALL_RECTANGLE=${RUN_SMALL_RECTANGLE:-0}
+EXIT_AFTER_RECTANGLE=${EXIT_AFTER_RECTANGLE:-0}
+case "$EXIT_AFTER_RECTANGLE" in
+  0|1) ;;
+  *) printf 'EXIT_AFTER_RECTANGLE must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+PR6_START_RTABMAP=${PR6_START_RTABMAP:-1}
+case "$PR6_START_RTABMAP" in
+  0) PR6_START_RTABMAP_BOOL=false ;;
+  1) PR6_START_RTABMAP_BOOL=true ;;
+  *) printf 'PR6_START_RTABMAP must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 mkdir -p "$RUN_DIR" "$(dirname "$ACTIVE_FILE")"
 
 if [[ -f "$ACTIVE_FILE" ]] && d435i_active_read "$ACTIVE_FILE" && \
@@ -151,6 +168,7 @@ printf 'input_trigger=%s\nnative_factor=%s\nlio_pose_fallback=%s\nimu_factor=%s\
 
 setsid ros2 launch multi_slam_uav_sim pr6_d435i_visual_integration.launch.py \
   use_sim_time:=true start_backend:="$INTEGRATION_START_BACKEND" \
+  start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
   database_path:="$RUN_DIR/rtabmap.db" \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"
@@ -172,9 +190,11 @@ fi
 wait_for_topic /sensors/rgbd/color 90
 wait_for_topic /sensors/rgbd/depth 45
 wait_for_topic /front/d435i/color/camera_info 45
-wait_for_topic /rtabmap/odom 120
 wait_for_topic /reliability/vision_score 45
-wait_for_valid_vision 60
+if [[ "$PR6_START_RTABMAP" == 1 ]]; then
+  wait_for_topic /rtabmap/odom 120
+  wait_for_valid_vision 60
+fi
 wait_for_topic /reliability/scheduler_state 45
 wait_for_topic /fusion/unified/odom 120
 
@@ -183,14 +203,25 @@ if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
     -p takeoff_alt:=3.0 -p length_x:=6.0 -p length_y:=4.0 \
     -p speed_mps:=0.8 -p land_at_end:=true \
     >"$RUN_DIR/small_rectangle.log" 2>&1 &
-  record_pid rectangle_motion "$!"
+  RECTANGLE_PID=$!
+  record_pid rectangle_motion "$RECTANGLE_PID"
 fi
 
 printf 'PR #6 + D435i visual integration is ready.\n'
+printf '  RTAB startup: %s\n' "$PR6_START_RTABMAP_BOOL"
 printf '  RGB-D: /sensors/rgbd/{color,depth}\n'
 printf '  RTAB odom: /rtabmap/odom\n'
 printf '  D_V_rgbd: /reliability/vision_score\n'
 printf '  FAST-LIO: /fast_lio/native_lidar_factor\n'
 printf '  Unified backend: /fusion/unified/odom\n'
 printf '  Logs: %s\n' "$RUN_DIR"
+if [[ "$RUN_SMALL_RECTANGLE" == 1 && "$EXIT_AFTER_RECTANGLE" == 1 ]]; then
+  set +e
+  wait "$RECTANGLE_PID"
+  rectangle_status=$?
+  set -e
+  printf 'small_rectangle_exit=%s\n' "$rectangle_status" \
+    >"$RUN_DIR/rectangle_result.env"
+  exit "$rectangle_status"
+fi
 wait
