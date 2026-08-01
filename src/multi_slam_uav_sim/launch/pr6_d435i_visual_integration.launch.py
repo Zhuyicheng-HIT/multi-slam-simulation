@@ -95,6 +95,7 @@ def generate_launch_description():
         include(
             "uf_lio_adapter",
             "lio_adapter.launch.py",
+            {"use_sim_time": use_sim_time},
             condition=IfCondition(start_backend),
         ),
         include(

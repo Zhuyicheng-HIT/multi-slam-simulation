@@ -15,6 +15,10 @@ def generate_launch_description():
         reliability_share + "/config/scheduler_visual_config.yaml")
     return LaunchDescription([
         DeclareLaunchArgument("preserve_lio_anchor", default_value="true"),
+        DeclareLaunchArgument("input_trigger_mode", default_value="native_factor"),
+        DeclareLaunchArgument("native_lidar_factor_enabled", default_value="true"),
+        DeclareLaunchArgument("allow_lio_pose_fallback", default_value="false"),
+        DeclareLaunchArgument("imu_factor_enabled", default_value="true"),
         Node(
             package="uf_reliability",
             executable="reliability_monitor",
@@ -42,7 +46,21 @@ def generate_launch_description():
                     "preserve_lio_anchor": ParameterValue(
                         LaunchConfiguration("preserve_lio_anchor"),
                         value_type=bool,
-                    )
+                    ),
+                    "input_trigger_mode": LaunchConfiguration(
+                        "input_trigger_mode"),
+                    "native_lidar_factor_enabled": ParameterValue(
+                        LaunchConfiguration("native_lidar_factor_enabled"),
+                        value_type=bool,
+                    ),
+                    "allow_lio_pose_fallback": ParameterValue(
+                        LaunchConfiguration("allow_lio_pose_fallback"),
+                        value_type=bool,
+                    ),
+                    "imu_factor_enabled": ParameterValue(
+                        LaunchConfiguration("imu_factor_enabled"),
+                        value_type=bool,
+                    ),
                 },
             ],
             output="screen",

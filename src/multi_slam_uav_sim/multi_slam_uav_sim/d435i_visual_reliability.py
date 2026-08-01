@@ -121,6 +121,7 @@ class D435iVisualReliability(Node):
         self.pair_tracking_group = MutuallyExclusiveCallbackGroup()
         self.image_pair_health = ExactStampPairHealth(
             max_pending=120, max_intervals=120)
+        self.image_pair_health_lock = threading.Lock()
         self.odom_arrivals = deque(maxlen=120)
         self.latency_history = deque(maxlen=80)
         self.tracking_by_stamp = {}
@@ -233,14 +234,16 @@ class D435iVisualReliability(Node):
     def _color_cb(self, message):
         now_s = time.monotonic()
         self.latest_color = message
-        self.image_pair_health.observe(
-            "color", stamp_ns(message.header.stamp), now_s)
+        with self.image_pair_health_lock:
+            self.image_pair_health.observe(
+                "color", stamp_ns(message.header.stamp), now_s)
 
     def _depth_cb(self, message):
         now_s = time.monotonic()
         self.latest_depth = message
-        self.image_pair_health.observe(
-            "depth", stamp_ns(message.header.stamp), now_s)
+        with self.image_pair_health_lock:
+            self.image_pair_health.observe(
+                "depth", stamp_ns(message.header.stamp), now_s)
 
     def _tracking_cb(self, message):
         try:
@@ -582,14 +585,21 @@ class D435iVisualReliability(Node):
         color = self._color_metrics()
         depth = self._depth_metrics()
         with self.pair_health_lock:
-            intervals = list(self.pair_health.intervals)
-            pair_sequence = self.pair_health.pair_sequence
-            pair_observed_count = self.pair_health.observed_pair_count
             pair_sequence_gaps = self.pair_health.pair_sequence_gaps
             source_sequence_gaps = self.pair_health.source_sequence_gaps
             source_drop_ratio = self.pair_health.source_drop_ratio
-            last_pair_arrival_s = self.pair_health.last_pair_arrival_s
-            last_stamp_delta_ms = self.pair_health.last_stamp_delta_ms
+        # The normalized images consumed by RTAB are the authoritative evidence
+        # for exact RGB-D pairing.  Transport tracking is optional and is kept
+        # only for source sequence/drop diagnostics.
+        with self.image_pair_health_lock:
+            intervals = list(self.image_pair_health.intervals)
+            pair_sequence = self.image_pair_health.pair_sequence
+            pair_observed_count = self.image_pair_health.observed_pair_count
+            last_pair_arrival_s = self.image_pair_health.last_pair_arrival_s
+            last_stamp_delta_ms = self.image_pair_health.last_stamp_delta_ms
+            image_pair_sequence = self.image_pair_health.pair_sequence
+            unmatched_color = len(self.image_pair_health.color_arrivals)
+            unmatched_depth = len(self.image_pair_health.depth_arrivals)
         frame_hz = 1.0 / statistics.mean(intervals) if intervals else 0.0
         longest_ms = max(intervals) * 1000.0 if intervals else None
         image_gap_s = (
@@ -607,9 +617,9 @@ class D435iVisualReliability(Node):
             "pair_sequence_gaps": pair_sequence_gaps,
             "source_sequence_gaps": source_sequence_gaps,
             "source_drop_ratio": source_drop_ratio,
-            "image_pair_sequence": self.image_pair_health.pair_sequence,
-            "unmatched_color": len(self.image_pair_health.color_arrivals),
-            "unmatched_depth": len(self.image_pair_health.depth_arrivals),
+            "image_pair_sequence": image_pair_sequence,
+            "unmatched_color": unmatched_color,
+            "unmatched_depth": unmatched_depth,
             "frame_hz": frame_hz,
             "longest_frame_interval_ms": longest_ms,
             "image_gap_s": image_gap_s,

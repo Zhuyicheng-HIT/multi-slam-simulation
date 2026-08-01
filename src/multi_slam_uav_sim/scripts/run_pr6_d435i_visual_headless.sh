@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -Eeo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PKG_SHARE=$(cd "$SCRIPT_DIR/.." && pwd)
@@ -63,6 +63,21 @@ wait_for_topic() {
   return 1
 }
 
+wait_for_valid_vision() {
+  local timeout_s=${1:-60} started=$SECONDS sample=
+  while (( SECONDS - started < timeout_s )); do
+    sample=$(timeout 3s ros2 topic echo /reliability/vision_score \
+      --once --field valid 2>/dev/null || true)
+    if grep -qi '^true$' <<<"$sample"; then
+      printf 'ready: D_V_rgbd valid\n'
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'Timed out waiting for valid D_V_rgbd\n' >&2
+  return 1
+}
+
 printf 'Starting PR #6 sensor stack. Logs: %s\n' "$RUN_DIR"
 setsid env \
   HEADLESS=1 GAZEBO_GUI=0 SHOW_FLOW_WINDOW=0 \
@@ -78,7 +93,27 @@ setsid env \
   >"$RUN_DIR/sensor_stack_supervisor.log" 2>&1 &
 record_pid stack_supervisor "$!"
 
-wait_for_topic /clock 45
+# PR #6's sensor supervisor runs Gazebo without a ROS /clock bridge. RTAB uses
+# simulation time, so this wrapper owns exactly one clock publisher.
+setsid ros2 run ros_gz_bridge parameter_bridge \
+  '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock' \
+  >"$RUN_DIR/clock_bridge.log" 2>&1 &
+CLOCK_BRIDGE_PID=$!
+record_pid clock_bridge "$CLOCK_BRIDGE_PID"
+
+if ! wait_for_topic /clock 45; then
+  # ros_gz_bridge occasionally starts before the fresh Gazebo Transport
+  # partition is discoverable.  Restart only this owned bridge once, after the
+  # simulator and FCU have had time to become ready.
+  kill -INT -- "-$CLOCK_BRIDGE_PID" 2>/dev/null || true
+  timeout 5s tail --pid="$CLOCK_BRIDGE_PID" -f /dev/null 2>/dev/null || true
+  setsid ros2 run ros_gz_bridge parameter_bridge \
+    '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock' \
+    >"$RUN_DIR/clock_bridge_retry.log" 2>&1 &
+  CLOCK_BRIDGE_PID=$!
+  record_pid clock_bridge_retry "$CLOCK_BRIDGE_PID"
+  wait_for_topic /clock 45
+fi
 wait_for_topic /livox/lidar 120
 wait_for_topic /mavros/imu/data_raw 120
 wait_for_topic /sim/optical_flow/rad 90
@@ -91,19 +126,55 @@ setsid env \
   bash "$PKG_SHARE/scripts/run_mid360_fastlio_mapping.sh" \
   >"$RUN_DIR/fastlio_supervisor.log" 2>&1 &
 record_pid fastlio_supervisor "$!"
-wait_for_topic /fast_lio/native_lidar_factor 120
+wait_for_topic /Odometry 120
+
+BACKEND_INPUT_TRIGGER=native_factor
+BACKEND_NATIVE_FACTOR=true
+BACKEND_LIO_FALLBACK=false
+BACKEND_IMU_FACTOR=true
+INTEGRATION_START_BACKEND=true
+if ! timeout 15s ros2 topic echo /fast_lio/native_lidar_factor --once \
+    >/dev/null 2>&1; then
+  wait_for_topic /Odometry 30
+  BACKEND_INPUT_TRIGGER=lio_pair
+  BACKEND_NATIVE_FACTOR=false
+  BACKEND_LIO_FALLBACK=true
+  # FAST-LIO /Odometry already contains its internal IMU update. Do not add
+  # the backend IMU factor again in this explicit dependency fallback.
+  BACKEND_IMU_FACTOR=false
+  INTEGRATION_START_BACKEND=false
+fi
+printf 'input_trigger=%s\nnative_factor=%s\nlio_pose_fallback=%s\nimu_factor=%s\n' \
+  "$BACKEND_INPUT_TRIGGER" "$BACKEND_NATIVE_FACTOR" \
+  "$BACKEND_LIO_FALLBACK" "$BACKEND_IMU_FACTOR" \
+  >"$RUN_DIR/backend_runtime_mode.env"
 
 setsid ros2 launch multi_slam_uav_sim pr6_d435i_visual_integration.launch.py \
-  use_sim_time:=true start_backend:=true \
+  use_sim_time:=true start_backend:="$INTEGRATION_START_BACKEND" \
   database_path:="$RUN_DIR/rtabmap.db" \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"
+
+if [[ "$INTEGRATION_START_BACKEND" == false ]]; then
+  setsid ros2 launch uf_lio_adapter lio_adapter.launch.py \
+    use_sim_time:=true prefer_native_factor_diagnostics:=false \
+    >"$RUN_DIR/lio_adapter_fallback.log" 2>&1 &
+  record_pid lio_adapter_fallback "$!"
+  setsid ros2 launch uf_backend_fusion online_backend_visual.launch.py \
+    preserve_lio_anchor:=true input_trigger_mode:="$BACKEND_INPUT_TRIGGER" \
+    native_lidar_factor_enabled:="$BACKEND_NATIVE_FACTOR" \
+    allow_lio_pose_fallback:="$BACKEND_LIO_FALLBACK" \
+    imu_factor_enabled:="$BACKEND_IMU_FACTOR" \
+    >"$RUN_DIR/backend_fallback.log" 2>&1 &
+  record_pid backend_fallback "$!"
+fi
 
 wait_for_topic /sensors/rgbd/color 90
 wait_for_topic /sensors/rgbd/depth 45
 wait_for_topic /front/d435i/color/camera_info 45
 wait_for_topic /rtabmap/odom 120
 wait_for_topic /reliability/vision_score 45
+wait_for_valid_vision 60
 wait_for_topic /reliability/scheduler_state 45
 wait_for_topic /fusion/unified/odom 120
 
