@@ -470,6 +470,34 @@ class SlidingWindowBackend:
             np.concatenate((np.asarray(position, dtype=float), np.asarray(rotation, dtype=float))),
             covariance, decision)
 
+    def add_visual_odometry(
+        self, previous: int, current: int, delta_body: Sequence[float],
+        delta_rotation: Sequence[float], linearization_rotation: Sequence[float],
+        covariance=1.0, decision: Mapping[str, object] | None = None,
+    ) -> None:
+        """Add one relative RTAB odometry factor without an absolute map anchor."""
+        from .native_lidar import rpy_to_rotation_matrix
+
+        delta_body = np.asarray(delta_body, dtype=float)
+        delta_rotation = np.asarray(delta_rotation, dtype=float)
+        linearization_rotation = np.asarray(linearization_rotation, dtype=float)
+        if any(value.shape != (3,) or np.any(~np.isfinite(value)) for value in (
+                delta_body, delta_rotation, linearization_rotation)):
+            raise ValueError("visual odometry increments must be finite 3-vectors")
+        block = np.zeros((6, STATE_SIZE), dtype=float)
+        block[:3, POSITION] = np.eye(3)
+        block[3:, ROTATION] = np.eye(3)
+        self._append_factor(
+            "visual_odometry",
+            [(current, block), (previous, -block)],
+            np.concatenate((
+                rpy_to_rotation_matrix(linearization_rotation) @ delta_body,
+                delta_rotation,
+            )),
+            covariance,
+            decision,
+        )
+
     def _factor_normal_contribution(self, factor, state_count):
         """Return one factor's canonical ``H x = b`` contribution."""
         dimension = int(state_count) * STATE_SIZE

@@ -56,3 +56,7 @@ reliability_monitor:
     vision.tau_reprojection_px: 3.0
     vision.weights: [0.30, 0.25, 0.25, 0.20]
     vision.minimum_features: 20
+    # The general monitor keeps its lightweight score for non-integrated use.
+    # The D435i launch overrides this to false so D_V_rgbd is the only
+    # scheduler-facing visual reliability publisher.
+    vision.internal_score_enabled: true

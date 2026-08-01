@@ -40,6 +40,7 @@ from .imu_preintegration import (
     preintegrate,
     preintegrate_manifold,
 )
+from .manifold import rotation_matrix_to_rpy
 from .manifold_window import ManifoldSlidingWindowBackend, propagate_state
 from .native_lidar import (
     NativeFactorBuffer,
@@ -176,6 +177,65 @@ def unwrap_yaw(previous_yaw, wrapped_yaw):
         math.cos(float(wrapped_yaw) - float(previous_yaw)),
     )
     return float(previous_yaw) + delta
+
+
+def visual_odometry_increment(previous, current, default_translation_variance,
+                              default_rotation_variance):
+    """Return an origin-free RTAB odometry increment and diagonal covariance."""
+    if (
+        previous.header.frame_id != current.header.frame_id
+        or previous.child_frame_id != current.child_frame_id
+    ):
+        raise ValueError("visual odometry frame contract changed within an interval")
+    previous_pose = previous.pose.pose
+    current_pose = current.pose.pose
+    previous_position = np.asarray([
+        previous_pose.position.x,
+        previous_pose.position.y,
+        previous_pose.position.z,
+    ], dtype=float)
+    current_position = np.asarray([
+        current_pose.position.x,
+        current_pose.position.y,
+        current_pose.position.z,
+    ], dtype=float)
+    previous_rotation = rpy_to_rotation_matrix(quaternion_xyzw_to_rpy([
+        previous_pose.orientation.x,
+        previous_pose.orientation.y,
+        previous_pose.orientation.z,
+        previous_pose.orientation.w,
+    ]))
+    current_rotation = rpy_to_rotation_matrix(quaternion_xyzw_to_rpy([
+        current_pose.orientation.x,
+        current_pose.orientation.y,
+        current_pose.orientation.z,
+        current_pose.orientation.w,
+    ]))
+    delta_body = previous_rotation.T @ (current_position - previous_position)
+    delta_rotation = rotation_matrix_to_rpy(previous_rotation.T @ current_rotation)
+    covariance_indices = (0, 7, 14, 21, 28, 35)
+    defaults = [
+        float(default_translation_variance),
+        float(default_translation_variance),
+        float(default_translation_variance),
+        float(default_rotation_variance),
+        float(default_rotation_variance),
+        float(default_rotation_variance),
+    ]
+    covariance = []
+    for index, fallback in zip(covariance_indices, defaults):
+        candidates = (
+            float(previous.pose.covariance[index]),
+            float(current.pose.covariance[index]),
+        )
+        valid = [value for value in candidates if math.isfinite(value) and value > 0.0]
+        covariance.append(max(fallback, sum(valid)) if valid else fallback)
+    if (
+        np.any(~np.isfinite(delta_body))
+        or np.any(~np.isfinite(delta_rotation))
+    ):
+        raise ValueError("visual odometry increment is non-finite")
+    return delta_body, delta_rotation, np.asarray(covariance, dtype=float)
 
 
 def rotate_planar(forward, left, yaw):
@@ -661,6 +721,7 @@ class UnifiedBackendNode(Node):
             "native_lidar_factor_topic": "/fast_lio/native_lidar_factor",
             "gnss_topic": "/sensors/gnss/fix",
             "flow_topic": "/sensors/optical_flow/rad",
+            "visual_odom_topic": "/rtabmap/odom",
             "imu_topic": "/sensors/imu",
             "scheduler_topic": "/reliability/scheduler_state",
             "output_topic": "/fusion/unified/odom",
@@ -708,6 +769,14 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("flow_rotation_minimum_translation_m", 0.01)
         self.declare_parameter("flow_rotation_recovery_max_base_score", 0.55)
         self.declare_parameter("flow_rotation_imu_max_gap_s", 0.12)
+        self.declare_parameter("visual_factor_enabled", True)
+        self.declare_parameter("visual_max_arrival_age_s", 0.75)
+        self.declare_parameter("visual_minimum_translation_m", 0.002)
+        self.declare_parameter("visual_minimum_rotation_rad", 0.002)
+        self.declare_parameter("visual_maximum_translation_m", 3.0)
+        self.declare_parameter("visual_maximum_rotation_rad", 1.2)
+        self.declare_parameter("visual_default_translation_variance_m2", 0.01)
+        self.declare_parameter("visual_default_rotation_variance_rad2", 0.0025)
         self.declare_parameter("imu_factor_enabled", True)
         self.declare_parameter("preserve_lio_anchor", True)
         self.declare_parameter("lidar_anchor_minimum_effective_weight", 0.10)
@@ -728,6 +797,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("fixed_gnss_weight", 1.0)
         self.declare_parameter("fixed_imu_weight", 1.0)
         self.declare_parameter("fixed_optical_flow_weight", 1.0)
+        self.declare_parameter("fixed_vision_weight", 1.0)
         self.declare_parameter("fixed_covariance_inflation", 1.0)
         self.declare_parameter("publish_path_length", 2000)
 
@@ -798,6 +868,32 @@ class UnifiedBackendNode(Node):
             self.get_parameter("flow_rotation_recovery_max_base_score").value)
         self.flow_rotation_imu_max_gap_s = float(
             self.get_parameter("flow_rotation_imu_max_gap_s").value)
+        self.visual_factor_enabled = bool(
+            self.get_parameter("visual_factor_enabled").value)
+        self.visual_max_arrival_age_s = float(
+            self.get_parameter("visual_max_arrival_age_s").value)
+        self.visual_minimum_translation_m = float(
+            self.get_parameter("visual_minimum_translation_m").value)
+        self.visual_minimum_rotation_rad = float(
+            self.get_parameter("visual_minimum_rotation_rad").value)
+        self.visual_maximum_translation_m = float(
+            self.get_parameter("visual_maximum_translation_m").value)
+        self.visual_maximum_rotation_rad = float(
+            self.get_parameter("visual_maximum_rotation_rad").value)
+        self.visual_default_translation_variance = float(
+            self.get_parameter("visual_default_translation_variance_m2").value)
+        self.visual_default_rotation_variance = float(
+            self.get_parameter("visual_default_rotation_variance_rad2").value)
+        if (
+            self.visual_max_arrival_age_s <= 0.0
+            or self.visual_minimum_translation_m < 0.0
+            or self.visual_minimum_rotation_rad < 0.0
+            or self.visual_maximum_translation_m <= self.visual_minimum_translation_m
+            or self.visual_maximum_rotation_rad <= self.visual_minimum_rotation_rad
+            or self.visual_default_translation_variance <= 0.0
+            or self.visual_default_rotation_variance <= 0.0
+        ):
+            raise ValueError("visual odometry factor limits are invalid")
         self.imu_factor_enabled = bool(self.get_parameter("imu_factor_enabled").value)
         self.preserve_lio_anchor = bool(self.get_parameter("preserve_lio_anchor").value)
         self.lidar_anchor_minimum_effective_weight = float(
@@ -851,7 +947,7 @@ class UnifiedBackendNode(Node):
             raise ValueError("reliability_mode must be dynamic or fixed")
         self.fixed_weights = {
             modality: float(self.get_parameter(f"fixed_{modality}_weight").value)
-            for modality in ("lidar", "gnss", "imu", "optical_flow")
+            for modality in ("lidar", "gnss", "imu", "optical_flow", "vision")
         }
         if any(
             not math.isfinite(weight) or not 0.0 <= weight <= 1.0
@@ -927,6 +1023,11 @@ class UnifiedBackendNode(Node):
         self.path.poses = []
         self.imu_buffer = deque(maxlen=10000)
         self.flow_buffer = deque(maxlen=3000)
+        self.visual_lock = threading.Lock()
+        self.latest_visual_odom = None
+        self.latest_visual_arrival = None
+        self.last_visual_odom = None
+        self.last_visual_stamp_ns = None
         self.flow_rotation_gate = OpticalFlowRotationGate(
             FlowRotationGateConfig(
                 lower_yaw_rate_radps=float(self.get_parameter(
@@ -967,6 +1068,10 @@ class UnifiedBackendNode(Node):
             "flow_factor_attempts": 0, "flow_factors": 0,
             "flow_disabled_quality": 0,
             "flow_disabled_rotation": 0,
+            "visual_received": 0, "visual_nonmonotonic": 0,
+            "visual_factor_attempts": 0, "visual_factors": 0,
+            "visual_disabled": 0, "visual_stale": 0,
+            "visual_duplicate_samples": 0, "visual_motion_rejected": 0,
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
             "lidar_anchor_overrides": 0, "imu_residual_updates": 0,
             "imu_residual_errors": 0,
@@ -1010,6 +1115,9 @@ class UnifiedBackendNode(Node):
         self.last_flow_rotation_phase = "unavailable"
         self.last_flow_rotation_weight = 0.0
         self.last_flow_yaw_rate_abs_radps = -1.0
+        self.last_visual_reason = "unavailable"
+        self.last_visual_translation_m = 0.0
+        self.last_visual_rotation_rad = 0.0
         self.last_lidar_prediction_position_innovation_m = -1.0
         self.last_lidar_prediction_yaw_innovation_rad = -1.0
         self.last_lidar_source = "unavailable"
@@ -1051,12 +1159,15 @@ class UnifiedBackendNode(Node):
             OpticalFlowRad, str(self.get_parameter("flow_topic").value),
             self._flow, qos_profile_sensor_data)
         self.create_subscription(
+            Odometry, str(self.get_parameter("visual_odom_topic").value),
+            self._visual_odom, qos_profile_sensor_data)
+        self.create_subscription(
             Imu, str(self.get_parameter("imu_topic").value),
             self._imu, self.imu_qos)
         self.create_subscription(
             SchedulerState, str(self.get_parameter("scheduler_topic").value),
             self._scheduler, 20)
-        for modality in ("lidar", "gnss", "imu", "optical_flow"):
+        for modality in ("lidar", "gnss", "imu", "optical_flow", "vision"):
             self.create_subscription(
                 ReliabilityScore, f"/reliability/{modality}_score",
                 lambda msg, name=modality: self._score(name, msg),
@@ -1077,7 +1188,7 @@ class UnifiedBackendNode(Node):
             )
         self.get_logger().info(
             f"Unified backend active: solver={self.backend_solver_mode}; "
-            f"reliability_mode={self.reliability_mode}; native LiDAR + GNSS/flow; "
+            f"reliability_mode={self.reliability_mode}; native LiDAR + GNSS/flow/vision; "
             f"input_trigger={self.input_trigger_mode}; "
             f"native_lidar={'on' if self.native_lidar_enabled else 'fallback'}; "
             f"preserve_lio_anchor={'on' if self.preserve_lio_anchor else 'off'}; "
@@ -1256,6 +1367,30 @@ class UnifiedBackendNode(Node):
             "quality": int(msg.quality),
             "distance_m": float(msg.distance),
         })
+
+    def _visual_odom(self, msg):
+        stamp_ns = (
+            int(msg.header.stamp.sec) * 1_000_000_000
+            + int(msg.header.stamp.nanosec)
+        )
+        if stamp_ns <= 0 or not msg.header.frame_id or not msg.child_frame_id:
+            self.counts["visual_nonmonotonic"] += 1
+            self.last_visual_reason = "invalid_header_or_frame"
+            return
+        with self.visual_lock:
+            if (
+                self.latest_visual_odom is not None
+                and stamp_ns <= (
+                    int(self.latest_visual_odom.header.stamp.sec) * 1_000_000_000
+                    + int(self.latest_visual_odom.header.stamp.nanosec)
+                )
+            ):
+                self.counts["visual_nonmonotonic"] += 1
+                self.last_visual_reason = "nonmonotonic_visual_stamp"
+                return
+            self.latest_visual_odom = copy.deepcopy(msg)
+            self.latest_visual_arrival = time.monotonic()
+            self.counts["visual_received"] += 1
 
     def _gnss(self, msg):
         if msg.status.status < NavSatStatus.STATUS_FIX:
@@ -1546,6 +1681,94 @@ class UnifiedBackendNode(Node):
             and float(decision.get("reliability_weight", 1.0)) > 0.0
         ):
             self.counts["flow_factors"] += 1
+
+    def _visual_factor(self, previous_index, current_index,
+                       linearization_rotation):
+        if not self.visual_factor_enabled:
+            self.last_visual_reason = "disabled_by_parameter"
+            return
+        with self.visual_lock:
+            current = copy.deepcopy(self.latest_visual_odom)
+            arrival = self.latest_visual_arrival
+        if current is None or arrival is None:
+            self.last_visual_reason = "no_visual_odometry"
+            return
+        if time.monotonic() - arrival > self.visual_max_arrival_age_s:
+            self.counts["visual_stale"] += 1
+            self.last_visual_reason = "stale_visual_odometry"
+            return
+        current_stamp_ns = (
+            int(current.header.stamp.sec) * 1_000_000_000
+            + int(current.header.stamp.nanosec)
+        )
+        previous = self.last_visual_odom
+        if previous is None:
+            self.last_visual_odom = current
+            self.last_visual_stamp_ns = current_stamp_ns
+            self.last_visual_reason = "baseline_initialized"
+            return
+        if current_stamp_ns == self.last_visual_stamp_ns:
+            self.counts["visual_duplicate_samples"] += 1
+            self.last_visual_reason = "no_new_visual_sample"
+            return
+        try:
+            delta_body, delta_rotation, covariance = visual_odometry_increment(
+                previous,
+                current,
+                self.visual_default_translation_variance,
+                self.visual_default_rotation_variance,
+            )
+        except ValueError as error:
+            self.last_visual_odom = current
+            self.last_visual_stamp_ns = current_stamp_ns
+            self.counts["visual_motion_rejected"] += 1
+            self.last_visual_reason = f"invalid_increment:{error}"
+            return
+        self.last_visual_odom = current
+        self.last_visual_stamp_ns = current_stamp_ns
+        translation_m = float(np.linalg.norm(delta_body))
+        rotation_rad = float(np.linalg.norm(delta_rotation))
+        self.last_visual_translation_m = translation_m
+        self.last_visual_rotation_rad = rotation_rad
+        if (
+            translation_m < self.visual_minimum_translation_m
+            and rotation_rad < self.visual_minimum_rotation_rad
+        ):
+            self.last_visual_reason = "motion_below_threshold"
+            return
+        if (
+            translation_m > self.visual_maximum_translation_m
+            or rotation_rad > self.visual_maximum_rotation_rad
+        ):
+            self.counts["visual_motion_rejected"] += 1
+            self.last_visual_reason = "visual_motion_hard_gate"
+            return
+        decision = self._decision("vision", default_enabled=False)
+        if (
+            self.reliability_mode == "dynamic"
+            and not self._score_is_fresh("vision", time.monotonic())
+        ):
+            decision = scheduler_decision(
+                0.0, False, MAX_COVARIANCE_INFLATION)
+        self.backend.add_visual_odometry(
+            previous_index,
+            current_index,
+            delta_body,
+            delta_rotation,
+            linearization_rotation,
+            covariance=covariance,
+            decision=decision,
+        )
+        self.counts["visual_factor_attempts"] += 1
+        if (
+            bool(decision.get("factor_enabled", False))
+            and float(decision.get("reliability_weight", 0.0)) > 0.0
+        ):
+            self.counts["visual_factors"] += 1
+            self.last_visual_reason = "accepted_dv_weighted_relative_odom"
+        else:
+            self.counts["visual_disabled"] += 1
+            self.last_visual_reason = "disabled_by_dv_scheduler"
 
     def _native_lidar(self, msg):
         self.counts["native_lidar_received"] += 1
@@ -1969,6 +2192,11 @@ class UnifiedBackendNode(Node):
                 self.last_lio_stamp, stamp, reference["yaw"],
                 previous_index, current_index, reference["delta_position"],
             )
+            # One D_V-weighted relative RTAB odometry factor is the complete
+            # visual contribution. Raw RGB-D features are reliability evidence,
+            # not a second backend factor.
+            self._visual_factor(
+                previous_index, current_index, reference["orientation"])
             if self.backend_solver_mode == "manifold":
                 imu_diagnostic_covariance = self._add_manifold_imu_factor(
                     previous_index, current_index, manifold_measurement
@@ -2126,7 +2354,12 @@ class UnifiedBackendNode(Node):
             f"native_received={self.counts['native_lidar_received']};"
             f"native_queue_overflow={self.counts['native_worker_queue_overflow']};"
             "native_queue_discarded="
-            f"{self.counts['native_worker_queue_discarded']}",
+            f"{self.counts['native_worker_queue_discarded']};"
+            f"visual_received={self.counts['visual_received']};"
+            f"visual_factor_attempts={self.counts['visual_factor_attempts']};"
+            f"visual_factors={self.counts['visual_factors']};"
+            f"visual_disabled={self.counts['visual_disabled']};"
+            f"visual_reason={self.last_visual_reason}",
             flush=True,
         )
 
@@ -2232,6 +2465,15 @@ class UnifiedBackendNode(Node):
             self._key(
                 "flow_yaw_rate_abs_radps",
                 f"{self.last_flow_yaw_rate_abs_radps:.9g}",
+            ),
+            self._key("last_visual_reason", self.last_visual_reason),
+            self._key(
+                "last_visual_translation_m",
+                f"{self.last_visual_translation_m:.9g}",
+            ),
+            self._key(
+                "last_visual_rotation_rad",
+                f"{self.last_visual_rotation_rad:.9g}",
             ),
         ]
         diagnostic.values.extend(
