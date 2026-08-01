@@ -125,6 +125,7 @@ trap cleanup EXIT INT TERM
 
 setsid ros2 run multi_slam_uav_sim d435i_cross_session_monitor --ros-args \
   -p use_sim_time:=true -p mode:=session -p condition:="$CONDITION" \
+  -p ground_truth_topic:=/sim/mid360/ground_truth_odom \
   -p output_dir:="$OUTPUT_DIR/monitor" \
   >"$OUTPUT_DIR/monitor.log" 2>&1 &
 monitor_pid=$!
@@ -255,4 +256,3 @@ printf 'analysis_exit_code=%s\n' "$analysis_exit" >>"$OUTPUT_DIR/run_context.env
 trap - EXIT INT TERM
 cleanup
 exit "$analysis_exit"
-

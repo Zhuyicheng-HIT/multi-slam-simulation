@@ -44,6 +44,7 @@ setup(
             "d435i_cross_session_analysis = multi_slam_uav_sim.d435i_cross_session_analysis:main",
             "d435i_cross_session_comparison = multi_slam_uav_sim.d435i_cross_session_comparison:main",
             "d435i_relocalization_motion = multi_slam_uav_sim.d435i_relocalization_motion:main",
+            "d435i_speed_envelope_motion = multi_slam_uav_sim.d435i_speed_envelope_motion:main",
             "d435i_visual_reliability = multi_slam_uav_sim.d435i_visual_reliability:main",
             "external_nav_accuracy = multi_slam_uav_sim.external_nav_accuracy:main",
             "fcu_mavlink_flow_receiver = multi_slam_uav_sim.fcu_mavlink_flow_receiver:main",

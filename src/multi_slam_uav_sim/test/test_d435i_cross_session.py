@@ -66,7 +66,10 @@ class CrossSessionConfigurationTest(unittest.TestCase):
         config = yaml.safe_load((PACKAGE_ROOT / "config" /
             "d435i_relocalization_conditions.yaml").read_text(
                 encoding="utf-8"))
-        self.assertEqual(len(config["conditions"]), 6)
+        self.assertEqual(len(config["conditions"]), 8)
+        self.assertTrue({
+            "start_same", "start_offset", "start_yaw_offset", "start_reverse"
+        }.issubset(config["conditions"]))
         self.assertEqual(config["reference_route"]["distance_m"], 4.50)
         for condition in config["conditions"].values():
             self.assertGreaterEqual(float(condition["x_m"]), -1.0)
@@ -79,4 +82,3 @@ class CrossSessionConfigurationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -24,10 +24,12 @@ def generate_launch_description():
     database_path = LaunchConfiguration("database_path")
     use_sim_time = LaunchConfiguration("use_sim_time")
     start_backend = LaunchConfiguration("start_backend")
+    start_rtabmap = LaunchConfiguration("start_rtabmap")
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("start_backend", default_value="true"),
+        DeclareLaunchArgument("start_rtabmap", default_value="true"),
         DeclareLaunchArgument(
             "rtab_config",
             default_value=str(
@@ -76,6 +78,7 @@ def generate_launch_description():
                 "depth_topic": "/sensors/rgbd/depth",
                 "camera_info_topic": "/front/d435i/color/camera_info",
             },
+            condition=IfCondition(start_rtabmap),
         ),
         Node(
             package="multi_slam_uav_sim",

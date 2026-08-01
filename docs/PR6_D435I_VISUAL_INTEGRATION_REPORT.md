@@ -114,30 +114,81 @@ After correcting D_V's observation-count source, the focused run
 Thus visual odometry is genuinely consumed by the PR #6 unified backend; it is
 not merely launched beside it.
 
-The read-only RTAB database diagnostics for the rectangle run found 106 nodes,
-33 keyframes, 17,583 feature rows and five map IDs. No global or proximity loop
-closure was accepted in that short front-facing single-lap run. The loop and
-cross-session mechanisms are present and tested, but accepted relocalization is
-not claimed by this runtime result.
+The earlier rectangle database contained 106 nodes and five map IDs because
+the high-altitude, turning flight repeatedly lost visual odometry. RTAB's logs
+show automatic odometry resets followed by `Increment map id`; the database
+contained only neighbor links. This was a route/observation failure, not a
+cross-session database result.
 
-## Remaining external/runtime gaps
+## Native LiDAR factor result
 
-- `/home/zyc/multi-slam-deps/mid360_ws` does not contain PR #6's
-  `NativeLidarFactor` patch. Formal defaults remain native-factor mode. The local
-  validation runner detects the missing interface, selects `lio_pair`/pose
-  fallback, and disables the backend IMU factor so FAST-LIO's internal IMU update
-  is not counted twice.
-- Native-factor mode must be rerun after building the supplied FAST-LIO patch in
-  the dependency workspace.
-- A controlled two-session route is still required to demonstrate an accepted
-  cross-session loop/relocalization with this integrated branch.
-- WSLg hardware rendering is unavailable in this environment; Gazebo used
-  `kms_swrast` and occasionally required a clock-bridge restart. The runner now
-  performs one owned retry without restarting Gazebo or FCU.
+PR #6 itself contains the reproducible FAST-LIO patch, message contract,
+launcher switch and validator. The export is disabled by default. The local
+dependency checkout is the required upstream commit
+`a4743b095409588842a5b30ddfa27e29d2f99164`, but its existing install is
+unpatched. To keep that source read-only, the patch was applied and built in an
+ignored isolated dependency workspace under `logs/native_factor_dependency_ws_20260801`.
+
+All five final-matrix processes reported `input_trigger=native_factor`,
+zero LIO pose fallbacks and zero optimization errors. The reference session
+relinearized 723 native factors and inserted 94 visual factors. The four
+localization sessions relinearized 600, 573, 577 and 585 native factors while
+inserting 120, 137, 95 and 128 visual factors respectively. `/Odometry` remains
+the implemented PR #6 compatibility path for an unpatched overlay, but it was
+not the path used by the final matrix.
+
+## Cross-session relocalization result
+
+The final independent-process matrix is
+`logs/d435i_visual_slam/cross_session/matrix_pr6_d435i_final_20260801_r4`.
+Session 1 produced one map ID, 71 nodes, 2,534 words, 11,509 features, 18
+GlobalClosure links and nine live geometry-validated closure events. Maximum
+geometry support was 67 inliers; lost/reset were zero. The immutable mother
+database SHA-256 was
+`80f79acfc17e8c11c6d294c5f9c40db2bbe2ada1a85c9cc43e4321c502662c2b`.
+
+Three of four independent Session 2 conditions relocalized without false
+matches: same pose matched node 60 with 72 inliers, the 0.25/0.20 m offset
+matched node 59 with 40 inliers, and the 15 degree yaw offset matched node 60
+with 39 inliers. All matched map ID 0, had lost/reset/TF-backward-jump counts
+of zero and reached stable alignment in 3.572, 2.888 and 3.045 seconds.
+
+| Condition | Node/map | Inliers/matches | Closure translation (m) | Closure yaw | `map -> odom` correction |
+|---|---|---:|---|---:|---|
+| same pose | 60 / 0 | 72 / 126 | (0.0246, -0.0303, 0.0058) | 0.70 deg | 0.5036 m, 0.77 deg |
+| 0.25/0.20 m offset | 59 / 0 | 40 / 66 | (0.1141, 0.2175, 0.0108) | 0.62 deg | 0.6092 m, 0.71 deg |
+| 15 deg yaw offset | 60 / 0 | 39 / 73 | (0.0082, 0.0271, 0.0076) | 15.64 deg | 0.5041 m, 15.82 deg |
+| 180 deg reverse | none | 0 / 0 | none | none | none |
+
+The 180 degree reverse view produced 17 candidates, all rejected, and no
+accepted event. It is an honest algorithm failure, not a false relocalization.
+The mother hash was unchanged after every child session, all active markers and
+PID manifests cleared, and the audited FCU/Gazebo ports were free.
+
+The per-session working database SHA-256 values were
+`4eb60239e529316579515edaac9f97f043d62f93238578523001d7bab6c4fdd0`
+(same pose),
+`613e9a004b2980b930b34f39fe747008357e88065afdc76204f0bbd1d0c6306f`
+(position offset),
+`ca535f06514efa84ae1de35207145f50373c5bca41297ea3248119d39d8b1aa2`
+(yaw offset), and
+`4f8ca7a6121e152ae9b3b7db8f0e0588ebcb5ffec87d2438432957f76a1d71e2`
+(reverse view).
+
+## Remaining runtime gaps
+
+- A normal machine setup must apply the checked-in native-factor patch before
+  building the external FAST-LIO workspace; the existing dependency checkout
+  was intentionally not modified by this validation.
+- Direct 180 degree appearance reversal is not supported by this front-facing
+  single-camera reference map. It failed safely with no accepted wrong match.
+- WSLg rendering required temporary access to `/dev/dri/renderD128`; its
+  original `render` group ownership was restored after the matrix.
 
 ## Draft PR decision
 
-The branch is suitable for a new **Draft PR**: the build/tests pass and the
-visual factor is demonstrably in the unified backend. It should remain draft
-until patched native-factor FAST-LIO and a successful two-session relocalization
-run are attached. It is not ready to merge or mark ready for review yet.
+The branch is suitable to push and open as a new **Draft PR**. Native-factor
+FAST-LIO, D_V-weighted visual factors and three real cross-session localization
+conditions are now demonstrated in the PR #6 stack. It should remain draft
+while the 180 degree reverse-view limitation and external dependency patching
+procedure are reviewed; it is not being marked ready or merged here.
