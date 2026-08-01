@@ -11,6 +11,29 @@ from uf_backend_fusion.window import (
 
 
 class SlidingWindowBackendTest(unittest.TestCase):
+    def test_visual_odometry_factor_is_weighted_once(self):
+        backend = SlidingWindowBackend(solver="dense")
+        backend.add_state()
+        backend.add_state()
+        backend.add_prior(0, np.zeros(STATE_SIZE), covariance=1.0e-4)
+        backend.add_visual_odometry(
+            0, 1, [1.0, 0.0, 0.0], [0.0, 0.0, 0.1],
+            [0.0, 0.0, 0.0], covariance=[0.01] * 6,
+            decision={
+                "factor_enabled": True,
+                "reliability_weight": 0.5,
+                "covariance_inflation": 2.0,
+            },
+        )
+
+        estimate = backend.optimize()[1]
+        record = backend.factor_summary()[-1]
+
+        np.testing.assert_allclose(estimate[:3], [1.0, 0.0, 0.0], atol=2.0e-3)
+        np.testing.assert_allclose(estimate[3:6], [0.0, 0.0, 0.1], atol=2.0e-3)
+        self.assertEqual(record.name, "visual_odometry")
+        self.assertAlmostEqual(record.effective_weight, 0.25)
+
     def test_dynamic_weight_rejects_a_gnss_jump(self):
         rows = run_ablation("/tmp/uf_backend_ablation_test.csv")
         fixed = rows[0]["position_rmse_m"]

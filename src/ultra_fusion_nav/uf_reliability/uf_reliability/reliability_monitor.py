@@ -204,14 +204,18 @@ class ReliabilityMonitor(Node):
             "vision.tau_reprojection_px": 3.0,
             "vision.weights": [0.30, 0.25, 0.25, 0.20],
             "vision.minimum_features": 20,
+            "vision.internal_score_enabled": True,
         }
         for name, value in parameters.items():
             self.declare_parameter(name, value)
+        score_names = [
+            "lidar", "lidar_map", "gnss", "imu", "optical_flow"
+        ]
+        if bool(self.get_parameter("vision.internal_score_enabled").value):
+            score_names.append("vision")
         self.score_publishers = {
             name: self.create_publisher(ReliabilityScore, f"/reliability/{name}_score", 20)
-            for name in (
-                "lidar", "lidar_map", "gnss", "imu", "optical_flow", "vision"
-            )
+            for name in score_names
         }
         self.gnss_integrity_pub = self.create_publisher(GnssIntegrity, "/reliability/gnss_integrity", 20)
         self.last_imu = None
@@ -669,6 +673,8 @@ class ReliabilityMonitor(Node):
         self._publish_vision(msg.header)
 
     def _publish_vision(self, header):
+        if not bool(self.get_parameter("vision.internal_score_enabled").value):
+            return
         current_ns = stamp_ns(header)
         if self.last_vision_publish_ns is not None and current_ns - self.last_vision_publish_ns < 200_000_000:
             return

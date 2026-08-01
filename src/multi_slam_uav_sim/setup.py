@@ -14,6 +14,7 @@ data_files = [
     ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
     (f"share/{package_name}", ["package.xml"]),
     (f"share/{package_name}/worlds", glob("worlds/*.sdf") + glob("worlds/*.world")),
+    (f"share/{package_name}/launch", glob("launch/*.launch.py")),
     (f"share/{package_name}/config", glob("config/*")),
     (f"share/{package_name}/params", glob("params/*")),
     (f"share/{package_name}/scripts", glob("scripts/*")),
@@ -39,6 +40,12 @@ setup(
     entry_points={
         "console_scripts": [
             "d435i_sim_bridge = multi_slam_uav_sim.d435i_sim_bridge:main",
+            "d435i_cross_session_monitor = multi_slam_uav_sim.d435i_cross_session_monitor:main",
+            "d435i_cross_session_analysis = multi_slam_uav_sim.d435i_cross_session_analysis:main",
+            "d435i_cross_session_comparison = multi_slam_uav_sim.d435i_cross_session_comparison:main",
+            "d435i_relocalization_motion = multi_slam_uav_sim.d435i_relocalization_motion:main",
+            "d435i_speed_envelope_motion = multi_slam_uav_sim.d435i_speed_envelope_motion:main",
+            "d435i_visual_reliability = multi_slam_uav_sim.d435i_visual_reliability:main",
             "external_nav_accuracy = multi_slam_uav_sim.external_nav_accuracy:main",
             "fcu_mavlink_flow_receiver = multi_slam_uav_sim.fcu_mavlink_flow_receiver:main",
             "flight_state_bridge = multi_slam_uav_sim.flight_state_bridge:main",
@@ -55,6 +62,7 @@ setup(
             "mtf01p_mavlink_sensor = multi_slam_uav_sim.mtf01p_mavlink_sensor:main",
             "optical_flow_viewer = multi_slam_uav_sim.optical_flow_viewer:main",
             "rectangle_flow_test = multi_slam_uav_sim.rectangle_flow_test:main",
+            "rtabmap_database_diagnostics = multi_slam_uav_sim.rtabmap_database_diagnostics:main",
             "people_motion = multi_slam_uav_sim.people_motion:main",
             "rgbd_camera_follow = multi_slam_uav_sim.rgbd_camera_follow:main",
             "simulation_performance_monitor = multi_slam_uav_sim.simulation_performance_monitor:main",
