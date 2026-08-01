@@ -1,0 +1,30 @@
+
+d435i_visual_reliability:
+  ros__parameters:
+    publish_hz: 5.0
+    calibration_s: 8.0
+    minimum_state_dwell_s: 1.0
+    recovered_hold_s: 3.0
+    weak_threshold: 0.30
+    risk_threshold: 0.55
+    state_hysteresis: 0.05
+    dominant_direct_weak_threshold: 0.80
+    hard_image_gap_s: 1.0
+    hard_latency_ms: 1000.0
+    delay_slope_risk_ms_s: 5.0
+    feature_healthy_absolute: 120.0
+    feature_bad_absolute: 20.0
+    inlier_healthy_absolute: 30.0
+    inlier_bad_absolute: 5.0
+    depth_healthy_absolute: 0.70
+    depth_bad_absolute: 0.15
+    latency_healthy_absolute_ms: 120.0
+    latency_bad_absolute_ms: 400.0
+    weight_feature: 0.15
+    weight_inlier: 0.25
+    weight_depth: 0.15
+    weight_image: 0.15
+    weight_delay: 0.15
+    weight_motion: 0.05
+    weight_covariance: 0.10
+

@@ -1,0 +1,64 @@
+
+# Frozen before the formal matrix. Coordinates are MAVROS local offsets from
+# the common Gazebo spawn point. The D435i is front-facing (+X at yaw=0).
+version: d435i_cross_session_v1
+world: simple_apm_rgbd_visual_textured
+reference_route:
+  profile: long_loop_return
+  distance_m: 4.50
+  speed_mps: 0.20
+  flight_altitude_m: 0.50
+  yaw_rad: 0.0
+
+success:
+  min_geometry_inliers: 10
+  max_stable_position_error_m: 0.75
+  max_stable_yaw_error_deg: 45.0
+  max_candidate_node_distance_m: 1.25
+  stable_sample_count: 5
+  abnormal_jump_m: 1.0
+
+conditions:
+  start_same:
+    description: Near the mapped start hover, with the mapped +X view.
+    x_m: 0.00
+    y_m: 0.00
+    z_m: 0.50
+    yaw_rad: 0.0
+    sweep_deg: 12.0
+  start_reverse:
+    description: Near the mapped start hover with a 180 degree view change.
+    x_m: 0.00
+    y_m: 0.00
+    z_m: 0.50
+    yaw_rad: 3.141592653589793
+    sweep_deg: 12.0
+  route_middle:
+    description: At the middle of the mapped 4.50 m center-line route.
+    x_m: 2.25
+    y_m: 0.00
+    z_m: 0.50
+    yaw_rad: 0.0
+    sweep_deg: 12.0
+  route_end:
+    description: Near the mapped route endpoint, retaining the +X view.
+    x_m: 4.25
+    y_m: 0.00
+    z_m: 0.50
+    yaw_rad: 0.0
+    sweep_deg: 12.0
+  mapped_edge:
+    description: Near the mapped corridor edge with a 0.45 m lateral offset.
+    x_m: 3.75
+    y_m: 0.45
+    z_m: 0.50
+    yaw_rad: 0.0
+    sweep_deg: 18.0
+  similar_geometry:
+    description: Parallel 0.60 m offset over repetitive grid geometry.
+    x_m: 2.25
+    y_m: 0.60
+    z_m: 0.50
+    yaw_rad: 0.0
+    sweep_deg: 18.0
+
