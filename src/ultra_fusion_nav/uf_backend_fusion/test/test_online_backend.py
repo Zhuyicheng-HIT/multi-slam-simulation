@@ -38,6 +38,7 @@ from uf_backend_fusion.online_backend import (
     unwrap_yaw,
     UnifiedBackendNode,
     validate_optimized_state,
+    visual_odometry_increment,
     yaw_to_quaternion,
 )
 from uf_reliability.flow_rotation_gate import FlowRotationGateResult
@@ -177,6 +178,30 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(stale, 1)
         self.assertEqual(superseded, 0)
         self.assertEqual(observations, [])
+
+    def test_visual_odometry_increment_is_origin_free_and_body_relative(self):
+        previous = Odometry()
+        previous.header.frame_id = "odom"
+        previous.child_frame_id = "base_link"
+        previous.pose.pose.position.x = 10.0
+        previous.pose.pose.position.y = -3.0
+        previous.pose.pose.orientation.z = np.sin(np.pi / 4.0)
+        previous.pose.pose.orientation.w = np.cos(np.pi / 4.0)
+        current = Odometry()
+        current.header.frame_id = "odom"
+        current.child_frame_id = "base_link"
+        current.pose.pose.position.x = 10.0
+        current.pose.pose.position.y = -1.0
+        current.pose.pose.orientation.z = np.sin((np.pi / 2.0 + 0.2) / 2.0)
+        current.pose.pose.orientation.w = np.cos((np.pi / 2.0 + 0.2) / 2.0)
+
+        translation, rotation, covariance = visual_odometry_increment(
+            previous, current, 0.01, 0.0025)
+
+        np.testing.assert_allclose(translation, [2.0, 0.0, 0.0], atol=1.0e-9)
+        np.testing.assert_allclose(rotation, [0.0, 0.0, 0.2], atol=1.0e-9)
+        np.testing.assert_allclose(
+            covariance, [0.01, 0.01, 0.01, 0.0025, 0.0025, 0.0025])
 
     def test_full_imu_covariance_inflation_preserves_correlation_and_spd(self):
         covariance = np.eye(15)

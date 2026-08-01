@@ -4,6 +4,7 @@ unified_backend_fusion:
     native_lidar_factor_topic: /fast_lio/native_lidar_factor
     gnss_topic: /sensors/gnss/fix
     flow_topic: /sensors/optical_flow/rad
+    visual_odom_topic: /rtabmap/odom
     imu_topic: /sensors/imu
     scheduler_topic: /reliability/scheduler_state
     relocalization_result_topic: /relocalization/result
@@ -79,6 +80,18 @@ unified_backend_fusion:
     # horizontal displacement factor. Replace the offset with a measured
     # ROS-FLU optical-flow-to-IMU vector on the aircraft.
     flow_lever_arm_compensation_enabled: true
+    # RTAB odometry is sampled by arrival time because PR #6 restamps the
+    # MID360/LIO path while RGB-D retains Gazebo sensor stamps. Only relative
+    # increments enter the backend, so the RTAB odom origin is never a second
+    # global pose anchor.
+    visual_factor_enabled: true
+    visual_max_arrival_age_s: 0.75
+    visual_minimum_translation_m: 0.002
+    visual_minimum_rotation_rad: 0.002
+    visual_maximum_translation_m: 3.0
+    visual_maximum_rotation_rad: 1.2
+    visual_default_translation_variance_m2: 0.01
+    visual_default_rotation_variance_rad2: 0.0025
     imu_factor_enabled: true
     # Until an independently validated visual heading factor is present, IMU
     # alone only propagates relative yaw. Keep a weak native LiDAR anchor.
@@ -125,6 +138,7 @@ unified_backend_fusion:
     fixed_gnss_weight: 1.0
     fixed_imu_weight: 1.0
     fixed_optical_flow_weight: 1.0
+    fixed_vision_weight: 1.0
     fixed_covariance_inflation: 1.0
     publish_path_length: 2000
     path_publish_period_s: 0.5

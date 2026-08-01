@@ -94,6 +94,25 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertEqual(backend.factor_count, 1)
         np.testing.assert_allclose(backend.state(0), recovered)
         self.assertEqual(backend.factor_summary()[0].name, "prior")
+
+    def test_visual_odometry_factor_recovers_relative_se3_motion(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        backend.add_state(np.zeros(15))
+        initial = np.zeros(15)
+        initial[:3] = [0.6, 0.3, -0.1]
+        initial[3:6] = [0.0, 0.0, -0.1]
+        backend.add_state(initial)
+        backend.add_prior(0, np.zeros(15), covariance=1.0e-5)
+        backend.add_visual_odometry(
+            0, 1, [1.0, 0.0, 0.0], [0.0, 0.0, 0.2],
+            covariance=[0.01] * 3 + [0.0025] * 3,
+        )
+
+        estimate = backend.optimize()[1]
+
+        np.testing.assert_allclose(estimate[:3], [1.0, 0.0, 0.0], atol=2.0e-3)
+        np.testing.assert_allclose(estimate[3:6], [0.0, 0.0, 0.2], atol=2.0e-3)
+        self.assertEqual(backend.factor_summary()[-1].name, "visual_odometry")
     def test_huber_loss_is_symmetric_and_continuous_at_threshold(self):
         residual = np.asarray([0.0, 2.5, -2.5, 10.0, -10.0])
         loss, weight = huber_loss_and_weight(residual, 2.5)
