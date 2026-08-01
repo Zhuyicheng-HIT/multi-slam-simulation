@@ -208,11 +208,14 @@ class ReliabilityMonitor(Node):
         }
         for name, value in parameters.items():
             self.declare_parameter(name, value)
+        score_names = [
+            "lidar", "lidar_map", "gnss", "imu", "optical_flow"
+        ]
+        if bool(self.get_parameter("vision.internal_score_enabled").value):
+            score_names.append("vision")
         self.score_publishers = {
             name: self.create_publisher(ReliabilityScore, f"/reliability/{name}_score", 20)
-            for name in (
-                "lidar", "lidar_map", "gnss", "imu", "optical_flow", "vision"
-            )
+            for name in score_names
         }
         self.gnss_integrity_pub = self.create_publisher(GnssIntegrity, "/reliability/gnss_integrity", 20)
         self.last_imu = None

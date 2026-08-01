@@ -125,7 +125,7 @@ d435i_component_command_owned() {
     stack_supervisor)
       [[ "$command" == *"$project_root/"* && "$command" == *"run_apm_sensor_stack.sh"* ]]
       ;;
-    clock_bridge)
+    clock_bridge|clock_bridge_retry)
       [[ "$command" == *"parameter_bridge"* && "$command" == *"/clock"* ]]
       ;;
     ground_truth_bridge)
@@ -173,8 +173,23 @@ d435i_component_command_owned() {
          "$command" == *"run_mid360_fastlio_mapping.sh"* ]]
       ;;
     integration_overlay)
-      [[ "$command" == *"ros2 launch multi_slam_uav_sim"* &&
-         "$command" == *"pr6_d435i_visual_integration.launch.py"* ]]
+      [[ ( "$command" == *"ros2 launch multi_slam_uav_sim"* &&
+           "$command" == *"pr6_d435i_visual_integration.launch.py"* ) ||
+         "$command" == *"$project_root/install/"* ||
+         "$command" == /opt/ros/humble/lib/rtabmap_* ||
+         "$command" == *"/opt/ros/humble/lib/tf2_ros/static_transform_publisher"* ]]
+      ;;
+    lio_adapter_fallback)
+      [[ ( "$command" == *"ros2 launch uf_lio_adapter"* &&
+           "$command" == *"lio_adapter.launch.py"* ) ||
+         "$command" == *"$project_root/install/uf_lio_adapter/"* ]]
+      ;;
+    backend_fallback)
+      [[ ( "$command" == *"ros2 launch uf_backend_fusion"* &&
+           "$command" == *"online_backend_visual.launch.py"* ) ||
+         "$command" == *"$project_root/install/uf_backend_fusion/"* ||
+         "$command" == *"$project_root/install/uf_reliability/"* ||
+         "$command" == *"$project_root/install/uf_sensor_pipeline/"* ]]
       ;;
     rectangle_motion)
       [[ "$command" == *"ros2 run multi_slam_uav_sim"* &&
