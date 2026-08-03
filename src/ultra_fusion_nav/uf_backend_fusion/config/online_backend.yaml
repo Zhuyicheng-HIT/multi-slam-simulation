@@ -75,6 +75,10 @@ unified_backend_fusion:
     # down-looking offset; replace it with the measured hardware lever arm.
     flow_los_diagnostics_enabled: true
     flow_sensor_offset_body_m: [0.0, 0.0, -0.35]
+    # Correct sensor-origin motion to the IMU/body origin while retaining a
+    # horizontal displacement factor. Replace the offset with a measured
+    # ROS-FLU optical-flow-to-IMU vector on the aircraft.
+    flow_lever_arm_compensation_enabled: true
     imu_factor_enabled: true
     # Until an independently validated visual heading factor is present, IMU
     # alone only propagates relative yaw. Keep a weak native LiDAR anchor.

@@ -72,6 +72,7 @@ from .window import SlidingWindowBackend
 from uf_reliability.scoring import (
     gnss_score,
     optical_flow_displacement_frd,
+    optical_flow_lever_arm_displacement_flu,
     optical_flow_los_prediction_flu,
     optical_flow_los_rate_apm,
     optical_flow_score,
@@ -1063,6 +1064,7 @@ class UnifiedBackendNode(Node):
         # ROS FLU body coordinates. Replace this simulation mount with the
         # measured optical-flow-to-IMU lever arm on the aircraft.
         self.declare_parameter("flow_sensor_offset_body_m", [0.0, 0.0, -0.35])
+        self.declare_parameter("flow_lever_arm_compensation_enabled", True)
         self.declare_parameter("imu_factor_enabled", True)
         self.declare_parameter("preserve_lio_anchor", True)
         self.declare_parameter("lidar_anchor_minimum_effective_weight", 0.10)
@@ -1215,6 +1217,8 @@ class UnifiedBackendNode(Node):
             self.get_parameter("flow_rotation_imu_max_gap_s").value)
         self.flow_los_diagnostics_enabled = bool(
             self.get_parameter("flow_los_diagnostics_enabled").value)
+        self.flow_lever_arm_compensation_enabled = bool(
+            self.get_parameter("flow_lever_arm_compensation_enabled").value)
         flow_sensor_offset = tuple(
             float(value) for value in self.get_parameter(
                 "flow_sensor_offset_body_m").value
@@ -1561,6 +1565,8 @@ class UnifiedBackendNode(Node):
             "flow_disabled_rotation": 0,
             "flow_los_diagnostic_samples": 0,
             "flow_los_diagnostic_invalid": 0,
+            "flow_lever_arm_compensated": 0,
+            "flow_lever_arm_unavailable": 0,
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
             "imu_reintegrations": 0,
             "calibration_updates": 0, "calibration_accepted": 0,
@@ -1644,9 +1650,11 @@ class UnifiedBackendNode(Node):
         self.last_flow_rotation_weight = 0.0
         self.last_flow_yaw_rate_abs_radps = -1.0
         self.last_flow_los_diagnostic = None
+        self.last_flow_lever_arm_displacement = None
         self.flow_los_residual_no_lever_norms = deque(maxlen=5000)
         self.flow_los_residual_norms = deque(maxlen=5000)
         self.flow_los_lever_arm_norms = deque(maxlen=5000)
+        self.flow_lever_arm_displacement_norms = deque(maxlen=5000)
         self.last_lidar_prediction_position_innovation_m = -1.0
         self.last_lidar_prediction_yaw_innovation_rad = -1.0
         self.last_lidar_source = "unavailable"
@@ -2394,6 +2402,85 @@ class UnifiedBackendNode(Node):
         self.flow_los_lever_arm_norms.append(lever_norm)
         return diagnostic
 
+    def _flow_lever_arm_correction(self, records, previous_stamp, current_stamp,
+                                   previous_state):
+        """Estimate sensor-point motion to remove from horizontal flow delta."""
+        if not self.flow_lever_arm_compensation_enabled:
+            self.last_flow_lever_arm_displacement = None
+            return np.zeros(3, dtype=float), {
+                "enabled": 0.0,
+                "valid": 0.0,
+                "reason": "disabled",
+                "integration_s": 0.0,
+            }
+        observation = flow_los_observation(records)
+        integration_s = (
+            float(observation["integration_s"])
+            if observation is not None else float(current_stamp - previous_stamp)
+        )
+        if not math.isfinite(integration_s) or integration_s <= 0.0:
+            self.counts["flow_lever_arm_unavailable"] += 1
+            self.last_flow_lever_arm_displacement = None
+            return np.zeros(3, dtype=float), {
+                "enabled": 1.0,
+                "valid": 0.0,
+                "reason": "invalid_integration",
+                "integration_s": 0.0,
+            }
+        imu_samples = sorted([
+            (sample.stamp_s, tuple(float(value) for value in sample.angular_velocity))
+            for sample in self._imu_snapshot()
+        ])
+        angular_velocity = interval_mean_vector(
+            imu_samples,
+            previous_stamp,
+            current_stamp,
+            self.flow_rotation_imu_max_gap_s,
+        )
+        if angular_velocity is None:
+            self.counts["flow_lever_arm_unavailable"] += 1
+            self.last_flow_lever_arm_displacement = None
+            return np.zeros(3, dtype=float), {
+                "enabled": 1.0,
+                "valid": 0.0,
+                "reason": "imu_interval_unavailable",
+                "integration_s": integration_s,
+            }
+        if previous_state is not None:
+            state = np.asarray(previous_state, dtype=float)
+            if state.shape == (15,) and np.all(np.isfinite(state)):
+                angular_velocity = tuple(
+                    float(angular_velocity[index]) - float(state[12 + index])
+                    for index in range(3)
+                )
+        correction = optical_flow_lever_arm_displacement_flu(
+            angular_velocity,
+            self.flow_sensor_offset_body_m,
+            integration_s,
+        )
+        if correction is None:
+            self.counts["flow_lever_arm_unavailable"] += 1
+            self.last_flow_lever_arm_displacement = None
+            return np.zeros(3, dtype=float), {
+                "enabled": 1.0,
+                "valid": 0.0,
+                "reason": "invalid_gyro_or_mount",
+                "integration_s": integration_s,
+            }
+        correction = np.asarray(correction, dtype=float)
+        self.counts["flow_lever_arm_compensated"] += 1
+        self.last_flow_lever_arm_displacement = tuple(float(value) for value in correction)
+        self.flow_lever_arm_displacement_norms.append(
+            float(np.linalg.norm(correction[:2]))
+        )
+        return correction, {
+            "enabled": 1.0,
+            "valid": 1.0,
+            "reason": "compensated",
+            "integration_s": integration_s,
+            "angular_velocity_body_flu": tuple(float(value) for value in angular_velocity),
+        }
+
     def _flow_factor(self, previous_stamp, current_stamp, previous_yaw,
                      previous_index, current_index, lio_delta,
                      previous_state=None):
@@ -2413,7 +2500,26 @@ class UnifiedBackendNode(Node):
         if observation is None:
             self.last_flow_reason = "no_valid_observation"
             return
-        flow_displacement = observation["delta_position"]
+        flow_delta_body_sensor = np.asarray(observation["delta_body"], dtype=float)
+        lever_correction, lever_evidence = self._flow_lever_arm_correction(
+            records, previous_stamp, current_stamp, previous_state,
+        )
+        flow_delta_body = flow_delta_body_sensor - lever_correction
+        # Keep the output planar: rotation-induced vertical motion is never
+        # allowed to leak into the horizontal optical-flow factor.
+        flow_delta_body[2] = 0.0
+        flow_delta_position = np.asarray(
+            frd_to_enu_delta(
+                float(flow_delta_body[0]),
+                -float(flow_delta_body[1]),
+                previous_yaw,
+            ),
+            dtype=float,
+        )
+        flow_delta_position = np.asarray(
+            [flow_delta_position[0], flow_delta_position[1], 0.0], dtype=float
+        )
+        flow_displacement = [float(value) for value in flow_delta_position]
         los_diagnostic = self._flow_los_diagnostic(
             records, previous_state, previous_stamp, current_stamp,
         )
@@ -2426,6 +2532,25 @@ class UnifiedBackendNode(Node):
         decision["degradation_score"] = float(score)
         decision["evidence"] = evidence
         decision["reasons"] = list(reasons)
+        decision["evidence"].update({
+            "flow_lever_arm_compensation_enabled": lever_evidence["enabled"],
+            "flow_lever_arm_compensation_valid": lever_evidence["valid"],
+            "flow_lever_arm_integration_s": lever_evidence["integration_s"],
+            "flow_lever_arm_displacement_x_m": float(lever_correction[0]),
+            "flow_lever_arm_displacement_y_m": float(lever_correction[1]),
+            "flow_lever_arm_displacement_norm_m": float(
+                np.linalg.norm(lever_correction[:2])
+            ),
+            "flow_delta_sensor_x_m": float(flow_delta_body_sensor[0]),
+            "flow_delta_sensor_y_m": float(flow_delta_body_sensor[1]),
+            "flow_delta_body_x_m": float(flow_delta_body[0]),
+            "flow_delta_body_y_m": float(flow_delta_body[1]),
+        })
+        if lever_evidence["valid"] < 0.5 and lever_evidence["enabled"] > 0.5:
+            decision["evidence"]["flow_lever_arm_unavailable"] = 1.0
+            decision["reasons"].append(
+                f"flow_lever_arm_{lever_evidence['reason']}"
+            )
         if los_diagnostic is None:
             decision["evidence"]["flow_los_diagnostic_valid"] = 0.0
         else:
@@ -2463,7 +2588,7 @@ class UnifiedBackendNode(Node):
             self.flow_rotation_imu_max_gap_s,
         )
         translation_norm = float(np.linalg.norm(
-            np.asarray(observation["delta_body"], dtype=float)[:2]
+            np.asarray(flow_delta_body, dtype=float)[:2]
         ))
         rotation_gate = self.flow_rotation_gate.update(
             current_stamp,
@@ -2501,14 +2626,14 @@ class UnifiedBackendNode(Node):
             self.last_flow_reason = "accepted"
         if self.optical_flow_yaw_coupling_enabled:
             self.backend.add_optical_flow_body(
-                previous_index, current_index, observation["delta_body"],
+                previous_index, current_index, flow_delta_body.tolist(),
                 previous_yaw,
                 covariance=[0.10 ** 2, 0.10 ** 2, 1.0], decision=decision,
             )
             self.last_flow_factor_type = "body_yaw_linearized"
         else:
             self.backend.add_optical_flow(
-                previous_index, current_index, observation["delta_position"],
+                previous_index, current_index, flow_delta_position.tolist(),
                 covariance=[0.10 ** 2, 0.10 ** 2, 1.0], decision=decision,
             )
             self.last_flow_factor_type = "map_translation"
@@ -3568,6 +3693,14 @@ class UnifiedBackendNode(Node):
             float(np.percentile(self.flow_los_lever_arm_norms, 95))
             if self.flow_los_lever_arm_norms else -1.0
         )
+        flow_lever_displacement_mean = (
+            float(np.mean(self.flow_lever_arm_displacement_norms))
+            if self.flow_lever_arm_displacement_norms else -1.0
+        )
+        flow_lever_displacement_p95 = (
+            float(np.percentile(self.flow_lever_arm_displacement_norms, 95))
+            if self.flow_lever_arm_displacement_norms else -1.0
+        )
         ownership = (
             "native_relinearized="
             f"{self.counts['native_lidar_relinearized']};"
@@ -3673,6 +3806,8 @@ class UnifiedBackendNode(Node):
             f"{flow_los_residual_no_lever_p95:.9g};"
             f"flow_los_lever_mean_radps={flow_los_lever_mean:.9g};"
             f"flow_los_lever_p95_radps={flow_los_lever_p95:.9g};"
+            f"flow_lever_arm_displacement_mean_m={flow_lever_displacement_mean:.9g};"
+            f"flow_lever_arm_displacement_p95_m={flow_lever_displacement_p95:.9g};"
             f"prepare_mean_ms={self._phase_mean_ms('prepare'):.3f};"
             f"prepare_max_ms={self.phase_timing['prepare']['max_ms']:.3f};"
             f"pre_state_mean_ms={self._phase_mean_ms('pre_state'):.3f};"
@@ -3710,6 +3845,10 @@ class UnifiedBackendNode(Node):
         flow_los_lever_p95 = (
             float(np.percentile(self.flow_los_lever_arm_norms, 95))
             if self.flow_los_lever_arm_norms else -1.0
+        )
+        flow_lever_displacement_p95 = (
+            float(np.percentile(self.flow_lever_arm_displacement_norms, 95))
+            if self.flow_lever_arm_displacement_norms else -1.0
         )
         diagnostic = DiagnosticStatus()
         diagnostic.name = "unified_backend_fusion"
@@ -3917,6 +4056,14 @@ class UnifiedBackendNode(Node):
                 ",".join(
                     f"{value:.6g}" for value in self.flow_sensor_offset_body_m
                 ),
+            ),
+            self._key(
+                "flow_lever_arm_compensation_enabled",
+                self.flow_lever_arm_compensation_enabled,
+            ),
+            self._key(
+                "flow_lever_arm_displacement_p95_m",
+                f"{flow_lever_displacement_p95:.9g}",
             ),
         ]
         diagnostic.values.extend(

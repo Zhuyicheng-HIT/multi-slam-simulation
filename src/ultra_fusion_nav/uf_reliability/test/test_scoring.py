@@ -4,6 +4,7 @@ from uf_reliability.scoring import (
     augment_lidar_score, gnss_integrity_quality, gnss_score, imu_score, lidar_score,
     lidar_factor_score, lidar_innovation_score, lidar_map_score,
     apm_optical_flow_compensated_los, optical_flow_displacement_frd,
+    optical_flow_lever_arm_displacement_flu,
     optical_flow_los_prediction_flu, optical_flow_los_rate_apm,
     optical_flow_score, optical_flow_velocity_frd, vision_score,
 )
@@ -170,6 +171,14 @@ class ScoringTest(unittest.TestCase):
         self.assertAlmostEqual(without[1], -0.5)
         self.assertAlmostEqual(with_arm[0], 0.05)
         self.assertAlmostEqual(with_arm[1], -0.5)
+
+    def test_flow_lever_arm_displacement_uses_flu_cross_product(self):
+        correction = optical_flow_lever_arm_displacement_flu(
+            (0.5, 0.0, 0.0), (0.0, 0.0, 0.2), 0.1,
+        )
+        self.assertAlmostEqual(correction[0], 0.0)
+        self.assertAlmostEqual(correction[1], -0.01)
+        self.assertAlmostEqual(correction[2], 0.0)
 
     def test_vision_holes_and_blur_increase(self):
         good = vision_score(150, 150, 1.0, 0.2, 0.98)[0]

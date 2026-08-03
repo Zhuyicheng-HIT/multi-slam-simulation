@@ -86,6 +86,38 @@ def optical_flow_velocity_frd(integrated_x, integrated_y,
     return tuple(float(value) / integration_time_s for value in displacement)
 
 
+def optical_flow_lever_arm_displacement_flu(
+        angular_velocity_body_flu, lever_arm_body_flu, integration_time_s):
+    """Return sensor-to-body displacement from ``omega x r`` in ROS FLU.
+
+    The optical-flow sensor measures the velocity of its own origin.  For a
+    body/IMU-origin horizontal displacement factor, the sensor-point motion
+    contribution is removed once as ``(omega x r) * dt``.  The returned
+    vector remains in body FLU coordinates; callers may discard ``z`` when
+    the factor is planar.
+    """
+    try:
+        angular_velocity = tuple(float(value) for value in angular_velocity_body_flu)
+        lever_arm = tuple(float(value) for value in lever_arm_body_flu)
+        duration = float(integration_time_s)
+    except (TypeError, ValueError):
+        return None
+    if (
+        len(angular_velocity) != 3 or len(lever_arm) != 3
+        or not math.isfinite(duration) or duration <= 0.0
+        or not all(math.isfinite(value) for value in angular_velocity)
+        or not all(math.isfinite(value) for value in lever_arm)
+    ):
+        return None
+    omega_x, omega_y, omega_z = angular_velocity
+    arm_x, arm_y, arm_z = lever_arm
+    return (
+        (omega_y * arm_z - omega_z * arm_y) * duration,
+        (omega_z * arm_x - omega_x * arm_z) * duration,
+        (omega_x * arm_y - omega_y * arm_x) * duration,
+    )
+
+
 def optical_flow_los_rate_apm(integrated_x, integrated_y,
                               integrated_xgyro, integrated_ygyro,
                               integration_time_s):
