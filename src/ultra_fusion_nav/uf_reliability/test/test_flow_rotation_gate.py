@@ -4,6 +4,7 @@ from uf_reliability.flow_rotation_gate import (
     FlowRotationGateConfig,
     OpticalFlowRotationGate,
     interval_mean_absolute_yaw_rate,
+    interval_mean_vector,
 )
 
 
@@ -24,6 +25,17 @@ class FlowRotationGateTest(unittest.TestCase):
         self.assertIsNone(
             interval_mean_absolute_yaw_rate(samples, 0.5, 0.6)
         )
+
+    def test_interval_mean_vector_integrates_imu_components(self):
+        samples = [
+            (0.0, (0.0, 0.0, 0.0)),
+            (0.05, (0.2, 0.4, 0.6)),
+            (0.10, (0.4, 0.8, 1.2)),
+        ]
+        value = interval_mean_vector(samples, 0.0, 0.10)
+        self.assertAlmostEqual(value[0], 0.20)
+        self.assertAlmostEqual(value[1], 0.40)
+        self.assertAlmostEqual(value[2], 0.60)
 
     def test_turn_downweights_then_waits_for_translation_and_ramps(self):
         active = self.gate.update(0.0, 0.02, 0.10, True)

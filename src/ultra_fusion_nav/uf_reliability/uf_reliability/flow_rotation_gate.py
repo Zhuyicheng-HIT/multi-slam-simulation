@@ -51,6 +51,93 @@ def _sample_scalar(samples, timestamp_s, maximum_gap_s):
     return float(before[1]) + ratio * (float(after[1]) - float(before[1]))
 
 
+def _sample_vector(samples, timestamp_s, maximum_gap_s):
+    times = [sample[0] for sample in samples]
+    index = bisect.bisect_left(times, timestamp_s)
+    if index < len(samples) and abs(times[index] - timestamp_s) <= 1.0e-9:
+        return tuple(float(value) for value in samples[index][1])
+    if index == 0:
+        return (
+            tuple(float(value) for value in samples[0][1])
+            if times[0] - timestamp_s <= maximum_gap_s else None
+        )
+    if index >= len(samples):
+        return (
+            tuple(float(value) for value in samples[-1][1])
+            if timestamp_s - times[-1] <= maximum_gap_s else None
+        )
+    before = samples[index - 1]
+    after = samples[index]
+    gap_s = after[0] - before[0]
+    if gap_s <= 0.0 or gap_s > maximum_gap_s:
+        return None
+    ratio = (timestamp_s - before[0]) / gap_s
+    return tuple(
+        float(before[1][component])
+        + ratio * (float(after[1][component]) - float(before[1][component]))
+        for component in range(len(before[1]))
+    )
+
+
+def interval_mean_vector(
+    samples: Iterable[Sequence[float]],
+    start_s: float,
+    end_s: float,
+    maximum_gap_s: float = 0.12,
+):
+    """Average a timestamped finite vector over one integration interval."""
+    start_s = float(start_s)
+    end_s = float(end_s)
+    maximum_gap_s = float(maximum_gap_s)
+    if (
+        not math.isfinite(start_s)
+        or not math.isfinite(end_s)
+        or end_s <= start_s
+        or not math.isfinite(maximum_gap_s)
+        or maximum_gap_s <= 0.0
+    ):
+        return None
+    ordered = []
+    dimension = None
+    for sample in samples:
+        try:
+            timestamp = float(sample[0])
+            vector = tuple(float(value) for value in sample[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if (
+            not math.isfinite(timestamp)
+            or not vector
+            or not all(math.isfinite(value) for value in vector)
+        ):
+            continue
+        if dimension is None:
+            dimension = len(vector)
+        if len(vector) == dimension:
+            ordered.append((timestamp, vector))
+    ordered.sort(key=lambda sample: sample[0])
+    if not ordered or dimension is None:
+        return None
+    start_value = _sample_vector(ordered, start_s, maximum_gap_s)
+    end_value = _sample_vector(ordered, end_s, maximum_gap_s)
+    if start_value is None or end_value is None:
+        return None
+    points = [(start_s, start_value)]
+    points.extend(sample for sample in ordered if start_s < sample[0] < end_s)
+    points.append((end_s, end_value))
+    integral = [0.0] * dimension
+    for before, after in zip(points[:-1], points[1:]):
+        dt_s = after[0] - before[0]
+        if dt_s <= 0.0 or dt_s > maximum_gap_s:
+            return None
+        for component in range(dimension):
+            integral[component] += 0.5 * (
+                float(before[1][component]) + float(after[1][component])
+            ) * dt_s
+    duration = end_s - start_s
+    return tuple(value / duration for value in integral)
+
+
 def interval_mean_absolute_yaw_rate(
     samples: Iterable[Sequence[float]],
     start_s: float,

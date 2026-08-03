@@ -14,6 +14,7 @@ from uf_backend_fusion.online_backend import (
     apply_flow_rotation_gate,
     apply_lidar_anchor_floor,
     covariance_update_due,
+    flow_los_observation,
     flow_observation_delta,
     select_flow_records,
     frd_to_enu_delta,
@@ -441,6 +442,31 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         np.testing.assert_allclose(observation["delta_position"], [1.0, 0.0, 0.0])
         np.testing.assert_allclose(observation["delta_body"], [1.0, 0.0, 0.0])
         self.assertEqual(observation["sample_count"], 1)
+
+    def test_flow_los_observation_is_exposure_weighted(self):
+        observation = flow_los_observation([
+            {
+                "integrated_x": 0.01,
+                "integrated_y": 0.00,
+                "integrated_xgyro": 0.00,
+                "integrated_ygyro": 0.00,
+                "integration_time_s": 0.01,
+                "distance_m": 1.0,
+            },
+            {
+                "integrated_x": 0.04,
+                "integrated_y": 0.00,
+                "integrated_xgyro": 0.00,
+                "integrated_ygyro": 0.00,
+                "integration_time_s": 0.04,
+                "distance_m": 2.0,
+            },
+        ])
+        self.assertIsNotNone(observation)
+        self.assertAlmostEqual(observation["measurement_radps"][0], -1.0)
+        self.assertAlmostEqual(observation["measurement_radps"][1], 0.0)
+        self.assertAlmostEqual(observation["distance_m"], 1.8)
+        self.assertEqual(observation["sample_count"], 2)
 
     def test_flow_selection_prefers_strict_interval_and_keeps_future(self):
         records = [

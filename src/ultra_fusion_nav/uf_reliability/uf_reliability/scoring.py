@@ -86,6 +86,63 @@ def optical_flow_velocity_frd(integrated_x, integrated_y,
     return tuple(float(value) / integration_time_s for value in displacement)
 
 
+def optical_flow_los_rate_apm(integrated_x, integrated_y,
+                              integrated_xgyro, integrated_ygyro,
+                              integration_time_s):
+    """Return APM-compensated optical-flow LOS rates in sensor axes."""
+    integration_time_s = float(integration_time_s)
+    if not math.isfinite(integration_time_s) or integration_time_s <= 0.0:
+        return None
+    compensated = apm_optical_flow_compensated_los(
+        integrated_x, integrated_y, integrated_xgyro, integrated_ygyro,
+    )
+    if compensated is None:
+        return None
+    return tuple(float(value) / integration_time_s for value in compensated)
+
+
+def optical_flow_los_prediction_flu(
+        velocity_body_flu, angular_velocity_body_flu,
+        lever_arm_body_flu, ground_distance_m):
+    """Predict APM LOS rates after converting the backend body to FLU.
+
+    ArduPilot's native FRD equation is ``[v_y/r, -v_x/r]``.  The backend
+    uses the ROS-style FLU body convention, so the equivalent sensor-axis
+    prediction is ``[-v_y/r, -v_x/r]``.  The lever-arm velocity is included
+    as ``omega x r`` before the LOS projection.
+    """
+    try:
+        velocity = tuple(float(value) for value in velocity_body_flu)
+        angular_velocity = tuple(float(value) for value in angular_velocity_body_flu)
+        lever_arm = tuple(float(value) for value in lever_arm_body_flu)
+    except (TypeError, ValueError):
+        return None
+    if len(velocity) != 3 or len(angular_velocity) != 3 or len(lever_arm) != 3:
+        return None
+    distance = float(ground_distance_m)
+    if (
+        not math.isfinite(distance) or distance <= 0.0
+        or not all(math.isfinite(value) for value in velocity)
+        or not all(math.isfinite(value) for value in angular_velocity)
+        or not all(math.isfinite(value) for value in lever_arm)
+    ):
+        return None
+    omega_x, omega_y, omega_z = angular_velocity
+    arm_x, arm_y, arm_z = lever_arm
+    lever_velocity = (
+        omega_y * arm_z - omega_z * arm_y,
+        omega_z * arm_x - omega_x * arm_z,
+        omega_x * arm_y - omega_y * arm_x,
+    )
+    sensor_velocity = tuple(
+        velocity[index] + lever_velocity[index] for index in range(3)
+    )
+    return (
+        -sensor_velocity[1] / distance,
+        -sensor_velocity[0] / distance,
+    )
+
+
 def finalize_score(score, coverage, evidence, reasons):
     complete = coverage >= 1.0 - 1.0e-9
     evidence["evidence_weight_coverage"] = coverage

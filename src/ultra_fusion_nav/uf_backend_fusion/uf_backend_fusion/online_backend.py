@@ -72,12 +72,15 @@ from .window import SlidingWindowBackend
 from uf_reliability.scoring import (
     gnss_score,
     optical_flow_displacement_frd,
+    optical_flow_los_prediction_flu,
+    optical_flow_los_rate_apm,
     optical_flow_score,
 )
 from uf_reliability.flow_rotation_gate import (
     FlowRotationGateConfig,
     OpticalFlowRotationGate,
     interval_mean_absolute_yaw_rate,
+    interval_mean_vector,
 )
 
 try:
@@ -901,6 +904,49 @@ def flow_observation_delta(flow_records, yaw):
     }
 
 
+def flow_los_observation(flow_records):
+    """Aggregate APM-compensated flow LOS rates using exposure duration."""
+    weighted_rates = []
+    total_duration_s = 0.0
+    weighted_distance = 0.0
+    for flow in flow_records:
+        try:
+            integration_s = float(flow.get("integration_time_s", 0.0))
+            distance_m = float(flow["distance_m"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            not math.isfinite(integration_s)
+            or integration_s <= 0.0
+            or not math.isfinite(distance_m)
+            or distance_m <= 0.0
+        ):
+            continue
+        rate = optical_flow_los_rate_apm(
+            flow["integrated_x"], flow["integrated_y"],
+            flow["integrated_xgyro"], flow["integrated_ygyro"],
+            integration_s,
+        )
+        if rate is None:
+            continue
+        weighted_rates.append((rate, integration_s))
+        total_duration_s += integration_s
+        weighted_distance += distance_m * integration_s
+    if not weighted_rates or total_duration_s <= 0.0:
+        return None
+    measurement = tuple(
+        sum(rate[component] * duration for rate, duration in weighted_rates)
+        / total_duration_s
+        for component in range(2)
+    )
+    return {
+        "measurement_radps": measurement,
+        "distance_m": weighted_distance / total_duration_s,
+        "integration_s": total_duration_s,
+        "sample_count": len(weighted_rates),
+    }
+
+
 def _flow_record_is_future(item, current_stamp):
     try:
         stamp = float(item["stamp_s"])
@@ -1013,6 +1059,10 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("flow_rotation_recovery_max_base_score", 0.55)
         self.declare_parameter("flow_rotation_imu_max_gap_s", 0.12)
         self.declare_parameter("flow_rotation_allow_compensated", True)
+        self.declare_parameter("flow_los_diagnostics_enabled", True)
+        # ROS FLU body coordinates. Replace this simulation mount with the
+        # measured optical-flow-to-IMU lever arm on the aircraft.
+        self.declare_parameter("flow_sensor_offset_body_m", [0.0, 0.0, -0.35])
         self.declare_parameter("imu_factor_enabled", True)
         self.declare_parameter("preserve_lio_anchor", True)
         self.declare_parameter("lidar_anchor_minimum_effective_weight", 0.10)
@@ -1163,6 +1213,19 @@ class UnifiedBackendNode(Node):
             self.get_parameter("flow_rotation_recovery_max_base_score").value)
         self.flow_rotation_imu_max_gap_s = float(
             self.get_parameter("flow_rotation_imu_max_gap_s").value)
+        self.flow_los_diagnostics_enabled = bool(
+            self.get_parameter("flow_los_diagnostics_enabled").value)
+        flow_sensor_offset = tuple(
+            float(value) for value in self.get_parameter(
+                "flow_sensor_offset_body_m").value
+        )
+        if len(flow_sensor_offset) != 3 or not all(
+            math.isfinite(value) for value in flow_sensor_offset
+        ):
+            raise ValueError("flow_sensor_offset_body_m must be a finite 3-vector")
+        self.flow_sensor_offset_body_m = np.asarray(
+            flow_sensor_offset, dtype=float
+        )
         self.imu_factor_enabled = bool(self.get_parameter("imu_factor_enabled").value)
         self.preserve_lio_anchor = bool(self.get_parameter("preserve_lio_anchor").value)
         self.lidar_anchor_minimum_effective_weight = float(
@@ -1496,6 +1559,8 @@ class UnifiedBackendNode(Node):
             "flow_clock_mismatch": 0,
             "flow_disabled_quality": 0,
             "flow_disabled_rotation": 0,
+            "flow_los_diagnostic_samples": 0,
+            "flow_los_diagnostic_invalid": 0,
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
             "imu_reintegrations": 0,
             "calibration_updates": 0, "calibration_accepted": 0,
@@ -1578,6 +1643,10 @@ class UnifiedBackendNode(Node):
         self.last_flow_rotation_phase = "unavailable"
         self.last_flow_rotation_weight = 0.0
         self.last_flow_yaw_rate_abs_radps = -1.0
+        self.last_flow_los_diagnostic = None
+        self.flow_los_residual_no_lever_norms = deque(maxlen=5000)
+        self.flow_los_residual_norms = deque(maxlen=5000)
+        self.flow_los_lever_arm_norms = deque(maxlen=5000)
         self.last_lidar_prediction_position_innovation_m = -1.0
         self.last_lidar_prediction_yaw_innovation_rad = -1.0
         self.last_lidar_source = "unavailable"
@@ -1977,6 +2046,7 @@ class UnifiedBackendNode(Node):
                 "integrated_y": float(msg.integrated_y),
                 "integrated_xgyro": float(msg.integrated_xgyro),
                 "integrated_ygyro": float(msg.integrated_ygyro),
+                "integration_time_s": float(msg.integration_time_us) * 1.0e-6,
                 "quality": int(msg.quality),
                 "distance_m": float(msg.distance),
             })
@@ -2222,7 +2292,111 @@ class UnifiedBackendNode(Node):
         self.backend.add_gnss(index, gnss_position, covariance=covariance, decision=decision)
         self.counts["gnss_factors"] += 1
 
-    def _flow_factor(self, previous_stamp, current_stamp, previous_yaw, previous_index, current_index, lio_delta):
+    def _flow_los_diagnostic(self, records, previous_state,
+                             previous_stamp, current_stamp):
+        """Evaluate APM LOS residuals without adding a new optimization factor."""
+        if not self.flow_los_diagnostics_enabled:
+            self.last_flow_los_diagnostic = None
+            return None
+        observation = flow_los_observation(records)
+        if observation is None or previous_state is None:
+            self.counts["flow_los_diagnostic_invalid"] += 1
+            self.last_flow_los_diagnostic = None
+            return None
+        state = np.asarray(previous_state, dtype=float)
+        if state.shape != (15,) or np.any(~np.isfinite(state)):
+            self.counts["flow_los_diagnostic_invalid"] += 1
+            self.last_flow_los_diagnostic = None
+            return None
+        angular_samples = [
+            (sample.stamp_s, sample.angular_velocity)
+            for sample in self._imu_snapshot()
+        ]
+        angular_velocity = interval_mean_vector(
+            angular_samples,
+            previous_stamp,
+            current_stamp,
+            self.flow_rotation_imu_max_gap_s,
+        )
+        if angular_velocity is None:
+            self.counts["flow_los_diagnostic_invalid"] += 1
+            self.last_flow_los_diagnostic = None
+            return None
+        rotation_body_to_map = rpy_to_rotation_matrix(state[3:6])
+        velocity_body = rotation_body_to_map.T @ state[6:9]
+        angular_velocity = tuple(
+            float(angular_velocity[index]) - float(state[12 + index])
+            for index in range(3)
+        )
+        prediction_without_lever = optical_flow_los_prediction_flu(
+            velocity_body,
+            angular_velocity,
+            (0.0, 0.0, 0.0),
+            observation["distance_m"],
+        )
+        prediction_with_lever = optical_flow_los_prediction_flu(
+            velocity_body,
+            angular_velocity,
+            self.flow_sensor_offset_body_m,
+            observation["distance_m"],
+        )
+        if prediction_without_lever is None or prediction_with_lever is None:
+            self.counts["flow_los_diagnostic_invalid"] += 1
+            self.last_flow_los_diagnostic = None
+            return None
+        measurement = observation["measurement_radps"]
+        residual_without_lever = tuple(
+            float(measurement[index]) - float(prediction_without_lever[index])
+            for index in range(2)
+        )
+        residual = tuple(
+            float(measurement[index]) - float(prediction_with_lever[index])
+            for index in range(2)
+        )
+        lever_delta = tuple(
+            float(prediction_with_lever[index])
+            - float(prediction_without_lever[index])
+            for index in range(2)
+        )
+        residual_norm = float(np.linalg.norm(residual))
+        residual_without_lever_norm = float(
+            np.linalg.norm(residual_without_lever)
+        )
+        lever_norm = float(np.linalg.norm(lever_delta))
+        diagnostic = {
+            "measurement_radps": tuple(float(value) for value in measurement),
+            "prediction_without_lever_radps": tuple(
+                float(value) for value in prediction_without_lever
+            ),
+            "prediction_with_lever_radps": tuple(
+                float(value) for value in prediction_with_lever
+            ),
+            "residual_radps": residual,
+            "residual_norm_radps": residual_norm,
+            "residual_without_lever_radps": residual_without_lever,
+            "residual_without_lever_norm_radps": residual_without_lever_norm,
+            "lever_delta_radps": lever_delta,
+            "lever_delta_norm_radps": lever_norm,
+            "distance_m": float(observation["distance_m"]),
+            "integration_s": float(observation["integration_s"]),
+            "sample_count": int(observation["sample_count"]),
+            "angular_velocity_body_flu": tuple(float(value) for value in angular_velocity),
+            "velocity_body_flu": tuple(float(value) for value in velocity_body),
+            "sensor_offset_body_m": tuple(
+                float(value) for value in self.flow_sensor_offset_body_m
+            ),
+            "state_source": "previous_optimized_state",
+        }
+        self.last_flow_los_diagnostic = diagnostic
+        self.counts["flow_los_diagnostic_samples"] += 1
+        self.flow_los_residual_no_lever_norms.append(residual_without_lever_norm)
+        self.flow_los_residual_norms.append(residual_norm)
+        self.flow_los_lever_arm_norms.append(lever_norm)
+        return diagnostic
+
+    def _flow_factor(self, previous_stamp, current_stamp, previous_yaw,
+                     previous_index, current_index, lio_delta,
+                     previous_state=None):
         self.counts["flow_factor_attempts"] += 1
         with self.flow_buffer_lock:
             records, remaining, delayed = select_flow_records(
@@ -2240,6 +2414,9 @@ class UnifiedBackendNode(Node):
             self.last_flow_reason = "no_valid_observation"
             return
         flow_displacement = observation["delta_position"]
+        los_diagnostic = self._flow_los_diagnostic(
+            records, previous_state, previous_stamp, current_stamp,
+        )
         score, evidence, reasons = optical_flow_score(
             observation["delta_position"],
             [float(lio_delta[0]), float(lio_delta[1])],
@@ -2249,6 +2426,28 @@ class UnifiedBackendNode(Node):
         decision["degradation_score"] = float(score)
         decision["evidence"] = evidence
         decision["reasons"] = list(reasons)
+        if los_diagnostic is None:
+            decision["evidence"]["flow_los_diagnostic_valid"] = 0.0
+        else:
+            decision["evidence"].update({
+                "flow_los_diagnostic_valid": 1.0,
+                "flow_los_measurement_x_radps": los_diagnostic[
+                    "measurement_radps"][0],
+                "flow_los_measurement_y_radps": los_diagnostic[
+                    "measurement_radps"][1],
+                "flow_los_prediction_x_radps": los_diagnostic[
+                    "prediction_with_lever_radps"][0],
+                "flow_los_prediction_y_radps": los_diagnostic[
+                    "prediction_with_lever_radps"][1],
+                "flow_los_residual_norm_radps": los_diagnostic[
+                    "residual_norm_radps"],
+                "flow_los_residual_without_lever_norm_radps": los_diagnostic[
+                    "residual_without_lever_norm_radps"],
+                "flow_los_lever_delta_norm_radps": los_diagnostic[
+                    "lever_delta_norm_radps"],
+                "flow_los_distance_m": los_diagnostic["distance_m"],
+                "flow_los_integration_s": los_diagnostic["integration_s"],
+            })
         quality_or_distance_invalid = (
             observation["quality"] < self.minimum_flow_quality
             or not self.minimum_flow_distance_m <= observation["distance_m"] <= self.maximum_flow_distance_m
@@ -2902,6 +3101,7 @@ class UnifiedBackendNode(Node):
             self._flow_factor(
                 self.last_lio_stamp, stamp, reference["yaw"],
                 previous_index, current_index, reference["delta_position"],
+                previous_state=previous_state,
             )
             if self.backend_solver_mode == "manifold":
                 imu_diagnostic_covariance = self._add_manifold_imu_factor(
@@ -3344,6 +3544,30 @@ class UnifiedBackendNode(Node):
             self.backend_solve_ms_total / self.backend_solve_count
             if self.backend_solve_count > 0 else 0.0
         )
+        flow_los_residual_mean = (
+            float(np.mean(self.flow_los_residual_norms))
+            if self.flow_los_residual_norms else -1.0
+        )
+        flow_los_residual_no_lever_mean = (
+            float(np.mean(self.flow_los_residual_no_lever_norms))
+            if self.flow_los_residual_no_lever_norms else -1.0
+        )
+        flow_los_residual_p95 = (
+            float(np.percentile(self.flow_los_residual_norms, 95))
+            if self.flow_los_residual_norms else -1.0
+        )
+        flow_los_residual_no_lever_p95 = (
+            float(np.percentile(self.flow_los_residual_no_lever_norms, 95))
+            if self.flow_los_residual_no_lever_norms else -1.0
+        )
+        flow_los_lever_mean = (
+            float(np.mean(self.flow_los_lever_arm_norms))
+            if self.flow_los_lever_arm_norms else -1.0
+        )
+        flow_los_lever_p95 = (
+            float(np.percentile(self.flow_los_lever_arm_norms, 95))
+            if self.flow_los_lever_arm_norms else -1.0
+        )
         ownership = (
             "native_relinearized="
             f"{self.counts['native_lidar_relinearized']};"
@@ -3439,6 +3663,16 @@ class UnifiedBackendNode(Node):
             f"flow_clock_mismatch={self.counts['flow_clock_mismatch']};"
             f"flow_last_reason={self.last_flow_reason};"
             f"flow_rotation_phase={self.last_flow_rotation_phase};"
+            f"flow_los_samples={self.counts['flow_los_diagnostic_samples']};"
+            f"flow_los_invalid={self.counts['flow_los_diagnostic_invalid']};"
+            f"flow_los_residual_mean_radps={flow_los_residual_mean:.9g};"
+            f"flow_los_residual_p95_radps={flow_los_residual_p95:.9g};"
+            "flow_los_residual_no_lever_mean_radps="
+            f"{flow_los_residual_no_lever_mean:.9g};"
+            "flow_los_residual_no_lever_p95_radps="
+            f"{flow_los_residual_no_lever_p95:.9g};"
+            f"flow_los_lever_mean_radps={flow_los_lever_mean:.9g};"
+            f"flow_los_lever_p95_radps={flow_los_lever_p95:.9g};"
             f"prepare_mean_ms={self._phase_mean_ms('prepare'):.3f};"
             f"prepare_max_ms={self.phase_timing['prepare']['max_ms']:.3f};"
             f"pre_state_mean_ms={self._phase_mean_ms('pre_state'):.3f};"
@@ -3464,6 +3698,18 @@ class UnifiedBackendNode(Node):
         average_solve_ms = (
             self.backend_solve_ms_total / self.backend_solve_count
             if self.backend_solve_count else 0.0
+        )
+        flow_los_residual_p95 = (
+            float(np.percentile(self.flow_los_residual_norms, 95))
+            if self.flow_los_residual_norms else -1.0
+        )
+        flow_los_residual_no_lever_p95 = (
+            float(np.percentile(self.flow_los_residual_no_lever_norms, 95))
+            if self.flow_los_residual_no_lever_norms else -1.0
+        )
+        flow_los_lever_p95 = (
+            float(np.percentile(self.flow_los_lever_arm_norms, 95))
+            if self.flow_los_lever_arm_norms else -1.0
         )
         diagnostic = DiagnosticStatus()
         diagnostic.name = "unified_backend_fusion"
@@ -3649,6 +3895,28 @@ class UnifiedBackendNode(Node):
             self._key(
                 "flow_yaw_rate_abs_radps",
                 f"{self.last_flow_yaw_rate_abs_radps:.9g}",
+            ),
+            self._key(
+                "flow_los_diagnostic_valid",
+                0 if self.last_flow_los_diagnostic is None else 1,
+            ),
+            self._key(
+                "flow_los_residual_p95_radps",
+                f"{flow_los_residual_p95:.9g}",
+            ),
+            self._key(
+                "flow_los_residual_no_lever_p95_radps",
+                f"{flow_los_residual_no_lever_p95:.9g}",
+            ),
+            self._key(
+                "flow_los_lever_p95_radps",
+                f"{flow_los_lever_p95:.9g}",
+            ),
+            self._key(
+                "flow_los_sensor_offset_body_m",
+                ",".join(
+                    f"{value:.6g}" for value in self.flow_sensor_offset_body_m
+                ),
             ),
         ]
         diagnostic.values.extend(
