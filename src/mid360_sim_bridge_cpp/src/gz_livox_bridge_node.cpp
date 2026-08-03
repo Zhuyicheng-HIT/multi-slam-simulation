@@ -3,6 +3,7 @@
 #include <gz/transport/Node.hh>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -21,6 +22,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include "mid360_sim_bridge_cpp/conversion.hpp"
@@ -63,6 +65,33 @@ public:
       declare_parameter<std::int64_t>(
         "scan_lines", static_cast<std::int64_t>(kDefaultLineCount)),
       1, 255));
+    body_filter_enabled_ = declare_parameter<bool>("body_filter_enabled", true);
+    body_bounds_ = {
+      declare_parameter<double>("body_min_x_m", -0.45),
+      declare_parameter<double>("body_max_x_m", 0.45),
+      declare_parameter<double>("body_min_y_m", -0.45),
+      declare_parameter<double>("body_max_y_m", 0.45),
+      declare_parameter<double>("body_min_z_m", -0.35),
+      declare_parameter<double>("body_max_z_m", 0.15)};
+    lidar_to_body_rotation_ = finite_parameter_array<9>(
+      declare_parameter<std::vector<double>>(
+        "lidar_to_body_rotation",
+        {0.984807753, 0.0, 0.173648178,
+          0.0, 1.0, 0.0,
+          -0.173648178, 0.0, 0.984807753}),
+      "lidar_to_body_rotation");
+    lidar_to_body_translation_ = finite_parameter_array<3>(
+      declare_parameter<std::vector<double>>(
+        "lidar_to_body_translation", {0.0, 0.0, 0.0}),
+      "lidar_to_body_translation");
+    if (body_bounds_[0] > body_bounds_[1] ||
+      body_bounds_[2] > body_bounds_[3] ||
+      body_bounds_[4] > body_bounds_[5])
+    {
+      throw std::invalid_argument("MID360 body exclusion bounds must be ordered min <= max");
+    }
+    body_removed_ratio_topic_ = declare_parameter<std::string>(
+      "body_removed_ratio_topic", "/sensors/lidar/body_removed_ratio");
     synthetic_scan_timing_ = declare_parameter<bool>("synthetic_scan_timing", false);
     const double frame_rate_hz =
       std::max(0.1, declare_parameter<double>("frame_rate_hz", 10.0));
@@ -78,6 +107,8 @@ public:
     }
     rtf_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
       rtf_topic_, rclcpp::QoS(rclcpp::KeepLast(2)).best_effort());
+    body_removed_ratio_pub_ = create_publisher<std_msgs::msg::Float32>(
+      body_removed_ratio_topic_, rclcpp::SensorDataQoS());
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
       input_imu_topic_, rclcpp::SensorDataQoS(),
       std::bind(&GzLivoxBridgeNode::on_imu, this, std::placeholders::_1));
@@ -100,16 +131,42 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Direct MID360 adapter active: %s -> %s, %s -> %s, stride=%d, max_points=%d, "
-      "point_timing=%s, stamp_mode=%s",
+      "point_timing=%s, stamp_mode=%s, body_filter=%s",
       gz_topic_.c_str(), lidar_topic_.c_str(), input_imu_topic_.c_str(),
       output_imu_topic_.c_str(), point_stride_, max_points_,
       synthetic_scan_timing_ ? "synthetic_scan" : "snapshot_at_packet_end",
       stamp_lidar_from_latest_imu_ ? "latest_fcu_imu" :
       (preserve_sim_scan_clock_ ? "sim_rate_epoch_aligned" :
-      (restamp_lidar_ ? "wall_each_frame" : "raw_gazebo")));
+      (restamp_lidar_ ? "wall_each_frame" : "raw_gazebo")),
+      body_filter_enabled_ ? "enabled" : "disabled");
+    if (body_filter_enabled_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "MID360 body exclusion in body frame: x=[%.2f, %.2f], y=[%.2f, %.2f], "
+        "z=[%.2f, %.2f] m",
+        body_bounds_[0], body_bounds_[1], body_bounds_[2], body_bounds_[3],
+        body_bounds_[4], body_bounds_[5]);
+    }
   }
 
 private:
+  template<std::size_t SizeT>
+  static std::array<double, SizeT> finite_parameter_array(
+    const std::vector<double> & values, const std::string & name)
+  {
+    if (values.size() != SizeT ||
+      !std::all_of(values.begin(), values.end(), [](const double value) {
+        return std::isfinite(value);
+      }))
+    {
+      throw std::invalid_argument(
+              name + " must contain " + std::to_string(SizeT) + " finite values");
+    }
+    std::array<double, SizeT> output{};
+    std::copy(values.begin(), values.end(), output.begin());
+    return output;
+  }
+
   static std::int64_t protobuf_stamp_ns(const gz::msgs::LaserScan & msg)
   {
     if (!msg.has_header() || !msg.header().has_stamp()) {
@@ -217,6 +274,8 @@ private:
     const double range_min = msg.range_min();
     const double range_max = msg.range_max();
     const std::size_t stride = static_cast<std::size_t>(point_stride_);
+    std::uint32_t valid_input_points = 0U;
+    std::uint32_t removed_body_points = 0U;
     for (std::size_t source_index = 0;
       source_index < source_count && output.points.size() < reserve_count;
       source_index += stride)
@@ -233,6 +292,14 @@ private:
       point.x = radial_xy * horizontal_cos_[horizontal_index];
       point.y = radial_xy * horizontal_sin_[horizontal_index];
       point.z = static_cast<float>(range) * vertical_sin_[vertical_index];
+      ++valid_input_points;
+      if (body_filter_enabled_ && point_in_body_exclusion_box(
+          point.x, point.y, point.z, body_bounds_, lidar_to_body_rotation_,
+          lidar_to_body_translation_))
+      {
+        ++removed_body_points;
+        continue;
+      }
       const double intensity = source_index < static_cast<std::size_t>(msg.intensities_size()) ?
         msg.intensities(static_cast<int>(source_index)) : 120.0;
       point.reflectivity = reflectivity_from_intensity(intensity);
@@ -244,8 +311,16 @@ private:
     }
 
     output.point_num = static_cast<std::uint32_t>(output.points.size());
+    std_msgs::msg::Float32 removed_ratio;
+    removed_ratio.data = static_cast<float>(removed_body_points) /
+      static_cast<float>(std::max<std::uint32_t>(1U, valid_input_points));
+    body_removed_ratio_pub_->publish(removed_ratio);
     publish_ground_truth_odom(msg, acquisition_stamp_ns);
     last_point_count_.store(output.point_num, std::memory_order_relaxed);
+    last_valid_input_point_count_.store(valid_input_points, std::memory_order_relaxed);
+    last_body_removed_point_count_.store(removed_body_points, std::memory_order_relaxed);
+    valid_input_point_count_.fetch_add(valid_input_points, std::memory_order_relaxed);
+    body_removed_point_count_.fetch_add(removed_body_points, std::memory_order_relaxed);
     cloud_count_.fetch_add(1, std::memory_order_relaxed);
     lidar_pub_->publish(std::move(output));
   }
@@ -341,9 +416,15 @@ private:
       static_cast<double>(lidar_stamp_ns - imu_stamp_ns) / 1.0e6 : 0.0;
     RCLCPP_INFO(
       get_logger(),
-      "direct bridge clouds=%lu points=%u cloud_hz=%.2f imu_hz=%.2f "
+      "direct bridge clouds=%lu points=%u input_valid=%u body_removed=%u "
+      "body_removed_ratio=%.5f cloud_hz=%.2f imu_hz=%.2f "
       "cloud_minus_imu_ms=%.1f adjusted_lidar=%lu adjusted_imu=%lu",
       static_cast<unsigned long>(clouds), last_point_count_.load(std::memory_order_relaxed),
+      last_valid_input_point_count_.load(std::memory_order_relaxed),
+      last_body_removed_point_count_.load(std::memory_order_relaxed),
+      static_cast<double>(body_removed_point_count_.load(std::memory_order_relaxed)) /
+      static_cast<double>(std::max<std::uint64_t>(
+        1U, valid_input_point_count_.load(std::memory_order_relaxed))),
       cloud_hz, imu_hz, stamp_delta_ms,
       static_cast<unsigned long>(adjusted_lidar_stamps_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(adjusted_imu_stamps_.load(std::memory_order_relaxed)));
@@ -362,22 +443,28 @@ private:
   std::string ground_truth_odom_topic_;
   std::string world_stats_topic_;
   std::string rtf_topic_;
+  std::string body_removed_ratio_topic_;
   bool publish_ground_truth_odom_{true};
   bool restamp_lidar_{true};
   bool stamp_lidar_from_latest_imu_{false};
   bool preserve_sim_scan_clock_{false};
   bool restamp_imu_{false};
   bool synthetic_scan_timing_{false};
+  bool body_filter_enabled_{true};
   int point_stride_{1};
   int max_points_{20000};
   int line_count_{static_cast<int>(kDefaultLineCount)};
   std::uint64_t scan_period_ns_{100000000ULL};
+  std::array<double, 6> body_bounds_{};
+  std::array<double, 9> lidar_to_body_rotation_{};
+  std::array<double, 3> lidar_to_body_translation_{};
 
   gz::transport::Node gz_node_;
   rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr ground_truth_odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr rtf_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr body_removed_ratio_pub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::TimerBase::SharedPtr status_timer_;
   rclcpp::TimerBase::SharedPtr rtf_timer_;
@@ -397,6 +484,10 @@ private:
   std::atomic<std::uint64_t> adjusted_lidar_stamps_{0U};
   std::atomic<std::uint64_t> adjusted_imu_stamps_{0U};
   std::atomic<std::uint32_t> last_point_count_{0U};
+  std::atomic<std::uint32_t> last_valid_input_point_count_{0U};
+  std::atomic<std::uint32_t> last_body_removed_point_count_{0U};
+  std::atomic<std::uint64_t> valid_input_point_count_{0U};
+  std::atomic<std::uint64_t> body_removed_point_count_{0U};
   std::atomic<std::int64_t> last_lidar_stamp_ns_{0};
   std::atomic<std::int64_t> last_imu_stamp_ns_{0};
   std::int64_t lidar_source_origin_ns_{0};

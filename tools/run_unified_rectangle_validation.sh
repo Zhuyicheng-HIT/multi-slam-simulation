@@ -112,22 +112,31 @@ setsid env LIDAR_WS="$LIDAR_WS" RVIZ=0 FASTLIO_INPUT_MODE=livox \
   LOG_DIR="$LOG_DIR/fastlio" bash "$REPO_ROOT/tools/run_fastlio_mapping.sh" \
   >"$LOG_DIR/fastlio_launcher.log" 2>&1 &
 pids+=("$!")
-case "${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0}" in
-  1|true|TRUE|yes|YES)
-    printf 'Backend-owned trajectory mode: FAST-LIO diagnostic topics are not backend startup dependencies.\n'
-    ;;
-  *)
-    wait_rate /Odometry 1.0 60
-    wait_rate /fast_lio/native_lidar_factor 1.0 30
-    ;;
-esac
 
+# Start the backend immediately after the frontend. In backend-confirmed map
+# mode the frontend intentionally stops advancing after its bounded startup
+# queue until the backend acknowledges optimized states.
 setsid env ENABLE_VISION=false USE_SIM_TIME=true \
   FRONTEND_SCAN_PREDICTION_ENABLED="$frontend_scan_prediction_enabled" \
   LOG_DIR="$LOG_DIR/unified" \
   bash "$REPO_ROOT/tools/run_unified_backend_stack.sh" \
   >"$LOG_DIR/unified_launcher.log" 2>&1 &
 pids+=("$!")
+
+case "${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0}" in
+  1|true|TRUE|yes|YES)
+    printf 'Backend-owned trajectory mode: FAST-LIO diagnostic topics are not backend startup dependencies.\n'
+    ;;
+  *)
+    # The native factor packet, not FAST-LIO's diagnostic pose, is the backend
+    # keyframe clock. Requiring /Odometry here can deadlock backend-confirmed
+    # map insertion before the unified backend has started.
+    wait_rate /fast_lio/native_lidar_factor 1.0 60
+    if ! wait_rate /Odometry 1.0 10; then
+      printf 'FAST-LIO diagnostic /Odometry is not continuously ready yet; continuing on native factors.\n'
+    fi
+    ;;
+esac
 wait_rate /fusion/unified/odom 2.0 60
 case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   # The backend first accumulates a stationary IMU bias window and initializes

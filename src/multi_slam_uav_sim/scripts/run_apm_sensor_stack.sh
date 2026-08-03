@@ -39,6 +39,13 @@ case "$MID360_SIM_BRIDGE_MODE" in
     exit 2
     ;;
 esac
+MID360_BODY_FILTER_ENABLED=${MID360_BODY_FILTER_ENABLED:-true}
+MID360_BODY_MIN_X_M=${MID360_BODY_MIN_X_M:--0.45}
+MID360_BODY_MAX_X_M=${MID360_BODY_MAX_X_M:-0.45}
+MID360_BODY_MIN_Y_M=${MID360_BODY_MIN_Y_M:--0.45}
+MID360_BODY_MAX_Y_M=${MID360_BODY_MAX_Y_M:-0.45}
+MID360_BODY_MIN_Z_M=${MID360_BODY_MIN_Z_M:--0.35}
+MID360_BODY_MAX_Z_M=${MID360_BODY_MAX_Z_M:-0.15}
 
 if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
   if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
@@ -114,6 +121,13 @@ printf 'Logs: %s\n' "$LOG_DIR"
 printf 'World: %s\n' "$WORLD"
 printf 'World name: %s\n' "$WORLD_NAME"
 printf 'MID360 simulation bridge: %s\n' "$MID360_SIM_BRIDGE_MODE"
+if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
+  printf 'MID360 body exclusion: %s, x=[%s, %s], y=[%s, %s], z=[%s, %s] m\n' \
+    "$MID360_BODY_FILTER_ENABLED" \
+    "$MID360_BODY_MIN_X_M" "$MID360_BODY_MAX_X_M" \
+    "$MID360_BODY_MIN_Y_M" "$MID360_BODY_MAX_Y_M" \
+    "$MID360_BODY_MIN_Z_M" "$MID360_BODY_MAX_Z_M"
+fi
 
 GPU_REPORT="$LOG_DIR/gpu_acceleration.log"
 if ! bash "$PKG_SHARE/scripts/check_gpu_acceleration.sh" >"$GPU_REPORT" 2>&1; then
@@ -373,6 +387,13 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p lidar_frame_id:=mid360_link \
     -p imu_frame_id:=base_link \
     -p point_stride:=${MID360_POINT_STRIDE:-1} \
+    -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
+    -p body_min_x_m:="$MID360_BODY_MIN_X_M" \
+    -p body_max_x_m:="$MID360_BODY_MAX_X_M" \
+    -p body_min_y_m:="$MID360_BODY_MIN_Y_M" \
+    -p body_max_y_m:="$MID360_BODY_MAX_Y_M" \
+    -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
+    -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
     -p publish_ground_truth_odom:=true \
     >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")

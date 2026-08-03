@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <array>
 
 #include <gtest/gtest.h>
 
@@ -7,6 +8,7 @@
 using mid360_sim_bridge_cpp::epoch_aligned_stamp_ns;
 using mid360_sim_bridge_cpp::line_for_output_index;
 using mid360_sim_bridge_cpp::packet_begin_stamp_ns;
+using mid360_sim_bridge_cpp::point_in_body_exclusion_box;
 using mid360_sim_bridge_cpp::point_offset_time_ns;
 using mid360_sim_bridge_cpp::reflectivity_from_intensity;
 using mid360_sim_bridge_cpp::relative_time_ns;
@@ -60,4 +62,20 @@ TEST(Conversion, ClampsReflectivity)
   EXPECT_EQ(reflectivity_from_intensity(-10.0), 0U);
   EXPECT_EQ(reflectivity_from_intensity(127.6), 128U);
   EXPECT_EQ(reflectivity_from_intensity(500.0), 255U);
+}
+
+TEST(Conversion, BodyExclusionUsesLidarToBodyExtrinsic)
+{
+  constexpr double c = 0.984807753012208;
+  constexpr double s = 0.173648177666930;
+  const std::array<double, 6> bounds{-0.45, 0.45, -0.45, 0.45, -0.35, 0.15};
+  const std::array<double, 9> rotation{c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c};
+  const std::array<double, 3> translation{0.0, 0.0, 0.0};
+
+  EXPECT_TRUE(point_in_body_exclusion_box(
+    0.40, 0.10, 0.20, bounds, rotation, translation));
+  EXPECT_FALSE(point_in_body_exclusion_box(
+    0.80, 0.10, 0.20, bounds, rotation, translation));
+  EXPECT_FALSE(point_in_body_exclusion_box(
+    0.20, 0.60, 0.00, bounds, rotation, translation));
 }

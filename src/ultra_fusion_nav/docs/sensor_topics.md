@@ -23,7 +23,14 @@ Gazebo flow in the same run.
 
 ## LiDAR Body Exclusion
 
-`pointcloud_body_filter` removes returns inside a configurable axis-aligned volume in `mid360_link`. The initial simulation bounds are `x,y=[-0.45,0.45] m` and `z=[-0.35,0.15] m`. These are conservative configuration values, not calibrated hardware geometry. `/sensors/lidar/body_removed_ratio` must be checked in each world before accepting them.
+The LiDAR input boundary removes returns inside a configurable axis-aligned
+volume after transforming points from `mid360_link` to the aircraft body
+frame. The `direct_livox` C++ adapter performs this operation before publishing
+`/livox/lidar`; the legacy PointCloud2 path uses `pointcloud_body_filter`.
+The initial simulation bounds are `x,y=[-0.45,0.45] m` and
+`z=[-0.35,0.15] m`. These are conservative configuration values, not
+calibrated hardware geometry. `/sensors/lidar/body_removed_ratio` must be
+checked in each world before accepting them.
 
 ## Fault Injection
 

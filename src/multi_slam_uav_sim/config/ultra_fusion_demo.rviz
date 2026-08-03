@@ -1,0 +1,449 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 75
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Point Clouds1
+        - /Trajectories1
+      Splitter Ratio: 0.52
+    Tree Height: 720
+  - Class: rviz_common/Views
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz_common/Time
+    Experimental: false
+    Name: Time
+    SyncMode: 0
+    SyncSource: Registered Scan
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.35
+          Cell Size: 1
+          Class: rviz_default_plugins/Grid
+          Color: 100; 100; 100
+          Enabled: true
+          Line Style:
+            Line Width: 0.029999999329447746
+            Value: Lines
+          Name: Metric Grid
+          Normal Cell Count: 0
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Plane: XY
+          Plane Cell Count: 60
+          Reference Frame: <Fixed Frame>
+          Value: true
+        - Class: rviz_default_plugins/TF
+          Enabled: true
+          Frame Timeout: 15
+          Frames:
+            All Enabled: true
+          Marker Scale: 0.7
+          Name: Frames
+          Show Arrows: true
+          Show Axes: true
+          Show Names: false
+          Tree: {}
+          Update Interval: 0
+          Value: true
+      Enabled: true
+      Name: Reference
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.72
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 8
+            Min Value: -2
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 210; 210; 210
+          Color Transformer: AxisColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 35; 55; 80
+          Name: Backend-confirmed Map
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 2
+          Size (m): 0.035
+          Style: Flat Squares
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /fastlio_denoised_map
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 0.92
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 8
+            Min Value: -2
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 230; 230; 230
+          Color Transformer: AxisColor
+          Decay Time: 0.8
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 20; 85; 135
+          Name: Registered Scan
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 3
+          Size (m): 0.045
+          Style: Flat Squares
+          Topic:
+            Depth: 2
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /cloud_registered
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 0.8
+          Autocompute Intensity Bounds: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 65; 215; 135
+          Color Transformer: FlatColor
+          Decay Time: 1
+          Enabled: true
+          Name: Static Points
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 3
+          Size (m): 0.05
+          Style: Flat Squares
+          Topic:
+            Depth: 2
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/static_cloud
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 1
+          Autocompute Intensity Bounds: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 255; 55; 55
+          Color Transformer: FlatColor
+          Decay Time: 2
+          Enabled: true
+          Name: Dynamic Points
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 5
+          Size (m): 0.075
+          Style: Flat Squares
+          Topic:
+            Depth: 2
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/dynamic_cloud
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 0.8
+          Autocompute Intensity Bounds: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 255; 205; 45
+          Color Transformer: FlatColor
+          Decay Time: 1.5
+          Enabled: true
+          Name: Uncertain Points
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 4
+          Size (m): 0.06
+          Style: Flat Squares
+          Topic:
+            Depth: 2
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar/uncertain_cloud
+          Use Fixed Frame: true
+          Value: true
+        - Alpha: 0.55
+          Autocompute Intensity Bounds: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 180; 180; 180
+          Color Transformer: AxisColor
+          Decay Time: 0
+          Enabled: false
+          Name: Project Local Map (optional)
+          Position Transformer: XYZ
+          Selectable: false
+          Size (Pixels): 2
+          Size (m): 0.035
+          Style: Flat Squares
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lio/local_map
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: false
+      Enabled: true
+      Name: Point Clouds
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 0; 255; 235
+          Enabled: true
+          Head Diameter: 0.28
+          Head Length: 0.2
+          Length: 0.28
+          Line Style: Lines
+          Line Width: 0.05
+          Name: Ultra-Fusion Path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 0; 255; 235
+          Pose Style: None
+          Radius: 0.03
+          Shaft Diameter: 0.08
+          Shaft Length: 0.1
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /fusion/unified/path
+          Value: true
+        - Alpha: 0.85
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 255; 145; 35
+          Enabled: true
+          Head Diameter: 0.25
+          Head Length: 0.18
+          Length: 0.25
+          Line Style: Lines
+          Line Width: 0.025
+          Name: FAST-LIO Diagnostic Path
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0
+          Pose Color: 255; 145; 35
+          Pose Style: None
+          Radius: 0.025
+          Shaft Diameter: 0.07
+          Shaft Length: 0.1
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /path
+          Value: true
+        - Angle Tolerance: 0.05
+          Class: rviz_default_plugins/Odometry
+          Covariance:
+            Orientation:
+              Alpha: 0.25
+              Color: 255; 255; 127
+              Color Style: Unique
+              Frame: Local
+              Offset: 1
+              Scale: 1
+              Value: true
+            Position:
+              Alpha: 0.18
+              Color: 0; 255; 235
+              Scale: 1
+              Value: true
+            Value: true
+          Enabled: true
+          Keep: 1
+          Name: Unified Vehicle Pose
+          Position Tolerance: 0.02
+          Shape:
+            Alpha: 1
+            Axes Length: 0.65
+            Axes Radius: 0.045
+            Color: 0; 255; 235
+            Head Length: 0.22
+            Head Radius: 0.08
+            Shaft Length: 0.45
+            Shaft Radius: 0.035
+            Value: Axes
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /fusion/unified/odom
+          Value: true
+        - Angle Tolerance: 0.1
+          Class: rviz_default_plugins/Odometry
+          Covariance:
+            Orientation:
+              Alpha: 0.2
+              Color: 255; 145; 35
+              Color Style: Unique
+              Frame: Local
+              Offset: 1
+              Scale: 1
+              Value: false
+            Position:
+              Alpha: 0.15
+              Color: 255; 145; 35
+              Scale: 1
+              Value: false
+            Value: false
+          Enabled: false
+          Keep: 150
+          Name: FAST-LIO Pose History (optional)
+          Position Tolerance: 0.08
+          Shape:
+            Alpha: 0.55
+            Axes Length: 0.35
+            Axes Radius: 0.025
+            Color: 255; 145; 35
+            Head Length: 0.15
+            Head Radius: 0.05
+            Shaft Length: 0.3
+            Shaft Radius: 0.025
+            Value: Axes
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /Odometry
+          Value: false
+        - Angle Tolerance: 0.1
+          Class: rviz_default_plugins/Odometry
+          Covariance:
+            Orientation:
+              Alpha: 0.15
+              Color: 255; 255; 255
+              Color Style: Unique
+              Frame: Local
+              Offset: 1
+              Scale: 1
+              Value: false
+            Position:
+              Alpha: 0.15
+              Color: 255; 255; 255
+              Scale: 1
+              Value: false
+            Value: false
+          Enabled: false
+          Keep: 300
+          Name: Ground Truth (evaluation only)
+          Position Tolerance: 0.1
+          Shape:
+            Alpha: 0.45
+            Axes Length: 0.25
+            Axes Radius: 0.02
+            Color: 255; 255; 255
+            Head Length: 0.1
+            Head Radius: 0.04
+            Shaft Length: 0.2
+            Shaft Radius: 0.02
+            Value: Axes
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /sim/mid360/ground_truth_odom
+          Value: false
+      Enabled: true
+      Name: Trajectories
+  Enabled: true
+  Global Options:
+    Background Color: 7; 10; 16
+    Fixed Frame: camera_init
+    Frame Rate: 20
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 255; 210; 65
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 28
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 1.5
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Demo View
+      Near Clip Distance: 0.01
+      Pitch: 0.92
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 0.78
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Width: 1500
+  X: 80
+  Y: 50

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -71,6 +72,35 @@ inline std::uint8_t reflectivity_from_intensity(const double intensity)
     return 0U;
   }
   return static_cast<std::uint8_t>(std::clamp(std::llround(intensity), 0LL, 255LL));
+}
+
+inline bool point_in_body_exclusion_box(
+  const double lidar_x,
+  const double lidar_y,
+  const double lidar_z,
+  const std::array<double, 6> & body_bounds,
+  const std::array<double, 9> & lidar_to_body_rotation,
+  const std::array<double, 3> & lidar_to_body_translation)
+{
+  const double body_x =
+    lidar_to_body_rotation[0] * lidar_x +
+    lidar_to_body_rotation[1] * lidar_y +
+    lidar_to_body_rotation[2] * lidar_z +
+    lidar_to_body_translation[0];
+  const double body_y =
+    lidar_to_body_rotation[3] * lidar_x +
+    lidar_to_body_rotation[4] * lidar_y +
+    lidar_to_body_rotation[5] * lidar_z +
+    lidar_to_body_translation[1];
+  const double body_z =
+    lidar_to_body_rotation[6] * lidar_x +
+    lidar_to_body_rotation[7] * lidar_y +
+    lidar_to_body_rotation[8] * lidar_z +
+    lidar_to_body_translation[2];
+  return
+    body_bounds[0] <= body_x && body_x <= body_bounds[1] &&
+    body_bounds[2] <= body_y && body_y <= body_bounds[3] &&
+    body_bounds[4] <= body_z && body_z <= body_bounds[5];
 }
 
 }  // namespace mid360_sim_bridge_cpp

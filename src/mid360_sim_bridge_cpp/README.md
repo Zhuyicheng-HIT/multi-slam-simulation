@@ -19,6 +19,14 @@ Gazebo. It does not open a Livox network device and must not be launched with
 the real sensor driver. Both paths intentionally provide the same downstream
 ROS message types and topic names.
 
+Before publishing, the adapter transforms each return from `mid360_link` into
+the aircraft body frame and removes returns inside the configured aircraft
+exclusion box. The default rotation is the simulated 10 degree nose-down
+mount, and the default body-frame bounds are `x,y=[-0.45,0.45] m` and
+`z=[-0.35,0.15] m`. The per-frame removed fraction is published on
+`/sensors/lidar/body_removed_ratio`. This filtering happens before FAST-LIO,
+so self returns cannot enter scan matching or the map.
+
 ## Example
 
 ```bash
@@ -28,7 +36,8 @@ ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
   -p gz_topic:=/mid360/lidar \
   -p livox_lidar_topic:=/livox/lidar \
   -p input_imu_topic:=/mavros/imu/data_raw \
-  -p livox_imu_topic:=/livox/imu
+  -p livox_imu_topic:=/livox/imu \
+  -p body_filter_enabled:=true
 ```
 
 `/sim/mid360/ground_truth_odom` is published only for simulation evaluation.
