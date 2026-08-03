@@ -10,6 +10,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from diagnostic_msgs.msg import DiagnosticArray
 from uf_interfaces.msg import (
@@ -26,9 +27,14 @@ def stamp_seconds(stamp):
 
 class ReliabilityTimelineRecorder(Node):
     def __init__(self):
-        super().__init__("reliability_timeline_recorder")
+        super().__init__(
+            "reliability_timeline_recorder",
+            parameter_overrides=[Parameter("use_sim_time", value=True)],
+        )
         self.events = []
-        self.started_monotonic = time.monotonic()
+        self.started_wall = time.monotonic()
+        self.first_event_ros_s = None
+        self.invalid_header_stamp_counts = {}
         self.create_subscription(
             SchedulerState,
             "/reliability/scheduler_state",
@@ -61,14 +67,35 @@ class ReliabilityTimelineRecorder(Node):
         )
 
     def _relative_event(self, kind, msg):
+        source_stamp_s = stamp_seconds(msg.header.stamp)
+        if source_stamp_s <= 0.0:
+            self.invalid_header_stamp_counts[kind] = (
+                self.invalid_header_stamp_counts.get(kind, 0) + 1
+            )
+            return None
+        event_ros_s = source_stamp_s
+        if self.first_event_ros_s is None:
+            self.first_event_ros_s = event_ros_s
+        elif event_ros_s < self.first_event_ros_s:
+            shift_s = self.first_event_ros_s - event_ros_s
+            self.first_event_ros_s = event_ros_s
+            for event in self.events:
+                event["received_s"] += shift_s
+                event["elapsed_ros_s"] += shift_s
+        elapsed_ros_s = event_ros_s - self.first_event_ros_s
         return {
             "kind": kind,
-            "received_s": time.monotonic() - self.started_monotonic,
-            "stamp_s": stamp_seconds(msg.header.stamp),
+            # Backward-compatible alias, now intentionally on the ROS timeline.
+            "received_s": elapsed_ros_s,
+            "elapsed_ros_s": elapsed_ros_s,
+            "arrival_elapsed_wall_s": time.monotonic() - self.started_wall,
+            "stamp_s": source_stamp_s,
         }
 
     def _scheduler(self, msg):
         event = self._relative_event("scheduler", msg)
+        if event is None:
+            return
         event.update({
             "health_state": str(msg.health_state),
             "relocalization_requested": bool(msg.relocalization_requested),
@@ -97,6 +124,8 @@ class ReliabilityTimelineRecorder(Node):
 
     def _fault(self, msg):
         event = self._relative_event("fault", msg)
+        if event is None:
+            return
         event.update({
             "modality": str(msg.modality),
             "fault_type": str(msg.fault_type),
@@ -109,6 +138,8 @@ class ReliabilityTimelineRecorder(Node):
 
     def _flow_score(self, msg):
         event = self._relative_event("flow_score", msg)
+        if event is None:
+            return
         evidence = {
             name: float(value)
             for name, value in zip(msg.evidence_names, msg.evidence_values)
@@ -139,6 +170,8 @@ class ReliabilityTimelineRecorder(Node):
                 continue
             values = {item.key: item.value for item in status.values}
             event = self._relative_event("backend", msg)
+            if event is None:
+                return
             level = (
                 int.from_bytes(status.level, byteorder="little")
                 if isinstance(status.level, (bytes, bytearray))
@@ -257,6 +290,8 @@ class ReliabilityTimelineRecorder(Node):
 
     def _lio(self, msg):
         event = self._relative_event("lio", msg)
+        if event is None:
+            return
         event.update({
             "input_points": int(msg.input_points),
             "matched_points": int(msg.matched_points),
@@ -275,6 +310,40 @@ class ReliabilityTimelineRecorder(Node):
             "source": str(msg.source),
         })
         self.events.append(event)
+
+
+def record_for_ros_duration(node, duration_s, wall_timeout_s):
+    wall_started = time.monotonic()
+    last_progress_wall = wall_started
+    ros_started_ns = None
+    last_ros_ns = None
+    elapsed_ros_s = 0.0
+    elapsed_wall_s = 0.0
+    while rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.1)
+        now_ros_ns = node.get_clock().now().nanoseconds
+        now_wall = time.monotonic()
+        if now_ros_ns > 0 and ros_started_ns is None:
+            ros_started_ns = now_ros_ns
+        if last_ros_ns is not None and now_ros_ns < last_ros_ns:
+            raise RuntimeError("ROS clock moved backwards while recording reliability timeline")
+        if last_ros_ns is None or now_ros_ns > last_ros_ns:
+            last_progress_wall = now_wall
+        last_ros_ns = now_ros_ns
+        elapsed_ros_s = (
+            (now_ros_ns - ros_started_ns) * 1.0e-9
+            if ros_started_ns is not None else 0.0
+        )
+        elapsed_wall_s = now_wall - wall_started
+        if elapsed_ros_s >= duration_s:
+            return elapsed_ros_s, elapsed_wall_s
+        stalled_wall_s = now_wall - last_progress_wall
+        if stalled_wall_s >= wall_timeout_s:
+            raise RuntimeError(
+                f"ROS clock stalled for {stalled_wall_s:.1f}s "
+                f"after advancing {elapsed_ros_s:.1f}s"
+            )
+    return elapsed_ros_s, time.monotonic() - wall_started
 
 
 def summarize(events):
@@ -483,16 +552,39 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--expect-fault-modality", default="")
     parser.add_argument("--expect-fault-type", default="")
+    parser.add_argument(
+        "--wall-timeout",
+        type=float,
+        default=0.0,
+        help="wall seconds without ROS-clock progress; 0 selects a conservative limit",
+    )
     args = parser.parse_args()
     rclpy.init()
     node = ReliabilityTimelineRecorder()
-    started = time.monotonic()
-    while rclpy.ok() and time.monotonic() - started < args.duration:
-        rclpy.spin_once(node, timeout_sec=0.1)
+    wall_timeout_s = (
+        args.wall_timeout if args.wall_timeout > 0.0
+        else max(args.duration * 10.0, args.duration + 60.0)
+    )
+    duration_ros_s, duration_wall_s = record_for_ros_duration(
+        node, args.duration, wall_timeout_s
+    )
+    events = sorted(
+        node.events,
+        key=lambda event: (
+            event["elapsed_ros_s"], event["arrival_elapsed_wall_s"]
+        ),
+    )
     payload = {
-        "duration_s": time.monotonic() - started,
-        "summary": summarize(node.events),
-        "events": node.events,
+        "duration_s": duration_ros_s,
+        "duration_ros_s": duration_ros_s,
+        "duration_wall_s": duration_wall_s,
+        "requested_duration_ros_s": args.duration,
+        "wall_timeout_s": wall_timeout_s,
+        "wall_stall_timeout_s": wall_timeout_s,
+        "event_time_basis": "valid_source_header_stamp_only",
+        "invalid_header_stamp_counts": dict(node.invalid_header_stamp_counts),
+        "summary": summarize(events),
+        "events": events,
     }
     expected_faults = [
         event for event in node.events

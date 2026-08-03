@@ -50,6 +50,10 @@ public:
     publish_ground_truth_odom_ =
       declare_parameter<bool>("publish_ground_truth_odom", true);
     restamp_lidar_ = declare_parameter<bool>("restamp_lidar", true);
+    stamp_lidar_from_latest_imu_ =
+      declare_parameter<bool>("stamp_lidar_from_latest_imu", false);
+    preserve_sim_scan_clock_ =
+      declare_parameter<bool>("preserve_sim_scan_clock", false);
     restamp_imu_ = declare_parameter<bool>("restamp_imu", false);
     point_stride_ = static_cast<int>(std::max<std::int64_t>(
       1, declare_parameter<std::int64_t>("point_stride", 1)));
@@ -59,6 +63,7 @@ public:
       declare_parameter<std::int64_t>(
         "scan_lines", static_cast<std::int64_t>(kDefaultLineCount)),
       1, 255));
+    synthetic_scan_timing_ = declare_parameter<bool>("synthetic_scan_timing", false);
     const double frame_rate_hz =
       std::max(0.1, declare_parameter<double>("frame_rate_hz", 10.0));
     scan_period_ns_ = static_cast<std::uint64_t>(std::llround(1.0e9 / frame_rate_hz));
@@ -94,9 +99,14 @@ public:
     last_status_time_ = std::chrono::steady_clock::now();
     RCLCPP_INFO(
       get_logger(),
-      "Direct MID360 adapter active: %s -> %s, %s -> %s, stride=%d, max_points=%d",
+      "Direct MID360 adapter active: %s -> %s, %s -> %s, stride=%d, max_points=%d, "
+      "point_timing=%s, stamp_mode=%s",
       gz_topic_.c_str(), lidar_topic_.c_str(), input_imu_topic_.c_str(),
-      output_imu_topic_.c_str(), point_stride_, max_points_);
+      output_imu_topic_.c_str(), point_stride_, max_points_,
+      synthetic_scan_timing_ ? "synthetic_scan" : "snapshot_at_packet_end",
+      stamp_lidar_from_latest_imu_ ? "latest_fcu_imu" :
+      (preserve_sim_scan_clock_ ? "sim_rate_epoch_aligned" :
+      (restamp_lidar_ ? "wall_each_frame" : "raw_gazebo")));
   }
 
 private:
@@ -111,7 +121,22 @@ private:
 
   std::int64_t monotonic_lidar_stamp(const gz::msgs::LaserScan & msg)
   {
-    std::int64_t stamp_ns = restamp_lidar_ ? now().nanoseconds() : protobuf_stamp_ns(msg);
+    const auto source_stamp_ns = protobuf_stamp_ns(msg);
+    std::int64_t stamp_ns = 0;
+    const auto latest_imu_stamp_ns =
+      last_imu_stamp_ns_.load(std::memory_order_relaxed);
+    if (stamp_lidar_from_latest_imu_ && latest_imu_stamp_ns > 0) {
+      stamp_ns = latest_imu_stamp_ns;
+    } else if (preserve_sim_scan_clock_ && source_stamp_ns > 0) {
+      if (lidar_source_origin_ns_ <= 0) {
+        lidar_source_origin_ns_ = source_stamp_ns;
+        lidar_epoch_origin_ns_ = now().nanoseconds();
+      }
+      stamp_ns = epoch_aligned_stamp_ns(
+        source_stamp_ns, lidar_source_origin_ns_, lidar_epoch_origin_ns_);
+    } else {
+      stamp_ns = restamp_lidar_ ? now().nanoseconds() : source_stamp_ns;
+    }
     if (stamp_ns <= 0) {
       stamp_ns = now().nanoseconds();
     }
@@ -175,10 +200,12 @@ private:
     }
 
     livox_ros_driver2::msg::CustomMsg output;
-    const auto stamp_ns = monotonic_lidar_stamp(msg);
-    output.header.stamp = rclcpp::Time(stamp_ns, RCL_SYSTEM_TIME);
+    const auto acquisition_stamp_ns = monotonic_lidar_stamp(msg);
+    const auto packet_stamp_ns = packet_begin_stamp_ns(
+      acquisition_stamp_ns, scan_period_ns_, synthetic_scan_timing_);
+    output.header.stamp = rclcpp::Time(packet_stamp_ns, RCL_SYSTEM_TIME);
     output.header.frame_id = lidar_frame_id_;
-    output.timebase = static_cast<std::uint64_t>(stamp_ns);
+    output.timebase = static_cast<std::uint64_t>(packet_stamp_ns);
     output.lidar_id = 1U;
     output.rsvd = {0U, 0U, 0U};
     const std::size_t reserve_count = std::min<std::size_t>(
@@ -211,12 +238,13 @@ private:
       point.reflectivity = reflectivity_from_intensity(intensity);
       point.tag = kDefaultTag;
       point.line = line_for_output_index(output.points.size(), line_count_);
-      point.offset_time = relative_time_ns(source_index, source_count, scan_period_ns_);
+      point.offset_time = point_offset_time_ns(
+        source_index, source_count, scan_period_ns_, synthetic_scan_timing_);
       output.points.push_back(point);
     }
 
     output.point_num = static_cast<std::uint32_t>(output.points.size());
-    publish_ground_truth_odom(msg, stamp_ns);
+    publish_ground_truth_odom(msg, acquisition_stamp_ns);
     last_point_count_.store(output.point_num, std::memory_order_relaxed);
     cloud_count_.fetch_add(1, std::memory_order_relaxed);
     lidar_pub_->publish(std::move(output));
@@ -336,7 +364,10 @@ private:
   std::string rtf_topic_;
   bool publish_ground_truth_odom_{true};
   bool restamp_lidar_{true};
+  bool stamp_lidar_from_latest_imu_{false};
+  bool preserve_sim_scan_clock_{false};
   bool restamp_imu_{false};
+  bool synthetic_scan_timing_{false};
   int point_stride_{1};
   int max_points_{20000};
   int line_count_{static_cast<int>(kDefaultLineCount)};
@@ -368,6 +399,8 @@ private:
   std::atomic<std::uint32_t> last_point_count_{0U};
   std::atomic<std::int64_t> last_lidar_stamp_ns_{0};
   std::atomic<std::int64_t> last_imu_stamp_ns_{0};
+  std::int64_t lidar_source_origin_ns_{0};
+  std::int64_t lidar_epoch_origin_ns_{0};
   std::atomic<std::uint64_t> world_stats_count_{0U};
   std::atomic<double> latest_rtf_{0.0};
   std::atomic<double> latest_step_ms_{0.0};

@@ -24,6 +24,18 @@ The state-machine node itself will wait for /mavros/state.connected.
 EOF
   exit 2
 fi
+clock_ready=false
+for _attempt in 1 2 3; do
+  if timeout 8s ros2 topic echo /clock --once --field clock \
+      --qos-reliability best_effort >/dev/null 2>&1; then
+    clock_ready=true
+    break
+  fi
+done
+if [[ "$clock_ready" != true ]]; then
+  printf 'ROS simulation /clock is unavailable. Start the updated simulation stack first.\n' >&2
+  exit 2
+fi
 
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/rectangle_state_machine_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
@@ -90,6 +102,7 @@ EOF
 accuracy_pid=""
 if [[ "$ENABLE_FLOW_ACCURACY" == "1" ]]; then
   ros2 run multi_slam_uav_sim flow_gazebo_accuracy --ros-args \
+    -p use_sim_time:=true \
     -p flow_topic:=/sim/optical_flow/rad \
     -p gazebo_world_name:="$WORLD_NAME" \
     -p gazebo_model:=apm_iris \
@@ -103,6 +116,7 @@ fi
 
 set +e
 ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
+  -p use_sim_time:=true \
   -p takeoff_alt:="$TAKEOFF_ALT_PARAM" \
   -p length_x:="$RECTANGLE_LENGTH_X_PARAM" \
   -p length_y:="$RECTANGLE_LENGTH_Y_PARAM" \

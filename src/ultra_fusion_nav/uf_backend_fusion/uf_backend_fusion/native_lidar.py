@@ -40,6 +40,10 @@ class NativeLidarPoseNormal:
     state_frame: str
     sensor_frame: str
     correspondences_valid: bool
+    # Defaults keep synthetic/unit-test factors source-compatible; packets
+    # parsed from FAST-LIO still carry and validate exact scan bounds.
+    scan_begin_s: float = 0.0
+    scan_end_s: float = 0.0
     lidar_points: np.ndarray | None = None
     plane_normals: np.ndarray | None = None
     plane_points: np.ndarray | None = None
@@ -47,6 +51,79 @@ class NativeLidarPoseNormal:
     lidar_to_body_translation: np.ndarray | None = None
     pose_hessian_right: np.ndarray | None = None
     pose_gradient_right: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class LidarPoseObservability:
+    effective_rank: int
+    translation_rank: int
+    rotation_rank: int
+    condition_number: float
+    characteristic_range_m: float
+    normalized_eigenvalues: tuple[float, ...]
+    weakest_direction: tuple[float, ...]
+
+
+def lidar_pose_observability(
+    factor: NativeLidarPoseNormal,
+    relative_eigenvalue_threshold: float = 1.0e-3,
+) -> LidarPoseObservability:
+    """Measure directional information without scalarizing the LiDAR factor.
+
+    Rotation columns are divided by a characteristic feature range so that a
+    one-radian perturbation is compared at an equivalent metric displacement.
+    Weak directions remain weak in the native Hessian instead of disabling
+    otherwise useful point-plane rows.
+    """
+    threshold = float(relative_eigenvalue_threshold)
+    if not math.isfinite(threshold) or threshold <= 0.0 or threshold >= 1.0:
+        raise ValueError("relative LiDAR eigenvalue threshold must be in (0, 1)")
+    hessian = np.asarray(factor.pose_hessian_right, dtype=float)
+    if hessian.shape != (6, 6) or np.any(~np.isfinite(hessian)):
+        raise ValueError("LiDAR observability requires a finite 6x6 Hessian")
+    characteristic_range_m = 1.0
+    if factor.lidar_points is not None:
+        ranges = np.linalg.norm(np.asarray(factor.lidar_points, dtype=float), axis=1)
+        finite = ranges[np.isfinite(ranges) & (ranges > 1.0e-3)]
+        if finite.size:
+            characteristic_range_m = max(0.25, float(np.median(finite)))
+    coordinates = np.eye(6, dtype=float)
+    coordinates[3:, 3:] /= characteristic_range_m
+    normalized = coordinates.T @ (0.5 * (hessian + hessian.T)) @ coordinates
+    eigenvalues, eigenvectors = np.linalg.eigh(normalized)
+    eigenvalues = np.maximum(eigenvalues, 0.0)
+    maximum = max(1.0e-12, float(eigenvalues[-1]))
+    cutoff = maximum * threshold
+    effective_rank = int(np.count_nonzero(eigenvalues > cutoff))
+
+    translation_eigenvalues = np.maximum(
+        np.linalg.eigvalsh(normalized[:3, :3]), 0.0
+    )
+    rotation_eigenvalues = np.maximum(
+        np.linalg.eigvalsh(normalized[3:, 3:]), 0.0
+    )
+    translation_rank = int(np.count_nonzero(
+        translation_eigenvalues
+        > max(1.0e-12, float(translation_eigenvalues[-1])) * threshold
+    ))
+    rotation_rank = int(np.count_nonzero(
+        rotation_eigenvalues
+        > max(1.0e-12, float(rotation_eigenvalues[-1])) * threshold
+    ))
+    condition_number = (
+        float(eigenvalues[-1] / eigenvalues[0])
+        if effective_rank == 6 and eigenvalues[0] > 1.0e-12
+        else math.inf
+    )
+    return LidarPoseObservability(
+        effective_rank,
+        translation_rank,
+        rotation_rank,
+        condition_number,
+        characteristic_range_m,
+        tuple(float(value / maximum) for value in eigenvalues),
+        tuple(float(value) for value in eigenvectors[:, 0]),
+    )
 
 
 def _finite_vector(values: Sequence[float], size: int, name: str) -> np.ndarray:
@@ -91,6 +168,43 @@ def rpy_to_rotation_matrix(values: Sequence[float]) -> np.ndarray:
         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
         [-sp, cp * sr, cp * cr],
     ], dtype=float)
+
+
+def rotation_matrix_to_rpy(values: Sequence[Sequence[float]]) -> np.ndarray:
+    rotation = np.asarray(values, dtype=float)
+    if rotation.shape != (3, 3) or np.any(~np.isfinite(rotation)):
+        raise ValueError("rotation matrix must be finite and 3x3")
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1.0e-6):
+        raise ValueError("rotation matrix must be orthonormal")
+    if not math.isclose(float(np.linalg.det(rotation)), 1.0, abs_tol=1.0e-6):
+        raise ValueError("rotation matrix must have determinant one")
+    pitch = math.asin(max(-1.0, min(1.0, -float(rotation[2, 0]))))
+    if abs(math.cos(pitch)) > 1.0e-8:
+        roll = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+        yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
+    else:
+        roll = 0.0
+        yaw = math.atan2(-float(rotation[0, 1]), float(rotation[1, 1]))
+    return np.asarray([roll, pitch, yaw], dtype=float)
+
+
+def pose_vector_to_matrix(values: Sequence[float]) -> np.ndarray:
+    pose = _finite_vector(values, 6, "pose")
+    transform = np.eye(4, dtype=float)
+    transform[:3, :3] = rpy_to_rotation_matrix(pose[3:6])
+    transform[:3, 3] = pose[:3]
+    return transform
+
+
+def matrix_to_pose_vector(values: Sequence[Sequence[float]]) -> np.ndarray:
+    transform = np.asarray(values, dtype=float)
+    if transform.shape != (4, 4) or np.any(~np.isfinite(transform)):
+        raise ValueError("pose transform must be finite and 4x4")
+    if not np.allclose(transform[3], [0.0, 0.0, 0.0, 1.0], atol=1.0e-9):
+        raise ValueError("pose transform must be homogeneous")
+    return np.concatenate((
+        transform[:3, 3], rotation_matrix_to_rpy(transform[:3, :3])
+    ))
 
 
 def quaternion_xyzw_to_rotation_matrix(values: Sequence[float]) -> np.ndarray:
@@ -172,6 +286,57 @@ def with_yaw_reference(
     return replace(factor, linearization_pose=pose)
 
 
+def transform_native_factor_map(
+    factor: NativeLidarPoseNormal,
+    target_from_source: Sequence[Sequence[float]],
+) -> NativeLidarPoseNormal:
+    """Move a native factor into a persistent navigation map.
+
+    FAST-LIO may restart or relocalize its local map. The backend keeps one
+    persistent map and applies a left rigid transform to the factor pose and
+    plane geometry. Body-frame points and LiDAR extrinsics remain unchanged.
+    """
+    transform = np.asarray(target_from_source, dtype=float)
+    if transform.shape != (4, 4) or np.any(~np.isfinite(transform)):
+        raise ValueError("map alignment must be a finite 4x4 transform")
+    if not np.allclose(transform[3], [0.0, 0.0, 0.0, 1.0], atol=1.0e-9):
+        raise ValueError("map alignment must be homogeneous")
+    rotation = transform[:3, :3]
+    rotation_matrix_to_rpy(rotation)
+
+    pose = matrix_to_pose_vector(
+        transform @ pose_vector_to_matrix(factor.linearization_pose)
+    )
+
+    tangent = np.eye(6, dtype=float)
+    tangent[:3, :3] = rotation.T
+    hessian_right = tangent.T @ factor.pose_hessian_right @ tangent
+    gradient_right = tangent.T @ factor.pose_gradient_right
+    coordinates = np.eye(6, dtype=float)
+    coordinates[3:, 3:] = right_perturbation_jacobian_rpy(pose[3:6])
+    hessian = coordinates.T @ hessian_right @ coordinates
+    gradient = coordinates.T @ gradient_right
+
+    plane_normals = factor.plane_normals
+    plane_points = factor.plane_points
+    if plane_normals is not None:
+        plane_normals = np.asarray(plane_normals, dtype=float) @ rotation.T
+    if plane_points is not None:
+        plane_points = (
+            np.asarray(plane_points, dtype=float) @ rotation.T + transform[:3, 3]
+        )
+    return replace(
+        factor,
+        linearization_pose=pose,
+        pose_hessian=0.5 * (hessian + hessian.T),
+        pose_gradient=gradient,
+        plane_normals=plane_normals,
+        plane_points=plane_points,
+        pose_hessian_right=0.5 * (hessian_right + hessian_right.T),
+        pose_gradient_right=gradient_right,
+    )
+
+
 def native_factor_from_message(msg) -> NativeLidarPoseNormal:
     """Validate one FAST-LIO frame trigger and its optional point-plane factor."""
     if bool(msg.approximate):
@@ -204,6 +369,19 @@ def native_factor_from_message(msg) -> NativeLidarPoseNormal:
     stamp_ns = stamp_sec * 1_000_000_000 + stamp_nanosec
     if stamp_ns <= 0:
         raise ValueError("native LiDAR timestamp must be positive")
+    begin_stamp = getattr(msg, "scan_begin_stamp", None)
+    end_stamp = getattr(msg, "scan_end_stamp", None)
+    if begin_stamp is None or end_stamp is None:
+        begin_stamp = end_stamp = msg.header.stamp
+    begin_s = float(begin_stamp.sec) + float(begin_stamp.nanosec) * 1.0e-9
+    end_s = float(end_stamp.sec) + float(end_stamp.nanosec) * 1.0e-9
+    if begin_s == 0.0 and end_s == 0.0:
+        # Old rosbag2 records deserialize newly-added fields as zero. Keep
+        # those packets usable by the legacy factor path; scan-prediction mode
+        # explicitly rejects this compatibility interval before integrating.
+        begin_s = end_s = stamp_ns * 1.0e-9
+    if end_s > 0.0 and abs(end_s - stamp_ns * 1.0e-9) > 2.0e-6:
+        raise ValueError("native LiDAR scan interval is invalid")
     map_frame = str(msg.map_frame)
     state_frame = str(msg.state_frame)
     sensor_frame = str(getattr(msg, "sensor_frame", ""))
@@ -225,6 +403,8 @@ def native_factor_from_message(msg) -> NativeLidarPoseNormal:
         return NativeLidarPoseNormal(
             stamp_ns=stamp_ns,
             stamp_s=stamp_ns * 1.0e-9,
+            scan_begin_s=begin_s,
+            scan_end_s=end_s,
             scan_sequence=int(msg.scan_sequence),
             matched_points=0,
             candidate_points=candidate,
@@ -279,6 +459,8 @@ def native_factor_from_message(msg) -> NativeLidarPoseNormal:
     return NativeLidarPoseNormal(
         stamp_ns=stamp_ns,
         stamp_s=stamp_ns * 1.0e-9,
+        scan_begin_s=begin_s,
+        scan_end_s=end_s,
         scan_sequence=int(msg.scan_sequence),
         matched_points=matched,
         candidate_points=candidate,

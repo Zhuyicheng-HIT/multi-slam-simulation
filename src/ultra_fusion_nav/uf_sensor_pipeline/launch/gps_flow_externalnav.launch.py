@@ -14,7 +14,9 @@ def generate_launch_description():
     accuracy_output_path = LaunchConfiguration("accuracy_output_path")
     world_name = LaunchConfiguration("world_name")
     flow_truth_assistance = LaunchConfiguration("flow_truth_assistance")
+    use_sim_time = LaunchConfiguration("use_sim_time")
     return LaunchDescription([
+        DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument(
             "sensor_config", default_value=sensor_share + "/config/sim_sensor_config.yaml"),
         DeclareLaunchArgument(
@@ -27,28 +29,28 @@ def generate_launch_description():
             package="uf_sensor_pipeline",
             executable="fault_injector",
             name="fault_injector_gnss",
-            parameters=[sensor_config],
+            parameters=[sensor_config, {"use_sim_time": use_sim_time}],
             output="screen",
         ),
         Node(
             package="uf_sensor_pipeline",
             executable="fault_injector",
             name="fault_injector_optical_flow",
-            parameters=[sensor_config],
+            parameters=[sensor_config, {"use_sim_time": use_sim_time}],
             output="screen",
         ),
         Node(
             package="uf_sensor_pipeline",
             executable="gps_flow_fusion",
             name="gps_flow_fusion",
-            parameters=[fusion_config],
+            parameters=[fusion_config, {"use_sim_time": use_sim_time}],
             output="screen",
         ),
         Node(
             package="uf_sensor_pipeline",
             executable="external_nav_gate",
             name="external_nav_gate",
-            parameters=[fusion_config],
+            parameters=[fusion_config, {"use_sim_time": use_sim_time}],
             output="screen",
         ),
         Node(
@@ -57,6 +59,7 @@ def generate_launch_description():
             name="simulation_performance_monitor",
             parameters=[{
                 "world_name": world_name,
+                "use_sim_time": use_sim_time,
                 "output_path": performance_output_path,
                 "flow_truth_assistance": ParameterValue(
                     flow_truth_assistance, value_type=bool),
@@ -69,6 +72,7 @@ def generate_launch_description():
             name="external_nav_accuracy",
             parameters=[{
                 "world_name": world_name,
+                "use_sim_time": use_sim_time,
                 "output_path": accuracy_output_path,
             }],
             output="screen",

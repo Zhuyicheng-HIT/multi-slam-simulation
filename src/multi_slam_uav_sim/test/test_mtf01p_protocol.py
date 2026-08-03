@@ -26,13 +26,21 @@ class Mtf01pProtocolTest(unittest.TestCase):
             focal_length_px(100, math.radians(42.0)), 130.254, places=3
         )
 
-    def test_mavlink1_pixel_roundtrip_is_quantized_but_consistent(self):
+    def test_mavlink1_decipixel_roundtrip_is_quantized_but_consistent(self):
         focal = focal_length_px()
         original = (0.035, -0.021)
         pixels = integrated_radians_to_pixels(*original, focal, focal)
         recovered = pixels_to_integrated_radians(*pixels, focal, focal)
-        self.assertAlmostEqual(recovered[0], original[0], delta=0.5 / focal)
-        self.assertAlmostEqual(recovered[1], original[1], delta=0.5 / focal)
+        self.assertAlmostEqual(recovered[0], original[0], delta=0.05 / focal)
+        self.assertAlmostEqual(recovered[1], original[1], delta=0.05 / focal)
+
+    def test_one_pixel_encodes_as_ten_dpix_counts(self):
+        focal = focal_length_px()
+        counts = integrated_radians_to_pixels(
+            math.atan2(1.0, focal), 0.0, focal, focal
+        )
+
+        self.assertEqual(counts, (10, 0))
 
     def test_aircraft_frd_to_ros_flu_flips_y(self):
         self.assertEqual(sensor_frd_to_ros_flu(3.0, -4.0), (3.0, 4.0))

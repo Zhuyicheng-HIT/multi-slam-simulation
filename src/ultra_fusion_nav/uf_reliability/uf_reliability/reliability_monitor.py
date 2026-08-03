@@ -2,7 +2,6 @@ import bisect
 import copy
 import math
 from collections import deque
-import time
 
 import numpy as np
 import rclpy
@@ -274,6 +273,15 @@ class ReliabilityMonitor(Node):
         self.create_subscription(Odometry, "/lio/odom", self._odom, 20)
         self.create_timer(0.5, self._outage_timer)
 
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1.0e-9
+
+    @staticmethod
+    def _age_s(now_s, received_s):
+        if received_s is None or received_s > now_s:
+            return math.inf
+        return now_s - received_s
+
     def _publish(
         self,
         modality,
@@ -313,8 +321,8 @@ class ReliabilityMonitor(Node):
         innovation_yaw = self.lidar_innovation_yaw
         innovation_age_s = -1.0
         if self.lidar_innovation_arrival is not None:
-            innovation_age_s = max(
-                0.0, time.monotonic() - self.lidar_innovation_arrival
+            innovation_age_s = self._age_s(
+                self._now_s(), self.lidar_innovation_arrival
             )
             if innovation_age_s > float(
                 self.get_parameter("lidar.factor.innovation_timeout_s").value
@@ -381,9 +389,13 @@ class ReliabilityMonitor(Node):
 
     def _gps_raw(self, msg):
         self.last_gps_raw = copy.deepcopy(msg)
-        self.last_gps_raw_arrival_ns = self.get_clock().now().nanoseconds
+        source_ns = stamp_ns(msg.header)
+        self.last_gps_raw_arrival_ns = source_ns if source_ns > 0 else None
 
     def _backend_diagnostics(self, msg):
+        source_s = stamp_ns(msg.header) * 1.0e-9
+        if source_s <= 0.0:
+            source_s = None
         value = nonnegative_diagnostic_value(
             msg,
             "unified_backend_fusion",
@@ -391,7 +403,7 @@ class ReliabilityMonitor(Node):
         )
         self.imu_preintegration_residual = value
         self.imu_preintegration_residual_arrival = (
-            time.monotonic() if value is not None else None
+            source_s if value is not None else None
         )
         position_innovation = nonnegative_diagnostic_value(
             msg,
@@ -406,13 +418,12 @@ class ReliabilityMonitor(Node):
         self.lidar_innovation_position = position_innovation
         self.lidar_innovation_yaw = yaw_innovation
         self.lidar_innovation_arrival = (
-            time.monotonic()
+            source_s
             if position_innovation is not None and yaw_innovation is not None
             else None
         )
 
     def _gnss(self, msg):
-        now_ns = self.get_clock().now().nanoseconds
         current_ns = stamp_ns(msg.header)
         covariance = float(msg.position_covariance[0] + msg.position_covariance[4] + msg.position_covariance[8])
         innovation = -1.0
@@ -430,8 +441,10 @@ class ReliabilityMonitor(Node):
             innovation_mahalanobis = 10.0
         raw = None
         if self.last_gps_raw is not None and self.last_gps_raw_arrival_ns is not None:
-            age_s = (now_ns - self.last_gps_raw_arrival_ns) * 1.0e-9
-            if age_s <= float(self.get_parameter("gnss.raw_timeout_s").value):
+            age_s = (current_ns - self.last_gps_raw_arrival_ns) * 1.0e-9
+            if 0.0 <= age_s <= float(
+                self.get_parameter("gnss.raw_timeout_s").value
+            ):
                 raw = self.last_gps_raw
         hdop = None
         vdop = None
@@ -480,7 +493,7 @@ class ReliabilityMonitor(Node):
         self.gnss_integrity_pub.publish(integrity)
         self.last_gnss = copy.deepcopy(msg)
         self.last_gnss_ns = current_ns
-        self.last_gnss_arrival_ns = now_ns
+        self.last_gnss_arrival_ns = current_ns
         self.last_gnss_lio_position = None if self.lio_position is None else self.lio_position.copy()
 
     def _imu(self, msg):
@@ -527,8 +540,8 @@ class ReliabilityMonitor(Node):
         residual = -1.0
         residual_age_s = -1.0
         if self.imu_preintegration_residual_arrival is not None:
-            residual_age_s = max(
-                0.0, time.monotonic() - self.imu_preintegration_residual_arrival
+            residual_age_s = self._age_s(
+                self._now_s(), self.imu_preintegration_residual_arrival
             )
             if residual_age_s <= float(
                 self.get_parameter("imu.preintegration_residual_timeout_s").value
@@ -558,7 +571,7 @@ class ReliabilityMonitor(Node):
         )
 
     def _flow(self, msg):
-        self.pending_flows.append((time.monotonic(), copy.deepcopy(msg)))
+        self.pending_flows.append((self._now_s(), copy.deepcopy(msg)))
         self._flush_flows()
 
     def _flow_prediction(self, msg):
@@ -578,10 +591,13 @@ class ReliabilityMonitor(Node):
         return float(body_flu_x), float(-body_flu_y)
 
     def _flush_flows(self):
-        now = time.monotonic()
+        now = self._now_s()
         wait_s = float(self.get_parameter("optical_flow.lio_wait_s").value)
         while self.pending_flows:
             queued_at, msg = self.pending_flows[0]
+            if queued_at > now:
+                self.pending_flows.clear()
+                return
             prediction = self._flow_prediction(msg)
             if prediction is None and now - queued_at < wait_s:
                 break
@@ -695,6 +711,9 @@ class ReliabilityMonitor(Node):
         if self.last_gnss_arrival_ns is None or self.last_gnss is None:
             return
         outage_s = (self.get_clock().now().nanoseconds - self.last_gnss_arrival_ns) * 1.0e-9
+        if outage_s < 0.0:
+            self.last_gnss_arrival_ns = None
+            return
         if outage_s <= 0.75:
             return
         covariance = float(

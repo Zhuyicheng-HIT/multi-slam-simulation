@@ -28,6 +28,73 @@ def capability_support_allowed(support, required, minimum_support):
     return all(float(support.get(name, 0.0)) >= minimum_support for name in required)
 
 
+def odometry_state_guard_reason(
+    message,
+    previous_message=None,
+    maximum_position_variance_m2=25.0,
+    maximum_orientation_variance_rad2=1.0,
+    maximum_position_step_m=1.0,
+    maximum_linear_speed_mps=10.0,
+    maximum_orientation_step_rad=0.5,
+    maximum_angular_speed_radps=5.0,
+):
+    """Reject finite but physically unsafe estimator states before FCU use."""
+    pose_diagonal = [
+        float(message.pose.covariance[index])
+        for index in (0, 7, 14, 21, 28, 35)
+    ]
+    if max(pose_diagonal[:3]) > float(maximum_position_variance_m2):
+        return "position_covariance_exceeds_limit"
+    if max(pose_diagonal[3:]) > float(maximum_orientation_variance_rad2):
+        return "orientation_covariance_exceeds_limit"
+    if previous_message is None:
+        return "ok"
+
+    dt_s = stamp_seconds(message.header.stamp) - stamp_seconds(
+        previous_message.header.stamp
+    )
+    if not math.isfinite(dt_s) or dt_s <= 0.0:
+        return "nonmonotonic_state_timestamp"
+    current_position = message.pose.pose.position
+    previous_position = previous_message.pose.pose.position
+    displacement = math.sqrt(
+        (current_position.x - previous_position.x) ** 2
+        + (current_position.y - previous_position.y) ** 2
+        + (current_position.z - previous_position.z) ** 2
+    )
+    allowed_displacement = max(
+        float(maximum_position_step_m),
+        float(maximum_linear_speed_mps) * dt_s,
+    )
+    if displacement > allowed_displacement:
+        return "position_jump_exceeds_limit"
+
+    current_orientation = _normalize_quaternion((
+        message.pose.pose.orientation.x,
+        message.pose.pose.orientation.y,
+        message.pose.pose.orientation.z,
+        message.pose.pose.orientation.w,
+    ))
+    previous_orientation = _normalize_quaternion((
+        previous_message.pose.pose.orientation.x,
+        previous_message.pose.pose.orientation.y,
+        previous_message.pose.pose.orientation.z,
+        previous_message.pose.pose.orientation.w,
+    ))
+    dot = abs(sum(
+        current * previous
+        for current, previous in zip(current_orientation, previous_orientation)
+    ))
+    orientation_step = 2.0 * math.acos(min(1.0, max(-1.0, dot)))
+    allowed_orientation_step = max(
+        float(maximum_orientation_step_rad),
+        float(maximum_angular_speed_radps) * dt_s,
+    )
+    if orientation_step > allowed_orientation_step:
+        return "orientation_jump_exceeds_limit"
+    return "ok"
+
+
 def _quaternion_multiply(left, right):
     lx, ly, lz, lw = left
     rx, ry, rz, rw = right
@@ -144,6 +211,12 @@ class ExternalNavGate(Node):
         self.declare_parameter("position_process_noise_mps", 0.50)
         self.declare_parameter("angular_process_noise_radps", 0.20)
         self.declare_parameter("maximum_covariance_scale", 5.0)
+        self.declare_parameter("maximum_position_variance_m2", 25.0)
+        self.declare_parameter("maximum_orientation_variance_rad2", 1.0)
+        self.declare_parameter("maximum_position_step_m", 1.0)
+        self.declare_parameter("maximum_linear_speed_mps", 10.0)
+        self.declare_parameter("maximum_orientation_step_rad", 0.5)
+        self.declare_parameter("maximum_angular_speed_radps", 5.0)
         self.declare_parameter("enabled", True)
         self.declare_parameter("require_scheduler_health", False)
         self.declare_parameter("scheduler_topic", "/reliability/scheduler_state")
@@ -169,6 +242,24 @@ class ExternalNavGate(Node):
         )
         self.maximum_covariance_scale = max(
             1.0, float(self.get_parameter("maximum_covariance_scale").value)
+        )
+        self.maximum_position_variance = float(
+            self.get_parameter("maximum_position_variance_m2").value
+        )
+        self.maximum_orientation_variance = float(
+            self.get_parameter("maximum_orientation_variance_rad2").value
+        )
+        self.maximum_position_step = float(
+            self.get_parameter("maximum_position_step_m").value
+        )
+        self.maximum_linear_speed = float(
+            self.get_parameter("maximum_linear_speed_mps").value
+        )
+        self.maximum_orientation_step = float(
+            self.get_parameter("maximum_orientation_step_rad").value
+        )
+        self.maximum_angular_speed = float(
+            self.get_parameter("maximum_angular_speed_radps").value
         )
         self.enabled = bool(self.get_parameter("enabled").value)
         self.require_scheduler_health = bool(
@@ -234,7 +325,7 @@ class ExternalNavGate(Node):
         )
 
     def _scheduler_state(self, msg):
-        self.last_scheduler_arrival = time.monotonic()
+        self.last_scheduler_arrival = stamp_seconds(msg.header.stamp)
         self.last_scheduler_state = str(msg.health_state).strip().upper() or "UNKNOWN"
         self.capability_support = {
             name: float(value)
@@ -247,7 +338,7 @@ class ExternalNavGate(Node):
             return "ok"
         if self.last_scheduler_arrival is None:
             return "missing_scheduler_state"
-        if time.monotonic() - self.last_scheduler_arrival > self.scheduler_timeout_s:
+        if self._age_s(self._now_s(), self.last_scheduler_arrival) > self.scheduler_timeout_s:
             return "stale_scheduler_state"
         if self.require_scheduler_health and not scheduler_state_allowed(
             self.last_scheduler_state, self.allowed_scheduler_states
@@ -294,11 +385,20 @@ class ExternalNavGate(Node):
             for value in pose_diagonal + twist_diagonal
         ):
             return "invalid_covariance"
-        return "ok"
+        return odometry_state_guard_reason(
+            msg,
+            self.latest_source,
+            self.maximum_position_variance,
+            self.maximum_orientation_variance,
+            self.maximum_position_step,
+            self.maximum_linear_speed,
+            self.maximum_orientation_step,
+            self.maximum_angular_speed,
+        )
 
     def _odom(self, msg):
         started = time.perf_counter_ns()
-        now = time.monotonic()
+        now = self._now_s()
         self.last_arrival = now
         self.arrivals.append(now)
         reason = self._validate_input(msg)
@@ -326,9 +426,9 @@ class ExternalNavGate(Node):
         if self.latest_source is None:
             self.last_reason = "waiting_for_fusion"
             return
-        now_ros_s = self.get_clock().now().nanoseconds * 1.0e-9
+        now_ros_s = self._now_s()
         source_age_s = now_ros_s - stamp_seconds(self.latest_source.header.stamp)
-        arrival_age_s = time.monotonic() - self.last_arrival
+        arrival_age_s = self._age_s(now_ros_s, self.last_arrival)
         if (
             not math.isfinite(source_age_s)
             or source_age_s < -0.05
@@ -349,16 +449,24 @@ class ExternalNavGate(Node):
             covariance_scale,
         )
         self.publisher.publish(output)
-        published_at = time.monotonic()
+        published_at = now_ros_s
         self.publications.append(published_at)
         self.last_publish_arrival = published_at
         self.published += 1
         self.last_reason = "ok"
 
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1.0e-9
+
     @staticmethod
-    def _rate(values):
-        now = time.monotonic()
-        recent = [value for value in values if now - value <= 5.0]
+    def _age_s(now_s, received_s):
+        if received_s is None or received_s > now_s:
+            return math.inf
+        return now_s - received_s
+
+    @staticmethod
+    def _rate(values, now_s):
+        recent = [value for value in values if 0.0 <= now_s - value <= 5.0]
         if len(recent) < 2:
             return 0.0
         return (len(recent) - 1) / max(1.0e-6, recent[-1] - recent[0])
@@ -371,19 +479,12 @@ class ExternalNavGate(Node):
         return item
 
     def _diagnostics(self):
-        input_rate = self._rate(self.arrivals)
-        output_rate = self._rate(self.publications)
-        input_age_s = math.inf if self.last_arrival is None else time.monotonic() - self.last_arrival
-        output_age_s = (
-            math.inf
-            if self.last_publish_arrival is None
-            else time.monotonic() - self.last_publish_arrival
-        )
-        scheduler_age_s = (
-            math.inf
-            if self.last_scheduler_arrival is None
-            else time.monotonic() - self.last_scheduler_arrival
-        )
+        now_s = self._now_s()
+        input_rate = self._rate(self.arrivals, now_s)
+        output_rate = self._rate(self.publications, now_s)
+        input_age_s = self._age_s(now_s, self.last_arrival)
+        output_age_s = self._age_s(now_s, self.last_publish_arrival)
+        scheduler_age_s = self._age_s(now_s, self.last_scheduler_arrival)
         healthy = self.last_reason == "ok" and output_age_s <= 2.0 / self.output_rate
         if len(self.arrivals) >= 5:
             healthy = healthy and input_rate >= self.minimum_rate
@@ -404,6 +505,7 @@ class ExternalNavGate(Node):
             self._value("output_age_s", f"{output_age_s:.3f}"),
             self._value("scheduler_state", self.last_scheduler_state),
             self._value("scheduler_age_s", f"{scheduler_age_s:.3f}"),
+            self._value("algorithm_clock", "ros"),
             self._value("estimator_support", f"{self.last_estimator_support:.3f}"),
             self._value("required_capabilities", ",".join(self.required_capabilities)),
             self._value(
@@ -413,6 +515,13 @@ class ExternalNavGate(Node):
                     for name, value in sorted(self.capability_support.items())
                 ),
             ),
+            self._value(
+                "timing_callback_wall_mean_ms",
+                f"{sum(self.callback_ms) / len(self.callback_ms):.4f}"
+                if self.callback_ms else "0.0",
+            ),
+            # Keep the legacy key while downstream dashboards migrate to the
+            # explicit wall-clock name above.
             self._value(
                 "timing_callback_mean_ms",
                 f"{sum(self.callback_ms) / len(self.callback_ms):.4f}"

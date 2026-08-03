@@ -72,27 +72,3 @@ def integrate_flu_gyro_as_sensor_frd(samples, start_s, end_s, maximum_gap_s=0.12
         for axis in range(3):
             integral_flu[axis] += 0.5 * (before[axis + 1] + after[axis + 1]) * dt
     return (integral_flu[0], -integral_flu[1], -integral_flu[2])
-
-
-def integrate_flu_gyro_with_arrival_fallback(
-    source_samples,
-    arrival_samples,
-    source_start_s,
-    source_end_s,
-    arrival_end_s,
-    maximum_gap_s=0.12,
-):
-    """Integrate in source time, falling back when FCU and sensor clocks diverge."""
-    result = integrate_flu_gyro_as_sensor_frd(
-        source_samples, source_start_s, source_end_s, maximum_gap_s
-    )
-    if result is not None:
-        return result, False
-    interval_s = source_end_s - source_start_s
-    result = integrate_flu_gyro_as_sensor_frd(
-        arrival_samples,
-        arrival_end_s - interval_s,
-        arrival_end_s,
-        maximum_gap_s,
-    )
-    return result, result is not None

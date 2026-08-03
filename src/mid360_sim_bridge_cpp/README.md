@@ -33,3 +33,18 @@ ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
 
 `/sim/mid360/ground_truth_odom` is published only for simulation evaluation.
 It is never connected to FAST-LIO or the unified estimator.
+
+Gazebo publishes each `LaserScan` as one synchronous snapshot. In the Livox
+packet contract the adapter represents that snapshot at the packet end: the
+header/timebase is `t_snapshot - scan_period` and every point has
+`offset_time=scan_period`. FAST-LIO therefore receives a valid scan interval,
+but every point uses the same end pose and no fictitious rolling-scan deskew is
+introduced. `synthetic_scan_timing:=true` remains available only for explicit
+timing stress tests. The real MID-360S path keeps the official driver's native
+per-point offsets.
+
+Timestamp experiments are explicit opt-ins. `stamp_lidar_from_latest_imu:=true`
+assigns each snapshot the latest preserved FCU IMU measurement stamp, while
+`preserve_sim_scan_clock:=true` epoch-aligns the raw Gazebo clock. Neither is a
+general replacement for wall restamping: ArduPilot SITL and Gazebo do not
+necessarily advance at the same rate, and the FCU callback can lag a scan.

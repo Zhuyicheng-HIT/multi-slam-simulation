@@ -1,6 +1,6 @@
 import os
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
-import json, math, time
+import json, math
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
@@ -126,7 +126,9 @@ class PeopleMotion(Node):
         self.gz_timeout_ms = int(self.get_parameter('gz_timeout_ms').value)
         self.agents = self._load_agents(self.get_parameter('agents_json').value)
         self.gz_node = GzNode()
-        self.start_time, self.warned = time.monotonic(), False
+        self.start_time = None
+        self.last_ros_time = None
+        self.warned = False
         self.failed_requests = 0
         self.get_logger().info(f'Controlling {len(self.agents)} visual-only actors in [{self.world_name}]')
         for agent in self.agents:
@@ -150,7 +152,15 @@ class PeopleMotion(Node):
         return agents
 
     def _tick(self):
-        now = time.monotonic() - self.start_time
+        ros_now_s = self.get_clock().now().nanoseconds * 1.0e-9
+        if ros_now_s <= 0.0:
+            return
+        if self.last_ros_time is not None and ros_now_s < self.last_ros_time:
+            self.start_time = ros_now_s
+        if self.start_time is None:
+            self.start_time = ros_now_s
+        self.last_ros_time = ros_now_s
+        now = ros_now_s - self.start_time
         req = Pose_V()
         for agent in self.agents:
             elapsed = max(0.0, now - agent.start_delay)

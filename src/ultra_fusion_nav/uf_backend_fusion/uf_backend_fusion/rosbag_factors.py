@@ -291,9 +291,25 @@ def _lidar_decision(diagnostic: dict[str, Any] | None):
     return decision
 
 
-def extract_factors(bag_path: str, output_path: str, tolerance_s: float = 0.30):
+def extract_factors(
+    bag_path: str,
+    output_path: str,
+    tolerance_s: float = 0.30,
+    allow_legacy_flow_clock_align: bool = False,
+):
     streams, deserialize_skipped = _read_streams(bag_path)
-    flow_stamp_offset_s = _align_relative_flow_clock(streams)
+    flow_stamp_offset_s = 0.0
+    if streams["lio"] and streams["flow"]:
+        clock_delta_s = abs(
+            streams["lio"][0]["stamp_s"] - streams["flow"][0]["stamp_s"]
+        )
+        if clock_delta_s >= 1000.0 and not allow_legacy_flow_clock_align:
+            raise RuntimeError(
+                "LiDAR and optical-flow stamps use different clock domains; "
+                "re-record with ROS /clock or explicitly enable legacy alignment"
+            )
+        if allow_legacy_flow_clock_align:
+            flow_stamp_offset_s = _align_relative_flow_clock(streams)
     lio = streams["lio"]
     if len(lio) < 2:
         raise RuntimeError("bag has fewer than two /lio/odom messages")
@@ -457,6 +473,9 @@ def extract_factors(bag_path: str, output_path: str, tolerance_s: float = 0.30):
         "deserialize_skipped_messages": deserialize_skipped,
         "lidar_diagnostics_available": bool(streams["diagnostics"]),
         "flow_stamp_offset_s": flow_stamp_offset_s,
+        "legacy_flow_clock_alignment_enabled": bool(
+            allow_legacy_flow_clock_align
+        ),
         "imu_preintegration_summary": {
             "interval_count": len(imu_statuses),
             "valid_count": sum(status["valid"] for status in imu_statuses),

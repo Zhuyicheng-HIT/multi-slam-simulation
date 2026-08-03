@@ -6,8 +6,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common features registration)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common features filters registration)
+find_package(pcl_conversions REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(uf_interfaces REQUIRED)
 
 add_library(registration_core src/registration_core.cpp)
 target_compile_features(registration_core PUBLIC cxx_std_17)
@@ -39,11 +47,30 @@ target_include_directories(descriptor_core PUBLIC
 target_link_libraries(descriptor_core PUBLIC ${PCL_LIBRARIES})
 target_compile_definitions(descriptor_core PUBLIC ${PCL_DEFINITIONS})
 
+add_executable(relocalization_node src/relocalization_node.cpp)
+target_compile_features(relocalization_node PUBLIC cxx_std_17)
+target_include_directories(relocalization_node PRIVATE
+  ${PCL_INCLUDE_DIRS}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(relocalization_node
+  registration_core keyframe_database descriptor_core
+  Eigen3::Eigen ${PCL_LIBRARIES}
+)
+ament_target_dependencies(relocalization_node
+  ament_index_cpp geometry_msgs nav_msgs pcl_conversions rclcpp
+  sensor_msgs std_msgs uf_interfaces
+)
+target_compile_definitions(relocalization_node PRIVATE ${PCL_DEFINITIONS})
+
 install(TARGETS registration_core keyframe_database descriptor_core
   EXPORT export_registration_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
+)
+install(TARGETS relocalization_node
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
 

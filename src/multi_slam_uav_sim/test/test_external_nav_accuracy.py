@@ -8,10 +8,21 @@ from multi_slam_uav_sim.external_nav_accuracy import ExternalNavAccuracy
 from multi_slam_uav_sim.simulation_performance_monitor import (
     TopicWindow,
     diagnostic_timing_values,
+    system_cpu_utilization_percent,
 )
 
 
 class ExternalNavAccuracyTest(unittest.TestCase):
+    def test_system_cpu_utilization_uses_total_capacity(self):
+        self.assertAlmostEqual(
+            system_cpu_utilization_percent((1000, 400), (1200, 450)),
+            75.0,
+        )
+        self.assertIsNone(system_cpu_utilization_percent(None, (1200, 450)))
+        self.assertIsNone(
+            system_cpu_utilization_percent((1200, 450), (1100, 460))
+        )
+
     def test_performance_monitor_accepts_backend_timing_diagnostics(self):
         message = SimpleNamespace(status=[SimpleNamespace(
             name="unified_backend_fusion",
@@ -63,6 +74,15 @@ class ExternalNavAccuracyTest(unittest.TestCase):
         )
         self.assertAlmostEqual(scale, 1.2, places=6)
         self.assertGreater(float(np.max(np.linalg.norm(aligned - truth, axis=1))), 0.1)
+
+    def test_yaw_wrap_and_quaternion_conversion_cross_branch_cut(self):
+        yaw = math.radians(179.0)
+        recovered = ExternalNavAccuracy._quaternion_yaw(
+            0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+        self.assertAlmostEqual(recovered, yaw)
+        error = ExternalNavAccuracy._wrap_angle(
+            math.radians(-179.0) - math.radians(179.0))
+        self.assertAlmostEqual(math.degrees(error), 2.0, places=6)
 
 
 if __name__ == "__main__":

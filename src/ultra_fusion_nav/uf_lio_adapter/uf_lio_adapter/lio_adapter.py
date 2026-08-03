@@ -1,6 +1,5 @@
 import copy
 import os
-import time
 from collections import deque
 
 # Native-factor diagnostics use many small matrix products. Avoid creating one
@@ -177,8 +176,8 @@ class LioAdapter(Node):
         self.deskewed_pub.publish(msg)
 
     def _native_factor(self, msg):
-        self.last_native_arrival = time.monotonic()
         stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        self.last_native_arrival = stamp_ns * 1.0e-9 if stamp_ns > 0 else None
         if self.last_native_diagnostic_ns is not None:
             elapsed_ns = stamp_ns - self.last_native_diagnostic_ns
             if 0 <= elapsed_ns < self.diagnostics_period_ns:
@@ -275,7 +274,10 @@ class LioAdapter(Node):
         native_recent = (
             self.prefer_native_factor_diagnostics
             and self.last_native_arrival is not None
-            and time.monotonic() - self.last_native_arrival <= self.native_factor_timeout_s
+            and 0.0 <= (
+                self.get_clock().now().nanoseconds * 1.0e-9
+                - self.last_native_arrival
+            ) <= self.native_factor_timeout_s
         )
         if not native_recent:
             self.diagnostic_pub.publish(diagnostic)

@@ -57,7 +57,7 @@ class FaultInjector(Node):
             self._callback,
             qos_profile_sensor_data,
         )
-        self.started_ns = self.get_clock().now().nanoseconds
+        self.started_ns = None
         self.rng = np.random.default_rng(int(self.get_parameter("seed").value))
         self.affected_messages = 0
         self.last_output_stamp_ns = 0
@@ -77,10 +77,14 @@ class FaultInjector(Node):
             float(self.get_parameter("secondary_magnitude").value),
         )
 
-    def _active(self, fault_type):
+    def _active(self, fault_type, source_stamp_ns):
         if fault_type == "none":
             return False
-        elapsed = (self.get_clock().now().nanoseconds - self.started_ns) * 1.0e-9
+        if source_stamp_ns <= 0:
+            return False
+        if self.started_ns is None or source_stamp_ns < self.started_ns:
+            self.started_ns = source_stamp_ns
+        elapsed = (source_stamp_ns - self.started_ns) * 1.0e-9
         start = float(self.get_parameter("fault_start_s").value)
         duration = float(self.get_parameter("fault_duration_s").value)
         return elapsed >= start and (duration <= 0.0 or elapsed < start + duration)
@@ -132,8 +136,12 @@ class FaultInjector(Node):
 
     def _callback(self, msg):
         fault_type, magnitude, secondary = self._settings()
-        active = self._active(fault_type)
-        stamp_s = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1.0e-9
+        source_stamp_ns = (
+            int(msg.header.stamp.sec) * 1_000_000_000
+            + int(msg.header.stamp.nanosec)
+        )
+        active = self._active(fault_type, source_stamp_ns)
+        stamp_s = source_stamp_ns * 1.0e-9
         if active and fault_type != self.active_fault_type:
             self.active_fault_type = fault_type
             self.active_fault_start_stamp_s = stamp_s

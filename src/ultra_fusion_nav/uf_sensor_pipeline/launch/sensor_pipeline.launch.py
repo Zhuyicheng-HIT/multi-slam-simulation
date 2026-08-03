@@ -165,7 +165,7 @@ def generate_launch_description():
     )
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config),
-        DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
         DeclareLaunchArgument("enable_nmea_gnss", default_value="false"),

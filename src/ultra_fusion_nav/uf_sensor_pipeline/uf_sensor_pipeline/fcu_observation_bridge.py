@@ -1,6 +1,5 @@
 import copy
 import math
-import time
 from collections import deque
 
 import rclpy
@@ -12,7 +11,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, NavSatFix, Range
 
 from .fcu_observation import (
-    integrate_flu_gyro_with_arrival_fallback,
+    integrate_flu_gyro_as_sensor_frd,
     legacy_pixel_flow_to_sensor_frd,
     legacy_flow_rate_to_sensor_frd,
     stamp_seconds,
@@ -60,11 +59,10 @@ class FcuObservationBridge(Node):
             self.get_parameter("flow_focal_length_y_px").value
         )
         self.imu_samples = deque(maxlen=2000)
-        self.imu_arrival_samples = deque(maxlen=2000)
         self.pending_flows = deque(maxlen=100)
         self.previous_flow_stamp_s = None
         self.latest_range = None
-        self.latest_range_arrival = None
+        self.latest_range_stamp_s = None
         self.counts = {"flow": 0, "flow_rejected": 0, "flow_without_gyro": 0,
                        "flow_arrival_aligned_gyro": 0,
                        "flow_rad_encoding": 0,
@@ -123,7 +121,10 @@ class FcuObservationBridge(Node):
         )
 
     def _touch(self, name):
-        self.last_arrival[name] = time.monotonic()
+        self.last_arrival[name] = self._now_s()
+
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1.0e-9
 
     def _imu(self, msg):
         timestamp_s = stamp_seconds(msg.header.stamp)
@@ -135,24 +136,18 @@ class FcuObservationBridge(Node):
             float(msg.angular_velocity.y),
             float(msg.angular_velocity.z),
         )
-        arrival_sample = (time.monotonic(), *sample[1:])
         self.imu_samples.append(sample)
-        self.imu_arrival_samples.append(arrival_sample)
         cutoff_s = timestamp_s - 2.0
         while self.imu_samples and self.imu_samples[0][0] < cutoff_s:
             self.imu_samples.popleft()
-        arrival_cutoff_s = arrival_sample[0] - 2.0
-        while (
-            self.imu_arrival_samples
-            and self.imu_arrival_samples[0][0] < arrival_cutoff_s
-        ):
-            self.imu_arrival_samples.popleft()
         self._flush_pending_flows()
 
     def _range(self, msg):
         if math.isfinite(float(msg.range)) and msg.min_range <= msg.range <= msg.max_range:
             self.latest_range = float(msg.range)
-            self.latest_range_arrival = time.monotonic()
+            self.latest_range_stamp_s = stamp_seconds(msg.header.stamp)
+            if self.latest_range_stamp_s <= 0.0:
+                self.latest_range_stamp_s = self._now_s()
             self.counts["range"] += 1
             self._touch("range")
 
@@ -167,8 +162,8 @@ class FcuObservationBridge(Node):
             self.counts["flow_rejected"] += 1
             return
         start_s = end_s - interval_s
-        arrival_s = time.monotonic()
-        self.pending_flows.append((start_s, end_s, interval_s, arrival_s, msg))
+        queued_ros_s = self._now_s()
+        self.pending_flows.append((start_s, end_s, interval_s, queued_ros_s, msg))
         self._flush_pending_flows()
 
     def _flow_rad(self, msg):
@@ -181,34 +176,31 @@ class FcuObservationBridge(Node):
         ):
             self.counts["flow_rejected"] += 1
             return
-        arrival_s = time.monotonic()
+        queued_ros_s = self._now_s()
         self.pending_flows.append(
-            (end_s - interval_s, end_s, interval_s, arrival_s, msg)
+            (end_s - interval_s, end_s, interval_s, queued_ros_s, msg)
         )
         self._flush_pending_flows()
 
     def _flush_pending_flows(self):
-        now = time.monotonic()
+        now = self._now_s()
         while self.pending_flows:
             start_s, end_s, interval_s, queued_at, msg = self.pending_flows[0]
+            if queued_at > now:
+                self.pending_flows.clear()
+                return
             source_covered = bool(
                 self.imu_samples
                 and self.imu_samples[0][0] <= start_s
                 and self.imu_samples[-1][0] >= end_s
             )
-            arrival_covered = bool(
-                self.imu_arrival_samples
-                and self.imu_arrival_samples[0][0] <= queued_at - interval_s
-                and self.imu_arrival_samples[-1][0] >= queued_at
-            )
-            covered = source_covered or arrival_covered
             expired = now - queued_at >= self.maximum_flow_wait
-            if not covered and not expired:
+            if not source_covered and not expired:
                 break
             self.pending_flows.popleft()
-            self._publish_flow(msg, start_s, end_s, interval_s, queued_at)
+            self._publish_flow(msg, start_s, end_s, interval_s)
 
-    def _publish_flow(self, msg, start_s, end_s, interval_s, arrival_s):
+    def _publish_flow(self, msg, start_s, end_s, interval_s):
         if isinstance(msg, OpticalFlowRad):
             integrated_x = float(msg.integrated_x)
             integrated_y = float(msg.integrated_y)
@@ -239,16 +231,12 @@ class FcuObservationBridge(Node):
                 self.counts["flow_pixel_encoding"] += 1
             quality = int(msg.quality)
             embedded_distance = float(msg.ground_distance)
-        gyro, used_arrival_clock = integrate_flu_gyro_with_arrival_fallback(
+        gyro = integrate_flu_gyro_as_sensor_frd(
             list(self.imu_samples),
-            list(self.imu_arrival_samples),
             start_s,
             end_s,
-            arrival_s,
             self.maximum_imu_gap,
         )
-        if used_arrival_clock:
-            self.counts["flow_arrival_aligned_gyro"] += 1
         if gyro is None:
             gyro = (float("nan"), float("nan"), float("nan"))
             self.counts["flow_without_gyro"] += 1
@@ -266,8 +254,8 @@ class FcuObservationBridge(Node):
         output.quality = quality
         output.time_delta_distance_us = 0
         range_fresh = (
-            self.latest_range is not None and self.latest_range_arrival is not None
-            and time.monotonic() - self.latest_range_arrival <= self.range_timeout
+            self.latest_range is not None and self.latest_range_stamp_s is not None
+            and abs(end_s - self.latest_range_stamp_s) <= self.range_timeout
         )
         output.distance = (
             float(self.latest_range) if range_fresh else embedded_distance
@@ -296,7 +284,7 @@ class FcuObservationBridge(Node):
         return item
 
     def _diagnostics(self):
-        now = time.monotonic()
+        now = self._now_s()
         output = DiagnosticArray()
         output.header.stamp = self.get_clock().now().to_msg()
         for name, source in (
@@ -309,7 +297,7 @@ class FcuObservationBridge(Node):
             status.name = f"fcu_observation/{name}"
             status.hardware_id = "flight_controller"
             last = self.last_arrival.get(name)
-            age_s = math.inf if last is None else now - last
+            age_s = math.inf if last is None or last > now else now - last
             status.level = DiagnosticStatus.OK if age_s <= self.stale_after else DiagnosticStatus.ERROR
             status.message = "ok" if status.level == DiagnosticStatus.OK else "stale_or_missing"
             status.values = [
@@ -325,6 +313,7 @@ class FcuObservationBridge(Node):
                         "arrival_aligned_gyro_integrals",
                         self.counts["flow_arrival_aligned_gyro"],
                     ),
+                    self._value("gyro_integration_clock", "message_stamp"),
                     self._value("range_fallback_samples", self.counts["flow_range_fallback"]),
                     self._value("mavlink1_pixel_samples", self.counts["flow_pixel_encoding"]),
                     self._value("mavlink2_rate_samples", self.counts["flow_rate_encoding"]),

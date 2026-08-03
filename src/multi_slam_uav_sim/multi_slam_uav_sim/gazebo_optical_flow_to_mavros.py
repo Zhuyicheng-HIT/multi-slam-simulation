@@ -29,6 +29,7 @@ from multi_slam_uav_sim.optical_flow_model import (
     ros_flu_gyro_to_sensor_frd,
     scale_mavlink_translation,
     sensor_displacement_frd,
+    should_publish_accumulated_flow,
     synthesize_optical_flow_from_displacement,
     track_lk_flow,
 )
@@ -61,6 +62,8 @@ class GazeboOpticalFlowToMavros(Node):
         self.declare_parameter("forward_backward_threshold_px", 1.0)
         self.declare_parameter("max_track_error", 30.0)
         self.declare_parameter("max_displacement_px", 40.0)
+        self.declare_parameter("min_integration_displacement_px", 0.75)
+        self.declare_parameter("max_integration_time_s", 0.25)
         self.declare_parameter("min_inliers", 8)
         self.declare_parameter("min_depth_m", 0.08)
         self.declare_parameter("max_depth_m", 12.0)
@@ -93,7 +96,7 @@ class GazeboOpticalFlowToMavros(Node):
         self.prev_time = None
         self.latest_depth = None
         self.latest_range = None
-        self.latest_range_monotonic = None
+        self.latest_range_stamp_s = None
         self.latest_gazebo_height = None
         self.latest_vertical_speed = 0.0
         self.last_height_sample = None
@@ -103,7 +106,7 @@ class GazeboOpticalFlowToMavros(Node):
         self.last_publish_time = 0.0
         self.gazebo_imu_samples = deque(maxlen=1000)
         self.fcu_imu_samples = deque(maxlen=1000)
-        self.latest_gazebo_imu_monotonic = None
+        self.latest_gazebo_imu_stamp_s = None
 
         self.fov_x = float(self.get_parameter("camera_fov_x_rad").value)
         self.camera_width = int(self.get_parameter("camera_width_px").value)
@@ -120,6 +123,16 @@ class GazeboOpticalFlowToMavros(Node):
         self.fb_threshold = float(self.get_parameter("forward_backward_threshold_px").value)
         self.max_track_error = float(self.get_parameter("max_track_error").value)
         self.max_displacement = float(self.get_parameter("max_displacement_px").value)
+        self.min_integration_displacement = float(
+            self.get_parameter("min_integration_displacement_px").value
+        )
+        self.max_integration_time = float(
+            self.get_parameter("max_integration_time_s").value
+        )
+        if self.min_integration_displacement < 0.0:
+            raise ValueError("min_integration_displacement_px must be non-negative")
+        if not 0.02 <= self.max_integration_time <= 0.5:
+            raise ValueError("max_integration_time_s must be within [0.02, 0.5]")
         self.min_inliers = int(self.get_parameter("min_inliers").value)
         self.min_depth = float(self.get_parameter("min_depth_m").value)
         self.max_depth = float(self.get_parameter("max_depth_m").value)
@@ -272,7 +285,7 @@ class GazeboOpticalFlowToMavros(Node):
             float(msg.angular_velocity.y),
             float(msg.angular_velocity.z),
         ))
-        self.latest_gazebo_imu_monotonic = time.monotonic()
+        self.latest_gazebo_imu_stamp_s = timestamp_s
 
     def _gz_range_cb(self, msg):
         values = [
@@ -281,21 +294,23 @@ class GazeboOpticalFlowToMavros(Node):
         ]
         if not values:
             return
-        now = time.monotonic()
+        try:
+            now = float(msg.header.stamp.sec) + float(msg.header.stamp.nsec) * 1.0e-9
+        except Exception:
+            now = self.get_clock().now().nanoseconds * 1.0e-9
         measured = float(np.median(values))
-        if self.latest_range is not None and self.latest_range_monotonic is not None:
-            dt = now - self.latest_range_monotonic
+        if self.latest_range is not None and self.latest_range_stamp_s is not None:
+            dt = now - self.latest_range_stamp_s
             if 0.001 < dt < 1.0:
                 self.latest_vertical_speed = (measured - self.latest_range) / dt
         self.latest_range = measured
-        self.latest_range_monotonic = now
+        self.latest_range_stamp_s = now
 
     def _gz_pose_cb(self, msg):
-        now = time.monotonic()
         try:
             source_stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nsec) * 1.0e-9
         except Exception:
-            source_stamp = now
+            source_stamp = self.get_clock().now().nanoseconds * 1.0e-9
         for pose in msg.pose:
             if pose.name == self.gazebo_height_model or pose.name.endswith(
                 f"::{self.gazebo_height_model}"
@@ -323,10 +338,10 @@ class GazeboOpticalFlowToMavros(Node):
                 height = max(0.0, float(pose.position.z) - self.ground_z)
                 if self.last_height_sample is not None:
                     previous_time, previous_height = self.last_height_sample
-                    dt = now - previous_time
+                    dt = source_stamp - previous_time
                     if 0.001 < dt < 1.0:
                         self.latest_vertical_speed = (height - previous_height) / dt
-                self.last_height_sample = (now, height)
+                self.last_height_sample = (source_stamp, height)
                 self.latest_gazebo_height = height
                 if self.use_gazebo_height and not self.reported_gazebo_height:
                     self.get_logger().warning("Using Gazebo model height as a range fallback")
@@ -363,14 +378,15 @@ class GazeboOpticalFlowToMavros(Node):
         quaternion /= norm
         return tuple(float(value) for value in position), tuple(float(value) for value in quaternion)
 
-    def _distance(self):
-        now = time.monotonic()
+    def _distance(self, reference_s):
         if (
             self.latest_range is not None
-            and self.latest_range_monotonic is not None
-            and now - self.latest_range_monotonic <= self.range_timeout
+            and self.latest_range_stamp_s is not None
+            and abs(reference_s - self.latest_range_stamp_s) <= self.range_timeout
         ):
-            return self.latest_range, now - self.latest_range_monotonic
+            return self.latest_range, max(
+                0.0, reference_s - self.latest_range_stamp_s
+            )
         if self.latest_depth is not None:
             depth = np.asarray(self.latest_depth)
             if depth.dtype not in (np.float32, np.float64):
@@ -448,8 +464,8 @@ class GazeboOpticalFlowToMavros(Node):
             tracking.dx_px, tracking.dy_px, fx_small, fy_small
         )
         use_gazebo_imu = (
-            self.latest_gazebo_imu_monotonic is not None
-            and time.monotonic() - self.latest_gazebo_imu_monotonic <= 0.25
+            self.latest_gazebo_imu_stamp_s is not None
+            and abs(end_s - self.latest_gazebo_imu_stamp_s) <= 0.25
         )
         gyro_samples = self.gazebo_imu_samples if use_gazebo_imu else self.fcu_imu_samples
         gyro_source = "gazebo_internal" if use_gazebo_imu else "fcu_fallback"
@@ -458,7 +474,7 @@ class GazeboOpticalFlowToMavros(Node):
         if gyro is None:
             gyro = (float("nan"), float("nan"), float("nan"))
         mavlink_gyro = gazebo_downward_gyro_to_mavlink(gyro)
-        distance, distance_age_s = self._distance()
+        distance, distance_age_s = self._distance(end_s)
         flow_source = "image_lk"
         start_pose = self._pose_at(start_s)
         end_pose = self._pose_at(end_s)
@@ -554,8 +570,12 @@ class GazeboOpticalFlowToMavros(Node):
             self.last_debug_time = time.monotonic()
 
     def _image_cb(self, msg):
-        now = time.monotonic()
-        if now - self.last_publish_time < self.min_period:
+        stamp_seconds = self._stamp_seconds(msg.header.stamp)
+        if stamp_seconds < self.last_publish_time:
+            self.prev_gray = None
+            self.prev_time = None
+            self.last_publish_time = stamp_seconds - self.min_period
+        if stamp_seconds - self.last_publish_time < self.min_period:
             return
         try:
             gray = self._gray_small(msg)
@@ -563,7 +583,6 @@ class GazeboOpticalFlowToMavros(Node):
             self.get_logger().warning(f"Image conversion failed: {exc}")
             return
 
-        stamp_seconds = self._stamp_seconds(msg.header.stamp)
         if self.prev_gray is None:
             self.prev_gray = gray
             self.prev_time = stamp_seconds
@@ -585,11 +604,23 @@ class GazeboOpticalFlowToMavros(Node):
             max_displacement_px=self.max_displacement,
             min_inliers=self.min_inliers,
         )
-        if tracking.quality > 0 or self.publish_low_quality:
+        publish = should_publish_accumulated_flow(
+            tracking.dx_px,
+            tracking.dy_px,
+            tracking.quality,
+            dt,
+            self.min_integration_displacement,
+            self.max_integration_time,
+            self.publish_low_quality,
+        )
+        if publish:
             self._publish(msg.header.stamp, tracking, self.prev_time, stamp_seconds)
-            self.last_publish_time = now
-        self.prev_gray = gray
-        self.prev_time = stamp_seconds
+            self.last_publish_time = stamp_seconds
+            self.prev_gray = gray
+            self.prev_time = stamp_seconds
+        elif dt >= self.max_integration_time and not self.publish_low_quality:
+            self.prev_gray = gray
+            self.prev_time = stamp_seconds
 
 
 def main(args=None):

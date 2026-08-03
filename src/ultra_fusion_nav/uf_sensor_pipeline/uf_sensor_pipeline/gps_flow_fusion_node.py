@@ -162,28 +162,34 @@ class GpsFlowFusionNode(Node):
 
     def _message_time(self, header):
         value = stamp_seconds(header.stamp)
-        return value if value > 0.0 else self._now_s()
+        return value if value > 0.0 else None
 
-    def _touch(self, name):
-        self.last_arrival[name] = time.monotonic()
+    def _touch(self, name, source_stamp_s):
+        if source_stamp_s is not None and source_stamp_s > 0.0:
+            self.last_arrival[name] = float(source_stamp_s)
 
     def _age(self, name):
         value = self.last_arrival.get(name)
-        return math.inf if value is None else time.monotonic() - value
+        return self._age_since(value)
+
+    def _age_since(self, value):
+        now_s = self._now_s()
+        return math.inf if value is None or value > now_s else now_s - value
 
     def _reliability(self, msg):
         if msg.modality not in ("gnss", "optical_flow"):
             return
         self.reliability[msg.modality] = (
             float(msg.reliability_weight) if msg.valid else 0.0,
-            time.monotonic(),
+            stamp_seconds(msg.header.stamp),
         )
 
     def _effective_weight(self, modality, native_weight):
         if (
             self.use_scheduler
             and self.scheduler_arrival is not None
-            and time.monotonic() - self.scheduler_arrival <= self.scheduler_timeout
+            and 0.0 <= self._now_s() - self.scheduler_arrival
+            <= self.scheduler_timeout
         ):
             decision = self.scheduler.get(modality)
             if decision is not None:
@@ -191,7 +197,8 @@ class GpsFlowFusionNode(Node):
                     return 0.0
                 return max(0.0, min(1.0, native_weight * decision[0]))
         score = self.reliability.get(modality)
-        if score is None or time.monotonic() - score[1] > self.reliability_timeout:
+        score_age_s = math.inf if score is None else self._now_s() - score[1]
+        if score is None or not 0.0 <= score_age_s <= self.reliability_timeout:
             return max(0.0, min(1.0, native_weight))
         return max(0.0, min(1.0, native_weight * score[0]))
 
@@ -219,19 +226,23 @@ class GpsFlowFusionNode(Node):
             )
         }
         self.scheduler_health = str(msg.health_state)
-        self.scheduler_arrival = time.monotonic()
+        self.scheduler_arrival = stamp_seconds(msg.header.stamp)
 
     def _scheduler_inflation(self, modality):
         if (
             not self.use_scheduler
             or self.scheduler_arrival is None
-            or time.monotonic() - self.scheduler_arrival > self.scheduler_timeout
+            or not 0.0 <= self._now_s() - self.scheduler_arrival
+            <= self.scheduler_timeout
         ):
             return 1.0
         decision = self.scheduler.get(modality)
         return 1.0 if decision is None else decision[2]
 
     def _imu(self, msg):
+        source_stamp_s = self._message_time(msg.header)
+        if source_stamp_s is None:
+            return
         orientation = msg.orientation
         yaw = yaw_from_quaternion(
             float(orientation.x), float(orientation.y),
@@ -245,7 +256,7 @@ class GpsFlowFusionNode(Node):
             float(msg.angular_velocity.y),
             float(msg.angular_velocity.z),
         )
-        self._touch("imu")
+        self._touch("imu", source_stamp_s)
 
     def _gnss_variance(self, msg):
         diagonal = [
@@ -258,6 +269,10 @@ class GpsFlowFusionNode(Node):
     def _gnss(self, msg):
         started = time.perf_counter_ns()
         try:
+            source_stamp_s = self._message_time(msg.header)
+            if source_stamp_s is None:
+                self.counts["gnss_rejected"] += 1
+                return
             if msg.status.status < NavSatStatus.STATUS_FIX:
                 self.counts["gnss_rejected"] += 1
                 return
@@ -275,11 +290,11 @@ class GpsFlowFusionNode(Node):
                 self.counts["gnss_rejected"] += 1
                 return
             result = self.filter.update_gnss(
-                position, variance, self._message_time(msg.header), weight)
+                position, variance, source_stamp_s, weight)
             self.last_innovation_m = result.innovation_m
             if result.accepted:
                 self.counts["gnss"] += 1
-                self._touch("gnss")
+                self._touch("gnss", source_stamp_s)
             else:
                 self.counts["gnss_rejected"] += 1
         finally:
@@ -288,7 +303,11 @@ class GpsFlowFusionNode(Node):
     def _flow(self, msg):
         started = time.perf_counter_ns()
         try:
-            self._touch("flow_observation")
+            source_stamp_s = self._message_time(msg.header)
+            if source_stamp_s is None:
+                self.counts["flow_rejected"] += 1
+                return
+            self._touch("flow_observation", source_stamp_s)
             integration_s = float(msg.integration_time_us) * 1.0e-6
             distance = float(msg.distance)
             velocity = compensated_flow_velocity_frd(
@@ -313,11 +332,11 @@ class GpsFlowFusionNode(Node):
                 return
             result = self.filter.update_flow(
                 velocity[0], velocity[1], self.yaw,
-                self._message_time(msg.header), weight)
+                source_stamp_s, weight)
             if result.accepted:
                 self.counts["flow"] += 1
                 if weight > 0.0:
-                    self._touch("flow_valid")
+                    self._touch("flow_valid", source_stamp_s)
             else:
                 self.counts["flow_rejected"] += 1
         finally:
@@ -425,9 +444,16 @@ class GpsFlowFusionNode(Node):
             self._value(
                 "scheduler_age_s",
                 "inf" if self.scheduler_arrival is None else
-                f"{time.monotonic() - self.scheduler_arrival:.3f}"),
+                f"{self._age_since(self.scheduler_arrival):.3f}"),
             self._value("scheduler_used", self.use_scheduler),
+            self._value("algorithm_clock", "ros"),
             self._value("last_gnss_innovation_m", f"{self.last_innovation_m:.3f}"),
+            self._value("timing_gnss_wall_mean_ms", f"{self.timings['gnss'].mean():.4f}"),
+            self._value("timing_gnss_wall_max_ms", f"{self.timings['gnss'].maximum():.4f}"),
+            self._value("timing_flow_wall_mean_ms", f"{self.timings['flow'].mean():.4f}"),
+            self._value("timing_flow_wall_max_ms", f"{self.timings['flow'].maximum():.4f}"),
+            self._value("timing_publish_wall_mean_ms", f"{self.timings['publish'].mean():.4f}"),
+            self._value("timing_publish_wall_max_ms", f"{self.timings['publish'].maximum():.4f}"),
             self._value("timing_gnss_mean_ms", f"{self.timings['gnss'].mean():.4f}"),
             self._value("timing_gnss_max_ms", f"{self.timings['gnss'].maximum():.4f}"),
             self._value("timing_flow_mean_ms", f"{self.timings['flow'].mean():.4f}"),

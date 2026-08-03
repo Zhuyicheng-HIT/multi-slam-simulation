@@ -44,7 +44,7 @@ FAULT_MAGNITUDE=${FAULT_MAGNITUDE:-0}
 FAULT_SECONDARY_MAGNITUDE=${FAULT_SECONDARY_MAGNITUDE:-0}
 FAULT_DELIVERY_MODE=${FAULT_DELIVERY_MODE:-runtime}
 FLOW_USE_PHYSICS=${FLOW_USE_PHYSICS:-false}
-FLOW_RESTAMP_OUTPUT=${FLOW_RESTAMP_OUTPUT:-true}
+FLOW_RESTAMP_OUTPUT=${FLOW_RESTAMP_OUTPUT:-false}
 FLOW_TRANSPORT=${FLOW_TRANSPORT:-direct}
 ENABLE_FLOW_ROUTE_VALIDATION=${ENABLE_FLOW_ROUTE_VALIDATION:-1}
 FLOW_ROUTE_REQUIRE_PASS=${FLOW_ROUTE_REQUIRE_PASS:-1}
@@ -73,10 +73,10 @@ if [[ "$FLOW_USE_PHYSICS" != "false" && "$FLOW_USE_PHYSICS" != "0" ]]; then
     'Set FLOW_USE_PHYSICS=false for algorithm-quality evaluation.' >&2
   exit 2
 fi
-if [[ "$FLOW_RESTAMP_OUTPUT" != "true" && "$FLOW_RESTAMP_OUTPUT" != "1" ]]; then
+if [[ "$FLOW_RESTAMP_OUTPUT" != "false" && "$FLOW_RESTAMP_OUTPUT" != "0" ]]; then
   printf '%s\n' \
-    'The current non-use_sim_time stack requires FLOW_RESTAMP_OUTPUT=true.' \
-    'integration_time_us still preserves the source exposure interval.' >&2
+    'ROS simulation time requires FLOW_RESTAMP_OUTPUT=false.' \
+    'Keep source acquisition stamps and /clock in one time domain.' >&2
   exit 2
 fi
 
@@ -176,6 +176,7 @@ wait_for_message() {
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 
 setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" \
+  USE_SIM_TIME=true MTF_RESTAMP_OUTPUT=false \
   FLOW_USE_PHYSICS=false FLOW_RESTAMP_OUTPUT="$FLOW_RESTAMP_OUTPUT" \
   ENABLE_FCU_FLOW_ROUTER="$enable_fcu_flow_router" \
   LOG_DIR="$OUTPUT_DIR/sim" \
@@ -192,8 +193,7 @@ if [[ "$FLOW_TRANSPORT" == "fcu_router" ]]; then
 fi
 
 fault_launch_env=()
-if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
-      && "$FAULT_DELIVERY_MODE" == "startup" ]]; then
+if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
   fault_launch_env=(
     "UF_FAULT_MODALITY=$FAULT_MODALITY"
     "UF_FAULT_TYPE=$FAULT_TYPE"
@@ -204,6 +204,7 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
   )
 fi
 setsid env "${fault_launch_env[@]}" ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
+  use_sim_time:=true \
   enable_vision:="$ENABLE_VISION_PIPELINE" \
   enable_fcu_observation_bridge:="$enable_fcu_observation_bridge" \
   optical_flow_input_topic:="$optical_flow_input_topic" \
@@ -234,7 +235,7 @@ if [[ "$FLOW_TRANSPORT" == "fcu_router" \
   pids+=("$flow_route_validation_pid")
 fi
 
-setsid env RVIZ=0 LOG_DIR="$OUTPUT_DIR/lio" FASTLIO_INPUT_MODE="$FASTLIO_INPUT_MODE" \
+setsid env RVIZ=0 USE_SIM_TIME=true LOG_DIR="$OUTPUT_DIR/lio" FASTLIO_INPUT_MODE="$FASTLIO_INPUT_MODE" \
   bash "$REPO_ROOT/tools/run_fastlio_mapping.sh" \
   >"$OUTPUT_DIR/fastlio.stdout.log" 2>"$OUTPUT_DIR/fastlio.stderr.log" &
 pids+=("$!")
@@ -249,6 +250,7 @@ if [[ "$ENABLE_NATIVE_FACTOR_VALIDATOR" == "1" ]]; then
     exit 2
   fi
   setsid ros2 run uf_lio_adapter native_factor_validator --ros-args \
+    -p use_sim_time:=true \
     --params-file "$REPO_ROOT/install/uf_lio_adapter/share/uf_lio_adapter/config/native_factor_validator.yaml" \
     -p output_path:="$OUTPUT_DIR/native_factor_metrics.jsonl" \
     -p summary_path:="$OUTPUT_DIR/native_factor_summary.json" \
@@ -268,6 +270,7 @@ if [[ "$ENABLE_PERFORMANCE_MONITOR" == "1" ]]; then
     performance_fusion_diagnostic_topic=/fusion/unified/diagnostics
   fi
   ros2 run multi_slam_uav_sim simulation_performance_monitor --ros-args \
+    -p use_sim_time:=true \
     -p world_name:="$SIM_WORLD_NAME" \
     -p output_path:="$OUTPUT_DIR/simulation_performance.json" \
     -p fusion_topic:="$performance_fusion_topic" \
@@ -283,6 +286,7 @@ fi
 estimate_topic=/Odometry
 if [[ "$ENABLE_LIO_ADAPTER" == "1" ]]; then
   setsid ros2 launch uf_lio_adapter lio_adapter.launch.py \
+    use_sim_time:=true \
     >"$OUTPUT_DIR/lio_adapter.stdout.log" 2>"$OUTPUT_DIR/lio_adapter.stderr.log" &
   pids+=("$!")
   wait_for_message /lio/diagnostics 45
@@ -292,6 +296,7 @@ fi
 unified_backend_pid=""
 if [[ "$ENABLE_UNIFIED_BACKEND" == "1" ]]; then
   setsid ros2 launch uf_backend_fusion online_backend.launch.py \
+    use_sim_time:=true \
     preserve_lio_anchor:="$PRESERVE_LIO_ANCHOR" \
     >"$OUTPUT_DIR/unified_backend.stdout.log" 2>"$OUTPUT_DIR/unified_backend.stderr.log" &
   unified_backend_pid=$!
@@ -345,8 +350,7 @@ if [[ "$ENABLE_RELIABILITY_TIMELINE" == "1" ]]; then
 fi
 
 fault_trigger_pid=""
-if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
-      && "$FAULT_DELIVERY_MODE" == "runtime" ]]; then
+if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
   case "$FAULT_MODALITY" in
     lidar|imu|gnss|optical_flow|depth|color) ;;
     *)
@@ -354,31 +358,7 @@ if [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" \
       exit 2
       ;;
   esac
-  fault_node="/fault_injector_${FAULT_MODALITY}"
-  fault_magnitude_value=$(printf '%.9f' "$FAULT_MAGNITUDE")
-  fault_secondary_value=$(printf '%.9f' "$FAULT_SECONDARY_MAGNITUDE")
-  (
-    printf 'fault_trigger_start modality=%s type=%s delay_s=%s duration_s=%s\n' \
-      "$FAULT_MODALITY" "$FAULT_TYPE" "$FAULT_TRIGGER_DELAY_S" "$FAULT_DURATION_S"
-    sleep "$FAULT_TRIGGER_DELAY_S"
-    if awk "BEGIN {exit !($FAULT_MAGNITUDE != 0.0)}"; then
-      timeout 60s ros2 param set "$fault_node" magnitude "$fault_magnitude_value"
-    fi
-    if awk "BEGIN {exit !($FAULT_SECONDARY_MAGNITUDE != 0.0)}"; then
-      timeout 60s ros2 param set "$fault_node" secondary_magnitude "$fault_secondary_value"
-    fi
-    timeout 60s ros2 param set "$fault_node" fault_type "$FAULT_TYPE"
-    printf 'fault_trigger_active node=%s\n' "$fault_node"
-    if awk "BEGIN {exit !($FAULT_DURATION_S > 0.0)}"; then
-      sleep "$FAULT_DURATION_S"
-      timeout 60s ros2 param set "$fault_node" fault_type none
-      printf 'fault_trigger_cleared node=%s\n' "$fault_node"
-    fi
-  ) >"$OUTPUT_DIR/fault_trigger.log" 2>&1 &
-  fault_trigger_pid=$!
-  pids+=("$fault_trigger_pid")
-elif [[ -n "$FAULT_MODALITY" && "$FAULT_TYPE" != "none" ]]; then
-  printf 'fault_trigger_scheduled modality=%s type=%s start_from_node_s=%s duration_s=%s\n' \
+  printf 'fault_trigger_source_time modality=%s type=%s start_from_first_sample_s=%s duration_s=%s\n' \
     "$FAULT_MODALITY" "$FAULT_TYPE" "$FAULT_TRIGGER_DELAY_S" "$FAULT_DURATION_S" \
     >"$OUTPUT_DIR/fault_trigger.log"
 fi
@@ -387,6 +367,7 @@ score_recorder_pid=""
 if [[ "$ENABLE_RELIABILITY" == "1" ]]; then
   if [[ "$ENABLE_UNIFIED_BACKEND" != "1" ]]; then
     setsid ros2 launch uf_reliability reliability.launch.py \
+      use_sim_time:=true \
       >"$OUTPUT_DIR/reliability.stdout.log" 2>"$OUTPUT_DIR/reliability.stderr.log" &
     pids+=("$!")
   fi
@@ -421,6 +402,7 @@ fi
 
 python3 "$REPO_ROOT/tools/analyze_slam_drift.py" \
   --duration "$ANALYSIS_DURATION_S" --output "$OUTPUT_DIR/report.json" \
+  --ros-args -p use_sim_time:=true \
   >"$OUTPUT_DIR/analyzer.stdout.log" 2>"$OUTPUT_DIR/analyzer.stderr.log" &
 analyzer_pid=$!
 pids+=("$analyzer_pid")

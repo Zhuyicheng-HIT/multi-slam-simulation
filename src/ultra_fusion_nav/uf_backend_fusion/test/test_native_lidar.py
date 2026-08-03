@@ -1,3 +1,4 @@
+import math
 import unittest
 from types import SimpleNamespace
 
@@ -6,11 +7,14 @@ import numpy as np
 from uf_backend_fusion.native_lidar import (
     EXPECTED_POSE_STATE_ORDER,
     NativeFactorBuffer,
+    lidar_pose_observability,
     native_factor_from_message,
     point_plane_residual_jacobian,
     quaternion_xyzw_to_rpy,
     right_perturbation_jacobian_rpy,
     rpy_to_quaternion_xyzw,
+    rpy_to_rotation_matrix,
+    transform_native_factor_map,
     validate_native_frame_contract,
     with_yaw_reference,
 )
@@ -68,6 +72,21 @@ class NativeLidarConversionTest(unittest.TestCase):
         self.assertAlmostEqual(factor.residual_squared, 0.0525)
         self.assertEqual(factor.stamp_ns, 10_000_000_000)
         self.assertTrue(factor.correspondences_valid)
+
+    def test_directional_observability_preserves_strong_subspace(self):
+        message = make_message()
+        hessian = np.zeros((12, 12), dtype=float)
+        hessian[:6, :6] = np.diag([4.0, 3.0, 2.0, 1.0e-8, 0.8, 1.0e-9])
+        message.state_hessian = hessian.ravel().tolist()
+        factor = native_factor_from_message(message)
+
+        observability = lidar_pose_observability(factor)
+
+        self.assertEqual(observability.effective_rank, 4)
+        self.assertEqual(observability.translation_rank, 3)
+        self.assertEqual(observability.rotation_rank, 1)
+        self.assertTrue(math.isinf(observability.condition_number))
+        self.assertEqual(len(observability.weakest_direction), 6)
 
     def test_trigger_only_frame_is_valid_without_a_lidar_factor(self):
         msg = make_message(10.125)
@@ -146,6 +165,31 @@ class NativeLidarConversionTest(unittest.TestCase):
         np.testing.assert_allclose(residual, [0.0, 1.0, 2.0])
         np.testing.assert_allclose(jacobian[:, :3], np.eye(3))
         self.assertEqual(jacobian.shape, (3, 6))
+
+    def test_map_alignment_preserves_point_plane_residuals(self):
+        msg = make_message()
+        msg.lidar_points_xyz = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]
+        msg.plane_normals_xyz = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        msg.plane_points_xyz = [2.0, 0.0, 0.0, 1.0, 3.0, 0.0, 1.0, 2.0, 4.0]
+        msg.residuals = [0.0, 1.0, 2.0]
+        factor = native_factor_from_message(msg)
+        alignment = np.eye(4)
+        alignment[:3, :3] = rpy_to_rotation_matrix([0.1, -0.2, 0.4])
+        alignment[:3, 3] = [8.0, -3.0, 1.5]
+
+        transformed = transform_native_factor_map(factor, alignment)
+        residual_before, _ = point_plane_residual_jacobian(
+            factor, factor.linearization_pose
+        )
+        residual_after, _ = point_plane_residual_jacobian(
+            transformed, transformed.linearization_pose
+        )
+
+        np.testing.assert_allclose(residual_after, residual_before, atol=1.0e-10)
+        np.testing.assert_allclose(
+            transformed.linearization_pose[:3],
+            alignment[:3, :3] @ factor.linearization_pose[:3] + alignment[:3, 3],
+        )
 
     def test_rejects_incompatible_pose_state_order(self):
         msg = make_message()

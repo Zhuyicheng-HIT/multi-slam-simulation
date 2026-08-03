@@ -33,6 +33,33 @@ def percentile(values, fraction):
     return ordered[index]
 
 
+def read_system_cpu_ticks(path="/proc/stat"):
+    try:
+        with open(path, "r", encoding="ascii") as stream:
+            fields = stream.readline().split()
+    except OSError:
+        return None
+    if not fields or fields[0] != "cpu" or len(fields) < 5:
+        return None
+    try:
+        ticks = [int(value) for value in fields[1:]]
+    except ValueError:
+        return None
+    total = sum(ticks)
+    idle = ticks[3] + (ticks[4] if len(ticks) > 4 else 0)
+    return total, idle
+
+
+def system_cpu_utilization_percent(previous, current):
+    if previous is None or current is None:
+        return None
+    total_delta = int(current[0]) - int(previous[0])
+    idle_delta = int(current[1]) - int(previous[1])
+    if total_delta <= 0 or idle_delta < 0 or idle_delta > total_delta:
+        return None
+    return 100.0 * (total_delta - idle_delta) / total_delta
+
+
 class TopicWindow:
     def __init__(self, size=4000):
         self.samples = deque(maxlen=size)
@@ -160,6 +187,8 @@ class SimulationPerformanceMonitor(Node):
         self.rtf_clock_samples = deque(maxlen=2000)
         self.sim_step_samples_ms = deque(maxlen=2000)
         self.flow_integration_ms = deque(maxlen=2000)
+        self.system_cpu_percent = deque(maxlen=2000)
+        self.last_system_cpu_ticks = read_system_cpu_ticks()
         self.node_timings_ms = {}
         self.last_report = {}
 
@@ -296,7 +325,14 @@ class SimulationPerformanceMonitor(Node):
 
     def _build_report(self):
         now = time.monotonic()
+        current_cpu_ticks = read_system_cpu_ticks()
+        cpu_percent = system_cpu_utilization_percent(
+            self.last_system_cpu_ticks, current_cpu_ticks
+        )
+        self.last_system_cpu_ticks = current_cpu_ticks
         with self.lock:
+            if cpu_percent is not None:
+                self.system_cpu_percent.append(cpu_percent)
             topic_report = {
                 name: window.summary(now, self.window_s)
                 for name, window in self.topics.items()
@@ -319,6 +355,7 @@ class SimulationPerformanceMonitor(Node):
             step = list(self.sim_step_samples_ms)
             flow_integration = list(self.flow_integration_ms)
             node_timings = dict(self.node_timings_ms)
+            system_cpu = list(self.system_cpu_percent)
         wait_bottleneck = max(
             stage_report,
             key=lambda name: stage_report[name]["p95_ms"],
@@ -357,18 +394,32 @@ class SimulationPerformanceMonitor(Node):
             flow_integration_arrival_ratio is not None
             and 0.75 <= flow_integration_arrival_ratio <= 1.25
         )
-        live_timing_valid = (
+        real_time_compute_feasible = (
             rtf_median >= self.minimum_live_rtf
             and rates_ok
             and flow_source_rate_valid
             and flow_integration_valid
         )
-        algorithm_accuracy_valid = live_timing_valid and not self.flow_truth_assistance
+        localization_accuracy_inputs_valid = not self.flow_truth_assistance
         return {
             "schema_version": 1,
             "fusion_topic": self.fusion_topic,
             "fusion_diagnostic_topic": self.fusion_diagnostic_topic,
             "wall_duration_s": now - self.started_s,
+            "performance_clock": "wall_monotonic",
+            "compute": {
+                "system_cpu_utilization_percent_median": percentile(
+                    system_cpu, 0.50
+                ),
+                "system_cpu_utilization_percent_p95": percentile(
+                    system_cpu, 0.95
+                ),
+                "system_cpu_utilization_percent_max": (
+                    max(system_cpu) if system_cpu else 0.0
+                ),
+                "system_cpu_scope": "whole_wsl_system_total_capacity",
+                "samples": len(system_cpu),
+            },
             "simulation": {
                 "world": self.world_name,
                 "real_time_factor_median": rtf_median,
@@ -390,8 +441,10 @@ class SimulationPerformanceMonitor(Node):
             "bottleneck_wait_stage_by_p95": wait_bottleneck,
             "bottleneck_compute_stage_by_mean": compute_bottleneck,
             "gates": {
-                "live_timing_comparison_valid": live_timing_valid,
-                "algorithm_accuracy_comparison_valid": algorithm_accuracy_valid,
+                "live_timing_comparison_valid": real_time_compute_feasible,
+                "real_time_compute_feasible": real_time_compute_feasible,
+                "localization_accuracy_inputs_valid": localization_accuracy_inputs_valid,
+                "algorithm_accuracy_comparison_valid": localization_accuracy_inputs_valid,
                 "flow_truth_assistance_enabled": self.flow_truth_assistance,
                 "minimum_live_rtf": self.minimum_live_rtf,
                 "minimum_rates_hz": self.minimum_rates,
@@ -424,18 +477,26 @@ class SimulationPerformanceMonitor(Node):
         report = self._build_report()
         self.last_report = report
         self._write_report(report)
-        valid = report["gates"]["algorithm_accuracy_comparison_valid"]
+        valid = report["gates"]["real_time_compute_feasible"]
         status = DiagnosticStatus()
         status.name = "simulation/performance_gate"
         status.hardware_id = self.world_name
         status.level = DiagnosticStatus.OK if valid else DiagnosticStatus.WARN
         status.message = (
-            "algorithm_comparison_valid" if valid
-            else "timing_or_truth_assistance_gate_failed")
+            "real_time_compute_feasible" if valid
+            else "real_time_compute_gate_failed")
         status.values = [
+            self._value("performance_clock", "wall_monotonic"),
+            self._value(
+                "localization_accuracy_inputs_valid",
+                report["gates"]["localization_accuracy_inputs_valid"],
+            ),
             self._value(
                 "real_time_factor_median",
                 f"{report['simulation']['real_time_factor_median']:.3f}"),
+            self._value(
+                "system_cpu_utilization_percent_p95",
+                f"{report['compute']['system_cpu_utilization_percent_p95']:.3f}"),
             self._value(
                 "bottleneck_wait_stage", report["bottleneck_wait_stage_by_p95"]),
             self._value(
@@ -467,6 +528,7 @@ class SimulationPerformanceMonitor(Node):
         self.get_logger().info(
             "PERFORMANCE "
             f"rtf={report['simulation']['real_time_factor_median']:.3f} "
+            f"cpu_p95={report['compute']['system_cpu_utilization_percent_p95']:.1f}% "
             f"flow={report['topics']['raw_flow']['rate_hz']:.2f}Hz "
             f"gnss={report['topics']['gnss']['rate_hz']:.2f}Hz "
             f"external_nav={report['topics']['external_nav']['rate_hz']:.2f}Hz "

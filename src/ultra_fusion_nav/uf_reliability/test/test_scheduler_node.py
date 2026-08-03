@@ -42,6 +42,7 @@ class SchedulerHarness(Node):
     def publish_scores(self, values):
         for name in MODALITIES:
             msg = ReliabilityScore()
+            msg.header.stamp = self.get_clock().now().to_msg()
             msg.modality = name
             msg.degradation_score = float(values.get(name, 0.1))
             msg.reliability_weight = 1.0 - msg.degradation_score
@@ -99,6 +100,26 @@ class SchedulerNodeTest(unittest.TestCase):
             self.executor.spin_once(timeout_sec=0.02)
         return self.harness.latest
 
+    def drive_until_state(
+        self, values, expected_state, timeout_s=1.0, relocalization=False
+    ):
+        request = Bool()
+        request.data = bool(relocalization)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            self.harness.publish_scores(values)
+            self.harness.relocalization_pub.publish(request)
+            self.executor.spin_once(timeout_sec=0.02)
+            if (
+                self.harness.latest is not None
+                and self.harness.latest.health_state == expected_state
+            ):
+                return self.harness.latest
+        self.fail(
+            f"scheduler did not publish {expected_state} within {timeout_s:.1f}s; "
+            f"last={getattr(self.harness.latest, 'health_state', None)}"
+        )
+
     def test_runtime_state_and_factor_sequence(self):
         healthy = self.drive({}, 0.30)
         self.assertEqual(healthy.health_state, "NORMAL")
@@ -118,16 +139,16 @@ class SchedulerNodeTest(unittest.TestCase):
         self.assertTrue(risk.factor_enabled[gnss_index])
         self.assertGreater(risk.covariance_inflation[gnss_index], 3.0)
 
-        failed = self.drive({"imu": 0.90}, 0.25)
-        self.assertEqual(failed.health_state, "FAILSAFE")
-        imu_index = list(failed.modality_names).index("imu")
-        self.assertFalse(failed.factor_enabled[imu_index])
-        self.assertEqual(failed.covariance_inflation[imu_index], 20.0)
+        high_dynamic = self.drive({"imu": 0.90}, 0.25)
+        self.assertEqual(high_dynamic.health_state, "RISK")
+        imu_index = list(high_dynamic.modality_names).index("imu")
+        self.assertTrue(high_dynamic.factor_enabled[imu_index])
+        self.assertAlmostEqual(
+            high_dynamic.covariance_inflation[imu_index], 5.0, places=4)
 
-        self.drive({}, 0.20)
-        recovered = self.drive({}, 0.10)
-        self.assertIn("RECOVERED", self.harness.history)
-        normal = self.drive({}, 0.20)
+        recovered = self.drive_until_state({}, "RECOVERED")
+        self.assertEqual(recovered.health_state, "RECOVERED")
+        normal = self.drive_until_state({}, "NORMAL")
         self.assertEqual(normal.health_state, "NORMAL")
         self.assertTrue(normal.factor_enabled[gnss_index])
 

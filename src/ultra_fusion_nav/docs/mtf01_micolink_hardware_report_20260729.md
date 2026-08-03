@@ -109,7 +109,7 @@ then confirm the FRD mapping and velocity scale against an independent reference
 In Windows PowerShell:
 
 ```powershell
-$Repo = (wsl -d Ubuntu-22.04 -- wslpath -w /home/zyc/multi-slam-github-staging).Trim()
+$Repo = (wsl -d Ubuntu-22.04 -- bash -lc 'wslpath -w "$HOME/multi-slam-github-staging"').Trim()
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 & (Join-Path $Repo 'tools\windows_mtf01_serial_bridge.ps1') `
   -Port COM17 -BaudRate 115200 -TcpPort 5764

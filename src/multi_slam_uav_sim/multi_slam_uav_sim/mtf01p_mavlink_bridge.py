@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import socket
+import statistics
 import time
 
 import rclpy
@@ -50,10 +51,12 @@ class Mtf01pMavlinkBridge(Node):
             "frame_id": "mtf01_flow_sensor",
             "nominal_rate_hz": 100.0,
             "maximum_imu_gap_s": 0.12,
+            "maximum_imu_wait_wall_s": 0.25,
+            "align_sim_imu_clock": True,
             "range_min_m": 0.02,
             "range_max_m": 8.0,
             "range_fov_rad": math.radians(6.0),
-            "restamp_output": True,
+            "restamp_output": False,
             "report_path": "",
         }
         for name, value in defaults.items():
@@ -69,6 +72,12 @@ class Mtf01pMavlinkBridge(Node):
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.nominal_rate_hz = float(self.get_parameter("nominal_rate_hz").value)
         self.maximum_imu_gap = float(self.get_parameter("maximum_imu_gap_s").value)
+        self.maximum_imu_wait_wall = float(
+            self.get_parameter("maximum_imu_wait_wall_s").value
+        )
+        self.align_sim_imu_clock = bool(
+            self.get_parameter("align_sim_imu_clock").value
+        ) and self.mode == "sim"
         self.range_min = float(self.get_parameter("range_min_m").value)
         self.range_max = float(self.get_parameter("range_max_m").value)
         self.range_fov = float(self.get_parameter("range_fov_rad").value)
@@ -84,13 +93,15 @@ class Mtf01pMavlinkBridge(Node):
         self.tcp_socket = None
         self.last_connect_attempt = 0.0
         self.imu_samples = deque(maxlen=2000)
+        self.imu_clock_offsets = deque(maxlen=200)
         self.flow_arrivals = deque(maxlen=1000)
         self.last_flow_time_us = None
         self.device_epoch_us = None
         self.host_epoch_ns = None
         self.latest_range = None
         self.pending_flow = None
-        self.last_frame_monotonic = None
+        self.pending_gyro_flows = deque(maxlen=200)
+        self.last_frame_ros_s = None
         self.last_error = ""
         self.counts = {
             "sim_inputs": 0,
@@ -106,6 +117,7 @@ class Mtf01pMavlinkBridge(Node):
             "timestamp_regressions": 0,
             "flow_frame_gaps": 0,
             "gyro_missing": 0,
+            "gyro_wait_expired": 0,
         }
 
         self.flow_pub = self.create_publisher(
@@ -128,22 +140,58 @@ class Mtf01pMavlinkBridge(Node):
             )
         else:
             self.create_timer(0.005, self._read_tcp)
+        self.create_timer(0.005, self._drain_pending_gyro_flows)
         self.create_timer(1.0, self._diagnostics)
 
     def _on_imu(self, msg):
         gyro_frd = ros_flu_gyro_to_sensor_frd(
             (msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z)
         )
-        self.imu_samples.append((time.monotonic(), *gyro_frd))
+        stamp_s = (
+            float(msg.header.stamp.sec)
+            + float(msg.header.stamp.nanosec) * 1.0e-9
+        )
+        if stamp_s > 0.0:
+            self.imu_samples.append((stamp_s, *gyro_frd))
+            if self.align_sim_imu_clock:
+                now_s = self.get_clock().now().nanoseconds * 1.0e-9
+                offset_s = now_s - stamp_s
+                if now_s > 0.0 and math.isfinite(offset_s) and 0.0 <= offset_s <= 2.0:
+                    self.imu_clock_offsets.append(offset_s)
+
+    def _imu_time_offset_s(self):
+        if not getattr(self, "align_sim_imu_clock", False):
+            return 0.0
+        stats = self._imu_time_offset_stats()
+        if stats is None:
+            return 0.0
+        # now_ros - sensor_stamp contains both the clock offset and non-negative
+        # callback latency. A low percentile rejects most scheduling delay.
+        return stats[0]
+
+    def _imu_time_offset_stats(self):
+        offsets = sorted(float(value) for value in getattr(self, "imu_clock_offsets", ()))
+        if len(offsets) < 5:
+            return None
+        last = len(offsets) - 1
+        return (
+            offsets[int(0.05 * last)],
+            float(statistics.median(offsets)),
+            offsets[int(0.95 * last)],
+        )
 
     def _on_sim_flow(self, msg):
         self.counts["sim_inputs"] += 1
         integration_us = int(msg.integration_time_us)
+        source_stamp_ns = (
+            int(msg.header.stamp.sec) * 1_000_000_000
+            + int(msg.header.stamp.nanosec)
+        )
         if integration_us <= 0 or not all(
             math.isfinite(float(value)) for value in (msg.integrated_x, msg.integrated_y, msg.distance)
-        ):
+        ) or source_stamp_ns <= 0:
             return
-        sensor_time_us = self.sensor_clock.advance(integration_us)
+        sensor_time_us = source_stamp_ns // 1000
         flow_x, flow_y = integrated_radians_to_pixels(
             msg.integrated_x, msg.integrated_y, self.focal_px, self.focal_px
         )
@@ -224,6 +272,8 @@ class Mtf01pMavlinkBridge(Node):
 
     def _stamp_ns(self, source_time_us):
         source_time_us = int(source_time_us)
+        if self.mode == "sim":
+            return source_time_us * 1000
         now_ns = self.get_clock().now().nanoseconds
         if self.device_epoch_us is None:
             self.device_epoch_us, self.host_epoch_ns = source_time_us, now_ns
@@ -236,9 +286,8 @@ class Mtf01pMavlinkBridge(Node):
         """Map decoded flow to the ROS time domain used by the fusion stack.
 
         A direct MTF-01 has its own clock, while the FCU IMU is timestamped by
-        MAVROS. In simulation those clocks use unrelated epochs. Arrival-time
-        stamping is therefore the explicit simulation/default companion policy;
-        the original MAVLink bytes remain published for offline calibration.
+        ROS/MAVROS. The device epoch is anchored once to ROS time and its source
+        intervals are retained; callback arrival time is never an estimator clock.
         """
         if self.restamp_output:
             return self.get_clock().now().to_msg()
@@ -265,7 +314,7 @@ class Mtf01pMavlinkBridge(Node):
             pending_time_us, pending_flow = self.pending_flow
             if abs(pending_time_us - source_time_us) <= 20_000:
                 self.pending_flow = None
-                self._publish_flow(pending_flow, distance_m)
+                self._queue_flow_for_gyro(pending_flow, distance_m)
 
     def _on_flow(self, message):
         self.counts["optical_flow"] += 1
@@ -289,16 +338,45 @@ class Mtf01pMavlinkBridge(Node):
             "integration_s": integration_s,
         }
         if self.latest_range is not None and abs(self.latest_range[0] - source_time_us) <= 20_000:
-            self._publish_flow(flow_data, self.latest_range[1])
+            self._queue_flow_for_gyro(flow_data, self.latest_range[1])
         else:
             if self.pending_flow is not None:
                 self.counts["range_stale"] += 1
-                self._publish_flow(self.pending_flow[1], None)
+                self._queue_flow_for_gyro(self.pending_flow[1], None)
             self.pending_flow = (source_time_us, flow_data)
 
+    def _queue_flow_for_gyro(self, flow_data, distance_m):
+        self.pending_gyro_flows.append(
+            (time.monotonic(), flow_data, distance_m)
+        )
+        self._drain_pending_gyro_flows()
+
+    def _drain_pending_gyro_flows(self):
+        now = time.monotonic()
+        while self.pending_gyro_flows:
+            queued_at, flow_data, distance_m = self.pending_gyro_flows[0]
+            end_s = float(flow_data["stamp_ns"]) * 1.0e-9
+            imu_offset_s = self._imu_time_offset_s()
+            imu_covers_end = bool(
+                self.imu_samples
+                and self.imu_samples[-1][0] + imu_offset_s >= end_s
+            )
+            expired = now - queued_at >= self.maximum_imu_wait_wall
+            if not imu_covers_end and not expired:
+                break
+            self.pending_gyro_flows.popleft()
+            if expired and not imu_covers_end:
+                self.counts["gyro_wait_expired"] += 1
+            self._publish_flow(flow_data, distance_m)
+
     def _publish_flow(self, flow_data, distance_m):
+        end_s = float(flow_data["stamp_ns"]) * 1.0e-9
+        imu_offset_s = self._imu_time_offset_s()
+        imu_end_s = end_s - imu_offset_s
         gyro = integrate_gyro(
-            list(self.imu_samples), time.monotonic() - flow_data["integration_s"], time.monotonic(),
+            list(self.imu_samples),
+            imu_end_s - flow_data["integration_s"],
+            imu_end_s,
             max_gap_s=self.maximum_imu_gap,
         )
         if gyro is None:
@@ -321,20 +399,28 @@ class Mtf01pMavlinkBridge(Node):
         output.distance = float("nan") if distance_m is None else float(distance_m)
         self.flow_pub.publish(output)
         self.counts["published_flow"] += 1
-        self.last_frame_monotonic = time.monotonic()
-        self.flow_arrivals.append(self.last_frame_monotonic)
+        self.last_frame_ros_s = end_s
+        self.flow_arrivals.append(self.last_frame_ros_s)
 
     @staticmethod
     def _value(key, value):
         return KeyValue(key=str(key), value=str(value))
 
     def _diagnostics(self):
-        fresh = self.last_frame_monotonic is not None and time.monotonic() - self.last_frame_monotonic < 0.5
+        now_ros_s = self.get_clock().now().nanoseconds * 1.0e-9
+        fresh = (
+            self.last_frame_ros_s is not None
+            and 0.0 <= now_ros_s - self.last_frame_ros_s < 0.5
+        )
         status = DiagnosticStatus()
         status.name = "mtf01/mavlink_apm"
         status.hardware_id = "mtf01_sim" if self.mode == "sim" else "mtf01_com_bridge"
         status.level = DiagnosticStatus.OK if fresh and self.counts["bad_data"] == 0 else DiagnosticStatus.ERROR
         status.message = "mavlink_stream_ok" if status.level == DiagnosticStatus.OK else "mavlink_stream_missing_or_invalid"
+        offset_stats = self._imu_time_offset_stats()
+        _, offset_p50, offset_p95 = (
+            offset_stats if offset_stats is not None else (0.0, 0.0, 0.0)
+        )
         status.values = [
             self._value("source", f"{self.source_system}:{self.source_component}"),
             self._value("published_flow", self.counts["published_flow"]),
@@ -342,8 +428,14 @@ class Mtf01pMavlinkBridge(Node):
             self._value("bad_data", self.counts["bad_data"]),
             self._value("range_stale", self.counts["range_stale"]),
             self._value("gyro_missing", self.counts["gyro_missing"]),
+            self._value("gyro_wait_expired", self.counts["gyro_wait_expired"]),
+            self._value("pending_gyro_flows", len(self.pending_gyro_flows)),
             self._value("timestamp_regressions", self.counts["timestamp_regressions"]),
             self._value("flow_frame_gaps", self.counts["flow_frame_gaps"]),
+            self._value("gyro_integration_clock", "message_stamp_with_sim_offset"),
+            self._value("imu_time_offset_s", f"{self._imu_time_offset_s():.6f}"),
+            self._value("imu_time_offset_p50_s", f"{offset_p50:.6f}"),
+            self._value("imu_time_offset_p95_s", f"{offset_p95:.6f}"),
         ]
         diagnostics = DiagnosticArray()
         diagnostics.header.stamp = self.get_clock().now().to_msg()
@@ -353,8 +445,22 @@ class Mtf01pMavlinkBridge(Node):
 
     def _write_report(self):
         if self.report_path:
+            offset_stats = self._imu_time_offset_stats()
+            offset_p05, offset_p50, offset_p95 = (
+                offset_stats if offset_stats is not None else (0.0, 0.0, 0.0)
+            )
             Path(self.report_path).write_text(
-                json.dumps({"mode": self.mode, "counts": self.counts}, indent=2) + "\n",
+                json.dumps(
+                    {
+                        "mode": self.mode,
+                        "counts": self.counts,
+                        "imu_time_offset_s": offset_p05,
+                        "imu_time_offset_p50_s": offset_p50,
+                        "imu_time_offset_p95_s": offset_p95,
+                        "sim_imu_clock_alignment": self.align_sim_imu_clock,
+                    },
+                    indent=2,
+                ) + "\n",
                 encoding="utf-8",
             )
 

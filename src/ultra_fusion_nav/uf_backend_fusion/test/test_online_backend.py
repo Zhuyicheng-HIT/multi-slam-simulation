@@ -1,8 +1,11 @@
+import math
 import queue
+import threading
 import unittest
 from types import SimpleNamespace
 
 import numpy as np
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 
 from uf_backend_fusion.imu_preintegration import ImuSample
@@ -10,10 +13,12 @@ from uf_backend_fusion.native_lidar import rpy_to_rotation_matrix
 from uf_backend_fusion.online_backend import (
     apply_flow_rotation_gate,
     apply_lidar_anchor_floor,
+    covariance_update_due,
     flow_observation_delta,
     frd_to_enu_delta,
     fused_motion_reference,
     gnss_jump_rejected,
+    gnss_covariance_diagonal,
     gnss_temporal_jump_rejected,
     imu_interval_covered,
     imu_interval_status,
@@ -25,14 +30,152 @@ from uf_backend_fusion.online_backend import (
     manifold_motion_reference,
     native_frame_odometry,
     native_trigger_order_status,
+    path_sample_due,
     scheduler_decision,
+    select_gnss_observation,
     unwrap_yaw,
+    UnifiedBackendNode,
+    validate_optimized_state,
     yaw_to_quaternion,
 )
 from uf_reliability.flow_rotation_gate import FlowRotationGateResult
 
 
 class OnlineBackendHelpersTest(unittest.TestCase):
+    @staticmethod
+    def _integrity_limits():
+        return {
+            "maximum_translation_correction_m": 1.0,
+            "maximum_rotation_correction_rad": 0.5,
+            "maximum_velocity_correction_mps": 5.0,
+            "maximum_accel_bias_correction_mps2": 1.5,
+            "maximum_gyro_bias_correction_radps": 0.3,
+            "maximum_information_condition": 1.0e12,
+            "information_rank_tolerance": 1.0e-9,
+        }
+
+    def test_optimization_integrity_accepts_finite_cost_reducing_state(self):
+        initial = np.zeros(15)
+        estimate = initial.copy()
+        estimate[0] = 0.1
+        result = validate_optimized_state(
+            initial, estimate, np.eye(15), 10.0, 5.0,
+            **self._integrity_limits(),
+        )
+        self.assertTrue(result.valid)
+        self.assertEqual(result.reason, "ok")
+        self.assertEqual(result.latest_information_rank, 15)
+        self.assertAlmostEqual(result.translation_correction_m, 0.1)
+
+    def test_optimization_integrity_rejects_excessive_translation(self):
+        initial = np.zeros(15)
+        estimate = initial.copy()
+        estimate[0] = 1.01
+        result = validate_optimized_state(
+            initial, estimate, np.eye(15), 10.0, 5.0,
+            **self._integrity_limits(),
+        )
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "excessive_translation_correction")
+
+    def test_optimization_integrity_rejects_indefinite_information(self):
+        information = np.eye(15)
+        information[0, 0] = -1.0
+        result = validate_optimized_state(
+            np.zeros(15), np.zeros(15), information, 10.0, 5.0,
+            **self._integrity_limits(),
+        )
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "indefinite_latest_information")
+
+    def test_optimization_integrity_rejects_cost_increase(self):
+        result = validate_optimized_state(
+            np.zeros(15), np.zeros(15), np.eye(15), 5.0, 5.1,
+            **self._integrity_limits(),
+        )
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "optimization_cost_increased")
+
+    def test_path_sampling_requires_motion_or_rotation(self):
+        self.assertTrue(path_sample_due(
+            None, None, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 0.05, 0.02
+        ))
+        self.assertFalse(path_sample_due(
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            [0.01, 0.0, 0.0], [0.0, 0.0, 0.01], 0.05, 0.02
+        ))
+        self.assertTrue(path_sample_due(
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            [0.05, 0.0, 0.0], [0.0, 0.0, 0.0], 0.05, 0.02
+        ))
+        self.assertTrue(path_sample_due(
+            [0.0, 0.0, 0.0], [0.0, 0.0, math.pi - 0.01],
+            [0.0, 0.0, 0.0], [0.0, 0.0, -math.pi + 0.02], 0.05, 0.02
+        ))
+
+    def test_marginal_covariance_update_is_rate_limited_and_handles_reset(self):
+        self.assertTrue(covariance_update_due(None, 10.0, 1.0))
+        self.assertFalse(covariance_update_due(10.0, 10.9, 1.0))
+        self.assertTrue(covariance_update_due(10.0, 11.0, 1.0))
+        self.assertTrue(covariance_update_due(10.0, 9.0, 1.0))
+
+    def test_unknown_gnss_covariance_uses_conservative_default(self):
+        covariance = gnss_covariance_diagonal(
+            np.zeros(9),
+            covariance_type=0,
+            default_variance=4.0,
+        )
+
+        np.testing.assert_allclose(covariance, [4.0, 4.0, 4.0])
+
+    def test_known_gnss_covariance_keeps_valid_diagonal_and_floor(self):
+        raw = np.zeros(9)
+        raw[[0, 4, 8]] = [0.01, 0.25, 1.0]
+
+        covariance = gnss_covariance_diagonal(
+            raw,
+            covariance_type=2,
+            default_variance=4.0,
+        )
+
+        np.testing.assert_allclose(covariance, [0.04, 0.25, 1.0])
+
+    def test_gnss_observation_is_consumed_once(self):
+        observations = [
+            {"stamp_s": 10.0, "id": "old"},
+            {"stamp_s": 10.1, "id": "selected"},
+            {"stamp_s": 10.4, "id": "future"},
+        ]
+
+        selected, stale, superseded = select_gnss_observation(
+            observations, 10.12, maximum_age_s=2.0, future_tolerance_s=0.05
+        )
+
+        self.assertEqual(selected["id"], "selected")
+        self.assertEqual(stale, 0)
+        self.assertEqual(superseded, 1)
+        self.assertEqual([item["id"] for item in observations], ["future"])
+
+        selected, stale, superseded = select_gnss_observation(
+            observations, 10.12, maximum_age_s=2.0, future_tolerance_s=0.05
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(stale, 0)
+        self.assertEqual(superseded, 0)
+        self.assertEqual([item["id"] for item in observations], ["future"])
+
+    def test_gnss_observation_discards_stale_fix(self):
+        observations = [{"stamp_s": 5.0}, {"stamp_s": 9.9}]
+
+        selected, stale, superseded = select_gnss_observation(
+            observations, 10.0, maximum_age_s=1.0, future_tolerance_s=0.0
+        )
+
+        self.assertEqual(selected["stamp_s"], 9.9)
+        self.assertEqual(stale, 1)
+        self.assertEqual(superseded, 0)
+        self.assertEqual(observations, [])
+
     def test_full_imu_covariance_inflation_preserves_correlation_and_spd(self):
         covariance = np.eye(15)
         covariance[0, 3] = 0.4
@@ -143,6 +286,25 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             odometry.pose.pose.position.y,
             odometry.pose.pose.position.z,
         ], [1.0, 2.0, 3.0])
+
+    def test_native_factor_mode_ignores_perturbed_lio_odometry(self):
+        dispatched = []
+        owner = SimpleNamespace(
+            input_trigger_mode="native_factor",
+            counts={"lio_pose_inputs_ignored": 0},
+            _dispatch_lio=lambda *args: dispatched.append(args),
+        )
+        nominal = Odometry()
+        nominal.pose.pose.position.x = 1.0
+        perturbed = Odometry()
+        perturbed.pose.pose.position.x = 1001.0
+        perturbed.pose.pose.position.y = -500.0
+
+        UnifiedBackendNode._lio(owner, nominal)
+        UnifiedBackendNode._lio(owner, perturbed)
+
+        self.assertEqual(owner.counts["lio_pose_inputs_ignored"], 2)
+        self.assertEqual(dispatched, [])
 
     def test_native_trigger_order_contract_is_explicit(self):
         self.assertEqual(
@@ -360,6 +522,40 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         current = -3.12
         unwrapped = unwrap_yaw(previous, current)
         self.assertAlmostEqual(unwrapped, 3.163185307179586, places=6)
+
+    def test_rejected_native_frame_is_consumed_without_state_commit(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.counts = {"native_consumed_without_state_commit": 0}
+        node.last_native_consumed_sequence = 4
+        released = []
+        node._release_pending_scan_requests = lambda: released.append(True)
+
+        node._consume_native_sequence(5, state_committed=False)
+
+        self.assertEqual(node.last_native_consumed_sequence, 5)
+        self.assertEqual(node.counts["native_consumed_without_state_commit"], 1)
+        self.assertEqual(released, [True])
+
+    def test_retried_deferred_scan_request_is_idempotent(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.frontend_scan_prediction_enabled = True
+        node.last_native_consumed_sequence = -1
+        node.pending_scan_request_lock = threading.Lock()
+        node.pending_scan_requests = {2: SimpleNamespace(scan_sequence=2)}
+        node.scan_prediction_by_sequence = {}
+        node.counts = {
+            "scan_prediction_requests": 0,
+            "scan_prediction_duplicate_requests": 0,
+            "scan_prediction_stale_requests": 0,
+            "scan_prediction_deferred": 0,
+        }
+
+        node._scan_request(SimpleNamespace(scan_sequence=2))
+
+        self.assertEqual(node.counts["scan_prediction_requests"], 1)
+        self.assertEqual(node.counts["scan_prediction_duplicate_requests"], 1)
+        self.assertEqual(node.counts["scan_prediction_deferred"], 1)
+        self.assertEqual(list(node.pending_scan_requests), [2])
 
 
 if __name__ == "__main__":

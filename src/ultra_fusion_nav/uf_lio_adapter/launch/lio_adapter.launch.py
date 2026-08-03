@@ -11,7 +11,7 @@ def generate_launch_description():
     default_config = get_package_share_directory("uf_lio_adapter") + "/config/lio_adapter.yaml"
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config),
-        DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("use_sim_time", default_value="true"),
         Node(
             package="uf_lio_adapter",
             executable="lio_adapter",

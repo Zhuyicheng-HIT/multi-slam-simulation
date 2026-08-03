@@ -56,6 +56,44 @@ def plane_factor(point, normal, plane_point):
 
 
 class ManifoldWindowTest(unittest.TestCase):
+    def test_marginal_covariance_uses_information_not_solver_damping(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2, damping=100.0)
+        state = np.zeros(15)
+        index = backend.add_state(state)
+        variance = np.linspace(0.01, 0.15, 15)
+        backend.add_prior(index, state, covariance=variance)
+
+        covariance = backend.marginal_covariance()
+
+        np.testing.assert_allclose(np.diag(covariance), variance, atol=1.0e-10)
+        np.testing.assert_allclose(
+            covariance - np.diag(np.diag(covariance)),
+            np.zeros((15, 15)),
+            atol=1.0e-10,
+        )
+
+    def test_marginal_covariance_marks_unobservable_directions_uncertain(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        backend.add_state(np.zeros(15))
+
+        covariance = backend.marginal_covariance(unobservable_variance=1234.0)
+
+        np.testing.assert_allclose(covariance, np.eye(15) * 1234.0)
+
+    def test_relocalization_reset_discards_old_window_and_adds_prior(self):
+        backend = ManifoldSlidingWindowBackend(max_states=4)
+        backend.add_state(np.zeros(15))
+        backend.add_state(np.ones(15) * 0.1)
+        backend.add_prior(0, np.zeros(15), covariance=0.2)
+        recovered = np.arange(15, dtype=float) * 0.01
+
+        index = backend.reset(recovered, covariance=np.ones(15) * 0.05)
+
+        self.assertEqual(index, 0)
+        self.assertEqual(backend.state_count, 1)
+        self.assertEqual(backend.factor_count, 1)
+        np.testing.assert_allclose(backend.state(0), recovered)
+        self.assertEqual(backend.factor_summary()[0].name, "prior")
     def test_huber_loss_is_symmetric_and_continuous_at_threshold(self):
         residual = np.asarray([0.0, 2.5, -2.5, 10.0, -10.0])
         loss, weight = huber_loss_and_weight(residual, 2.5)
@@ -238,6 +276,82 @@ class ManifoldWindowTest(unittest.TestCase):
             factor.name == "marginal_prior" for factor in backend.factor_summary()
         ))
         self.assertAlmostEqual(backend.state(-1)[0], 2.0, places=4)
+
+    def test_schur_prior_is_independent_of_solver_damping(self):
+        def build(damping):
+            backend = ManifoldSlidingWindowBackend(max_states=2, damping=damping)
+            first = backend.add_state(np.zeros(15))
+            backend.add_prior(first, np.zeros(15), covariance=np.ones(15))
+            second = backend.add_state(np.zeros(15))
+            backend.add_optical_flow(first, second, [1.0, 0.0, 0.0])
+            # add_state marginalizes before the new state's factors are added,
+            # so this captures exactly the first-state Schur prior.
+            backend.add_state(np.zeros(15))
+            prior = next(
+                factor for factor in backend._factors
+                if factor["name"] == "marginal_prior"
+            )
+            return prior["normal_hessian"].copy(), prior["normal_gradient"].copy()
+
+        small = build(1.0e-9)
+        large = build(1.0e3)
+        np.testing.assert_allclose(small[0], large[0], atol=1.0e-12)
+        np.testing.assert_allclose(small[1], large[1], atol=1.0e-12)
+
+    def test_imu_factor_can_be_reintegrated_in_place(self):
+        measurement = stationary_measurement()
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        previous = backend.add_state(np.zeros(15))
+        current = backend.add_state(np.zeros(15))
+        backend.add_imu_preintegrated(previous, current, measurement)
+        replacement = replace(
+            measurement,
+            accel_bias_linearization=(0.1, 0.0, 0.0),
+        )
+        self.assertTrue(
+            backend.replace_imu_preintegrated(previous, current, replacement)
+        )
+        self.assertIs(
+            backend._factors[-1]["measurement"], replacement
+        )
+        self.assertFalse(backend.replace_imu_preintegrated(0, 2, replacement))
+
+    def test_transaction_snapshot_restores_states_factors_and_solver_metadata(self):
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        first = backend.add_state(np.zeros(15))
+        backend.add_prior(first, np.zeros(15), covariance=np.ones(15))
+        backend.optimize()
+        snapshot = backend.snapshot()
+        expected_state = backend.state(0)
+        expected_factors = backend.factor_summary()
+        expected_initial_cost = backend.last_initial_cost
+        expected_cost = backend.last_cost
+
+        second = backend.add_state(np.ones(15))
+        backend.add_optical_flow(first, second, [1.0, 0.0, 0.0])
+        backend.optimize()
+        self.assertEqual(backend.state_count, 2)
+
+        backend.restore(snapshot)
+        self.assertEqual(backend.state_count, 1)
+        np.testing.assert_allclose(backend.state(0), expected_state)
+        self.assertEqual(backend.factor_summary(), expected_factors)
+        self.assertEqual(backend.last_initial_cost, expected_initial_cost)
+        self.assertEqual(backend.last_cost, expected_cost)
+
+    def test_latest_state_information_is_finite_symmetric_and_undamped(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2, damping=100.0)
+        index = backend.add_state(np.zeros(15))
+        variances = np.linspace(0.5, 2.0, 15)
+        backend.add_prior(index, np.zeros(15), covariance=variances)
+        backend.optimize()
+
+        information = backend.latest_state_information()
+        self.assertEqual(information.shape, (15, 15))
+        np.testing.assert_allclose(information, information.T, atol=1.0e-12)
+        np.testing.assert_allclose(
+            np.diag(information), 1.0 / variances, rtol=1.0e-10
+        )
 
 
 if __name__ == "__main__":

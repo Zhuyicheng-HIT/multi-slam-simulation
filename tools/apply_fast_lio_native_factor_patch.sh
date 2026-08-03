@@ -8,7 +8,7 @@ FAST_LIO_SRC=${FAST_LIO_SRC:-$LIDAR_WS/src/FAST_LIO_ROS2}
 EXPECTED_COMMIT=a4743b095409588842a5b30ddfa27e29d2f99164
 PATCH_FILE="$REPO_ROOT/src/ultra_fusion_nav/uf_lio_adapter/fast_lio_patches/0001-native-lidar-factor-export.patch"
 
-if [[ ! -d "$FAST_LIO_SRC/.git" ]]; then
+if ! git -C "$FAST_LIO_SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "FAST-LIO source checkout not found: $FAST_LIO_SRC" >&2
   exit 2
 fi

@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from pathlib import Path
 
 # This diagnostic performs many small matrix products. Multi-threaded BLAS is
@@ -290,7 +289,7 @@ class NativeFactorValidator(Node):
         self.last_sequence = None
         self.metric_min = {}
         self.metric_max = {}
-        self.last_summary_time = time.monotonic()
+        self.last_summary_time = self.get_clock().now().nanoseconds * 1.0e-9
         self.output = None
         if self.output_path:
             path = Path(self.output_path).expanduser()
@@ -336,7 +335,9 @@ class NativeFactorValidator(Node):
         if self.output is not None:
             self.output.write(json.dumps(result, sort_keys=True) + "\n")
             self.output.flush()
-        now = time.monotonic()
+        now = self.get_clock().now().nanoseconds * 1.0e-9
+        if now < self.last_summary_time:
+            self.last_summary_time = now
         if now - self.last_summary_time >= self.summary_period_s:
             self.last_summary_time = now
             self.get_logger().info(

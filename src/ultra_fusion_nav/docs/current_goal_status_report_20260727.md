@@ -1,7 +1,7 @@
 # Ultra-Fusion 复现目标阶段报告
 
 日期：2026-07-27
-工作区：`/home/zyc/multi-slam-github-staging`
+工作区：`$HOME/multi-slam-github-staging`
 分支：`feature/ultra-fusion-stage3`
 远端已同步提交：`3831ee3 feat: consume native FAST-LIO factors in unified backend`
 

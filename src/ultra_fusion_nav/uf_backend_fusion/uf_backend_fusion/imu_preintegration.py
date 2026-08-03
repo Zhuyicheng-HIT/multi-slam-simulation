@@ -205,7 +205,10 @@ def _sample_at(samples: Sequence[ImuSample], stamp_s: float) -> ImuSample | None
     stamps = [sample.stamp_s for sample in samples]
     index = bisect_left(stamps, stamp_s)
     if index < len(samples) and abs(stamps[index] - stamp_s) <= 1.0e-9:
-        return samples[index]
+        sample = samples[index]
+        return ImuSample(
+            float(stamp_s), sample.acceleration, sample.angular_velocity
+        )
     if index == 0 or index >= len(samples):
         return None
     return _interpolate(samples[index - 1], samples[index], stamp_s)

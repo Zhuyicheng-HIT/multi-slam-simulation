@@ -7,7 +7,7 @@ export ENABLE_GAZEBO_FLOW=${ENABLE_GAZEBO_FLOW:-1}
 export ENABLE_FCU_FLOW=0
 export ENABLE_FCU_RANGE=0
 export ENABLE_NONGPS_FLOW=0
-export ENABLE_EXTERNALNAV_EKF3=1
+export ENABLE_EXTERNALNAV_EKF3=${ENABLE_EXTERNALNAV_EKF3:-1}
 export ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=0
 export ENABLE_D435_BRIDGE=${ENABLE_D435_BRIDGE:-0}
 export ENABLE_D435_POINTCLOUD=false
@@ -21,7 +21,11 @@ export MID360_PUBLISH_REGISTERED=${MID360_PUBLISH_REGISTERED:-true}
 export MID360_PUBLISH_TF=${MID360_PUBLISH_TF:-true}
 export SHOW_FLOW_WINDOW=${SHOW_FLOW_WINDOW:-0}
 export FLOW_DEBUG=${FLOW_DEBUG:-false}
-export FLOW_RESTAMP_OUTPUT=true
+export USE_SIM_TIME=true
+# Preserve the Gazebo acquisition timestamp. The ROS /clock bridge supplies the
+# common simulation epoch; callback arrival time must not replace sample time.
+export FLOW_RESTAMP_OUTPUT=false
+export MTF_RESTAMP_OUTPUT=false
 export FLOW_USE_PHYSICS=false
 export FLOW_PUBLISH_ALL_FRAMES=${FLOW_PUBLISH_ALL_FRAMES:-false}
 export FLOW_BRIDGE_HZ=${FLOW_BRIDGE_HZ:-15.0}

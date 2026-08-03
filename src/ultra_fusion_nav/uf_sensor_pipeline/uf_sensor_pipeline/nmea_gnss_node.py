@@ -1,7 +1,6 @@
 """ROS 2 adapter for a direct 115200 8N1 NMEA0183 GNSS receiver."""
 
 import math
-import time
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
@@ -245,7 +244,7 @@ class NmeaGnssNode(Node):
         if fix.status.status == NavSatStatus.STATUS_NO_FIX:
             self.counts["invalid_fix"] += 1
         else:
-            self.last_valid_arrival = time.monotonic()
+            self.last_valid_arrival = self.get_clock().now().nanoseconds * 1.0e-9
 
     @staticmethod
     def _value(key, value):
@@ -255,9 +254,11 @@ class NmeaGnssNode(Node):
         return item
 
     def _diagnostics(self):
+        now_s = self.get_clock().now().nanoseconds * 1.0e-9
         age_s = (
-            math.inf if self.last_valid_arrival is None
-            else time.monotonic() - self.last_valid_arrival
+            math.inf
+            if self.last_valid_arrival is None or self.last_valid_arrival > now_s
+            else now_s - self.last_valid_arrival
         )
         status = DiagnosticStatus()
         status.name = "direct_gnss/nmea0183"

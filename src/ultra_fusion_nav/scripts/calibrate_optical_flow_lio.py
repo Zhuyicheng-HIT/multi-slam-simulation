@@ -13,6 +13,7 @@ from mavros_msgs.msg import OpticalFlowRad
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 
 
@@ -143,9 +144,13 @@ def sample_range(samples):
 
 class FlowLioRecorder(Node):
     def __init__(self):
-        super().__init__("flow_lio_calibration")
+        super().__init__(
+            "flow_lio_calibration",
+            parameter_overrides=[Parameter("use_sim_time", value=True)],
+        )
         self.odom_samples = []
         self.flow_samples = []
+        self.invalid_header_stamp_counts = {"odom": 0, "flow": 0}
         self.last_flow_stamp = None
         self.create_subscription(Odometry, "/lio/odom", self._odom, 50)
         self.create_subscription(
@@ -153,9 +158,13 @@ class FlowLioRecorder(Node):
         )
 
     def _odom(self, msg):
+        stamp = stamp_seconds(msg.header)
+        if stamp <= 0.0:
+            self.invalid_header_stamp_counts["odom"] += 1
+            return
         pose = msg.pose.pose
         self.odom_samples.append((
-            stamp_seconds(msg.header),
+            stamp,
             float(pose.position.x),
             float(pose.position.y),
             yaw_from_quaternion(pose.orientation),
@@ -163,6 +172,9 @@ class FlowLioRecorder(Node):
 
     def _flow(self, msg):
         stamp = stamp_seconds(msg.header)
+        if stamp <= 0.0:
+            self.invalid_header_stamp_counts["flow"] += 1
+            return
         output_interval = 0.0 if self.last_flow_stamp is None else stamp - self.last_flow_stamp
         self.last_flow_stamp = stamp
         self.flow_samples.append((
@@ -179,6 +191,43 @@ class FlowLioRecorder(Node):
         ))
 
 
+def record_for_ros_duration(node, duration_s, wall_timeout_s):
+    wall_started = time.monotonic()
+    last_progress_wall = wall_started
+    ros_started_ns = None
+    last_ros_ns = None
+    elapsed_ros_s = 0.0
+    elapsed_wall_s = 0.0
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.2)
+            now_ros_ns = node.get_clock().now().nanoseconds
+            now_wall = time.monotonic()
+            if now_ros_ns > 0 and ros_started_ns is None:
+                ros_started_ns = now_ros_ns
+            if last_ros_ns is not None and now_ros_ns < last_ros_ns:
+                raise RuntimeError("ROS clock moved backwards during optical-flow calibration")
+            if last_ros_ns is None or now_ros_ns > last_ros_ns:
+                last_progress_wall = now_wall
+            last_ros_ns = now_ros_ns
+            elapsed_ros_s = (
+                (now_ros_ns - ros_started_ns) * 1.0e-9
+                if ros_started_ns is not None else 0.0
+            )
+            elapsed_wall_s = now_wall - wall_started
+            if elapsed_ros_s >= duration_s:
+                return elapsed_ros_s, elapsed_wall_s
+            stalled_wall_s = now_wall - last_progress_wall
+            if stalled_wall_s >= wall_timeout_s:
+                raise RuntimeError(
+                    f"ROS clock stalled for {stalled_wall_s:.1f}s "
+                    f"after advancing {elapsed_ros_s:.1f}s"
+                )
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    return elapsed_ros_s, time.monotonic() - wall_started
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=float, default=125.0)
@@ -188,17 +237,24 @@ def main():
     parser.add_argument("--min-distance", type=float, default=0.6)
     parser.add_argument("--max-distance", type=float, default=12.0)
     parser.add_argument("--max-yaw-rate", type=float, default=0.10)
+    parser.add_argument(
+        "--wall-timeout",
+        type=float,
+        default=0.0,
+        help="wall seconds without ROS-clock progress; 0 selects a conservative limit",
+    )
     parser.add_argument("--require-pass", action="store_true")
     args = parser.parse_args()
 
     rclpy.init()
     node = FlowLioRecorder()
-    started = time.monotonic()
-    try:
-        while rclpy.ok() and time.monotonic() - started < args.duration:
-            rclpy.spin_once(node, timeout_sec=0.2)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
+    wall_timeout_s = (
+        args.wall_timeout if args.wall_timeout > 0.0
+        else max(args.duration * 10.0, args.duration + 60.0)
+    )
+    duration_ros_s, duration_wall_s = record_for_ros_duration(
+        node, args.duration, wall_timeout_s
+    )
 
     filtered_flows = [
         sample for sample in node.flow_samples
@@ -211,7 +267,11 @@ def main():
     best = candidates[0] if candidates else None
     timing_ratios = [row["output_to_integration_ratio"] for row in pairs]
     timing_ratio_median = float(np.median(timing_ratios)) if timing_ratios else float("nan")
-    timing_consistent = bool(timing_ratios and math.isfinite(timing_ratio_median))
+    timing_consistent = bool(
+        timing_ratios
+        and math.isfinite(timing_ratio_median)
+        and 0.75 <= timing_ratio_median <= 1.25
+    )
     passed = bool(
         best and len(pairs) >= 80
         and best["correlation_flat"] >= 0.50
@@ -219,17 +279,27 @@ def main():
         and 0.70 <= best["scale"] <= 1.30
     )
     result = {
-        "duration_s": args.duration,
+        "duration_s": duration_ros_s,
+        "duration_ros_s": duration_ros_s,
+        "duration_wall_s": duration_wall_s,
+        "requested_duration_ros_s": args.duration,
+        "wall_timeout_s": wall_timeout_s,
+        "wall_stall_timeout_s": wall_timeout_s,
+        "invalid_header_stamp_counts": dict(node.invalid_header_stamp_counts),
         "odom_samples": len(node.odom_samples),
         "flow_samples": len(node.flow_samples),
         "filtered_flow_samples": len(filtered_flows),
         "max_yaw_rate_rad_s": args.max_yaw_rate,
         "matched_pairs": len(pairs),
         "timing": {
-            "clock_model": "gazebo_integration_with_ros_wall_output_stamp",
+            "clock_model": "ros_source_header_stamp",
+            "association_basis": "source_header_stamp",
             "output_to_integration_ratio_median": timing_ratio_median,
             "consistent": timing_consistent,
-            "note": "Ratio follows Gazebo real-time factor and is diagnostic, not an acceptance gate.",
+            "note": (
+                "Output intervals and integration intervals are both measured in "
+                "the ROS/source time domain; wall arrival timing is excluded."
+            ),
         },
         "stamp_ranges": {
             "odom": sample_range(node.odom_samples),

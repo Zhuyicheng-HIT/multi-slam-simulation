@@ -97,6 +97,7 @@ class LioSchedulerPipelineTest(unittest.TestCase):
     def drive(self, msg, duration_s=0.35):
         deadline = time.monotonic() + duration_s
         while time.monotonic() < deadline:
+            msg.header.stamp = self.harness.get_clock().now().to_msg()
             self.harness.lio_pub.publish(msg)
             self.executor.spin_once(timeout_sec=0.02)
         for _ in range(8):

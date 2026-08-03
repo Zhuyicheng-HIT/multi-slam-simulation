@@ -8,8 +8,17 @@ def extract_main() -> int:
     parser = argparse.ArgumentParser(description="Extract Ultra-Fusion factors from a ROS 2 bag")
     parser.add_argument("--bag", required=True, help="rosbag2 directory")
     parser.add_argument("--output", required=True, help="factor JSON path")
+    parser.add_argument(
+        "--legacy-flow-clock-align",
+        action="store_true",
+        help="opt in to legacy epoch shifting; results are not timing-valid",
+    )
     args = parser.parse_args()
-    result = extract_factors(args.bag, args.output)
+    result = extract_factors(
+        args.bag,
+        args.output,
+        allow_legacy_flow_clock_align=args.legacy_flow_clock_align,
+    )
     print(f"frames={result['frame_count']} output={args.output}")
     print(f"streams={result['streams']}")
     print(f"imu_preintegration={result['imu_preintegration_summary']}")

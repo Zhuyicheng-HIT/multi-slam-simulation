@@ -1,12 +1,10 @@
-import time
-
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool
-from uf_interfaces.msg import ReliabilityScore, SchedulerState
+from uf_interfaces.msg import ReliabilityScore, RelocalizationResult, SchedulerState
 
 from .scheduler_core import (
     CAPABILITIES,
@@ -14,6 +12,10 @@ from .scheduler_core import (
     ReliabilitySchedulerCore,
     SchedulerConfig,
 )
+
+
+def stamp_seconds(stamp):
+    return float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
 
 
 class ReliabilityScheduler(Node):
@@ -33,6 +35,7 @@ class ReliabilityScheduler(Node):
         self.declare_parameter("factor_enable_threshold", 0.55)
         self.declare_parameter("minimum_weight", 0.05)
         self.declare_parameter("maximum_covariance_inflation", 20.0)
+        self.declare_parameter("imu_soft_max_degradation", 0.80)
         self.declare_parameter("transition_dwell_s", 0.5)
         self.declare_parameter("recovery_dwell_s", 1.5)
         self.declare_parameter("recovered_hold_s", 1.0)
@@ -58,6 +61,9 @@ class ReliabilityScheduler(Node):
             factor_enable_threshold=float(self.get_parameter("factor_enable_threshold").value),
             minimum_weight=float(self.get_parameter("minimum_weight").value),
             maximum_covariance_inflation=float(self.get_parameter("maximum_covariance_inflation").value),
+            imu_soft_max_degradation=float(
+                self.get_parameter("imu_soft_max_degradation").value
+            ),
             transition_dwell_s=float(self.get_parameter("transition_dwell_s").value),
             recovery_dwell_s=float(self.get_parameter("recovery_dwell_s").value),
             recovered_hold_s=float(self.get_parameter("recovered_hold_s").value),
@@ -66,7 +72,9 @@ class ReliabilityScheduler(Node):
             ),
         ))
         self.scores = {}
+        self._last_clock_s = None
         self.relocalization_requested = False
+        self.relocalization_failed = False
         self.state_pub = self.create_publisher(
             SchedulerState, "/reliability/scheduler_state", 20)
         self.diagnostic_pub = self.create_publisher(
@@ -80,6 +88,9 @@ class ReliabilityScheduler(Node):
             )
         self.create_subscription(
             Bool, "/relocalization/request", self._relocalization, 10)
+        self.create_subscription(
+            RelocalizationResult, "/relocalization/result",
+            self._relocalization_result, 10)
         rate = max(1.0, float(self.get_parameter("publish_rate_hz").value))
         self.create_timer(1.0 / rate, self._publish)
         self.get_logger().info(
@@ -90,6 +101,14 @@ class ReliabilityScheduler(Node):
             f"{self.core.config.minimum_usable_modalities}")
 
     def _score(self, modality, msg):
+        now_s = self._now_s()
+        self._observe_ros_clock(now_s)
+        source_s = stamp_seconds(msg.header.stamp)
+        if source_s <= 0.0:
+            return
+        previous = self.scores.get(modality)
+        if previous is not None and source_s <= previous["arrival_s"]:
+            return
         evidence = {
             name: float(value)
             for name, value in zip(msg.evidence_names, msg.evidence_values)
@@ -103,11 +122,29 @@ class ReliabilityScheduler(Node):
             "observation_count": int(msg.observation_count),
             "minimum_observation_count": int(msg.minimum_observation_count),
             "reasons": tuple(msg.reasons),
-            "arrival_s": time.monotonic(),
+            "arrival_s": source_s,
         }
+
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1.0e-9
+
+    def _observe_ros_clock(self, now_s):
+        if self._last_clock_s is not None and now_s < self._last_clock_s:
+            self.scores.clear()
+        self._last_clock_s = now_s
 
     def _relocalization(self, msg):
         self.relocalization_requested = bool(msg.data)
+        if msg.data:
+            self.relocalization_failed = False
+
+    def _relocalization_result(self, msg):
+        if int(msg.state) == int(RelocalizationResult.SUCCESS) and msg.accepted:
+            self.relocalization_requested = False
+            self.relocalization_failed = False
+        elif int(msg.state) == int(RelocalizationResult.FAILED):
+            self.relocalization_requested = False
+            self.relocalization_failed = True
 
     @staticmethod
     def _key(key, value):
@@ -117,8 +154,11 @@ class ReliabilityScheduler(Node):
         return item
 
     def _publish(self):
+        now_s = self._now_s()
+        self._observe_ros_clock(now_s)
         result = self.core.update(
-            self.scores, time.monotonic(), self.relocalization_requested)
+            self.scores, now_s, self.relocalization_requested,
+            self.relocalization_failed)
         stamp = self.get_clock().now().to_msg()
         msg = SchedulerState()
         msg.header.stamp = stamp

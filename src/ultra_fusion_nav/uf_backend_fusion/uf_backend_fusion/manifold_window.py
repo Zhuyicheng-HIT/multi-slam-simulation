@@ -1,5 +1,7 @@
 """Nonlinear SO(3) fixed-lag backend for the Ultra-Fusion reproduction."""
 
+import copy
+from dataclasses import dataclass
 import math
 import time
 from typing import Mapping, Sequence
@@ -32,6 +34,20 @@ ROTATION = slice(3, 6)
 VELOCITY = slice(6, 9)
 ACCEL_BIAS = slice(9, 12)
 GYRO_BIAS = slice(12, 15)
+
+
+@dataclass
+class ManifoldBackendSnapshot:
+    states: list
+    factors: list
+    last_initial_cost: float
+    last_cost: float
+    last_iterations: int
+    last_solve_ms: float
+    last_rejected_steps: int
+    last_hessian: object
+    last_marginalization_ms: float
+    lm_damping: float
 
 
 def _positive_diagonal(covariance, dimension):
@@ -315,6 +331,7 @@ class ManifoldSlidingWindowBackend:
         lm_damping_down=0.3,
         lm_min_damping=1.0e-12,
         lm_max_damping=1.0e12,
+        marginal_rank_tolerance=1.0e-9,
     ):
         if max_states < 2:
             raise ValueError("manifold window requires at least two states")
@@ -332,6 +349,7 @@ class ManifoldSlidingWindowBackend:
             or not 0.0 < lm_damping_down < 1.0
             or lm_min_damping <= 0.0
             or lm_max_damping < lm_min_damping
+            or marginal_rank_tolerance <= 0.0
         ):
             raise ValueError("invalid robust solver configuration")
         self.max_states = int(max_states)
@@ -344,6 +362,10 @@ class ManifoldSlidingWindowBackend:
         self.lm_damping_down = float(lm_damping_down)
         self.lm_min_damping = float(lm_min_damping)
         self.lm_max_damping = float(lm_max_damping)
+        # This tolerance is used only when forming a marginal prior.  The
+        # Levenberg-Marquardt damping is deliberately excluded from that
+        # prior: damping is a solver device, not an observation.
+        self.marginal_rank_tolerance = float(marginal_rank_tolerance)
         self._lm_damping = min(
             self.lm_max_damping, max(self.lm_min_damping, self.damping)
         )
@@ -352,10 +374,13 @@ class ManifoldSlidingWindowBackend:
             raise ValueError("gravity must be a finite 3-vector")
         self._states = []
         self._factors = []
+        self._last_initial_cost = 0.0
         self._last_cost = 0.0
         self._last_iterations = 0
         self._last_solve_ms = 0.0
         self._last_rejected_steps = 0
+        self._last_hessian = None
+        self._last_marginalization_ms = 0.0
 
     @property
     def state_count(self):
@@ -370,6 +395,57 @@ class ManifoldSlidingWindowBackend:
 
     def states(self):
         return [state.copy() for state in self._states]
+
+    def snapshot(self):
+        """Capture all mutable window state before a transactional update."""
+        return ManifoldBackendSnapshot(
+            states=[state.copy() for state in self._states],
+            factors=copy.deepcopy(self._factors),
+            last_initial_cost=float(self._last_initial_cost),
+            last_cost=float(self._last_cost),
+            last_iterations=int(self._last_iterations),
+            last_solve_ms=float(self._last_solve_ms),
+            last_rejected_steps=int(self._last_rejected_steps),
+            last_hessian=(
+                None if self._last_hessian is None else self._last_hessian.copy()
+            ),
+            last_marginalization_ms=float(self._last_marginalization_ms),
+            lm_damping=float(self._lm_damping),
+        )
+
+    def restore(self, snapshot):
+        """Restore a snapshot after an invalid solve or failed publication."""
+        if not isinstance(snapshot, ManifoldBackendSnapshot):
+            raise TypeError("snapshot has the wrong backend type")
+        self._states = [state.copy() for state in snapshot.states]
+        self._factors = copy.deepcopy(snapshot.factors)
+        self._last_initial_cost = float(snapshot.last_initial_cost)
+        self._last_cost = float(snapshot.last_cost)
+        self._last_iterations = int(snapshot.last_iterations)
+        self._last_solve_ms = float(snapshot.last_solve_ms)
+        self._last_rejected_steps = int(snapshot.last_rejected_steps)
+        self._last_hessian = (
+            None if snapshot.last_hessian is None else snapshot.last_hessian.copy()
+        )
+        self._last_marginalization_ms = float(
+            snapshot.last_marginalization_ms
+        )
+        self._lm_damping = float(snapshot.lm_damping)
+
+    def latest_state_information(self):
+        """Return the undamped information block for the newest state."""
+        if not self._states:
+            raise IndexError("cannot inspect an empty window")
+        hessian = self._last_hessian
+        expected = len(self._states) * STATE_SIZE
+        if hessian is None or hessian.shape != (expected, expected):
+            hessian, _, _ = self._normal()
+        block = np.asarray(hessian[-STATE_SIZE:, -STATE_SIZE:], dtype=float)
+        return 0.5 * (block + block.T)
+
+    @property
+    def last_initial_cost(self):
+        return self._last_initial_cost
 
     @property
     def last_cost(self):
@@ -391,6 +467,47 @@ class ManifoldSlidingWindowBackend:
     def last_damping(self):
         return self._lm_damping
 
+    @property
+    def last_marginalization_ms(self):
+        return self._last_marginalization_ms
+
+    def marginal_covariance(self, index=-1, unobservable_variance=1.0e6):
+        """Return one state's covariance from the undamped window Hessian.
+
+        Solver damping is deliberately excluded because it is not sensor
+        information. Rank-deficient directions receive a large finite
+        variance so downstream consumers do not mistake a nullspace for high
+        confidence.
+        """
+        if not self._states:
+            raise IndexError("cannot compute covariance for an empty window")
+        index = int(index)
+        if index < 0:
+            index += len(self._states)
+        if index < 0 or index >= len(self._states):
+            raise IndexError("covariance state is outside the active window")
+        if (
+            not math.isfinite(unobservable_variance)
+            or unobservable_variance <= 0.0
+        ):
+            raise ValueError("unobservable variance must be finite and positive")
+
+        hessian = self._last_hessian
+        if hessian is None or hessian.shape[0] != len(self._states) * STATE_SIZE:
+            hessian, _, _ = self._normal()
+        hessian = 0.5 * (hessian + hessian.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(hessian)
+        scale = max(1.0, float(np.max(np.abs(eigenvalues))))
+        active = eigenvalues > self.marginal_rank_tolerance * scale
+        inverse_eigenvalues = np.full(
+            eigenvalues.shape, float(unobservable_variance), dtype=float
+        )
+        inverse_eigenvalues[active] = 1.0 / eigenvalues[active]
+        covariance = (eigenvectors * inverse_eigenvalues) @ eigenvectors.T
+        start = index * STATE_SIZE
+        block = covariance[start:start + STATE_SIZE, start:start + STATE_SIZE]
+        return 0.5 * (block + block.T)
+
     def add_state(self, initial=None):
         state = np.zeros(STATE_SIZE, dtype=float)
         if initial is not None:
@@ -398,8 +515,30 @@ class ManifoldSlidingWindowBackend:
         if np.any(~np.isfinite(state)):
             raise ValueError("manifold state must be finite")
         self._states.append(state)
+        self._last_hessian = None
         self._marginalize_if_needed()
         return len(self._states) - 1
+
+    def reset(self, initial, covariance=1.0):
+        """Start a new fixed-lag epoch after an accepted global relocalization."""
+        state = np.asarray(initial, dtype=float)
+        if state.shape != (STATE_SIZE,) or np.any(~np.isfinite(state)):
+            raise ValueError("reset state must be a finite 15-vector")
+        self._states = []
+        self._factors = []
+        self._last_initial_cost = 0.0
+        self._last_cost = 0.0
+        self._last_iterations = 0
+        self._last_solve_ms = 0.0
+        self._last_rejected_steps = 0
+        self._last_hessian = None
+        self._last_marginalization_ms = 0.0
+        self._lm_damping = min(
+            self.lm_max_damping, max(self.lm_min_damping, self.damping)
+        )
+        index = self.add_state(state)
+        self.add_prior(index, state, covariance=covariance)
+        return index
 
     def _append(self, name, indices, residual_dimension, decision, **values):
         for index in indices:
@@ -416,6 +555,7 @@ class ManifoldSlidingWindowBackend:
             "effective_weight": reliability_weight / inflation,
             **values,
         })
+        self._last_hessian = None
 
     def add_prior(self, index, state, covariance=1.0):
         state = np.asarray(state, dtype=float)
@@ -437,6 +577,22 @@ class ManifoldSlidingWindowBackend:
             covariance=covariance,
             information_matrix=_covariance_information(covariance),
         )
+
+    def replace_imu_preintegrated(self, previous, current, measurement):
+        """Replace the active interval's preintegration after a bias update."""
+        if not isinstance(measurement, ManifoldPreintegratedImu) or not measurement.valid:
+            raise ValueError("IMU factor requires valid manifold preintegration")
+        covariance = _positive_covariance(measurement.covariance, 15)
+        for factor in reversed(self._factors):
+            if (
+                factor["name"] == "imu_preintegrated"
+                and factor["indices"] == (int(previous), int(current))
+            ):
+                factor["measurement"] = measurement
+                factor["covariance"] = covariance
+                factor["information_matrix"] = _covariance_information(covariance)
+                return True
+        return False
 
     def add_native_lidar_correspondences(self, index, factor, decision=None):
         if not isinstance(factor, NativeLidarPoseNormal):
@@ -542,8 +698,33 @@ class ManifoldSlidingWindowBackend:
                 np.arange(index * STATE_SIZE, (index + 1) * STATE_SIZE)
                 for index in factor["indices"]
             ])
-            hessian[np.ix_(indices, indices)] += local_hessian
-            gradient[indices] += local_gradient
+            # The stored prior is expressed in the tangent space at its
+            # references.  Re-linearize the SO(3) local coordinates before
+            # applying it at the current state; treating this Jacobian as an
+            # identity causes yaw/roll information to become inconsistent as
+            # the fixed-lag window moves.
+            local_jacobians = []
+            for reference, index in zip(factor["references"], factor["indices"]):
+                local_jacobian = np.eye(STATE_SIZE)
+                local_rotation = local[3:6]
+                # `local` is concatenated in state order, so use the state's
+                # own three-vector rather than the first state's rotation.
+                state_local_rotation = state_local(reference, states[index])[3:6]
+                local_jacobian[3:6, 3:6] = so3_right_jacobian_inverse(
+                    state_local_rotation
+                )
+                local_jacobians.append(local_jacobian)
+            prior_jacobian = np.zeros_like(local_hessian)
+            for block, local_jacobian in enumerate(local_jacobians):
+                start = block * STATE_SIZE
+                prior_jacobian[
+                    start:start + STATE_SIZE,
+                    start:start + STATE_SIZE,
+                ] = local_jacobian
+            hessian[np.ix_(indices, indices)] += (
+                prior_jacobian.T @ local_hessian @ prior_jacobian
+            )
+            gradient[indices] += prior_jacobian.T @ local_gradient
             cost = float(
                 0.5 * local @ local_hessian @ local
                 + factor["normal_gradient"] @ local
@@ -697,6 +878,7 @@ class ManifoldSlidingWindowBackend:
         rejected_steps = 0
         states = self.states()
         hessian, gradient, current_cost = self._normal(states=states)
+        self._last_initial_cost = float(current_cost)
         damping = self._lm_damping
         for _ in range(self.max_iterations):
             if float(np.max(np.abs(gradient))) < 1.0e-10:
@@ -761,6 +943,7 @@ class ManifoldSlidingWindowBackend:
         self._last_iterations = accepted_iterations
         self._last_rejected_steps = rejected_steps
         self._lm_damping = damping
+        self._last_hessian = hessian.copy()
         self._last_solve_ms = (time.perf_counter() - started) * 1000.0
         return self.states()
 
@@ -831,7 +1014,10 @@ class ManifoldSlidingWindowBackend:
         ]
 
     def _marginalize_if_needed(self):
+        started = time.perf_counter()
+        marginalized = False
         while len(self._states) > self.max_states:
+            marginalized = True
             eliminated = [
                 factor for factor in self._factors if 0 in factor["indices"]
             ]
@@ -843,24 +1029,54 @@ class ManifoldSlidingWindowBackend:
                 hessian, gradient, _ = self._normal(eliminated, self._states)
                 first = slice(0, STATE_SIZE)
                 rest = slice(STATE_SIZE, hessian.shape[0])
-                eliminated_hessian = hessian[first, first] + np.eye(STATE_SIZE) * self.damping
+                eliminated_hessian = 0.5 * (
+                    hessian[first, first] + hessian[first, first].T
+                )
                 cross = hessian[first, rest]
-                try:
-                    solved_cross = np.linalg.solve(eliminated_hessian, cross)
-                    solved_gradient = np.linalg.solve(
-                        eliminated_hessian, gradient[first]
+                eigenvalues, eigenvectors = np.linalg.eigh(eliminated_hessian)
+                scale = max(1.0, float(np.max(np.abs(eigenvalues))))
+                active = eigenvalues > self.marginal_rank_tolerance * scale
+                if np.any(active):
+                    inverse = (
+                        eigenvectors[:, active]
+                        @ np.diag(1.0 / eigenvalues[active])
+                        @ eigenvectors[:, active].T
                     )
-                except np.linalg.LinAlgError:
-                    inverse = np.linalg.pinv(eliminated_hessian)
                     solved_cross = inverse @ cross
                     solved_gradient = inverse @ gradient[first]
+                else:
+                    solved_cross = np.zeros_like(cross)
+                    solved_gradient = np.zeros_like(gradient[first])
                 schur_hessian = hessian[rest, rest] - cross.T @ solved_cross
                 schur_gradient = gradient[rest] - cross.T @ solved_gradient
                 schur_hessian = 0.5 * (schur_hessian + schur_hessian.T)
+                # Preserve a bounded, positive-semidefinite prior even when
+                # the eliminated block was rank deficient.  Components of the
+                # linear term in discarded null directions have no finite
+                # quadratic model and must be discarded with those directions.
+                try:
+                    # A globally anchored, observable window is normally SPD.
+                    # Cholesky is substantially cheaper than a full dense
+                    # eigendecomposition and does not alter the prior.
+                    np.linalg.cholesky(schur_hessian)
+                except np.linalg.LinAlgError:
+                    eigenvalues, eigenvectors = np.linalg.eigh(schur_hessian)
+                    scale = max(1.0, float(np.max(np.abs(eigenvalues))))
+                    active = eigenvalues > self.marginal_rank_tolerance * scale
+                    if np.any(active):
+                        basis = eigenvectors[:, active]
+                        schur_hessian = (
+                            basis * eigenvalues[active]
+                        ) @ basis.T
+                        schur_gradient = basis @ (basis.T @ schur_gradient)
+                    else:
+                        schur_hessian = np.zeros_like(schur_hessian)
+                        schur_gradient = np.zeros_like(schur_gradient)
             else:
                 schur_hessian = None
                 schur_gradient = None
             self._states = self._states[1:]
+            self._last_hessian = None
             for factor in retained:
                 factor["indices"] = tuple(index - 1 for index in factor["indices"])
             self._factors = retained
@@ -877,3 +1093,6 @@ class ManifoldSlidingWindowBackend:
                     "normal_gradient": schur_gradient,
                     "references": references,
                 })
+        self._last_marginalization_ms = (
+            (time.perf_counter() - started) * 1000.0 if marginalized else 0.0
+        )

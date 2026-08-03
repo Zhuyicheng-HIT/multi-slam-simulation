@@ -1,7 +1,7 @@
 # Stage 7 Native FAST-LIO Factor Backend Report
 
 Date: 2026-07-26
-Workspace: `/home/zyc/multi-slam-github-staging`
+Workspace: `$HOME/multi-slam-github-staging`
 Branch: `feature/ultra-fusion-stage3`
 
 ## Scope

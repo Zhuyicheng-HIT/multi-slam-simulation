@@ -1,4 +1,3 @@
-import time
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
@@ -52,7 +51,8 @@ class SensorContractMonitor(Node):
         self.declare_parameter("startup_grace_s", 12.0)
         self.declare_parameter("stale_after_s", 3.0)
 
-        self.started = time.monotonic()
+        self.started = None
+        self.last_ros_s = None
         self.stale_after = float(self.get_parameter("stale_after_s").value)
         self.streams = {}
         active_modalities = normalize_modalities(
@@ -87,9 +87,33 @@ class SensorContractMonitor(Node):
         )
         self.create_timer(2.0, self._publish)
 
+    def _reset_clock_window(self, now):
+        self.started = now
+        for stream in self.streams.values():
+            stream["last_arrival"] = 0.0
+            stream["first_arrival"] = 0.0
+            stream["count"] = 0
+            stream["last_stamp"] = 0
+            stream["regressions"] = 0
+            stream["duplicates"] = 0
+            stream["empty_frames"] = 0
+            stream["zero_stamps"] = 0
+
+    def _observe_ros_time(self, now):
+        if now <= 0.0:
+            return False
+        if self.last_ros_s is not None and now < self.last_ros_s:
+            self._reset_clock_window(now)
+        if self.started is None:
+            self.started = now
+        self.last_ros_s = now
+        return True
+
     def _record(self, modality, msg):
         stream = self.streams[modality]
-        now = time.monotonic()
+        now = self.get_clock().now().nanoseconds * 1.0e-9
+        if not self._observe_ros_time(now):
+            return
         stamp = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
         if stamp == 0:
             stream["zero_stamps"] += 1
@@ -131,7 +155,11 @@ class SensorContractMonitor(Node):
             problems.append("zero_stamp")
         if stream["empty_frames"]:
             problems.append("empty_frame")
-        grace = now - self.started < float(self.get_parameter("startup_grace_s").value)
+        grace = (
+            self.started is None
+            or now - self.started
+            < float(self.get_parameter("startup_grace_s").value)
+        )
         status.level = DiagnosticStatus.OK
         if problems:
             status.level = DiagnosticStatus.WARN if grace or problems == ["low_rate"] else DiagnosticStatus.ERROR
@@ -148,7 +176,9 @@ class SensorContractMonitor(Node):
         return status
 
     def _publish(self):
-        now = time.monotonic()
+        now = self.get_clock().now().nanoseconds * 1.0e-9
+        if not self._observe_ros_time(now):
+            return
         output = DiagnosticArray()
         output.header.stamp = self.get_clock().now().to_msg()
         output.status = [self._status(name, stream, now) for name, stream in self.streams.items()]

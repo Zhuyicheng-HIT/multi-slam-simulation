@@ -31,6 +31,7 @@ class SchedulerConfig:
     factor_enable_threshold: float = 0.55
     minimum_weight: float = 0.05
     maximum_covariance_inflation: float = 20.0
+    imu_soft_max_degradation: float = 0.80
     transition_dwell_s: float = 0.5
     recovery_dwell_s: float = 1.5
     recovered_hold_s: float = 1.0
@@ -75,6 +76,10 @@ class ReliabilitySchedulerCore:
             raise ValueError(
                 "minimum usable modalities must be within active modalities"
             )
+        if not 0.0 <= self.config.imu_soft_max_degradation < self.config.failsafe_threshold:
+            raise ValueError(
+                "IMU soft maximum degradation must be below the failsafe threshold"
+            )
         self.required_modalities = tuple(
             name
             for name in self.config.required_modalities
@@ -88,6 +93,16 @@ class ReliabilitySchedulerCore:
         self.recovered_since = None
         self.has_valid_state = False
         self.factor_enabled = {name: False for name in MODALITIES}
+        self.last_update_s = None
+
+    def _handle_clock_rewind(self, now):
+        if self.last_update_s is not None and now < self.last_update_s:
+            self.state_since = now
+            self.candidate_state = None
+            self.candidate_since = None
+            self.healthy_since = None
+            self.recovered_since = None
+        self.last_update_s = now
 
     def _target_state(
         self,
@@ -97,7 +112,10 @@ class ReliabilitySchedulerCore:
         required_usable,
         degraded_or_missing,
         relocalization_requested,
+        relocalization_failed,
     ):
+        if relocalization_failed:
+            return "FAILSAFE"
         if relocalization_requested:
             return "RELOCALIZING"
         if (
@@ -158,14 +176,19 @@ class ReliabilitySchedulerCore:
         self.candidate_since = None
         self.recovered_since = now if target == "RECOVERED" else None
 
-    def update(self, scores, now_s, relocalization_requested=False):
+    def update(
+        self, scores, now_s, relocalization_requested=False,
+        relocalization_failed=False,
+    ):
         now = float(now_s)
+        self._handle_clock_rewind(now)
         degradation = {}
         weights = {}
         inflation = {}
         reasons = {}
         valid_count = 0
         valid_active_scores = {}
+        operational_scores_by_modality = {}
         for name in MODALITIES:
             if name not in self.active_modalities:
                 self.factor_enabled[name] = False
@@ -184,7 +207,10 @@ class ReliabilitySchedulerCore:
                 value = clamp(sample.get("degradation_score", 1.0))
                 valid = bool(sample.get("valid", False))
                 hard_gate_allowed = bool(sample.get("hard_gate_allowed", True))
-                sample_age = max(0.0, now - float(sample.get("arrival_s", now)))
+                arrival_s = float(sample.get("arrival_s", now))
+                sample_age = (
+                    float("inf") if arrival_s > now else now - arrival_s
+                )
                 sample_reasons = list(sample.get("reasons", ()))
                 observation_count = max(0, int(sample.get("observation_count", 1)))
                 minimum_observation_count = max(
@@ -203,13 +229,41 @@ class ReliabilitySchedulerCore:
                 valid = False
                 sample_reasons.append("insufficient_observations_eq15")
             degradation[name] = value
-            weight = 1.0 - value if valid else 0.0
+            # IMU is the propagation backbone. During a turn its score can
+            # rise because excitation/residual terms are temporarily poor,
+            # but that is a soft quality loss, not a reason to remove the
+            # only state-propagation factor. Keep a bounded floor for this
+            # case and reserve binary disabling for stale/invalid evidence or
+            # an explicit hard gate.
+            operational_value = value
+            imu_hard_failure = (
+                name == "imu" and "saturation_eq21" in sample_reasons
+            )
+            imu_soft_degradation = (
+                name == "imu" and valid and hard_gate_allowed
+                and not imu_hard_failure
+            )
+            if imu_soft_degradation:
+                operational_value = min(
+                    value, self.config.imu_soft_max_degradation)
+                if value >= self.config.factor_disable_threshold:
+                    sample_reasons.append("imu_propagation_soft_degradation")
+            elif imu_hard_failure:
+                operational_value = 1.0
+            operational_scores_by_modality[name] = operational_value
+            weight = 1.0 - operational_value if valid else 0.0
             weights[name] = clamp(weight)
             if name in self.active_modalities:
                 if valid:
                     valid_count += 1
                     valid_active_scores[name] = value
-            if self.factor_enabled[name]:
+            if imu_hard_failure:
+                self.factor_enabled[name] = False
+            elif name == "imu" and valid and hard_gate_allowed:
+                # Keep valid IMU propagation enabled through high dynamics;
+                # covariance inflation above carries the reliability penalty.
+                self.factor_enabled[name] = True
+            elif self.factor_enabled[name]:
                 if stale or not valid:
                     self.factor_enabled[name] = False
                 elif value >= self.config.factor_disable_threshold:
@@ -229,10 +283,10 @@ class ReliabilitySchedulerCore:
             )
             reasons[name] = tuple(sample_reasons)
         usable_active_scores = {
-            name: value
+            name: operational_scores_by_modality[name]
             for name, value in valid_active_scores.items()
             if self.factor_enabled[name]
-            and value < self.config.failsafe_threshold
+            and operational_scores_by_modality[name] < self.config.failsafe_threshold
         }
         usable_count = len(usable_active_scores)
         required_usable = all(
@@ -299,6 +353,7 @@ class ReliabilitySchedulerCore:
                 required_usable,
                 degraded_or_missing,
                 bool(relocalization_requested),
+                bool(relocalization_failed),
             )
         )
         if valid_count > 0:

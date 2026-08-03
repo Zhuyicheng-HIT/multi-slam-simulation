@@ -1,24 +1,96 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index be3040b..f4cee09 100644
+index be3040b..82a984f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -87,0 +88 @@ set(msg_files
+@@ -87,0 +88,2 @@ set(msg_files
 +  "msg/NativeLidarFactor.msg"
-@@ -91,0 +93 @@ rosidl_generate_interfaces(${PROJECT_NAME}
++  "msg/BackendStateSeed.msg"
+@@ -91,0 +94 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 +  DEPENDENCIES std_msgs
-@@ -128 +130 @@ install(
+@@ -128 +131 @@ install(
 -ament_package()
 \ No newline at end of file
 +ament_package()
+diff --git a/README.md b/README.md
+index cc29f08..062ecb6 100644
+--- a/README.md
++++ b/README.md
+@@ -117,0 +118,43 @@ ros2 launch fast_lio mapping.launch.py config_file:=avia.yaml
++### 3.1.1 Transitional downstream-backend mode
++
++`mapping.launch.py` can expose FAST-LIO's native point-to-plane correspondence
++packet to a downstream unified backend while suppressing FAST-LIO pose outputs:
++
++```bash
++ros2 launch fast_lio mapping.launch.py \
++  config_file:=mid360.yaml \
++  downstream_backend_enable:=true
++```
++
++When this mode is enabled, native factor export is forced on. `/Odometry`,
++`/path`, and the `camera_init -> body` TF are disabled by default so they are
++not mistaken for the authoritative fused state. They can be enabled separately
++for comparison only:
++
++```bash
++downstream_publish_diagnostic_odometry:=true
++downstream_publish_diagnostic_path:=true
++downstream_publish_diagnostic_tf:=true
++```
++
++This is a compatibility mode, not a complete transfer of estimator or map
++ownership. FAST-LIO still runs its internal ESIKF and updates its ikd-Tree map
++to obtain correspondences. The downstream backend must not treat the optional
++FAST-LIO pose diagnostics as an independent measurement alongside the exported
++LiDAR and IMU factors.
++
++Map insertion ownership can be transferred separately during this transition:
++
++```bash
++ros2 launch fast_lio mapping.launch.py \
++  config_file:=mid360.yaml \
++  downstream_backend_enable:=true \
++  downstream_map_insertion_mode:=backend_confirmed \
++  downstream_backend_state_topic:=/fusion/unified/odom
++```
++
++The first scan still bootstraps the ikd-Tree coordinate frame. Every later
++downsampled, deskewed scan is queued and inserted only after a same-timestamp
++optimized backend pose arrives. This does not yet bypass the iterated ESIKF
++update; it changes map insertion ownership only.
++
 diff --git a/launch/mapping.launch.py b/launch/mapping.launch.py
-index b76313d..2b6e425 100644
+index b76313d..61b2cdf 100644
 --- a/launch/mapping.launch.py
 +++ b/launch/mapping.launch.py
-@@ -23,0 +24,3 @@ def generate_launch_description():
+@@ -23,0 +24,26 @@ def generate_launch_description():
 +    native_factor_export_enable = LaunchConfiguration('native_factor_export_enable')
 +    native_factor_export_topic = LaunchConfiguration('native_factor_export_topic')
 +    native_factor_sensor_frame = LaunchConfiguration('native_factor_sensor_frame')
-@@ -44,0 +48,12 @@ def generate_launch_description():
++    downstream_backend_enable = LaunchConfiguration('downstream_backend_enable')
++    downstream_publish_diagnostic_odometry = LaunchConfiguration(
++        'downstream_publish_diagnostic_odometry')
++    downstream_publish_diagnostic_path = LaunchConfiguration(
++        'downstream_publish_diagnostic_path')
++    downstream_publish_diagnostic_tf = LaunchConfiguration(
++        'downstream_publish_diagnostic_tf')
++    downstream_map_insertion_mode = LaunchConfiguration(
++        'downstream_map_insertion_mode')
++    downstream_backend_state_topic = LaunchConfiguration(
++        'downstream_backend_state_topic')
++    frontend_state_seed_mode = LaunchConfiguration('frontend_state_seed_mode')
++    frontend_state_seed_topic = LaunchConfiguration('frontend_state_seed_topic')
++    frontend_state_seed_tolerance_s = LaunchConfiguration(
++        'frontend_state_seed_tolerance_s')
++    frontend_state_seed_minimum_quality = LaunchConfiguration(
++        'frontend_state_seed_minimum_quality')
++    frontend_state_seed_history_size = LaunchConfiguration(
++        'frontend_state_seed_history_size')
++    frontend_state_seed_max_translation_correction_m = LaunchConfiguration(
++        'frontend_state_seed_max_translation_correction_m')
++    frontend_state_seed_max_rotation_correction_rad = LaunchConfiguration(
++        'frontend_state_seed_max_rotation_correction_rad')
+@@ -44,0 +71,65 @@ def generate_launch_description():
 +    declare_native_factor_export_enable_cmd = DeclareLaunchArgument(
 +        'native_factor_export_enable', default_value='false',
 +        description='Export native point-to-plane factors for a downstream backend'
@@ -31,16 +103,119 @@ index b76313d..2b6e425 100644
 +        'native_factor_sensor_frame', default_value='lidar',
 +        description='Frame of the points stored in the native factor packet'
 +    )
-@@ -50 +65,4 @@ def generate_launch_description():
++    declare_downstream_backend_enable_cmd = DeclareLaunchArgument(
++        'downstream_backend_enable', default_value='false',
++        description='Enable transitional native-factor export mode for a downstream unified backend'
++    )
++    declare_downstream_publish_diagnostic_odometry_cmd = DeclareLaunchArgument(
++        'downstream_publish_diagnostic_odometry', default_value='false',
++        description='Publish FAST-LIO /Odometry as a non-authoritative diagnostic in downstream mode'
++    )
++    declare_downstream_publish_diagnostic_path_cmd = DeclareLaunchArgument(
++        'downstream_publish_diagnostic_path', default_value='false',
++        description='Publish FAST-LIO /path as a non-authoritative diagnostic in downstream mode'
++    )
++    declare_downstream_publish_diagnostic_tf_cmd = DeclareLaunchArgument(
++        'downstream_publish_diagnostic_tf', default_value='false',
++        description='Publish FAST-LIO camera_init-to-body TF as a non-authoritative diagnostic in downstream mode'
++    )
++    declare_downstream_map_insertion_mode_cmd = DeclareLaunchArgument(
++        'downstream_map_insertion_mode', default_value='fast_lio_posterior',
++        description='Map insertion owner: fast_lio_posterior or backend_confirmed'
++    )
++    declare_downstream_backend_state_topic_cmd = DeclareLaunchArgument(
++        'downstream_backend_state_topic', default_value='/fusion/unified/odom',
++        description='Optimized backend state for backend-confirmed map insertion'
++    )
++    declare_frontend_state_seed_mode_cmd = DeclareLaunchArgument(
++        'frontend_state_seed_mode', default_value='disabled',
++        description='Backend state feedback mode: disabled, shadow, or backend_seeded'
++    )
++    declare_frontend_state_seed_topic_cmd = DeclareLaunchArgument(
++        'frontend_state_seed_topic',
++        default_value='/fusion/unified/frontend_state_seed',
++        description='Timestamped unified-backend state seed topic'
++    )
++    declare_frontend_state_seed_tolerance_cmd = DeclareLaunchArgument(
++        'frontend_state_seed_tolerance_s', default_value='0.015',
++        description='Maximum timestamp mismatch for backend/frontend state matching'
++    )
++    declare_frontend_state_seed_minimum_quality_cmd = DeclareLaunchArgument(
++        'frontend_state_seed_minimum_quality', default_value='20',
++        description='Minimum backend integrity quality for state feedback'
++    )
++    declare_frontend_state_seed_history_size_cmd = DeclareLaunchArgument(
++        'frontend_state_seed_history_size', default_value='64',
++        description='Frontend state history used for timestamp matching'
++    )
++    declare_frontend_state_seed_max_translation_cmd = DeclareLaunchArgument(
++        'frontend_state_seed_max_translation_correction_m', default_value='1.0',
++        description='Maximum backend/frontend translation correction accepted per seed'
++    )
++    declare_frontend_state_seed_max_rotation_cmd = DeclareLaunchArgument(
++        'frontend_state_seed_max_rotation_correction_rad', default_value='0.50',
++        description='Maximum backend/frontend rotation correction accepted per seed'
++    )
+@@ -50 +141,17 @@ def generate_launch_description():
 -                    {'use_sim_time': use_sim_time}],
 +                    {'use_sim_time': use_sim_time,
 +                     'native_factor_export.enable': native_factor_export_enable,
 +                     'native_factor_export.topic': native_factor_export_topic,
-+                     'native_factor_export.sensor_frame': native_factor_sensor_frame}],
-@@ -65,0 +84,3 @@ def generate_launch_description():
++                     'native_factor_export.sensor_frame': native_factor_sensor_frame,
++                     'downstream_backend.enable': downstream_backend_enable,
++                     'downstream_backend.publish_diagnostic_odometry': downstream_publish_diagnostic_odometry,
++                     'downstream_backend.publish_diagnostic_path': downstream_publish_diagnostic_path,
++                     'downstream_backend.publish_diagnostic_tf': downstream_publish_diagnostic_tf,
++                     'downstream_backend.map_insertion_mode': downstream_map_insertion_mode,
++                     'downstream_backend.state_topic': downstream_backend_state_topic,
++                     'frontend_state_seed.mode': frontend_state_seed_mode,
++                     'frontend_state_seed.topic': frontend_state_seed_topic,
++                     'frontend_state_seed.tolerance_s': frontend_state_seed_tolerance_s,
++                     'frontend_state_seed.minimum_quality': frontend_state_seed_minimum_quality,
++                     'frontend_state_seed.history_size': frontend_state_seed_history_size,
++                     'frontend_state_seed.max_translation_correction_m': frontend_state_seed_max_translation_correction_m,
++                     'frontend_state_seed.max_rotation_correction_rad': frontend_state_seed_max_rotation_correction_rad}],
+@@ -65,0 +173,16 @@ def generate_launch_description():
 +    ld.add_action(declare_native_factor_export_enable_cmd)
 +    ld.add_action(declare_native_factor_export_topic_cmd)
 +    ld.add_action(declare_native_factor_sensor_frame_cmd)
++    ld.add_action(declare_downstream_backend_enable_cmd)
++    ld.add_action(declare_downstream_publish_diagnostic_odometry_cmd)
++    ld.add_action(declare_downstream_publish_diagnostic_path_cmd)
++    ld.add_action(declare_downstream_publish_diagnostic_tf_cmd)
++    ld.add_action(declare_downstream_map_insertion_mode_cmd)
++    ld.add_action(declare_downstream_backend_state_topic_cmd)
++    ld.add_action(declare_frontend_state_seed_mode_cmd)
++    ld.add_action(declare_frontend_state_seed_topic_cmd)
++    ld.add_action(declare_frontend_state_seed_tolerance_cmd)
++    ld.add_action(declare_frontend_state_seed_minimum_quality_cmd)
++    ld.add_action(declare_frontend_state_seed_history_size_cmd)
++    ld.add_action(declare_frontend_state_seed_max_translation_cmd)
++    ld.add_action(declare_frontend_state_seed_max_rotation_cmd)
+diff --git a/msg/BackendStateSeed.msg b/msg/BackendStateSeed.msg
+new file mode 100644
+index 0000000..e41f396
+--- /dev/null
++++ b/msg/BackendStateSeed.msg
+@@ -0,0 +1,18 @@
++std_msgs/Header header
++
++# One backend-approved navigation state. The timestamp is the LiDAR keyframe
++# time in the shared ROS/source clock domain.
++string map_frame
++string body_frame
++uint64 sequence
++uint32 reset_counter
++uint8 quality
++bool valid
++
++# Unified backend state order: p, R(local tangent), v, b_a, b_g.
++float64[3] position
++float64[4] orientation_xyzw
++float64[3] velocity_map
++float64[3] accel_bias
++float64[3] gyro_bias
++float64[225] covariance
 diff --git a/msg/NativeLidarFactor.msg b/msg/NativeLidarFactor.msg
 new file mode 100755
 index 0000000..e10cc3b
@@ -88,21 +263,278 @@ index 0000000..e10cc3b
 +bool approximate
 +bool correspondences_valid
 diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
-index e5d9950..5d3001d 100644
+index e5d9950..901e6f0 100644
 --- a/src/laserMapping.cpp
 +++ b/src/laserMapping.cpp
-@@ -62,0 +63 @@
+@@ -41,0 +42,3 @@
++#include <array>
++#include <algorithm>
++#include <deque>
+@@ -46,0 +50 @@
++#include <Eigen/Eigenvalues>
+@@ -62,0 +67,2 @@
++#include "fast_lio/msg/backend_state_seed.hpp"
 +#include "fast_lio/msg/native_lidar_factor.hpp"
-@@ -100,0 +102,5 @@ bool    is_first_lidar = true;
+@@ -100,0 +107,89 @@ bool    is_first_lidar = true;
 +bool native_factor_export_en = false;
 +bool native_factor_debug_jacobian_en = false;
++bool downstream_backend_en = false;
++bool downstream_publish_diagnostic_odometry = false;
++bool downstream_publish_diagnostic_path = false;
++bool downstream_publish_diagnostic_tf = false;
++bool downstream_backend_confirmed_map = false;
++double downstream_backend_state_tolerance_s = 0.010;
++double downstream_backend_max_map_translation_disagreement_m = 0.50;
++double downstream_backend_max_map_rotation_disagreement_rad = 0.35;
++int downstream_backend_max_pending_map_frames = 16;
 +string native_factor_topic = "/fast_lio/native_lidar_factor";
 +string native_factor_sensor_frame = "lidar";
++string downstream_backend_state_topic = "/fusion/unified/odom";
++string frontend_state_seed_mode = "disabled";
++string frontend_state_seed_topic = "/fusion/unified/frontend_state_seed";
++double frontend_state_seed_tolerance_s = 0.015;
++double frontend_state_seed_max_translation_correction_m = 1.0;
++double frontend_state_seed_max_rotation_correction_rad = 0.50;
++int frontend_state_seed_min_quality = 20;
++int frontend_state_seed_history_size = 64;
 +uint64_t native_factor_sequence = 0;
-@@ -144,0 +151,2 @@ shared_ptr<ImuProcess> p_imu(new ImuProcess());
++
++struct PendingBackendMapFrame
++{
++    double stamp = 0.0;
++    PointCloudXYZI::Ptr points_lidar;
++    std::array<double, 9> lidar_to_body_rotation{};
++    std::array<double, 3> lidar_to_body_translation{};
++    std::array<double, 3> frontend_position{};
++    std::array<double, 4> frontend_quaternion_xyzw{};
++};
++
++struct BackendMapPose
++{
++    double stamp = 0.0;
++    std::array<double, 3> position{};
++    std::array<double, 4> quaternion_xyzw{};
++};
++
++struct FrontendStateRecord
++{
++    double stamp = 0.0;
++    std::array<double, 3> position{};
++    std::array<double, 4> quaternion_xyzw{};
++    std::array<double, 3> velocity{};
++    std::array<double, 3> accel_bias{};
++    std::array<double, 3> gyro_bias{};
++};
++
++struct BackendStateSeedRecord
++{
++    double stamp = 0.0;
++    uint64_t sequence = 0;
++    uint32_t reset_counter = 0;
++    uint8_t quality = 0;
++    std::array<double, 3> position{};
++    std::array<double, 4> quaternion_xyzw{};
++    std::array<double, 3> velocity{};
++    std::array<double, 3> accel_bias{};
++    std::array<double, 3> gyro_bias{};
++    std::array<double, 225> covariance{};
++};
++
++mutex backend_map_mutex;
++deque<PendingBackendMapFrame> pending_backend_map_frames;
++deque<BackendMapPose> pending_backend_map_poses;
++uint64_t backend_map_frames_queued = 0;
++uint64_t backend_map_frames_inserted = 0;
++uint64_t backend_map_frames_dropped = 0;
++uint64_t backend_map_poses_unmatched = 0;
++uint64_t backend_map_frames_rejected = 0;
++mutex frontend_state_seed_mutex;
++deque<FrontendStateRecord> frontend_state_history;
++deque<BackendStateSeedRecord> pending_backend_state_seeds;
++bool frontend_state_seed_sequence_initialized = false;
++uint64_t frontend_state_seed_last_sequence = 0;
++bool frontend_state_seed_reset_initialized = false;
++uint32_t frontend_state_seed_last_reset_counter = 0;
++uint64_t frontend_state_seeds_received = 0;
++uint64_t frontend_state_seeds_matched = 0;
++uint64_t frontend_state_seeds_shadowed = 0;
++uint64_t frontend_state_seeds_applied = 0;
++uint64_t frontend_state_seeds_rejected = 0;
++uint64_t frontend_state_seeds_stale = 0;
++double frontend_state_seed_last_translation_correction_m = 0.0;
++double frontend_state_seed_last_rotation_correction_rad = 0.0;
++double frontend_state_seed_max_observed_translation_correction_m = 0.0;
++double frontend_state_seed_max_observed_rotation_correction_rad = 0.0;
+@@ -144,0 +240,2 @@ shared_ptr<ImuProcess> p_imu(new ImuProcess());
 +rclcpp::Publisher<fast_lio::msg::NativeLidarFactor>::SharedPtr pubNativeLidarFactor;
 +fast_lio::msg::NativeLidarFactor native_factor_msg;
-@@ -676,0 +685,37 @@ void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
+@@ -486,0 +584,145 @@ void map_incremental()
++void queue_backend_map_frame()
++{
++    PendingBackendMapFrame frame;
++    frame.stamp = lidar_end_time;
++    frame.points_lidar.reset(new PointCloudXYZI(*feats_down_body));
++    const M3D rotation = state_point.offset_R_L_I.toRotationMatrix();
++    const V3D translation = state_point.offset_T_L_I;
++    frame.frontend_position = {
++        state_point.pos(0), state_point.pos(1), state_point.pos(2)};
++    frame.frontend_quaternion_xyzw = {
++        state_point.rot.coeffs()[0], state_point.rot.coeffs()[1],
++        state_point.rot.coeffs()[2], state_point.rot.coeffs()[3]};
++    for (int row = 0; row < 3; ++row)
++    {
++        frame.lidar_to_body_translation[row] = translation(row);
++        for (int column = 0; column < 3; ++column)
++            frame.lidar_to_body_rotation[row * 3 + column] = rotation(row, column);
++    }
++    lock_guard<mutex> lock(backend_map_mutex);
++    pending_backend_map_frames.push_back(std::move(frame));
++    ++backend_map_frames_queued;
++    while (static_cast<int>(pending_backend_map_frames.size()) >
++           downstream_backend_max_pending_map_frames)
++    {
++        pending_backend_map_frames.pop_front();
++        ++backend_map_frames_dropped;
++    }
++}
++
++bool insert_backend_confirmed_frame(
++    const PendingBackendMapFrame &frame, const BackendMapPose &pose)
++{
++    Eigen::Quaterniond quaternion(
++        pose.quaternion_xyzw[3], pose.quaternion_xyzw[0],
++        pose.quaternion_xyzw[1], pose.quaternion_xyzw[2]);
++    if (quaternion.norm() <= 1.0e-12)
++        return false;
++    quaternion.normalize();
++    Eigen::Quaterniond frontend_quaternion(
++        frame.frontend_quaternion_xyzw[3], frame.frontend_quaternion_xyzw[0],
++        frame.frontend_quaternion_xyzw[1], frame.frontend_quaternion_xyzw[2]);
++    if (frontend_quaternion.norm() <= 1.0e-12)
++        return false;
++    frontend_quaternion.normalize();
++    const V3D frontend_position(
++        frame.frontend_position[0], frame.frontend_position[1],
++        frame.frontend_position[2]);
++    const V3D backend_position(
++        pose.position[0], pose.position[1], pose.position[2]);
++    const double translation_disagreement =
++        (backend_position - frontend_position).norm();
++    const double quaternion_dot = min(
++        1.0, max(0.0, fabs(quaternion.dot(frontend_quaternion))));
++    const double rotation_disagreement = 2.0 * acos(quaternion_dot);
++    if (translation_disagreement >
++            downstream_backend_max_map_translation_disagreement_m ||
++        rotation_disagreement >
++            downstream_backend_max_map_rotation_disagreement_rad)
++    {
++        ++backend_map_frames_rejected;
++        return false;
++    }
++    const M3D body_rotation = quaternion.toRotationMatrix();
++    const V3D body_position(
++        pose.position[0], pose.position[1], pose.position[2]);
++    M3D lidar_to_body_rotation;
++    V3D lidar_to_body_translation;
++    for (int row = 0; row < 3; ++row)
++    {
++        lidar_to_body_translation(row) = frame.lidar_to_body_translation[row];
++        for (int column = 0; column < 3; ++column)
++            lidar_to_body_rotation(row, column) =
++                frame.lidar_to_body_rotation[row * 3 + column];
++    }
++
++    PointVector points_world;
++    points_world.reserve(frame.points_lidar->size());
++    for (const auto &point_lidar : frame.points_lidar->points)
++    {
++        const V3D lidar_point(point_lidar.x, point_lidar.y, point_lidar.z);
++        const V3D world_point = body_rotation *
++            (lidar_to_body_rotation * lidar_point + lidar_to_body_translation)
++            + body_position;
++        PointType point = point_lidar;
++        point.x = world_point(0);
++        point.y = world_point(1);
++        point.z = world_point(2);
++        points_world.push_back(point);
++    }
++    const double started = omp_get_wtime();
++    add_point_size = ikdtree.Add_Points(points_world, true);
++    kdtree_incremental_time = omp_get_wtime() - started;
++    ++backend_map_frames_inserted;
++    if (backend_map_frames_inserted % 100 == 0)
++    {
++        cout << "Backend-confirmed map insertion: inserted="
++             << backend_map_frames_inserted << " rejected="
++             << backend_map_frames_rejected << " dropped="
++             << backend_map_frames_dropped << endl;
++    }
++    return true;
++}
++
++void apply_backend_confirmed_map_updates()
++{
++    vector<pair<PendingBackendMapFrame, BackendMapPose>> confirmed;
++    {
++        lock_guard<mutex> lock(backend_map_mutex);
++        while (!pending_backend_map_poses.empty())
++        {
++            const BackendMapPose pose = pending_backend_map_poses.front();
++            auto best = pending_backend_map_frames.end();
++            double best_delta = downstream_backend_state_tolerance_s;
++            for (auto it = pending_backend_map_frames.begin();
++                 it != pending_backend_map_frames.end(); ++it)
++            {
++                const double delta = fabs(it->stamp - pose.stamp);
++                if (delta <= best_delta)
++                {
++                    best = it;
++                    best_delta = delta;
++                }
++            }
++            if (best != pending_backend_map_frames.end())
++            {
++                confirmed.emplace_back(std::move(*best), pose);
++                pending_backend_map_frames.erase(best);
++                pending_backend_map_poses.pop_front();
++                continue;
++            }
++            if (!pending_backend_map_frames.empty() &&
++                pending_backend_map_frames.back().stamp >
++                    pose.stamp + downstream_backend_state_tolerance_s)
++            {
++                pending_backend_map_poses.pop_front();
++                ++backend_map_poses_unmatched;
++                continue;
++            }
++            break;
++        }
++    }
++    for (const auto &item : confirmed)
++        insert_backend_confirmed_frame(item.first, item.second);
++}
++
+@@ -628 +870,5 @@ void set_posestamp(T & out)
+-void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped, std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br)
++void publish_odometry(
++    const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped,
++    std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br,
++    bool publish_odom,
++    bool publish_tf)
+@@ -634 +879,0 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
+-    pubOdomAftMapped->publish(odomAftMapped);
+@@ -646,0 +892,10 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
++    if (publish_odom)
++    {
++        pubOdomAftMapped->publish(odomAftMapped);
++    }
++
++    if (!publish_tf)
++    {
++        return;
++    }
++
+@@ -676,0 +932,37 @@ void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
 +void reset_native_lidar_factor(const state_ikfom &s)
 +{
 +    native_factor_msg = fast_lio::msg::NativeLidarFactor();
@@ -140,11 +572,11 @@ index e5d9950..5d3001d 100644
 +    native_factor_msg.correspondences_valid = false;
 +}
 +
-@@ -683,0 +729,3 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+@@ -683,0 +976,3 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 +    if (native_factor_export_en)
 +        reset_native_lidar_factor(s);
 +
-@@ -792,0 +841,53 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+@@ -792,0 +1088,53 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 +
 +    if (native_factor_export_en)
 +    {
@@ -198,7 +630,7 @@ index e5d9950..5d3001d 100644
 +        }
 +        native_factor_msg.correspondences_valid = true;
 +    }
-@@ -795,0 +897,16 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+@@ -795,0 +1144,16 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 +void publish_native_lidar_factor()
 +{
 +    if (!native_factor_export_en || !pubNativeLidarFactor)
@@ -215,28 +647,529 @@ index e5d9950..5d3001d 100644
 +    native_factor_sequence++;
 +}
 +
-@@ -835,0 +953,4 @@ public:
+@@ -835,0 +1200,24 @@ public:
 +        this->declare_parameter<bool>("native_factor_export.enable", false);
 +        this->declare_parameter<bool>("native_factor_export.include_debug_jacobian", false);
 +        this->declare_parameter<string>("native_factor_export.topic", "/fast_lio/native_lidar_factor");
 +        this->declare_parameter<string>("native_factor_export.sensor_frame", "lidar");
-@@ -871,0 +993,4 @@ public:
++        this->declare_parameter<bool>("downstream_backend.enable", false);
++        this->declare_parameter<bool>("downstream_backend.publish_diagnostic_odometry", false);
++        this->declare_parameter<bool>("downstream_backend.publish_diagnostic_path", false);
++        this->declare_parameter<bool>("downstream_backend.publish_diagnostic_tf", false);
++        this->declare_parameter<string>("downstream_backend.map_insertion_mode", "fast_lio_posterior");
++        this->declare_parameter<string>("downstream_backend.state_topic", "/fusion/unified/odom");
++        this->declare_parameter<double>("downstream_backend.state_tolerance_s", 0.010);
++        this->declare_parameter<int>("downstream_backend.max_pending_map_frames", 16);
++        this->declare_parameter<double>("downstream_backend.max_map_translation_disagreement_m", 0.50);
++        this->declare_parameter<double>("downstream_backend.max_map_rotation_disagreement_rad", 0.35);
++        this->declare_parameter<string>("frontend_state_seed.mode", "disabled");
++        this->declare_parameter<string>(
++            "frontend_state_seed.topic", "/fusion/unified/frontend_state_seed");
++        this->declare_parameter<double>("frontend_state_seed.tolerance_s", 0.015);
++        this->declare_parameter<int>("frontend_state_seed.minimum_quality", 20);
++        this->declare_parameter<int>("frontend_state_seed.history_size", 64);
++        this->declare_parameter<double>(
++            "frontend_state_seed.max_translation_correction_m", 1.0);
++        this->declare_parameter<double>(
++            "frontend_state_seed.max_rotation_correction_rad", 0.50);
+@@ -871,0 +1260,93 @@ public:
 +        this->get_parameter_or<bool>("native_factor_export.enable", native_factor_export_en, false);
 +        this->get_parameter_or<bool>("native_factor_export.include_debug_jacobian", native_factor_debug_jacobian_en, false);
 +        this->get_parameter_or<string>("native_factor_export.topic", native_factor_topic, "/fast_lio/native_lidar_factor");
 +        this->get_parameter_or<string>("native_factor_export.sensor_frame", native_factor_sensor_frame, "lidar");
-@@ -935,0 +1061,5 @@ public:
++        this->get_parameter_or<bool>("downstream_backend.enable", downstream_backend_en, false);
++        this->get_parameter_or<bool>("downstream_backend.publish_diagnostic_odometry", downstream_publish_diagnostic_odometry, false);
++        this->get_parameter_or<bool>("downstream_backend.publish_diagnostic_path", downstream_publish_diagnostic_path, false);
++        this->get_parameter_or<bool>("downstream_backend.publish_diagnostic_tf", downstream_publish_diagnostic_tf, false);
++        string downstream_map_insertion_mode;
++        this->get_parameter_or<string>("downstream_backend.map_insertion_mode", downstream_map_insertion_mode, "fast_lio_posterior");
++        this->get_parameter_or<string>("downstream_backend.state_topic", downstream_backend_state_topic, "/fusion/unified/odom");
++        this->get_parameter_or<double>("downstream_backend.state_tolerance_s", downstream_backend_state_tolerance_s, 0.010);
++        this->get_parameter_or<int>("downstream_backend.max_pending_map_frames", downstream_backend_max_pending_map_frames, 16);
++        this->get_parameter_or<double>("downstream_backend.max_map_translation_disagreement_m", downstream_backend_max_map_translation_disagreement_m, 0.50);
++        this->get_parameter_or<double>("downstream_backend.max_map_rotation_disagreement_rad", downstream_backend_max_map_rotation_disagreement_rad, 0.35);
++        this->get_parameter_or<string>(
++            "frontend_state_seed.mode", frontend_state_seed_mode, "disabled");
++        this->get_parameter_or<string>(
++            "frontend_state_seed.topic", frontend_state_seed_topic,
++            "/fusion/unified/frontend_state_seed");
++        this->get_parameter_or<double>(
++            "frontend_state_seed.tolerance_s", frontend_state_seed_tolerance_s,
++            0.015);
++        this->get_parameter_or<int>(
++            "frontend_state_seed.minimum_quality", frontend_state_seed_min_quality,
++            20);
++        this->get_parameter_or<int>(
++            "frontend_state_seed.history_size", frontend_state_seed_history_size,
++            64);
++        this->get_parameter_or<double>(
++            "frontend_state_seed.max_translation_correction_m",
++            frontend_state_seed_max_translation_correction_m, 1.0);
++        this->get_parameter_or<double>(
++            "frontend_state_seed.max_rotation_correction_rad",
++            frontend_state_seed_max_rotation_correction_rad, 0.50);
++        if (downstream_map_insertion_mode != "fast_lio_posterior" &&
++            downstream_map_insertion_mode != "backend_confirmed")
++            throw invalid_argument(
++                "downstream_backend.map_insertion_mode must be fast_lio_posterior or backend_confirmed");
++        downstream_backend_confirmed_map =
++            downstream_map_insertion_mode == "backend_confirmed";
++        if (downstream_backend_confirmed_map && !downstream_backend_en)
++            throw invalid_argument(
++                "backend_confirmed map insertion requires downstream_backend.enable=true");
++        if (downstream_backend_state_tolerance_s <= 0.0 ||
++            downstream_backend_max_pending_map_frames < 2 ||
++            downstream_backend_max_map_translation_disagreement_m <= 0.0 ||
++            downstream_backend_max_map_rotation_disagreement_rad <= 0.0)
++            throw invalid_argument("invalid downstream backend map insertion limits");
++        if (frontend_state_seed_mode != "disabled" &&
++            frontend_state_seed_mode != "shadow" &&
++            frontend_state_seed_mode != "backend_seeded")
++            throw invalid_argument(
++                "frontend_state_seed.mode must be disabled, shadow, or backend_seeded");
++        if (frontend_state_seed_tolerance_s <= 0.0 ||
++            frontend_state_seed_min_quality < 0 ||
++            frontend_state_seed_min_quality > 100 ||
++            frontend_state_seed_history_size < 4 ||
++            frontend_state_seed_max_translation_correction_m <= 0.0 ||
++            frontend_state_seed_max_rotation_correction_rad <= 0.0)
++            throw invalid_argument("invalid frontend state seed limits");
++        if (frontend_state_seed_mode == "backend_seeded" &&
++            (!downstream_backend_en || !downstream_backend_confirmed_map))
++            throw invalid_argument(
++                "backend_seeded mode requires downstream backend and backend_confirmed map insertion");
++
++        if (downstream_backend_en)
++        {
++            // Transitional mode: FAST-LIO still owns its ESIKF state and ikd-Tree map.
++            native_factor_export_en = true;
++            RCLCPP_WARN(
++                this->get_logger(),
++                "Downstream backend compatibility mode enabled. Internal ESIKF/map updates remain active; FAST-LIO pose outputs are diagnostic only.");
++            RCLCPP_INFO(
++                this->get_logger(),
++                "Diagnostic outputs: odometry=%s path=%s tf=%s",
++                downstream_publish_diagnostic_odometry ? "on" : "off",
++                downstream_publish_diagnostic_path ? "on" : "off",
++                downstream_publish_diagnostic_tf ? "on" : "off");
++            RCLCPP_INFO(
++                this->get_logger(),
++                "Map insertion owner: %s; backend_state_topic=%s",
++                downstream_backend_confirmed_map ?
++                    "unified_backend" : "fast_lio_posterior",
++                downstream_backend_state_topic.c_str());
++        }
++        if (frontend_state_seed_mode != "disabled")
++        {
++            RCLCPP_WARN(
++                this->get_logger(),
++                "Frontend state seed mode=%s topic=%s. backend_seeded is transitional: the current-frame ESIKF update still runs, but the next frame starts from the last accepted unified-backend state.",
++                frontend_state_seed_mode.c_str(), frontend_state_seed_topic.c_str());
++        }
+@@ -929,0 +1411,17 @@ public:
++        if (downstream_backend_confirmed_map)
++        {
++            sub_backend_state_ = this->create_subscription<nav_msgs::msg::Odometry>(
++                downstream_backend_state_topic, 20,
++                std::bind(
++                    &LaserMappingNode::backend_state_callback, this,
++                    std::placeholders::_1));
++        }
++        if (frontend_state_seed_mode != "disabled")
++        {
++            sub_frontend_state_seed_ =
++                this->create_subscription<fast_lio::msg::BackendStateSeed>(
++                    frontend_state_seed_topic, rclcpp::SensorDataQoS(),
++                    std::bind(
++                        &LaserMappingNode::frontend_state_seed_callback, this,
++                        std::placeholders::_1));
++        }
+@@ -935,0 +1434,5 @@ public:
 +        if (native_factor_export_en)
 +        {
 +            pubNativeLidarFactor = this->create_publisher<fast_lio::msg::NativeLidarFactor>(native_factor_topic, rclcpp::SensorDataQoS());
 +            RCLCPP_INFO(this->get_logger(), "Native LiDAR factor export enabled on %s", native_factor_topic.c_str());
 +        }
-@@ -1023,0 +1154,5 @@ private:
+@@ -954,0 +1458,24 @@ public:
++        if (downstream_backend_confirmed_map)
++        {
++            RCLCPP_INFO(
++                this->get_logger(),
++                "Backend map ownership summary: queued=%lu inserted=%lu rejected=%lu dropped=%lu unmatched_pose=%lu pending=%zu",
++                backend_map_frames_queued, backend_map_frames_inserted,
++                backend_map_frames_rejected, backend_map_frames_dropped,
++                backend_map_poses_unmatched,
++                pending_backend_map_frames.size());
++        }
++        if (frontend_state_seed_mode != "disabled")
++        {
++            RCLCPP_INFO(
++                this->get_logger(),
++                "Frontend state seed summary: mode=%s received=%lu matched=%lu shadowed=%lu applied=%lu rejected=%lu stale=%lu last_translation=%.6f last_rotation=%.6f max_translation=%.6f max_rotation=%.6f",
++                frontend_state_seed_mode.c_str(), frontend_state_seeds_received,
++                frontend_state_seeds_matched, frontend_state_seeds_shadowed,
++                frontend_state_seeds_applied, frontend_state_seeds_rejected,
++                frontend_state_seeds_stale,
++                frontend_state_seed_last_translation_correction_m,
++                frontend_state_seed_last_rotation_correction_rad,
++                frontend_state_seed_max_observed_translation_correction_m,
++                frontend_state_seed_max_observed_rotation_correction_rad);
++        }
+@@ -978,0 +1506 @@ private:
++            apply_pending_frontend_state_seed();
+@@ -982,0 +1511,3 @@ private:
++            if (downstream_backend_confirmed_map)
++                apply_backend_confirmed_map_updates();
++
+@@ -1023,0 +1555,5 @@ private:
 +                if (native_factor_export_en)
 +                {
 +                    reset_native_lidar_factor(state_point);
 +                    publish_native_lidar_factor();
 +                }
-@@ -1062,0 +1198,2 @@ private:
+@@ -1059,0 +1596 @@ private:
++            record_frontend_state(lidar_end_time, state_point);
+@@ -1062,0 +1600,2 @@ private:
 +            publish_native_lidar_factor();
 +
+@@ -1064 +1603,9 @@ private:
+-            publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
++            const bool publish_fast_lio_odom =
++                !downstream_backend_en || downstream_publish_diagnostic_odometry;
++            const bool publish_fast_lio_tf =
++                !downstream_backend_en || downstream_publish_diagnostic_tf;
++            if (publish_fast_lio_odom || publish_fast_lio_tf)
++            {
++                publish_odometry(
++                    pubOdomAftMapped_, tf_broadcaster_, publish_fast_lio_odom, publish_fast_lio_tf);
++            }
+@@ -1068 +1615,4 @@ private:
+-            map_incremental();
++            if (downstream_backend_confirmed_map)
++                queue_backend_map_frame();
++            else
++                map_incremental();
+@@ -1072 +1622,3 @@ private:
+-            if (path_en)                         publish_path(pubPath_);
++            const bool publish_fast_lio_path =
++                path_en && (!downstream_backend_en || downstream_publish_diagnostic_path);
++            if (publish_fast_lio_path)           publish_path(pubPath_);
+@@ -1131,0 +1684,314 @@ private:
++    void record_frontend_state(double stamp, const state_ikfom &state)
++    {
++        if (frontend_state_seed_mode == "disabled" || stamp <= 0.0)
++            return;
++        FrontendStateRecord record;
++        record.stamp = stamp;
++        record.position = {state.pos(0), state.pos(1), state.pos(2)};
++        record.quaternion_xyzw = {
++            state.rot.coeffs()[0], state.rot.coeffs()[1],
++            state.rot.coeffs()[2], state.rot.coeffs()[3]};
++        record.velocity = {state.vel(0), state.vel(1), state.vel(2)};
++        record.accel_bias = {state.ba(0), state.ba(1), state.ba(2)};
++        record.gyro_bias = {state.bg(0), state.bg(1), state.bg(2)};
++        lock_guard<mutex> lock(frontend_state_seed_mutex);
++        frontend_state_history.push_back(record);
++        while (static_cast<int>(frontend_state_history.size()) >
++               frontend_state_seed_history_size)
++            frontend_state_history.pop_front();
++    }
++
++    void frontend_state_seed_callback(
++        const fast_lio::msg::BackendStateSeed::SharedPtr message)
++    {
++        const double stamp = get_time_sec(message->header.stamp);
++        if (!message->valid || stamp <= 0.0 ||
++            message->header.frame_id != "camera_init" ||
++            message->map_frame != "camera_init" ||
++            message->body_frame != "body")
++        {
++            ++frontend_state_seeds_rejected;
++            return;
++        }
++        const auto &q = message->orientation_xyzw;
++        const double quaternion_norm = sqrt(
++            q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
++        if (!isfinite(quaternion_norm) || quaternion_norm <= 1.0e-12)
++        {
++            ++frontend_state_seeds_rejected;
++            return;
++        }
++        BackendStateSeedRecord seed;
++        seed.stamp = stamp;
++        seed.sequence = message->sequence;
++        seed.reset_counter = message->reset_counter;
++        seed.quality = message->quality;
++        for (int index = 0; index < 3; ++index)
++        {
++            seed.position[index] = message->position[index];
++            seed.velocity[index] = message->velocity_map[index];
++            seed.accel_bias[index] = message->accel_bias[index];
++            seed.gyro_bias[index] = message->gyro_bias[index];
++            if (!isfinite(seed.position[index]) ||
++                !isfinite(seed.velocity[index]) ||
++                !isfinite(seed.accel_bias[index]) ||
++                !isfinite(seed.gyro_bias[index]))
++            {
++                ++frontend_state_seeds_rejected;
++                return;
++            }
++        }
++        for (int index = 0; index < 4; ++index)
++            seed.quaternion_xyzw[index] = q[index] / quaternion_norm;
++        for (int index = 0; index < 225; ++index)
++        {
++            seed.covariance[index] = message->covariance[index];
++            if (!isfinite(seed.covariance[index]))
++            {
++                ++frontend_state_seeds_rejected;
++                return;
++            }
++        }
++        lock_guard<mutex> lock(frontend_state_seed_mutex);
++        pending_backend_state_seeds.push_back(seed);
++        ++frontend_state_seeds_received;
++        while (static_cast<int>(pending_backend_state_seeds.size()) >
++               frontend_state_seed_history_size * 2)
++        {
++            pending_backend_state_seeds.pop_front();
++            ++frontend_state_seeds_stale;
++        }
++    }
++
++    void apply_pending_frontend_state_seed()
++    {
++        if (frontend_state_seed_mode == "disabled")
++            return;
++
++        BackendStateSeedRecord seed;
++        FrontendStateRecord matched;
++        double latest_frontend_stamp = 0.0;
++        bool matched_seed = false;
++        {
++            lock_guard<mutex> lock(frontend_state_seed_mutex);
++            while (!pending_backend_state_seeds.empty())
++            {
++                const BackendStateSeedRecord candidate =
++                    pending_backend_state_seeds.front();
++                if (frontend_state_seed_sequence_initialized &&
++                    candidate.sequence <= frontend_state_seed_last_sequence)
++                {
++                    pending_backend_state_seeds.pop_front();
++                    ++frontend_state_seeds_rejected;
++                    continue;
++                }
++                auto best = frontend_state_history.end();
++                double best_delta = frontend_state_seed_tolerance_s;
++                for (auto it = frontend_state_history.begin();
++                     it != frontend_state_history.end(); ++it)
++                {
++                    const double delta = fabs(it->stamp - candidate.stamp);
++                    if (delta <= best_delta)
++                    {
++                        best = it;
++                        best_delta = delta;
++                    }
++                }
++                if (best == frontend_state_history.end())
++                {
++                    if (!frontend_state_history.empty() &&
++                        candidate.stamp < frontend_state_history.front().stamp -
++                            frontend_state_seed_tolerance_s)
++                    {
++                        pending_backend_state_seeds.pop_front();
++                        frontend_state_seed_last_sequence = candidate.sequence;
++                        frontend_state_seed_sequence_initialized = true;
++                        ++frontend_state_seeds_stale;
++                        continue;
++                    }
++                    return;
++                }
++                seed = candidate;
++                matched = *best;
++                latest_frontend_stamp = frontend_state_history.back().stamp;
++                pending_backend_state_seeds.pop_front();
++                frontend_state_seed_last_sequence = candidate.sequence;
++                frontend_state_seed_sequence_initialized = true;
++                matched_seed = true;
++                break;
++            }
++            if (!matched_seed ||
++                fabs(seed.stamp - matched.stamp) > frontend_state_seed_tolerance_s)
++                return;
++        }
++
++        ++frontend_state_seeds_matched;
++        if (frontend_state_seed_reset_initialized &&
++            seed.reset_counter < frontend_state_seed_last_reset_counter)
++        {
++            ++frontend_state_seeds_rejected;
++            return;
++        }
++        frontend_state_seed_last_reset_counter = seed.reset_counter;
++        frontend_state_seed_reset_initialized = true;
++
++        Eigen::Quaterniond frontend_quaternion(
++            matched.quaternion_xyzw[3], matched.quaternion_xyzw[0],
++            matched.quaternion_xyzw[1], matched.quaternion_xyzw[2]);
++        Eigen::Quaterniond backend_quaternion(
++            seed.quaternion_xyzw[3], seed.quaternion_xyzw[0],
++            seed.quaternion_xyzw[1], seed.quaternion_xyzw[2]);
++        frontend_quaternion.normalize();
++        backend_quaternion.normalize();
++        const V3D frontend_position(
++            matched.position[0], matched.position[1], matched.position[2]);
++        const V3D backend_position(
++            seed.position[0], seed.position[1], seed.position[2]);
++        const double translation_correction =
++            (backend_position - frontend_position).norm();
++        const double quaternion_dot = min(
++            1.0, max(0.0, fabs(
++                frontend_quaternion.dot(backend_quaternion))));
++        const double rotation_correction = 2.0 * acos(quaternion_dot);
++        frontend_state_seed_last_translation_correction_m =
++            translation_correction;
++        frontend_state_seed_last_rotation_correction_rad = rotation_correction;
++        frontend_state_seed_max_observed_translation_correction_m = max(
++            frontend_state_seed_max_observed_translation_correction_m,
++            translation_correction);
++        frontend_state_seed_max_observed_rotation_correction_rad = max(
++            frontend_state_seed_max_observed_rotation_correction_rad,
++            rotation_correction);
++
++        if (frontend_state_seed_mode == "shadow")
++        {
++            ++frontend_state_seeds_shadowed;
++            return;
++        }
++        if (seed.quality < frontend_state_seed_min_quality ||
++            fabs(seed.stamp - latest_frontend_stamp) >
++                frontend_state_seed_tolerance_s ||
++            fabs(seed.stamp - lidar_end_time) > frontend_state_seed_tolerance_s ||
++            translation_correction >
++                frontend_state_seed_max_translation_correction_m ||
++            rotation_correction >
++                frontend_state_seed_max_rotation_correction_rad)
++        {
++            ++frontend_state_seeds_rejected;
++            return;
++        }
++
++        Eigen::Matrix<double, 15, 15> backend_covariance;
++        for (int row = 0; row < 15; ++row)
++        {
++            for (int column = 0; column < 15; ++column)
++            {
++                backend_covariance(row, column) = 0.5 * (
++                    seed.covariance[row * 15 + column] +
++                    seed.covariance[column * 15 + row]);
++            }
++        }
++        Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 15, 15>> solver(
++            backend_covariance);
++        if (solver.info() != Eigen::Success)
++        {
++            ++frontend_state_seeds_rejected;
++            return;
++        }
++        const double covariance_scale = max(
++            1.0, solver.eigenvalues().cwiseAbs().maxCoeff());
++        const double minimum_eigenvalue = solver.eigenvalues().minCoeff();
++        if (minimum_eigenvalue < -1.0e-9 * covariance_scale)
++        {
++            ++frontend_state_seeds_rejected;
++            return;
++        }
++        if (minimum_eigenvalue < 1.0e-12)
++            backend_covariance.diagonal().array() +=
++                1.0e-12 - minimum_eigenvalue;
++
++        state_ikfom corrected = kf.get_x();
++        corrected.pos = backend_position;
++        corrected.rot = backend_quaternion.toRotationMatrix();
++        corrected.vel = V3D(
++            seed.velocity[0], seed.velocity[1], seed.velocity[2]);
++        corrected.ba = V3D(
++            seed.accel_bias[0], seed.accel_bias[1], seed.accel_bias[2]);
++        corrected.bg = V3D(
++            seed.gyro_bias[0], seed.gyro_bias[1], seed.gyro_bias[2]);
++
++        auto covariance = kf.get_P();
++        const int backend_to_fast_lio[15] = {
++            0, 1, 2, 3, 4, 5, 12, 13, 14, 18, 19, 20, 15, 16, 17};
++        bool mapped_index[23] = {false};
++        for (int index = 0; index < 15; ++index)
++            mapped_index[backend_to_fast_lio[index]] = true;
++        for (int row = 0; row < 23; ++row)
++        {
++            for (int column = 0; column < 23; ++column)
++            {
++                if (mapped_index[row] != mapped_index[column])
++                    covariance(row, column) = 0.0;
++            }
++        }
++        for (int row = 0; row < 15; ++row)
++        {
++            for (int column = 0; column < 15; ++column)
++            {
++                covariance(
++                    backend_to_fast_lio[row], backend_to_fast_lio[column]) =
++                    backend_covariance(row, column);
++            }
++        }
++        kf.change_x(corrected);
++        kf.change_P(covariance);
++        state_point = corrected;
++        ++frontend_state_seeds_applied;
++        if (frontend_state_seeds_applied == 1 ||
++            frontend_state_seeds_applied % 100 == 0)
++        {
++            RCLCPP_INFO(
++                this->get_logger(),
++                "Applied unified backend seed: count=%lu stamp=%.6f translation=%.6f rotation=%.6f quality=%u reset=%u",
++                frontend_state_seeds_applied, seed.stamp,
++                translation_correction, rotation_correction,
++                static_cast<unsigned int>(seed.quality), seed.reset_counter);
++        }
++    }
++
++    void backend_state_callback(const nav_msgs::msg::Odometry::SharedPtr message)
++    {
++        if (message->header.frame_id != "camera_init" ||
++            message->child_frame_id != "body")
++        {
++            RCLCPP_WARN_THROTTLE(
++                this->get_logger(), *this->get_clock(), 5000,
++                "Ignoring backend map pose with frames %s -> %s",
++                message->header.frame_id.c_str(), message->child_frame_id.c_str());
++            return;
++        }
++        const auto &position = message->pose.pose.position;
++        const auto &orientation = message->pose.pose.orientation;
++        const double quaternion_norm = sqrt(
++            orientation.x * orientation.x + orientation.y * orientation.y +
++            orientation.z * orientation.z + orientation.w * orientation.w);
++        if (!isfinite(position.x) || !isfinite(position.y) ||
++            !isfinite(position.z) || !isfinite(quaternion_norm) ||
++            quaternion_norm <= 1.0e-12)
++            return;
++        BackendMapPose pose;
++        pose.stamp = get_time_sec(message->header.stamp);
++        pose.position = {position.x, position.y, position.z};
++        pose.quaternion_xyzw = {
++            orientation.x / quaternion_norm, orientation.y / quaternion_norm,
++            orientation.z / quaternion_norm, orientation.w / quaternion_norm};
++        lock_guard<mutex> lock(backend_map_mutex);
++        pending_backend_map_poses.push_back(pose);
++        while (static_cast<int>(pending_backend_map_poses.size()) >
++               downstream_backend_max_pending_map_frames * 2)
++        {
++            pending_backend_map_poses.pop_front();
++            ++backend_map_poses_unmatched;
++        }
++    }
++
+@@ -1140,0 +2007,3 @@ private:
++    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_backend_state_;
++    rclcpp::Subscription<fast_lio::msg::BackendStateSeed>::SharedPtr
++        sub_frontend_state_seed_;

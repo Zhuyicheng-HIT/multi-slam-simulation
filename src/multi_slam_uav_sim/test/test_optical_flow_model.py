@@ -14,6 +14,7 @@ from multi_slam_uav_sim.optical_flow_model import (
     scale_mavlink_translation,
     sensor_velocity_frd,
     sensor_displacement_frd,
+    should_publish_accumulated_flow,
     synthesize_optical_flow,
     synthesize_optical_flow_from_displacement,
     track_lk_flow,
@@ -21,6 +22,25 @@ from multi_slam_uav_sim.optical_flow_model import (
 
 
 class OpticalFlowModelTest(unittest.TestCase):
+    def test_accumulated_flow_waits_for_observable_displacement(self):
+        self.assertFalse(
+            should_publish_accumulated_flow(0.3, 0.2, 180, 0.10, 0.75, 0.25, True)
+        )
+        self.assertTrue(
+            should_publish_accumulated_flow(0.8, 0.1, 180, 0.10, 0.75, 0.25, True)
+        )
+
+    def test_accumulated_flow_releases_expired_window_with_exact_timing(self):
+        self.assertTrue(
+            should_publish_accumulated_flow(0.2, 0.1, 180, 0.25, 0.75, 0.25, True)
+        )
+        self.assertTrue(
+            should_publish_accumulated_flow(0.0, 0.0, 0, 0.25, 0.75, 0.25, True)
+        )
+        self.assertFalse(
+            should_publish_accumulated_flow(0.0, 0.0, 0, 0.25, 0.75, 0.25, False)
+        )
+
     def test_pixel_flow_uses_camera_focal_length_without_empirical_scale(self):
         flow = pixel_flow_to_radians(10.0, -5.0, 500.0, 400.0)
         self.assertAlmostEqual(flow[0], math.atan2(10.0, 500.0))
@@ -30,11 +50,11 @@ class OpticalFlowModelTest(unittest.TestCase):
         flow = gazebo_downward_image_flow_to_mavlink(
             10.0, -5.0, 500.0, 400.0
         )
-        self.assertAlmostEqual(flow[0], -math.atan2(10.0, 500.0))
+        self.assertAlmostEqual(flow[0], math.atan2(10.0, 500.0))
         self.assertAlmostEqual(flow[1], math.atan2(-5.0, 400.0))
         self.assertEqual(
             gazebo_downward_gyro_to_mavlink((0.01, -0.02, 0.03)),
-            (-0.01, -0.02, 0.03),
+            (0.01, -0.02, 0.03),
         )
 
     def test_gazebo_axis_conversion_preserves_translation_after_gyro_compensation(self):
@@ -49,7 +69,7 @@ class OpticalFlowModelTest(unittest.TestCase):
         )
         fx_px = 82.0
         fy_px = 82.0
-        gazebo_image = (-expected_mavlink[0], expected_mavlink[1])
+        gazebo_image = (expected_mavlink[0], expected_mavlink[1])
         converted = gazebo_downward_image_flow_to_mavlink(
             math.tan(gazebo_image[0]) * fx_px,
             math.tan(gazebo_image[1]) * fy_px,

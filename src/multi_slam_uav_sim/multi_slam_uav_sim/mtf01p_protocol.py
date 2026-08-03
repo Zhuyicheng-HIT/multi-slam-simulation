@@ -4,6 +4,7 @@ import struct
 
 OPTICAL_FLOW_MESSAGE_ID = 100
 DISTANCE_SENSOR_MESSAGE_ID = 132
+MAVLINK_DPIX_PER_PIXEL = 10.0
 MTF01P_WIDTH_PX = 100
 MTF01P_FOV_RAD = math.radians(42.0)
 
@@ -21,22 +22,26 @@ def clamp_int16(value):
 
 
 def integrated_radians_to_pixels(integrated_x, integrated_y, fx_px, fy_px):
-    """Encode sensor-FRD integrated angles in MAVLink OPTICAL_FLOW pixels."""
+    """Encode sensor-FRD angles as MAVLink OPTICAL_FLOW decipixels."""
     if fx_px <= 0.0 or fy_px <= 0.0:
         raise ValueError("focal lengths must be positive")
     return (
-        clamp_int16(math.tan(float(integrated_x)) * float(fx_px)),
-        clamp_int16(math.tan(float(integrated_y)) * float(fy_px)),
+        clamp_int16(
+            math.tan(float(integrated_x)) * float(fx_px) * MAVLINK_DPIX_PER_PIXEL
+        ),
+        clamp_int16(
+            math.tan(float(integrated_y)) * float(fy_px) * MAVLINK_DPIX_PER_PIXEL
+        ),
     )
 
 
 def pixels_to_integrated_radians(flow_x, flow_y, fx_px, fy_px):
-    """Decode MAVLink1 OPTICAL_FLOW pixels to sensor-FRD integrated angles."""
+    """Decode MAVLink1 OPTICAL_FLOW decipixels to integrated angles."""
     if fx_px <= 0.0 or fy_px <= 0.0:
         raise ValueError("focal lengths must be positive")
     return (
-        math.atan2(float(flow_x), float(fx_px)),
-        math.atan2(float(flow_y), float(fy_px)),
+        math.atan2(float(flow_x) / MAVLINK_DPIX_PER_PIXEL, float(fx_px)),
+        math.atan2(float(flow_y) / MAVLINK_DPIX_PER_PIXEL, float(fy_px)),
     )
 
 

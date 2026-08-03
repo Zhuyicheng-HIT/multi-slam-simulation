@@ -1,7 +1,7 @@
 # Ultra-Fusion 统一滑窗推进报告
 
 日期：2026-07-28
-工作区：`/home/zyc/multi-slam-github-staging`
+工作区：`$HOME/multi-slam-github-staging`
 分支：`feature/ultra-fusion-stage3`
 本轮起点：`d823dd4 feat: validate manifold multi-sensor fusion backend`
 

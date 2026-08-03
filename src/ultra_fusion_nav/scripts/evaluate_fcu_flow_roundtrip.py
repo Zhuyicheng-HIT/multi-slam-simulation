@@ -16,6 +16,7 @@ from multi_slam_uav_sim.mtf01p_protocol import (
 )
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 
 
@@ -37,11 +38,15 @@ def correlation(first, second):
 
 class RoundtripRecorder(Node):
     def __init__(self, direct_topic, fcu_topic):
-        super().__init__("fcu_flow_roundtrip_evaluator")
+        super().__init__(
+            "fcu_flow_roundtrip_evaluator",
+            parameter_overrides=[Parameter("use_sim_time", value=True)],
+        )
         self.direct = []
         self.fcu = []
         self.direct_regressions = 0
         self.fcu_regressions = 0
+        self.invalid_header_stamp_counts = {"direct": 0, "fcu": 0}
         self.last_direct_stamp = None
         self.last_fcu_stamp = None
         self.create_subscription(
@@ -51,12 +56,20 @@ class RoundtripRecorder(Node):
             OpticalFlowRad, fcu_topic, self._fcu, qos_profile_sensor_data
         )
 
-    @staticmethod
-    def _sample(msg):
+    def _sample(self, msg):
         integration_s = float(msg.integration_time_us) * 1.0e-6
+        source_stamp_s = stamp_seconds(msg.header)
+        if source_stamp_s <= 0.0:
+            return None
+        arrival_ros_s = self.get_clock().now().nanoseconds * 1.0e-9
+        arrival_wall_s = time.monotonic()
         return {
-            "stamp": stamp_seconds(msg.header),
-            "arrival": time.monotonic(),
+            "stamp": source_stamp_s,
+            "association_time_s": source_stamp_s,
+            "arrival_ros_s": arrival_ros_s,
+            "arrival_wall_s": arrival_wall_s,
+            # Backward-compatible wall-arrival alias. It is diagnostic only.
+            "arrival": arrival_wall_s,
             "integration_s": integration_s,
             "integrated_x": float(msg.integrated_x),
             "integrated_y": float(msg.integrated_y),
@@ -69,36 +82,58 @@ class RoundtripRecorder(Node):
 
     def _direct(self, msg):
         sample = self._sample(msg)
-        if self.last_direct_stamp is not None and sample["stamp"] <= self.last_direct_stamp:
+        if sample is None:
+            self.invalid_header_stamp_counts["direct"] += 1
+            return
+        if (
+            sample["stamp"] > 0.0
+            and self.last_direct_stamp is not None
+            and sample["stamp"] <= self.last_direct_stamp
+        ):
             self.direct_regressions += 1
-        self.last_direct_stamp = sample["stamp"]
+        if sample["stamp"] > 0.0:
+            self.last_direct_stamp = sample["stamp"]
         self.direct.append(sample)
 
     def _fcu(self, msg):
         sample = self._sample(msg)
-        if self.last_fcu_stamp is not None and sample["stamp"] <= self.last_fcu_stamp:
+        if sample is None:
+            self.invalid_header_stamp_counts["fcu"] += 1
+            return
+        if (
+            sample["stamp"] > 0.0
+            and self.last_fcu_stamp is not None
+            and sample["stamp"] <= self.last_fcu_stamp
+        ):
             self.fcu_regressions += 1
-        self.last_fcu_stamp = sample["stamp"]
+        if sample["stamp"] > 0.0:
+            self.last_fcu_stamp = sample["stamp"]
         self.fcu.append(sample)
 
 
 def match_samples(direct, fcu, lag_s, averaging_window_s):
-    eligible_direct = [
-        sample for sample in direct
-        if sample["quality"] > 0 and sample["distance"] > 0.1
-    ]
-    times = [sample["arrival"] for sample in eligible_direct]
+    eligible_direct = sorted(
+        (
+            sample for sample in direct
+            if sample["quality"] > 0 and sample["distance"] > 0.1
+        ),
+        key=lambda sample: sample["association_time_s"],
+    )
+    times = [sample["association_time_s"] for sample in eligible_direct]
     pairs = []
     for returned in fcu:
         if returned["quality"] <= 0 or returned["distance"] <= 0.1 or not times:
             continue
-        center = returned["arrival"] - lag_s
+        center = returned["association_time_s"] - lag_s
         start = bisect.bisect_left(times, center - 0.5 * averaging_window_s)
         end = bisect.bisect_right(times, center + 0.5 * averaging_window_s)
         candidates = eligible_direct[start:end]
         if not candidates:
             continue
-        reference = min(candidates, key=lambda sample: abs(sample["arrival"] - center))
+        reference = min(
+            candidates,
+            key=lambda sample: abs(sample["association_time_s"] - center),
+        )
         focal = focal_length_px()
         pixel_x, pixel_y = integrated_radians_to_pixels(
             reference["integrated_x"], reference["integrated_y"], focal, focal
@@ -159,21 +194,56 @@ def pair_metrics(pairs):
 
 
 def stream_metrics(samples):
-    arrivals = np.asarray([sample["arrival"] for sample in samples], dtype=float)
+    wall_arrivals = np.asarray(
+        [sample["arrival_wall_s"] for sample in samples], dtype=float
+    )
+    ros_arrivals = np.asarray(
+        [sample["arrival_ros_s"] for sample in samples], dtype=float
+    )
+    association_times = np.asarray(
+        [sample["association_time_s"] for sample in samples], dtype=float
+    )
     stamps = np.asarray([sample["stamp"] for sample in samples], dtype=float)
     integrations = np.asarray(
         [sample["integration_s"] for sample in samples], dtype=float
     )
-    arrival_periods = np.diff(arrivals)
+    wall_arrival_periods = np.diff(wall_arrivals)
+    ros_arrival_periods = np.diff(ros_arrivals)
+    association_periods = np.diff(association_times)
     source_periods = np.diff(stamps)
-    elapsed_s = float(arrivals[-1] - arrivals[0]) if len(arrivals) >= 2 else 0.0
+    source_elapsed_s = (
+        float(association_times[-1] - association_times[0])
+        if len(association_times) >= 2 else 0.0
+    )
+    wall_elapsed_s = (
+        float(wall_arrivals[-1] - wall_arrivals[0])
+        if len(wall_arrivals) >= 2 else 0.0
+    )
+    source_rate_hz = (
+        float((len(samples) - 1) / source_elapsed_s)
+        if source_elapsed_s > 0.0 else 0.0
+    )
+    wall_arrival_rate_hz = (
+        float((len(samples) - 1) / wall_elapsed_s)
+        if wall_elapsed_s > 0.0 else 0.0
+    )
     return {
         "samples": len(samples),
-        "measured_rate_hz": (
-            float((len(samples) - 1) / elapsed_s) if elapsed_s > 0.0 else 0.0
+        # Backward-compatible key now has source/ROS-time semantics.
+        "measured_rate_hz": source_rate_hz,
+        "source_rate_hz": source_rate_hz,
+        "wall_arrival_rate_hz": wall_arrival_rate_hz,
+        "association_period_median_s": (
+            float(np.median(association_periods))
+            if len(association_periods) else None
+        ),
+        "ros_arrival_period_median_s": (
+            float(np.median(ros_arrival_periods))
+            if len(ros_arrival_periods) else None
         ),
         "arrival_period_median_s": (
-            float(np.median(arrival_periods)) if len(arrival_periods) else None
+            float(np.median(wall_arrival_periods))
+            if len(wall_arrival_periods) else None
         ),
         "source_period_median_s": (
             float(np.median(source_periods)) if len(source_periods) else None
@@ -257,6 +327,8 @@ def summarize(node, maximum_lag_s, lag_step_s, averaging_window_s):
         "direct_samples": len(node.direct),
         "fcu_samples": len(node.fcu),
         "best": best,
+        "association_basis": "valid_source_header_stamp_only",
+        "invalid_header_stamp_counts": dict(node.invalid_header_stamp_counts),
         "averaging_window_s": averaging_window_s,
         "fcu_gyro_coverage": gyro_coverage,
         "direct_stamp_regressions": node.direct_regressions,
@@ -270,6 +342,43 @@ def summarize(node, maximum_lag_s, lag_step_s, averaging_window_s):
     }
 
 
+def record_for_ros_duration(node, duration_s, wall_timeout_s):
+    wall_started = time.monotonic()
+    last_progress_wall = wall_started
+    ros_started_ns = None
+    last_ros_ns = None
+    elapsed_ros_s = 0.0
+    elapsed_wall_s = 0.0
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.2)
+            now_ros_ns = node.get_clock().now().nanoseconds
+            now_wall = time.monotonic()
+            if now_ros_ns > 0 and ros_started_ns is None:
+                ros_started_ns = now_ros_ns
+            if last_ros_ns is not None and now_ros_ns < last_ros_ns:
+                raise RuntimeError("ROS clock moved backwards during FCU flow evaluation")
+            if last_ros_ns is None or now_ros_ns > last_ros_ns:
+                last_progress_wall = now_wall
+            last_ros_ns = now_ros_ns
+            elapsed_ros_s = (
+                (now_ros_ns - ros_started_ns) * 1.0e-9
+                if ros_started_ns is not None else 0.0
+            )
+            elapsed_wall_s = now_wall - wall_started
+            if elapsed_ros_s >= duration_s:
+                return elapsed_ros_s, elapsed_wall_s
+            stalled_wall_s = now_wall - last_progress_wall
+            if stalled_wall_s >= wall_timeout_s:
+                raise RuntimeError(
+                    f"ROS clock stalled for {stalled_wall_s:.1f}s "
+                    f"after advancing {elapsed_ros_s:.1f}s"
+                )
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    return elapsed_ros_s, time.monotonic() - wall_started
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=float, default=100.0)
@@ -278,20 +387,32 @@ def main():
     parser.add_argument("--maximum-lag", type=float, default=0.6)
     parser.add_argument("--lag-step", type=float, default=0.01)
     parser.add_argument("--averaging-window", type=float, default=0.15)
+    parser.add_argument(
+        "--wall-timeout",
+        type=float,
+        default=0.0,
+        help="wall seconds without ROS-clock progress; 0 selects a conservative limit",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--require-pass", action="store_true")
     args = parser.parse_args()
 
     rclpy.init()
     node = RoundtripRecorder(args.direct_topic, args.fcu_topic)
-    started = time.monotonic()
-    try:
-        while rclpy.ok() and time.monotonic() - started < args.duration:
-            rclpy.spin_once(node, timeout_sec=0.2)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
+    wall_timeout_s = (
+        args.wall_timeout if args.wall_timeout > 0.0
+        else max(args.duration * 10.0, args.duration + 60.0)
+    )
+    duration_ros_s, duration_wall_s = record_for_ros_duration(
+        node, args.duration, wall_timeout_s
+    )
     result = summarize(node, args.maximum_lag, args.lag_step, args.averaging_window)
-    result["duration_s"] = args.duration
+    result["duration_s"] = duration_ros_s
+    result["duration_ros_s"] = duration_ros_s
+    result["duration_wall_s"] = duration_wall_s
+    result["requested_duration_ros_s"] = args.duration
+    result["wall_timeout_s"] = wall_timeout_s
+    result["wall_stall_timeout_s"] = wall_timeout_s
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

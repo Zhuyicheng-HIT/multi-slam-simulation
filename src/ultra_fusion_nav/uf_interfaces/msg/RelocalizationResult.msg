@@ -1,0 +1,17 @@
+std_msgs/Header header
+uint8 IDLE=0
+uint8 SEARCHING=1
+uint8 SUCCESS=2
+uint8 FAILED=3
+uint8 state
+string state_name
+bool request_active
+bool accepted
+uint32 candidate_id
+float32 descriptor_distance
+float32 registration_fitness
+geometry_msgs/PoseWithCovariance pose
+geometry_msgs/Pose source_lio_pose
+geometry_msgs/Pose map_from_lio
+uint32 reset_counter
+string reason

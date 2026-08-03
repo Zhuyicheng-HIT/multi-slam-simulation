@@ -21,9 +21,12 @@ LOCK_FILE=${LOCK_FILE:-/tmp/multi_slam_apm_sensor_stack.lock}
 ENABLE_EXTERNALNAV_EKF3=${ENABLE_EXTERNALNAV_EKF3:-${ENABLE_EXTERNALNAV_FUSION:-0}}
 ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=${ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV:-${ENABLE_EXTERNALNAV_FUSION:-0}}
 LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
+USE_SIM_TIME=${USE_SIM_TIME:-true}
 if [[ -z "${MID360_SIM_BRIDGE_MODE+x}" ]]; then
   if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
-    MID360_SIM_BRIDGE_MODE=pointcloud_python
+    # Keep simulation on the same Livox CustomMsg boundary as hardware.  The
+    # Python PointCloud2 bridge remains an explicit legacy/debug option only.
+    MID360_SIM_BRIDGE_MODE=direct_livox
   else
     MID360_SIM_BRIDGE_MODE=disabled
   fi
@@ -128,8 +131,44 @@ fi
 pids+=("$!")
 sleep 6
 
+setsid ros2 run multi_slam_uav_sim gazebo_clock_bridge --ros-args \
+  -p use_sim_time:=false \
+  -p world_name:="$WORLD_NAME" \
+  >"$LOG_DIR/ros_clock_bridge.log" 2>&1 &
+pids+=("$!")
+
+read_clock_ns() {
+  local sample sec nanosec
+  sample=$(timeout 10 ros2 topic echo /clock rosgraph_msgs/msg/Clock \
+    --once --field clock 2>/dev/null) \
+    || return 1
+  sec=$(awk '$1 == "sec:" {print $2; exit}' <<<"$sample")
+  nanosec=$(awk '$1 == "nanosec:" {print $2; exit}' <<<"$sample")
+  [[ "$sec" =~ ^[0-9]+$ && "$nanosec" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$((sec * 1000000000 + nanosec))"
+}
+
+clock_first_ns=$(read_clock_ns) || {
+  printf 'ROS /clock did not produce a valid Gazebo simulation timestamp.\n' >&2
+  exit 4
+}
+sleep 0.25
+clock_second_ns=$(read_clock_ns) || {
+  printf 'ROS /clock stopped before the second startup sample.\n' >&2
+  exit 4
+}
+if (( clock_second_ns <= clock_first_ns )); then
+  printf 'ROS /clock is not advancing: first=%s second=%s\n' \
+    "$clock_first_ns" "$clock_second_ns" >&2
+  exit 4
+fi
+printf 'ROS simulation clock active: delta=%.6fs\n' \
+  "$(awk -v a="$clock_first_ns" -v b="$clock_second_ns" \
+    'BEGIN {printf "%.6f", (b-a)/1e9}')"
+
 if [[ "${ENABLE_D435_BRIDGE:-1}" == "1" ]]; then
   setsid ros2 run multi_slam_uav_sim d435i_sim_bridge --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_prefix:=/front/d435i/gz \
     -p ros_prefix:=/front/d435i \
     -p publish_hz:=30.0 \
@@ -152,6 +191,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     fcu_range_topic="/mavros/rangefinder_sub"
   fi
   setsid ros2 run multi_slam_uav_sim gz_rgbd_latest_bridge --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_prefix:=/camera/camera \
     -p ros_prefix:=/camera/camera \
     -p publish_hz:=${FLOW_BRIDGE_HZ:-30.0} \
@@ -161,6 +201,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
   pids+=("$!")
 
   flow_args=(
+    -p use_sim_time:="$USE_SIM_TIME"
     -p image_topic:=/camera/camera/color/image_raw
     -p camera_info_topic:=/camera/camera/color/camera_info
     -p depth_topic:=/camera/camera/depth/image_rect_raw
@@ -195,6 +236,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
   # The MTF device clock is kept in raw MAVLink frames. Its ROS observations
   # must share MAVROS IMU's time domain for the companion fusion pipeline.
   setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p mode:=sim \
     -p input_topic:=/sim/optical_flow/rad_native \
     -p flow_topic:=/sim/optical_flow/rad \
@@ -202,13 +244,14 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
     -p imu_topic:=/mavros/imu/data_raw \
     -p nominal_rate_hz:=30.0 \
-    -p restamp_output:=${MTF_RESTAMP_OUTPUT:-true} \
+    -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
     -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
     >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
   pids+=("$!")
 
   if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
     setsid ros2 run multi_slam_uav_sim optical_flow_viewer --ros-args \
+      -p use_sim_time:="$USE_SIM_TIME" \
       -p image_topic:=/camera/camera/color/image_raw \
       -p flow_topic:=/sim/optical_flow/raw \
       >"$LOG_DIR/optical_flow_viewer.log" 2>&1 &
@@ -254,6 +297,7 @@ fi
 
 if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
   setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_sensor --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p input_topic:=/sim/optical_flow/rad \
     -p connection_url:=tcp:127.0.0.1:5762 \
     -p source_system:=200 \
@@ -262,6 +306,7 @@ if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
   pids+=("$!")
 
   setsid ros2 run multi_slam_uav_sim fcu_mavlink_flow_receiver --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p input_topic:=/uas1/mavlink_source \
     -p sensor_system_id:=200 \
     -p report_path:="$LOG_DIR/fcu_mavlink_flow_route.json" \
@@ -272,6 +317,7 @@ fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
   setsid ros2 run mavros mavros_node --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     --params-file /opt/ros/humble/share/mavros/launch/apm_config.yaml \
     --params-file /opt/ros/humble/share/mavros/launch/apm_pluginlists.yaml \
     --params-file "$PKG_SHARE/config/mavros_apm_rgbd.yaml" \
@@ -289,6 +335,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
   done
   printf 'Requesting ArduPilot telemetry streams for MAVROS pose/IMU/GPS topics...\n'
   ros2 run multi_slam_uav_sim mavros_stream_requester --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p mavros_ns:=/mavros \
     -p stream_rate_hz:=20 \
     -p position_rate_hz:=20.0 \
@@ -298,11 +345,13 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
 fi
 
 setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
+  -p use_sim_time:="$USE_SIM_TIME" \
   -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
 pids+=("$!")
 
 if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
   setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
     -p raw_topic:=/sim/mid360/points_raw \
     -p registered_topic:=/sim/mid360/cloud_registered \
@@ -316,6 +365,7 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
   pids+=("$!")
 elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
   setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
     -p livox_lidar_topic:=/livox/lidar \
     -p input_imu_topic:=/mavros/imu/data_raw \
@@ -330,6 +380,7 @@ fi
 
 if [[ "$ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV" == "1" ]]; then
   setsid ros2 launch uf_sensor_pipeline gps_flow_externalnav.launch.py \
+    use_sim_time:="$USE_SIM_TIME" \
     world_name:="$WORLD_NAME" \
     flow_truth_assistance:=${FLOW_USE_PHYSICS:-false} \
     performance_output_path:="$LOG_DIR/simulation_performance.json" \
@@ -339,10 +390,10 @@ if [[ "$ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV" == "1" ]]; then
 fi
 
 if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" ]]; then
-  setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args -p takeoff_alt:=3.0 -p length_x:=6.0 -p length_y:=4.0 -p speed_mps:=0.8 -p land_at_end:=true" >"$LOG_DIR/guided_rectangle_waypoints.log" 2>&1 &
+  setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args -p use_sim_time:='$USE_SIM_TIME' -p takeoff_alt:=3.0 -p length_x:=6.0 -p length_y:=4.0 -p speed_mps:=0.8 -p land_at_end:=true" >"$LOG_DIR/guided_rectangle_waypoints.log" 2>&1 &
   pids+=("$!")
 elif [[ "${AUTO_FLIGHT:-0}" == "1" ]]; then
-  setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_flight --ros-args -p takeoff_alt:=4.0 -p side_length:=5.0 -p hold_time:=5.0" >"$LOG_DIR/guided_flight.log" 2>&1 &
+  setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_flight --ros-args -p use_sim_time:='$USE_SIM_TIME' -p takeoff_alt:=4.0 -p side_length:=5.0 -p hold_time:=5.0" >"$LOG_DIR/guided_flight.log" 2>&1 &
   pids+=("$!")
 fi
 

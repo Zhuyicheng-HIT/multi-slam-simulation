@@ -17,6 +17,25 @@ def score(value, valid=True, arrival_s=0.0, reasons=(), count=1, minimum=1,
 
 
 class SchedulerCoreTest(unittest.TestCase):
+    def test_relocalization_failure_latches_failsafe_until_new_request(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("imu",),
+            required_modalities=("imu",),
+            minimum_usable_modalities=1,
+            transition_dwell_s=0.0,
+            recovery_dwell_s=0.0,
+        ))
+        scores = {"imu": {
+            "degradation_score": 0.1,
+            "valid": True,
+            "arrival_s": 0.0,
+        }}
+        result = core.update(scores, 0.0)
+        self.assertIn(result.health_state, ("NORMAL", "RECOVERED"))
+        failed = core.update(scores, 1.0, relocalization_failed=True)
+        self.assertEqual(failed.health_state, "FAILSAFE")
+        cleared = core.update(scores, 2.0, relocalization_requested=True)
+        self.assertEqual(cleared.health_state, "RELOCALIZING")
     def setUp(self):
         self.core = ReliabilitySchedulerCore(SchedulerConfig(
             active_modalities=("gnss", "optical_flow"),
@@ -71,9 +90,45 @@ class SchedulerCoreTest(unittest.TestCase):
         result = core.update({
             "lidar": score(0.10),
             "gnss": score(0.10),
-            "imu": score(0.90),
+            "imu": score(0.90, valid=False),
             "optical_flow": score(0.10),
         }, 0.1)
+        self.assertEqual(result.health_state, "FAILSAFE")
+
+    def test_high_dynamic_imu_remains_propagation_factor(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "gnss", "imu", "optical_flow"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            stale_after_s=1.0,
+            transition_dwell_s=0.0,
+        ))
+        result = core.update({
+            "lidar": score(0.10),
+            "gnss": score(0.10),
+            "imu": score(0.95, reasons=("high_dynamic",)),
+            "optical_flow": score(1.0, valid=False),
+        }, 0.1)
+        self.assertTrue(result.factor_enabled["imu"])
+        self.assertAlmostEqual(result.reliability_weights["imu"], 0.20)
+        self.assertLess(result.covariance_inflation["imu"], 20.0)
+        self.assertNotEqual(result.health_state, "FAILSAFE")
+
+    def test_saturated_imu_is_hard_disabled(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "gnss", "imu"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            stale_after_s=1.0,
+            transition_dwell_s=0.0,
+        ))
+        result = core.update({
+            "lidar": score(0.10),
+            "gnss": score(0.10),
+            "imu": score(0.90, reasons=("saturation_eq21",)),
+        }, 0.1)
+        self.assertFalse(result.factor_enabled["imu"])
+        self.assertEqual(result.covariance_inflation["imu"], 20.0)
         self.assertEqual(result.health_state, "FAILSAFE")
 
     def test_rotation_gated_flow_only_degrades_four_source_system(self):
@@ -242,6 +297,35 @@ class SchedulerCoreTest(unittest.TestCase):
             "optical_flow": score(0.10, arrival_s=1.9),
         }, 1.9)
         self.assertEqual(self.core.health_state, "NORMAL")
+
+    def test_future_source_timestamps_are_stale(self):
+        result = self.core.update({
+            "gnss": score(0.10, arrival_s=2.0),
+            "optical_flow": score(0.10, arrival_s=2.0),
+        }, 1.0)
+        self.assertEqual(result.health_state, "FAILSAFE")
+        self.assertFalse(result.factor_enabled["gnss"])
+        self.assertIn("score_stale_or_invalid", result.reasons["gnss"])
+
+    def test_clock_rewind_restarts_transition_dwell(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("gnss",),
+            minimum_usable_modalities=1,
+            stale_after_s=2.0,
+            transition_dwell_s=1.0,
+            recovery_dwell_s=0.0,
+        ))
+        healthy = {"gnss": score(0.10, arrival_s=10.0)}
+        core.update(healthy, 10.0)
+        core.update(healthy, 10.5)
+        self.assertEqual(core.health_state, "FAILSAFE")
+
+        rewound = {"gnss": score(0.10, arrival_s=1.0)}
+        core.update(rewound, 1.0)
+        core.update(rewound, 1.6)
+        self.assertEqual(core.health_state, "FAILSAFE")
+        core.update({"gnss": score(0.10, arrival_s=2.1)}, 2.1)
+        self.assertEqual(core.health_state, "RECOVERED")
 
 
 if __name__ == "__main__":

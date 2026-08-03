@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 import unittest
 
+import numpy as np
+
 
 def find_analyzer():
     start = Path(__file__).resolve()
@@ -55,6 +57,21 @@ class AnalyzerTimingTest(unittest.TestCase):
         self.assertTrue(valid)
         self.assertEqual(len(failures), 1)
         self.assertEqual(warnings, [])
+
+    def test_align_xy_removes_rigid_frame_offset_without_scaling(self):
+        truth = np.asarray([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0]])
+        rotation = np.asarray([[0.0, -1.0], [1.0, 0.0]])
+        estimate = (rotation.T @ (truth - np.asarray([4.0, -3.0])).T).T
+
+        aligned, _, _ = MODULE.align_xy(estimate, truth)
+
+        np.testing.assert_allclose(aligned, truth, atol=1.0e-9)
+
+    def test_wrap_angle_removes_full_turn_branch_error(self):
+        wrapped = MODULE.wrap_angle(np.deg2rad([270.0, -270.0, 361.0]))
+
+        np.testing.assert_allclose(
+            np.rad2deg(wrapped), [-90.0, 90.0, 1.0], atol=1.0e-9)
 
 
 if __name__ == "__main__":

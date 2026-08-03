@@ -58,24 +58,45 @@
     <model name="visible_floor_pattern">
       <static>true</static>
       <link name="pattern_link">
-        <visual name="x_grid_-8"><pose>-8 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
-        <visual name="x_grid_-6"><pose>-6 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.28 0.30 0.32 1</ambient><diffuse>0.28 0.30 0.32 1</diffuse></material></visual>
-        <visual name="x_grid_-4"><pose>-4 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
-        <visual name="x_grid_-2"><pose>-2 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.28 0.30 0.32 1</ambient><diffuse>0.28 0.30 0.32 1</diffuse></material></visual>
-        <visual name="x_grid_0"><pose>0 0 0.012 0 0 0</pose><geometry><box><size>0.10 16 0.012</size></box></geometry><material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material></visual>
-        <visual name="x_grid_2"><pose>2 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.28 0.30 0.32 1</ambient><diffuse>0.28 0.30 0.32 1</diffuse></material></visual>
-        <visual name="x_grid_4"><pose>4 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
-        <visual name="x_grid_6"><pose>6 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.28 0.30 0.32 1</ambient><diffuse>0.28 0.30 0.32 1</diffuse></material></visual>
-        <visual name="x_grid_8"><pose>8 0 0.012 0 0 0</pose><geometry><box><size>0.08 16 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
-        <visual name="y_grid_-8"><pose>0 -8 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
-        <visual name="y_grid_-6"><pose>0 -6 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.30 0.32 0.34 1</ambient><diffuse>0.30 0.32 0.34 1</diffuse></material></visual>
-        <visual name="y_grid_-4"><pose>0 -4 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
-        <visual name="y_grid_-2"><pose>0 -2 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.30 0.32 0.34 1</ambient><diffuse>0.30 0.32 0.34 1</diffuse></material></visual>
-        <visual name="y_grid_0"><pose>0 0 0.014 0 0 0</pose><geometry><box><size>18 0.10 0.012</size></box></geometry><material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material></visual>
-        <visual name="y_grid_2"><pose>0 2 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.30 0.32 0.34 1</ambient><diffuse>0.30 0.32 0.34 1</diffuse></material></visual>
-        <visual name="y_grid_4"><pose>0 4 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
-        <visual name="y_grid_6"><pose>0 6 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.30 0.32 0.34 1</ambient><diffuse>0.30 0.32 0.34 1</diffuse></material></visual>
-        <visual name="y_grid_8"><pose>0 8 0.014 0 0 0</pose><geometry><box><size>18 0.08 0.012</size></box></geometry><material><ambient>0.08 0.10 0.12 1</ambient><diffuse>0.08 0.10 0.12 1</diffuse></material></visual>
+        <!-- Full 38 m visual-only grid: dense enough for the 100x100 flow camera without adding collisions. -->
+        <visual name="x_grid_-18"><pose>-18 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_-16"><pose>-16 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_-14"><pose>-14 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_-12"><pose>-12 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_-10"><pose>-10 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_-8"><pose>-8 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_-6"><pose>-6 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_-4"><pose>-4 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_-2"><pose>-2 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_0"><pose>0 0 0.012 0 0 0</pose><geometry><box><size>0.14 38 0.012</size></box></geometry><material><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+        <visual name="x_grid_2"><pose>2 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_4"><pose>4 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_6"><pose>6 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_8"><pose>8 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_10"><pose>10 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_12"><pose>12 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_14"><pose>14 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="x_grid_16"><pose>16 0 0.012 0 0 0</pose><geometry><box><size>0.12 38 0.012</size></box></geometry><material><diffuse>0.34 0.36 0.38 1</diffuse></material></visual>
+        <visual name="x_grid_18"><pose>18 0 0.012 0 0 0</pose><geometry><box><size>0.08 38 0.012</size></box></geometry><material><diffuse>0.06 0.07 0.08 1</diffuse></material></visual>
+        <visual name="y_grid_-18"><pose>0 -18 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_-16"><pose>0 -16 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_-14"><pose>0 -14 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_-12"><pose>0 -12 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_-10"><pose>0 -10 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_-8"><pose>0 -8 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_-6"><pose>0 -6 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_-4"><pose>0 -4 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_-2"><pose>0 -2 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_0"><pose>0 0 0.014 0 0 0</pose><geometry><box><size>38 0.14 0.012</size></box></geometry><material><diffuse>0.01 0.01 0.01 1</diffuse></material></visual>
+        <visual name="y_grid_2"><pose>0 2 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_4"><pose>0 4 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_6"><pose>0 6 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_8"><pose>0 8 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_10"><pose>0 10 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_12"><pose>0 12 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_14"><pose>0 14 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
+        <visual name="y_grid_16"><pose>0 16 0.014 0 0 0</pose><geometry><box><size>38 0.12 0.012</size></box></geometry><material><diffuse>0.32 0.34 0.36 1</diffuse></material></visual>
+        <visual name="y_grid_18"><pose>0 18 0.014 0 0 0</pose><geometry><box><size>38 0.08 0.012</size></box></geometry><material><diffuse>0.05 0.06 0.07 1</diffuse></material></visual>
         <visual name="blue_patch"><pose>-5.2 -5.2 0.022 0 0 0.22</pose><geometry><box><size>1.4 0.9 0.014</size></box></geometry><material><ambient>0.05 0.28 0.85 1</ambient><diffuse>0.05 0.28 0.85 1</diffuse></material></visual>
         <visual name="yellow_patch"><pose>3.7 -4.8 0.022 0 0 -0.32</pose><geometry><box><size>1.2 1.1 0.014</size></box></geometry><material><ambient>0.95 0.82 0.08 1</ambient><diffuse>0.95 0.82 0.08 1</diffuse></material></visual>
         <visual name="red_patch"><pose>-3.0 3.4 0.022 0 0 0.65</pose><geometry><box><size>1.0 1.5 0.014</size></box></geometry><material><ambient>0.82 0.10 0.08 1</ambient><diffuse>0.82 0.10 0.08 1</diffuse></material></visual>
@@ -226,8 +247,27 @@
           <material><ambient>0.95 0.90 0.10 1.0</ambient><diffuse>0.95 0.90 0.10 1.0</diffuse></material>
         </visual>
 
+        <!-- Asymmetric outer markers prevent the expanded floor from becoming a repetitive grid. -->
+        <visual name="marker_20"><pose>-15.2 -14.5 0.035 0 0 0.18</pose><geometry><box><size>1.35 0.42 0.025</size></box></geometry><material><diffuse>0.04 0.04 0.04 1</diffuse></material></visual>
+        <visual name="marker_21"><pose>-8.8 -15.7 0.035 0 0 -0.42</pose><geometry><box><size>0.48 1.55 0.025</size></box></geometry><material><diffuse>0.92 0.78 0.08 1</diffuse></material></visual>
+        <visual name="marker_22"><pose>0.6 -14.8 0.035 0 0 0.72</pose><geometry><box><size>1.10 0.62 0.025</size></box></geometry><material><diffuse>0.08 0.34 0.88 1</diffuse></material></visual>
+        <visual name="marker_23"><pose>10.4 -15.3 0.035 0 0 0.08</pose><geometry><box><size>0.55 1.30 0.025</size></box></geometry><material><diffuse>0.78 0.10 0.12 1</diffuse></material></visual>
+        <visual name="marker_24"><pose>15.5 -8.7 0.035 0 0 -0.65</pose><geometry><box><size>1.45 0.45 0.025</size></box></geometry><material><diffuse>0.06 0.58 0.26 1</diffuse></material></visual>
+        <visual name="marker_25"><pose>-15.7 -5.4 0.035 0 0 0.38</pose><geometry><box><size>0.62 1.22 0.025</size></box></geometry><material><diffuse>0.80 0.18 0.72 1</diffuse></material></visual>
+        <visual name="marker_26"><pose>15.2 1.1 0.035 0 0 0.24</pose><geometry><box><size>1.52 0.38 0.025</size></box></geometry><material><diffuse>0.92 0.92 0.88 1</diffuse></material></visual>
+        <visual name="marker_27"><pose>-14.8 4.9 0.035 0 0 -0.18</pose><geometry><box><size>0.44 1.42 0.025</size></box></geometry><material><diffuse>0.05 0.05 0.05 1</diffuse></material></visual>
+        <visual name="marker_28"><pose>13.8 8.4 0.035 0 0 0.82</pose><geometry><box><size>1.20 0.58 0.025</size></box></geometry><material><diffuse>0.08 0.46 0.82 1</diffuse></material></visual>
+        <visual name="marker_29"><pose>-15.1 14.2 0.035 0 0 0.55</pose><geometry><box><size>1.38 0.50 0.025</size></box></geometry><material><diffuse>0.88 0.42 0.06 1</diffuse></material></visual>
+        <visual name="marker_30"><pose>-4.6 15.6 0.035 0 0 -0.48</pose><geometry><box><size>0.50 1.48 0.025</size></box></geometry><material><diffuse>0.12 0.62 0.34 1</diffuse></material></visual>
+        <visual name="marker_31"><pose>8.2 14.9 0.035 0 0 0.12</pose><geometry><box><size>1.55 0.40 0.025</size></box></geometry><material><diffuse>0.82 0.12 0.10 1</diffuse></material></visual>
+
       </link>
     </model>
+
+    <include>
+      <uri>model://s_curve_lidar_landmarks</uri>
+      <name>s_curve_lidar_landmarks</name>
+    </include>
 
     <include>
       <uri>model://iris_apm_rgbd</uri>

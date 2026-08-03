@@ -31,22 +31,42 @@ def pixel_flow_to_radians(dx_px, dy_px, fx_px, fy_px):
     return math.atan2(float(dx_px), float(fx_px)), math.atan2(float(dy_px), float(fy_px))
 
 
+def should_publish_accumulated_flow(
+    dx_px,
+    dy_px,
+    quality,
+    integration_s,
+    min_displacement_px,
+    max_integration_s,
+    publish_low_quality,
+):
+    """Release a reference-frame measurement once it is observable or old."""
+    if not math.isfinite(float(integration_s)) or integration_s <= 0.0:
+        return False
+    displacement_px = math.hypot(float(dx_px), float(dy_px))
+    observable = int(quality) > 0 and displacement_px >= float(min_displacement_px)
+    expired = integration_s >= float(max_integration_s)
+    return observable or (expired and (int(quality) > 0 or publish_low_quality))
+
+
 def gazebo_downward_image_flow_to_mavlink(dx_px, dy_px, fx_px, fy_px):
     """Convert the Gazebo downward-camera image axes to OPTICAL_FLOW_RAD.
 
-    Gazebo's rendered image column increases opposite to MAVLink integrated_x
-    for the camera mount used by this model. The image row and MAVLink
-    integrated_y directions agree. The matching horizontal gyro projection is
-    applied by :func:`gazebo_downward_gyro_to_mavlink`.
+    For the downward mount, rightward sensor motion moves ground features
+    toward decreasing image columns. MAVLink FRD recovers right displacement
+    as ``-integrated_x * distance``, so the image-column angular displacement
+    must be preserved here. The image row and integrated_y directions agree.
+    The matching horizontal gyro projection is applied by
+    :func:`gazebo_downward_gyro_to_mavlink`.
     """
     image_x, image_y = pixel_flow_to_radians(dx_px, dy_px, fx_px, fy_px)
-    return -image_x, image_y
+    return image_x, image_y
 
 
 def gazebo_downward_gyro_to_mavlink(gyro_frd):
     """Apply the same horizontal-axis mount transform to gyro integrals."""
     gx, gy, gz = (float(value) for value in gyro_frd)
-    return -gx, gy, gz
+    return gx, gy, gz
 
 
 def scale_mavlink_translation(raw_flow_rad, gyro_rad, scale):

@@ -42,8 +42,8 @@ if [[ -z "$bag_duration_s" ]]; then
   printf 'could not read rosbag2 duration: %s\n' "$BAG_DIR" >&2
   exit 2
 fi
-record_duration_s=$(awk -v duration="$bag_duration_s" -v rate="$PLAYBACK_RATE" \
-  -v post="$POST_ROLL_S" 'BEGIN {printf "%.3f", duration / rate + post + 2.0}')
+record_duration_s=$(awk -v duration="$bag_duration_s" \
+  'BEGIN {printf "%.3f", duration}')
 
 playback_topics=(
   /fast_lio/native_lidar_factor
@@ -89,12 +89,14 @@ run_mode() {
   local replay_flow_trigger_pid=""
   if [[ "$RESYNTHESIZE_RELIABILITY" == "1" ]]; then
     setsid ros2 run uf_reliability reliability_monitor --ros-args \
+      -p use_sim_time:=true \
       --params-file "$REPO_ROOT/install/uf_reliability/share/uf_reliability/config/reliability.yaml" \
       >"$mode_dir/reliability_monitor.stdout.log" \
       2>"$mode_dir/reliability_monitor.stderr.log" &
     monitor_pid=$!
     pids+=("$monitor_pid")
     setsid ros2 run uf_reliability reliability_scheduler --ros-args \
+      -p use_sim_time:=true \
       --params-file "$REPO_ROOT/install/uf_reliability/share/uf_reliability/config/scheduler_config.yaml" \
       >"$mode_dir/reliability_scheduler.stdout.log" \
       2>"$mode_dir/reliability_scheduler.stderr.log" &
@@ -105,10 +107,13 @@ run_mode() {
   if awk "BEGIN {exit !($REPLAY_OPTICAL_FLOW_SCALE != 1.0)}"; then
     setsid ros2 run uf_sensor_pipeline fault_injector --ros-args \
       -r __node:=replay_flow_fault_injector \
+      -p use_sim_time:=true \
       -p modality:=optical_flow \
       -p input_topic:=/replay/optical_flow/rad \
       -p output_topic:=/sensors/optical_flow/rad \
-      -p fault_type:=none \
+      -p fault_type:=scale \
+      -p fault_start_s:="$REPLAY_FLOW_FAULT_START_SOURCE_S" \
+      -p fault_duration_s:="$REPLAY_FLOW_FAULT_DURATION_SOURCE_S" \
       -p magnitude:="$REPLAY_OPTICAL_FLOW_SCALE" \
       >"$mode_dir/replay_flow_fault.stdout.log" \
       2>"$mode_dir/replay_flow_fault.stderr.log" &
@@ -117,6 +122,7 @@ run_mode() {
   fi
 
   setsid ros2 run uf_backend_fusion online_backend_fusion --ros-args \
+    -p use_sim_time:=true \
     --params-file "$REPO_ROOT/install/uf_backend_fusion/share/uf_backend_fusion/config/online_backend.yaml" \
     -p reliability_mode:="$mode" \
     >"$mode_dir/backend.stdout.log" 2>"$mode_dir/backend.stderr.log" &
@@ -139,39 +145,22 @@ run_mode() {
   pids+=("$timeline_pid")
 
   sleep 1
-  if [[ -n "$replay_flow_fault_pid" ]]; then
-    local fault_start_wall_s
-    local fault_duration_wall_s
-    fault_start_wall_s=$(awk \
-      -v source="$REPLAY_FLOW_FAULT_START_SOURCE_S" -v rate="$PLAYBACK_RATE" \
-      'BEGIN {printf "%.6f", source / rate}')
-    fault_duration_wall_s=$(awk \
-      -v source="$REPLAY_FLOW_FAULT_DURATION_SOURCE_S" -v rate="$PLAYBACK_RATE" \
-      'BEGIN {printf "%.6f", source / rate}')
-    (
-      sleep "$fault_start_wall_s"
-      ros2 param set /replay_flow_fault_injector fault_type scale
-      if awk "BEGIN {exit !($fault_duration_wall_s > 0.0)}"; then
-        sleep "$fault_duration_wall_s"
-        ros2 param set /replay_flow_fault_injector fault_type none
-      fi
-    ) >"$mode_dir/replay_flow_trigger.log" 2>&1 &
-    replay_flow_trigger_pid=$!
-    pids+=("$replay_flow_trigger_pid")
-  fi
   if [[ "$RESYNTHESIZE_RELIABILITY" == "1" ]]; then
     if [[ -n "$replay_flow_fault_pid" ]]; then
       ros2 bag play "$BAG_DIR" --rate "$PLAYBACK_RATE" \
+        --clock 100 \
         --topics "${playback_topics[@]}" \
         --remap /sensors/optical_flow/rad:=/replay/optical_flow/rad \
         >"$mode_dir/play.stdout.log" 2>"$mode_dir/play.stderr.log"
     else
       ros2 bag play "$BAG_DIR" --rate "$PLAYBACK_RATE" \
+        --clock 100 \
         --topics "${playback_topics[@]}" \
         >"$mode_dir/play.stdout.log" 2>"$mode_dir/play.stderr.log"
     fi
   else
     ros2 bag play "$BAG_DIR" --rate "$PLAYBACK_RATE" \
+      --clock 100 \
       >"$mode_dir/play.stdout.log" 2>"$mode_dir/play.stderr.log"
   fi
   sleep "$POST_ROLL_S"
