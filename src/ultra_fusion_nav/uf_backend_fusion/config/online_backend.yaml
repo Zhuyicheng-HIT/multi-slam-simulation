@@ -58,8 +58,8 @@ unified_backend_fusion:
     gnss_jump_gate_m: 20.0
     gnss_jump_speed_mps: 15.0
     # Keep optical flow in the body frame and relinearize its map projection
-    # against the previous window state. The FCU-IMU turn gate still suppresses
-    # translation during rapid yaw motion.
+    # against the previous window state. A valid gyro-compensated exposure is
+    # retained through yaw; residual and scheduler gates remain authoritative.
     optical_flow_yaw_coupling_enabled: true
     flow_rotation_lower_yaw_rate_radps: 0.08
     flow_rotation_upper_yaw_rate_radps: 0.30
@@ -68,6 +68,9 @@ unified_backend_fusion:
     flow_rotation_minimum_translation_m: 0.01
     flow_rotation_recovery_max_base_score: 0.55
     flow_rotation_imu_max_gap_s: 0.12
+    # Match ArduPilot: compensate a valid flow exposure with FCU gyro before
+    # applying innovation/scheduler weighting; yaw rate alone is not a fault.
+    flow_rotation_allow_compensated: true
     imu_factor_enabled: true
     # Until an independently validated visual heading factor is present, IMU
     # alone only propagates relative yaw. Keep a weak native LiDAR anchor.

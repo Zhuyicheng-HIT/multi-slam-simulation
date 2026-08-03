@@ -29,24 +29,61 @@ def planar_norm(value):
     return math.hypot(float(values[0]), float(values[1]))
 
 
-def optical_flow_displacement_frd(integrated_x, integrated_y,
-                                  integrated_xgyro, integrated_ygyro,
-                                  ground_distance_m):
-    """Invert MAVLink OPTICAL_FLOW_RAD geometry into planar sensor-FRD displacement."""
+def apm_optical_flow_compensated_los(
+    integrated_x, integrated_y, integrated_xgyro, integrated_ygyro,
+):
+    """Return APM's compensated LOS integrals in the sensor axes.
+
+    ArduPilot first negates the raw optical-flow convention and then adds the
+    body-rate integral: ``flowRadXYcomp = -rawFlowRates + bodyRadXY``.  Keeping
+    this operation explicit prevents a later axis conversion from accidentally
+    applying the gyro correction twice.
+    """
     values = (
         integrated_x, integrated_y, integrated_xgyro, integrated_ygyro,
-        ground_distance_m,
     )
     if not all(math.isfinite(float(value)) for value in values):
         return None
+    return (
+        -float(integrated_x) + float(integrated_xgyro),
+        -float(integrated_y) + float(integrated_ygyro),
+    )
+
+
+def optical_flow_displacement_frd(integrated_x, integrated_y,
+                                  integrated_xgyro, integrated_ygyro,
+                                  ground_distance_m):
+    """Convert APM-compensated flow into planar sensor-FRD displacement."""
+    if not math.isfinite(float(ground_distance_m)):
+        return None
     if float(ground_distance_m) <= 0.0:
         return None
-    translational_x = float(integrated_x) - float(integrated_xgyro)
-    translational_y = float(integrated_y) - float(integrated_ygyro)
-    return (
-        translational_y * float(ground_distance_m),
-        -translational_x * float(ground_distance_m),
+    compensated = apm_optical_flow_compensated_los(
+        integrated_x, integrated_y, integrated_xgyro, integrated_ygyro,
     )
+    if compensated is None:
+        return None
+    compensated_x, compensated_y = compensated
+    return (
+        -compensated_y * float(ground_distance_m),
+        compensated_x * float(ground_distance_m),
+    )
+
+
+def optical_flow_velocity_frd(integrated_x, integrated_y,
+                              integrated_xgyro, integrated_ygyro,
+                              integration_time_s, ground_distance_m):
+    """Return APM-compatible sensor-FRD velocity from one flow exposure."""
+    integration_time_s = float(integration_time_s)
+    if not math.isfinite(integration_time_s) or integration_time_s <= 0.0:
+        return None
+    displacement = optical_flow_displacement_frd(
+        integrated_x, integrated_y, integrated_xgyro, integrated_ygyro,
+        ground_distance_m,
+    )
+    if displacement is None:
+        return None
+    return tuple(float(value) / integration_time_s for value in displacement)
 
 
 def finalize_score(score, coverage, evidence, reasons):

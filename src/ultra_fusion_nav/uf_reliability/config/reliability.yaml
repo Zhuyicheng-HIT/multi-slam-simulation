@@ -56,6 +56,8 @@ reliability_monitor:
     optical_flow.rotation_gate.minimum_translation_speed_mps: 0.08
     optical_flow.rotation_gate.recovery_max_base_score: 0.55
     optical_flow.rotation_gate.imu_max_gap_s: 0.12
+    # Match APM: subtract the FCU/body gyro contribution before using flow.
+    optical_flow.rotation_gate.allow_compensated: true
     vision.feature_reference: 150
     vision.tau_reprojection_px: 3.0
     vision.weights: [0.30, 0.25, 0.25, 0.20]

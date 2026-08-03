@@ -201,6 +201,9 @@ class ReliabilityMonitor(Node):
             "optical_flow.rotation_gate.minimum_translation_speed_mps": 0.08,
             "optical_flow.rotation_gate.recovery_max_base_score": 0.55,
             "optical_flow.rotation_gate.imu_max_gap_s": 0.12,
+            # APM's FCU optical-flow path compensates body rotation before
+            # fusion.  Keep the same behavior for the direct companion path.
+            "optical_flow.rotation_gate.allow_compensated": True,
             "vision.feature_reference": 150,
             "vision.tau_reprojection_px": 3.0,
             "vision.weights": [0.30, 0.25, 0.25, 0.20],
@@ -248,6 +251,8 @@ class ReliabilityMonitor(Node):
                     "optical_flow.rotation_gate.minimum_translation_m").value),
                 minimum_translation_speed_mps=float(self.get_parameter(
                     "optical_flow.rotation_gate.minimum_translation_speed_mps").value),
+                allow_compensated_rotation=bool(self.get_parameter(
+                    "optical_flow.rotation_gate.allow_compensated").value),
             )
         )
         self.latest_depth_ratio = -1.0
@@ -640,18 +645,23 @@ class ReliabilityMonitor(Node):
             None if flow_displacement is None
             else math.hypot(float(flow_displacement[0]), float(flow_displacement[1]))
         )
-        recovery_healthy = (
-            flow_displacement is not None
-            and prediction is not None
-            and score <= float(self.get_parameter(
-                "optical_flow.rotation_gate.recovery_max_base_score").value)
+        # The gyro-compensated displacement is an observation in its own
+        # right.  A missing LIO prediction must not turn a valid flow sample
+        # into a rotation-gate failure; its quality and distance still enter
+        # the normal score and scheduler below.
+        rotation_compensated = flow_displacement is not None
+        observation_healthy = (
+            rotation_compensated
+            and int(msg.quality) > 0
+            and 0.10 <= float(msg.distance) <= 30.0
         )
         rotation_gate = self.flow_rotation_gate.update(
             end_s,
             yaw_rate,
             translation_norm,
-            recovery_healthy,
+            observation_healthy,
             translation_interval_s=integration_s,
+            rotation_compensated=rotation_compensated,
         )
         rotation_term = 1.0 - rotation_gate.weight
         score = max(float(score), rotation_term)

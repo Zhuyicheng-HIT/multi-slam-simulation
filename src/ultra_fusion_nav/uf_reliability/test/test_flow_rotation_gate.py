@@ -91,6 +91,22 @@ class FlowRotationGateTest(unittest.TestCase):
         self.assertFalse(too_slow.translation_ready)
         self.assertEqual(too_slow.reason, "waiting_for_consistent_translation")
 
+    def test_compensated_rotation_does_not_disable_flow(self):
+        gate = OpticalFlowRotationGate(FlowRotationGateConfig(
+            lower_yaw_rate_radps=0.08,
+            upper_yaw_rate_radps=0.30,
+            allow_compensated_rotation=True,
+        ))
+        result = gate.update(
+            1.0, 0.80, 0.10, True,
+            translation_interval_s=0.05,
+            rotation_compensated=True,
+        )
+        self.assertEqual(result.phase, "ACTIVE")
+        self.assertEqual(result.weight, 1.0)
+        self.assertFalse(result.hard_disabled)
+        self.assertEqual(result.reason, "apm_rotation_compensated")
+
 
 if __name__ == "__main__":
     unittest.main()

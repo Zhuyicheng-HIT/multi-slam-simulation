@@ -3,7 +3,8 @@ import unittest
 from uf_reliability.scoring import (
     augment_lidar_score, gnss_integrity_quality, gnss_score, imu_score, lidar_score,
     lidar_factor_score, lidar_innovation_score, lidar_map_score,
-    optical_flow_displacement_frd, optical_flow_score, vision_score,
+    apm_optical_flow_compensated_los, optical_flow_displacement_frd,
+    optical_flow_score, optical_flow_velocity_frd, vision_score,
 )
 
 
@@ -130,6 +131,23 @@ class ScoringTest(unittest.TestCase):
         displacement = optical_flow_displacement_frd(0.03, 0.12, 0.01, 0.02, 2.0)
         self.assertAlmostEqual(displacement[0], 0.20)
         self.assertAlmostEqual(displacement[1], -0.04)
+
+    def test_apm_rotation_compensation_removes_pure_rotation(self):
+        los = apm_optical_flow_compensated_los(0.03, -0.02, 0.03, -0.02)
+        self.assertAlmostEqual(los[0], 0.0)
+        self.assertAlmostEqual(los[1], 0.0)
+        displacement = optical_flow_displacement_frd(
+            0.03, -0.02, 0.03, -0.02, 2.0,
+        )
+        self.assertAlmostEqual(displacement[0], 0.0)
+        self.assertAlmostEqual(displacement[1], 0.0)
+
+    def test_apm_flow_velocity_uses_exposure_duration(self):
+        velocity = optical_flow_velocity_frd(
+            0.03, 0.12, 0.01, 0.02, 0.05, 2.0,
+        )
+        self.assertAlmostEqual(velocity[0], 4.0)
+        self.assertAlmostEqual(velocity[1], -0.8)
 
     def test_vision_holes_and_blur_increase(self):
         good = vision_score(150, 150, 1.0, 0.2, 0.98)[0]

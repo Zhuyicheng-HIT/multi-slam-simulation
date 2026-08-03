@@ -14,6 +14,7 @@ class FlowRotationGateConfig:
     recovery_ramp_s: float = 1.5
     minimum_translation_m: float = 0.01
     minimum_translation_speed_mps: float = 0.0
+    allow_compensated_rotation: bool = False
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,7 @@ class OpticalFlowRotationGate:
         translation_norm_m,
         observation_healthy,
         translation_interval_s=None,
+        rotation_compensated=False,
     ):
         stamp_s = float(stamp_s)
         if not math.isfinite(stamp_s):
@@ -201,6 +203,27 @@ class OpticalFlowRotationGate:
             return self._result(
                 0.0, self.phase, None, translation_ready,
                 "fcu_yaw_rate_unavailable",
+            )
+
+        # ArduPilot does not reject a turn merely because yaw rate is high. It
+        # compensates the optical-flow LOS rate with the FCU gyro first and
+        # then lets the innovation gate decide.  Preserve the old hysteretic
+        # behavior for callers that have not proven gyro compensation, while
+        # allowing the APM-compatible path to remain usable during a turn.
+        if (
+            self.config.allow_compensated_rotation
+            and rotation_compensated
+            and observation_healthy
+        ):
+            self.phase = "ACTIVE"
+            self.stable_since_s = None
+            self.ramp_since_s = None
+            return self._result(
+                1.0,
+                self.phase,
+                abs(float(yaw_rate_radps)),
+                translation_ready,
+                "apm_rotation_compensated",
             )
 
         yaw_rate_abs = abs(float(yaw_rate_radps))

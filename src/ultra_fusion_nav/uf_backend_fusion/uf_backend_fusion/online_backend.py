@@ -1012,6 +1012,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("flow_rotation_minimum_translation_m", 0.01)
         self.declare_parameter("flow_rotation_recovery_max_base_score", 0.55)
         self.declare_parameter("flow_rotation_imu_max_gap_s", 0.12)
+        self.declare_parameter("flow_rotation_allow_compensated", True)
         self.declare_parameter("imu_factor_enabled", True)
         self.declare_parameter("preserve_lio_anchor", True)
         self.declare_parameter("lidar_anchor_minimum_effective_weight", 0.10)
@@ -1156,6 +1157,8 @@ class UnifiedBackendNode(Node):
             self.get_parameter("gnss_jump_speed_mps").value)
         self.optical_flow_yaw_coupling_enabled = bool(
             self.get_parameter("optical_flow_yaw_coupling_enabled").value)
+        self.flow_rotation_allow_compensated = bool(
+            self.get_parameter("flow_rotation_allow_compensated").value)
         self.flow_rotation_recovery_max_base_score = float(
             self.get_parameter("flow_rotation_recovery_max_base_score").value)
         self.flow_rotation_imu_max_gap_s = float(
@@ -1455,6 +1458,7 @@ class UnifiedBackendNode(Node):
                     "flow_rotation_recovery_ramp_s").value),
                 minimum_translation_m=float(self.get_parameter(
                     "flow_rotation_minimum_translation_m").value),
+                allow_compensated_rotation=self.flow_rotation_allow_compensated,
             )
         )
         self.native_lidar_buffer = NativeFactorBuffer(max_size=128)
@@ -2235,6 +2239,7 @@ class UnifiedBackendNode(Node):
         if observation is None:
             self.last_flow_reason = "no_valid_observation"
             return
+        flow_displacement = observation["delta_position"]
         score, evidence, reasons = optical_flow_score(
             observation["delta_position"],
             [float(lio_delta[0]), float(lio_delta[1])],
@@ -2265,10 +2270,8 @@ class UnifiedBackendNode(Node):
             current_stamp,
             yaw_rate,
             translation_norm,
-            (
-                not quality_or_distance_invalid
-                and score <= self.flow_rotation_recovery_max_base_score
-            ),
+            flow_displacement is not None and not quality_or_distance_invalid,
+            rotation_compensated=flow_displacement is not None,
         )
         decision["evidence"].update({
             "fcu_yaw_rate_abs_radps": rotation_gate.yaw_rate_abs_radps,
