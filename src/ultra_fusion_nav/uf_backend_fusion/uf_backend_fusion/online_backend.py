@@ -901,6 +901,57 @@ def flow_observation_delta(flow_records, yaw):
     }
 
 
+def _flow_record_is_future(item, current_stamp):
+    try:
+        stamp = float(item["stamp_s"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return math.isfinite(stamp) and stamp > float(current_stamp)
+
+
+def select_flow_records(flow_records, previous_stamp, current_stamp, max_age_s):
+    """Select one flow interval without consuming future samples.
+
+    The normal association interval is ``(previous_stamp, current_stamp]``.
+    If it is empty, a recent late sample is used once as a bounded fallback.
+    All samples at or before ``current_stamp`` are consumed so a late packet
+    cannot be applied repeatedly to later intervals.
+    """
+    previous_stamp = float(previous_stamp)
+    current_stamp = float(current_stamp)
+    max_age_s = float(max_age_s)
+    if (
+        not math.isfinite(previous_stamp)
+        or not math.isfinite(current_stamp)
+        or not math.isfinite(max_age_s)
+        or current_stamp <= previous_stamp
+        or max_age_s < 0.0
+    ):
+        raise ValueError("invalid flow interval or age limit")
+
+    records = list(flow_records)
+    strict = []
+    recent = []
+    cutoff = current_stamp - max_age_s
+    for item in records:
+        try:
+            stamp = float(item["stamp_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(stamp):
+            continue
+        if previous_stamp < stamp <= current_stamp:
+            strict.append(item)
+        elif cutoff < stamp <= current_stamp:
+            recent.append(item)
+
+    if strict:
+        return strict, [item for item in records if _flow_record_is_future(item, current_stamp)], False
+    if recent:
+        return recent, [item for item in records if _flow_record_is_future(item, current_stamp)], True
+    return [], [item for item in records if _flow_record_is_future(item, current_stamp)], False
+
+
 class UnifiedBackendNode(Node):
     def __init__(self):
         super().__init__("unified_backend_fusion")
@@ -1391,6 +1442,7 @@ class UnifiedBackendNode(Node):
         self.path.poses = []
         self.imu_buffer = deque(maxlen=10000)
         self.flow_buffer = deque(maxlen=3000)
+        self.flow_buffer_lock = threading.Lock()
         self.flow_rotation_gate = OpticalFlowRotationGate(
             FlowRotationGateConfig(
                 lower_yaw_rate_radps=float(self.get_parameter(
@@ -1914,15 +1966,16 @@ class UnifiedBackendNode(Node):
         stamp = self._flow_stamp(stamp_seconds(msg.header.stamp))
         if stamp is None:
             return
-        self.flow_buffer.append({
-            "stamp_s": stamp,
-            "integrated_x": float(msg.integrated_x),
-            "integrated_y": float(msg.integrated_y),
-            "integrated_xgyro": float(msg.integrated_xgyro),
-            "integrated_ygyro": float(msg.integrated_ygyro),
-            "quality": int(msg.quality),
-            "distance_m": float(msg.distance),
-        })
+        with self.flow_buffer_lock:
+            self.flow_buffer.append({
+                "stamp_s": stamp,
+                "integrated_x": float(msg.integrated_x),
+                "integrated_y": float(msg.integrated_y),
+                "integrated_xgyro": float(msg.integrated_xgyro),
+                "integrated_ygyro": float(msg.integrated_ygyro),
+                "quality": int(msg.quality),
+                "distance_m": float(msg.distance),
+            })
 
     def _gnss(self, msg):
         if msg.status.status < NavSatStatus.STATUS_FIX:
@@ -2166,17 +2219,18 @@ class UnifiedBackendNode(Node):
         self.counts["gnss_factors"] += 1
 
     def _flow_factor(self, previous_stamp, current_stamp, previous_yaw, previous_index, current_index, lio_delta):
-        if not self.flow_buffer:
+        self.counts["flow_factor_attempts"] += 1
+        with self.flow_buffer_lock:
+            records, remaining, delayed = select_flow_records(
+                self.flow_buffer,
+                previous_stamp,
+                current_stamp,
+                self.flow_max_age_s,
+            )
+            self.flow_buffer = deque(remaining, maxlen=3000)
+        if not records:
             self.last_flow_reason = "no_samples"
             return
-        stamps = [item["stamp_s"] for item in self.flow_buffer]
-        start = bisect_right(stamps, previous_stamp)
-        end = bisect_right(stamps, current_stamp)
-        records = list(self.flow_buffer)[start:end]
-        self.flow_buffer = deque(
-            [item for item in self.flow_buffer if item["stamp_s"] > current_stamp],
-            maxlen=3000,
-        )
         observation = flow_observation_delta(records, previous_yaw)
         if observation is None:
             self.last_flow_reason = "no_valid_observation"
@@ -2256,7 +2310,6 @@ class UnifiedBackendNode(Node):
                 covariance=[0.10 ** 2, 0.10 ** 2, 1.0], decision=decision,
             )
             self.last_flow_factor_type = "map_translation"
-        self.counts["flow_factor_attempts"] += 1
         if (
             bool(decision.get("factor_enabled", True))
             and float(decision.get("reliability_weight", 1.0)) > 0.0

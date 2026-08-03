@@ -477,7 +477,8 @@ def imu_score(excitation, preintegration_residual_mahalanobis, saturation,
 
 def optical_flow_score(delta_position_flow_m, delta_position_prediction_m,
                        quality, ground_distance_m, tau_translation=0.30,
-                       weights=(0.60, 0.25, 0.15)):
+                       weights=(0.60, 0.25, 0.15),
+                       allow_prediction_fallback=False):
     flow_norm = planar_norm(delta_position_flow_m)
     prediction_norm = planar_norm(delta_position_prediction_m)
     increment_residual = None
@@ -497,11 +498,26 @@ def optical_flow_score(delta_position_flow_m, delta_position_prediction_m,
         increment_term = min(1.0, increment_residual / tau_translation)
     quality_term = 1.0 - clamp(float(quality) / 255.0)
     distance_term = 0.0 if 0.10 <= float(ground_distance_m) <= 30.0 else 1.0
-    score, coverage = weighted_score([
-        (increment_term, weights[0]),
-        (quality_term, weights[1]),
-        (distance_term, weights[2]),
-    ])
+    prediction_fallback = bool(
+        allow_prediction_fallback
+        and increment_term is None
+        and flow_norm is not None
+    )
+    if prediction_fallback:
+        # A stale/missing LIO prediction must not turn an otherwise usable
+        # optical-flow sample into an invalid factor.  This branch deliberately
+        # omits Eq. 22's innovation term and records that loss of evidence.
+        score, _ = weighted_score([
+            (quality_term, weights[1]),
+            (distance_term, weights[2]),
+        ])
+        coverage = 1.0
+    else:
+        score, coverage = weighted_score([
+            (increment_term, weights[0]),
+            (quality_term, weights[1]),
+            (distance_term, weights[2]),
+        ])
     evidence = {
         "delta_position_flow_m": -1.0 if flow_norm is None else flow_norm,
         "delta_position_prediction_m": (
@@ -517,12 +533,16 @@ def optical_flow_score(delta_position_flow_m, delta_position_prediction_m,
     reasons = []
     if increment_term is None:
         reasons.append("increment_prediction_unavailable_eq22_adapted")
+        if prediction_fallback:
+            reasons.append("prediction_fallback_quality_distance_only")
     elif increment_term > 0.5:
         reasons.append("increment_inconsistent_eq22_adapted")
     if quality_term > 0.5:
         reasons.append("low_quality_extension")
     if distance_term > 0.5:
         reasons.append("invalid_ground_distance_extension")
+    if prediction_fallback:
+        evidence["prediction_fallback_eq22_adapted"] = 1.0
     return finalize_score(score, coverage, evidence, reasons)
 
 

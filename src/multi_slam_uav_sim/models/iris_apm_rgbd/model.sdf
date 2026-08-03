@@ -634,7 +634,7 @@
         </inertia>
       </inertial>
       <sensor name="optical_flow_mono_down" type="camera">
-        <pose>0 0 0 0 1.57079632679 0</pose>
+        <pose>0 0 0 0 -1.57079632679 0</pose>
         <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
@@ -658,7 +658,7 @@
         </camera>
       </sensor>
       <sensor name="optical_flow_range" type="gpu_lidar">
-        <pose>0 0 0 0 1.57079632679 0</pose>
+        <pose>0 0 0 0 -1.57079632679 0</pose>
         <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
@@ -666,16 +666,19 @@
         <lidar>
           <scan>
             <horizontal>
-              <samples>1</samples>
+              <!-- Harmonic produces NaN angular steps for a zero-width,
+                   single-ray GPU lidar. A narrow 3x3 footprint behaves like
+                   the MTF-01 rangefinder while keeping the scan trivial. -->
+              <samples>3</samples>
               <resolution>1</resolution>
-              <min_angle>0</min_angle>
-              <max_angle>0</max_angle>
+              <min_angle>-0.01</min_angle>
+              <max_angle>0.01</max_angle>
             </horizontal>
             <vertical>
-              <samples>1</samples>
+              <samples>3</samples>
               <resolution>1</resolution>
-              <min_angle>0</min_angle>
-              <max_angle>0</max_angle>
+              <min_angle>-0.01</min_angle>
+              <max_angle>0.01</max_angle>
             </vertical>
           </scan>
           <range>

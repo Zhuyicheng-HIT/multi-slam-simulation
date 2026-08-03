@@ -151,6 +151,16 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(evidence["increment_term_eq22_adapted"], -1.0)
         self.assertIn("increment_prediction_unavailable_eq22_adapted", reasons)
 
+    def test_flow_prediction_fallback_is_explicit_and_complete(self):
+        score, evidence, reasons = optical_flow_score(
+            0.8, None, 220, 3.0, allow_prediction_fallback=True,
+        )
+        self.assertLess(score, 0.2)
+        self.assertEqual(evidence["evidence_weight_coverage"], 1.0)
+        self.assertEqual(evidence["score_complete"], 1.0)
+        self.assertEqual(evidence["prediction_fallback_eq22_adapted"], 1.0)
+        self.assertIn("prediction_fallback_quality_distance_only", reasons)
+
     def test_missing_vision_reprojection_preserves_paper_weights(self):
         _, evidence, reasons = vision_score(150, 150, 1.0, -1.0, 1.0)
         self.assertAlmostEqual(evidence["evidence_weight_coverage"], 0.75)

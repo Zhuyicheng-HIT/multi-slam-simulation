@@ -40,6 +40,10 @@ reliability_monitor:
     imu.minimum_window_samples: 20
     optical_flow.tau_translation: 0.30
     optical_flow.weights: [0.60, 0.25, 0.15]
+    # When the auxiliary LIO prediction is temporarily unavailable, retain a
+    # high-quality optical-flow observation using quality and range only.
+    optical_flow.allow_prediction_fallback: true
+    optical_flow.prediction_fallback_min_quality: 120
     optical_flow.lio_max_gap_s: 0.5
     optical_flow.lio_wait_s: 0.4
     optical_flow.rotation_gate.lower_yaw_rate_radps: 0.08

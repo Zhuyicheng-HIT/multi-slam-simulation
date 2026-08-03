@@ -189,6 +189,8 @@ class ReliabilityMonitor(Node):
             "imu.preintegration_residual_timeout_s": 2.0,
             "optical_flow.tau_translation": 0.30,
             "optical_flow.weights": [0.60, 0.25, 0.15],
+            "optical_flow.allow_prediction_fallback": True,
+            "optical_flow.prediction_fallback_min_quality": 120,
             "optical_flow.lio_max_gap_s": 0.5,
             "optical_flow.lio_wait_s": 0.4,
             "optical_flow.rotation_gate.lower_yaw_rate_radps": 0.08,
@@ -610,10 +612,20 @@ class ReliabilityMonitor(Node):
             msg.integrated_xgyro, msg.integrated_ygyro,
             msg.distance,
         )
+        prediction_fallback_allowed = (
+            prediction is None
+            and flow_displacement is not None
+            and int(msg.quality) >= int(self.get_parameter(
+                "optical_flow.prediction_fallback_min_quality").value)
+            and 0.10 <= float(msg.distance) <= 30.0
+            and bool(self.get_parameter(
+                "optical_flow.allow_prediction_fallback").value)
+        )
         score, evidence, reasons = optical_flow_score(
             flow_displacement, prediction, msg.quality, msg.distance,
             self.get_parameter("optical_flow.tau_translation").value,
             tuple(self.get_parameter("optical_flow.weights").value),
+            allow_prediction_fallback=prediction_fallback_allowed,
         )
         integration_s = float(msg.integration_time_us) * 1.0e-6
         end_s = stamp_ns(msg.header) * 1.0e-9

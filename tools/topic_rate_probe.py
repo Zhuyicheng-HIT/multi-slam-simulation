@@ -83,9 +83,14 @@ def main():
                 if len(source_stamps) >= 2 else 0.0
             )
             required_samples = max(3, min(args.window, int(math.ceil(args.minimum_hz * 2.0)) + 1))
+            # A bounded window of N samples spans N-1 periods. Requiring a
+            # full two seconds at exactly 10 Hz with the default N=20 is
+            # impossible (the span is 1.9 s), so derive the gate from the
+            # actual sample count instead of the nominal two-second target.
+            required_span_s = (required_samples - 1) / max(rate_hz, args.minimum_hz, 1.0e-9)
             if (
                 len(source_stamps) >= required_samples
-                and observation_span_s >= min(2.0, 2.0 / args.minimum_hz)
+                and observation_span_s >= min(2.0, required_span_s)
                 and rate_hz >= args.minimum_hz
             ):
                 print(

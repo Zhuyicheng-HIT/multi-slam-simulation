@@ -15,6 +15,7 @@ from uf_backend_fusion.online_backend import (
     apply_lidar_anchor_floor,
     covariance_update_due,
     flow_observation_delta,
+    select_flow_records,
     frd_to_enu_delta,
     fused_motion_reference,
     gnss_jump_rejected,
@@ -440,6 +441,33 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         np.testing.assert_allclose(observation["delta_position"], [1.0, 0.0, 0.0])
         np.testing.assert_allclose(observation["delta_body"], [1.0, 0.0, 0.0])
         self.assertEqual(observation["sample_count"], 1)
+
+    def test_flow_selection_prefers_strict_interval_and_keeps_future(self):
+        records = [
+            {"stamp_s": 0.80},
+            {"stamp_s": 1.05},
+            {"stamp_s": 1.15},
+            {"stamp_s": 1.25},
+        ]
+        selected, remaining, delayed = select_flow_records(
+            records, 1.0, 1.2, 0.5,
+        )
+        self.assertEqual([item["stamp_s"] for item in selected], [1.05, 1.15])
+        self.assertEqual([item["stamp_s"] for item in remaining], [1.25])
+        self.assertFalse(delayed)
+
+    def test_flow_selection_uses_bounded_late_sample(self):
+        records = [
+            {"stamp_s": 0.65},
+            {"stamp_s": 0.82},
+            {"stamp_s": 1.25},
+        ]
+        selected, remaining, delayed = select_flow_records(
+            records, 0.9, 1.0, 0.25,
+        )
+        self.assertEqual([item["stamp_s"] for item in selected], [0.82])
+        self.assertEqual([item["stamp_s"] for item in remaining], [1.25])
+        self.assertTrue(delayed)
 
     def test_scheduler_decision_can_disable_factor(self):
         decision = scheduler_decision(0.0, enabled=False, inflation=20.0)
