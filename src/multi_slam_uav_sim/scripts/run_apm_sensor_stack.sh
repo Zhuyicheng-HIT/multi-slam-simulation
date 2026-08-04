@@ -153,9 +153,10 @@ pids+=("$!")
 
 read_clock_ns() {
   local sample sec nanosec
-  for _attempt in 1 2 3; do
+  for _attempt in 1 2 3 4 5 6; do
     sample=$(timeout 8 ros2 topic echo /clock rosgraph_msgs/msg/Clock \
-      --no-daemon --spin-time 2.0 --once --field clock 2>/dev/null) || sample=
+      --no-daemon --spin-time 2.0 --once --field clock \
+      --qos-reliability best_effort 2>/dev/null) || sample=
     sec=$(awk '$1 == "sec:" {print $2; exit}' <<<"$sample")
     nanosec=$(awk '$1 == "nanosec:" {print $2; exit}' <<<"$sample")
     if [[ "$sec" =~ ^[0-9]+$ && "$nanosec" =~ ^[0-9]+$ ]]; then
@@ -232,9 +233,9 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p imu_topic:=/mavros/imu/data_raw
     -p max_rate_hz:=30.0
     -p angular_scale:=1.0
-    # Fixed offline calibration for this 100x100 Gazebo camera model. It is
-    # applied only after gyro compensation and is not used for real hardware.
-    -p translation_scale:=${FLOW_TRANSLATION_SCALE:-0.683}
+    # The camera intrinsics define the metric scale. Keep an explicit override
+    # for A/B tests, but do not hide geometry errors behind an empirical gain.
+    -p translation_scale:=${FLOW_TRANSLATION_SCALE:-1.0}
     -p use_physics_flow:=${FLOW_USE_PHYSICS:-false}
     -p use_gazebo_height:=false
     -p gazebo_world_name:="$WORLD_NAME"
@@ -299,6 +300,34 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
   fi
   if [[ "$ENABLE_EXTERNALNAV_EKF3" == "1" ]]; then
     sitl_defaults+=("$PKG_SHARE/params/apm_externalnav_gps_flow.parm")
+  fi
+  case "${ENABLE_IRIS_ROLL_STABILITY_PROFILE:-1}" in
+    1)
+      iris_stability_profile="$PKG_SHARE/params/iris_roll_stability.parm"
+      if [[ ! -f "$iris_stability_profile" ]]; then
+        printf 'Iris roll stability profile does not exist: %s\n' \
+          "$iris_stability_profile" >&2
+        exit 2
+      fi
+      sitl_defaults+=("$iris_stability_profile")
+      printf 'SITL Iris roll stability profile: %s\n' \
+        "$iris_stability_profile"
+      ;;
+    0) ;;
+    *)
+      printf 'ENABLE_IRIS_ROLL_STABILITY_PROFILE must be 0 or 1, got %s.\n' \
+        "$ENABLE_IRIS_ROLL_STABILITY_PROFILE" >&2
+      exit 2
+      ;;
+  esac
+  if [[ -n "${SITL_EXTRA_DEFAULTS_FILE:-}" ]]; then
+    if [[ ! -f "$SITL_EXTRA_DEFAULTS_FILE" ]]; then
+      printf 'SITL extra defaults file does not exist: %s\n' \
+        "$SITL_EXTRA_DEFAULTS_FILE" >&2
+      exit 2
+    fi
+    sitl_defaults+=("$SITL_EXTRA_DEFAULTS_FILE")
+    printf 'SITL extra defaults: %s\n' "$SITL_EXTRA_DEFAULTS_FILE"
   fi
   SITL_DEFAULTS=$(IFS=,; printf '%s' "${sitl_defaults[*]}")
   WIPE_ARG=""
@@ -383,6 +412,9 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
     >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
   pids+=("$!")
 elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
+  # The simulation FCU timestamp can regress when Gazebo RTF drops. Keep raw
+  # timestamps as the default for hardware, but align the simulation Livox
+  # adapter to the ROS clock when explicitly requested.
   setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
@@ -399,6 +431,7 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p body_max_y_m:="$MID360_BODY_MAX_Y_M" \
     -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
     -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
+    -p restamp_imu:=${MID360_SIM_RESTAMP_IMU:-true} \
     -p publish_ground_truth_odom:=true \
     >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")

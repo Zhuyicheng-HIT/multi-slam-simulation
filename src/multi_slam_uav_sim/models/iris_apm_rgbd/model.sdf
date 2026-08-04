@@ -623,18 +623,22 @@
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>
-        <mass>0.001</mass>
+        <!-- Keep a strictly positive inertial for Gazebo, but make the
+             companion sensor payload dynamically negligible. -->
+        <mass>1e-6</mass>
         <inertia>
-          <ixx>1e-6</ixx>
+          <ixx>1e-9</ixx>
           <ixy>0</ixy>
           <ixz>0</ixz>
-          <iyy>1e-6</iyy>
+          <iyy>1e-9</iyy>
           <iyz>0</iyz>
-          <izz>1e-6</izz>
+          <izz>1e-9</izz>
         </inertia>
       </inertial>
       <sensor name="optical_flow_mono_down" type="camera">
-        <pose>0 0 0 0 -1.57079632679 0</pose>
+        <!-- Gazebo camera and lidar rays point along sensor +X. A positive
+             90-degree pitch maps +X to the vehicle -Z (downward). -->
+        <pose>0 0 0 0 1.57079632679 0</pose>
         <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
@@ -658,7 +662,7 @@
         </camera>
       </sensor>
       <sensor name="optical_flow_range" type="gpu_lidar">
-        <pose>0 0 0 0 -1.57079632679 0</pose>
+        <pose>0 0 0 0 1.57079632679 0</pose>
         <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
@@ -723,10 +727,10 @@
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>
-        <mass>0.001</mass>
+        <mass>1e-6</mass>
         <inertia>
-          <ixx>1e-6</ixx><ixy>0</ixy><ixz>0</ixz>
-          <iyy>1e-6</iyy><iyz>0</iyz><izz>1e-6</izz>
+          <ixx>1e-9</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>1e-9</iyy><iyz>0</iyz><izz>1e-9</izz>
         </inertia>
       </inertial>
       <visual name="d435i_body">
@@ -782,14 +786,14 @@
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>
-        <mass>0.001</mass>
+        <mass>1e-6</mass>
         <inertia>
-          <ixx>1e-6</ixx>
+          <ixx>1e-9</ixx>
           <ixy>0</ixy>
           <ixz>0</ixz>
-          <iyy>1e-6</iyy>
+          <iyy>1e-9</iyy>
           <iyz>0</iyz>
-          <izz>1e-6</izz>
+          <izz>1e-9</izz>
         </inertia>
       </inertial>
       <visual name="mid360_body">

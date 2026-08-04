@@ -98,6 +98,15 @@ cd "$HOME/projects/multi-slam-simulation"
 bash tools/run_sim_with_flow.sh
 ```
 
+该入口默认加载仅用于 SITL Iris 模型的滚转稳定参数，避免原生参数在当前
+Gazebo plant 上产生约 7.5 Hz 的滚转极限环；不会修改真实飞控。需要复现
+ArduPilot 原生参数进行 A/B 时使用 `WIPE_EEPROM=1
+ENABLE_IRIS_ROLL_STABILITY_PROFILE=0 bash tools/run_sim_with_flow.sh`。旧工作区首次
+切换到稳定 profile 时也应运行一次
+`WIPE_EEPROM=1 bash tools/run_sim_with_flow.sh`，之后恢复普通启动命令；这是因为
+SITL EEPROM 中已保存的参数优先于 defaults 文件。定量依据见
+[`docs/sensor_payload_pid_stability_report.md`](docs/sensor_payload_pid_stability_report.md)。
+
 需要同时打开 100x100 光流画面和跟踪矢量时，将上一条启动命令改为：
 
 ```bash

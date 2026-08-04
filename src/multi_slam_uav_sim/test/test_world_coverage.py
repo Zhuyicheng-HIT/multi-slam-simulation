@@ -10,6 +10,7 @@ WORLD = PACKAGE_ROOT / "worlds" / "simple_apm_rgbd_mid360.sdf"
 LANDMARKS = (
     PACKAGE_ROOT / "models" / "s_curve_lidar_landmarks" / "model.sdf"
 )
+AIRCRAFT_MODEL = PACKAGE_ROOT / "models" / "iris_apm_rgbd" / "model.sdf"
 
 
 def pose_xy(element):
@@ -22,6 +23,44 @@ def named_children(root, tag, prefix):
         element for element in root.findall(f".//{tag}")
         if element.get("name", "").startswith(prefix)
     ]
+
+
+def test_optical_flow_camera_and_range_point_downward():
+    root = ET.parse(AIRCRAFT_MODEL).getroot()
+    sensors = {
+        sensor.get("name"): sensor
+        for sensor in root.findall(".//sensor")
+    }
+    for name in ("optical_flow_mono_down", "optical_flow_range"):
+        pose = [float(value) for value in sensors[name].findtext("pose").split()]
+        assert len(pose) == 6
+        assert math.isclose(pose[3], 0.0, abs_tol=1.0e-9)
+        assert math.isclose(pose[4], math.pi / 2.0, abs_tol=1.0e-9)
+        assert math.isclose(pose[5], 0.0, abs_tol=1.0e-9)
+
+        # Gazebo sensors look along local +X. R_y(+pi/2) maps it to body -Z.
+        forward_body_z = -math.sin(pose[4])
+        assert forward_body_z < -0.999999
+
+
+def test_companion_sensor_payloads_are_dynamically_negligible():
+    root = ET.parse(AIRCRAFT_MODEL).getroot()
+    links = {
+        link.get("name"): link
+        for link in root.findall(".//link")
+    }
+
+    for name in ("flow_camera_link", "front_d435i_link", "mid360_link"):
+        inertial = links[name].find("inertial")
+        assert inertial is not None
+
+        # Gazebo requires positive inertial values for a dynamic link. These
+        # fixed payload links therefore use near-zero values instead of zero.
+        mass = float(inertial.findtext("mass"))
+        assert 0.0 < mass <= 1.0e-6
+        for axis in ("ixx", "iyy", "izz"):
+            moment = float(inertial.findtext(f"inertia/{axis}"))
+            assert 0.0 < moment <= 1.0e-9
 
 
 def test_flow_texture_covers_the_expanded_floor():

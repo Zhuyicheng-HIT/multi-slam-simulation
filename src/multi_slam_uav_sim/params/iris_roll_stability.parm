@@ -1,0 +1,4 @@
+# SITL-only Iris roll-rate stabilization profile.
+# Keep pitch and the roll P/I gains at the ArduPilot defaults while the
+# measured 7.5 Hz roll limit cycle is isolated.
+ATC_RAT_RLL_D 0.0018
