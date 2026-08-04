@@ -1,0 +1,50 @@
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 1
+        max_iteration: 3
+        filter_size_surf: 0.25
+        filter_size_map: 0.35
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: "maps/sim_mid360_fastlio_map.pcd"
+
+        common:
+            lid_topic: "/sensors/lidar/points"
+            imu_topic: "/livox/imu"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            # Filtered PointCloud2 preserves the Gazebo snapshot layout and timing.
+            lidar_type: 0
+            scan_line: 4
+            blind: 0.10
+            timestamp_unit: 0
+            scan_rate: 10
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.001
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree: 360.0
+            det_range: 40.0
+            extrinsic_est_en: false
+            # R_body_lidar: MID360 optical axis pitches 10 deg nose-down.
+            extrinsic_T: [0.0, 0.0, 0.0]
+            extrinsic_R: [0.984807753, 0., 0.173648178,
+                          0., 1., 0.,
+                          -0.173648178, 0., 0.984807753]
+
+        publish:
+            path_en: true
+            effect_map_en: false
+            map_en: false
+            scan_publish_en: true
+            dense_publish_en: false
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            pcd_save_en: false
+            interval: -1

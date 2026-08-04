@@ -24,6 +24,18 @@ The state-machine node itself will wait for /mavros/state.connected.
 EOF
   exit 2
 fi
+clock_ready=false
+for _attempt in 1 2 3; do
+  if timeout 8s ros2 topic echo /clock --once --field clock \
+      --qos-reliability best_effort >/dev/null 2>&1; then
+    clock_ready=true
+    break
+  fi
+done
+if [[ "$clock_ready" != true ]]; then
+  printf 'ROS simulation /clock is unavailable. Start the updated simulation stack first.\n' >&2
+  exit 2
+fi
 
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/rectangle_state_machine_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
@@ -41,6 +53,7 @@ NAVIGATION_SOURCE=${NAVIGATION_SOURCE:-auto}
 FLOW_MIN_QUALITY=${FLOW_MIN_QUALITY:-0}
 ACCURACY_DURATION_S=${ACCURACY_DURATION_S:-150.0}
 ENABLE_FLOW_ACCURACY=${ENABLE_FLOW_ACCURACY:-1}
+MAVLINK_TAKEOFF_URL=${MAVLINK_TAKEOFF_URL:-tcp:127.0.0.1:5763}
 
 float_param() {
   case "$1" in
@@ -79,6 +92,7 @@ Parameters:
   flow_min_quality=$FLOW_MIN_QUALITY
   accuracy_duration_s=$ACCURACY_DURATION_S
   enable_flow_accuracy=$ENABLE_FLOW_ACCURACY
+  mavlink_takeoff_url=$MAVLINK_TAKEOFF_URL
 
 Required first-window stack:
   run_sim_with_flow.sh
@@ -88,7 +102,8 @@ EOF
 accuracy_pid=""
 if [[ "$ENABLE_FLOW_ACCURACY" == "1" ]]; then
   ros2 run multi_slam_uav_sim flow_gazebo_accuracy --ros-args \
-    -p flow_topic:=/sim/optical_flow/raw \
+    -p use_sim_time:=true \
+    -p flow_topic:=/sim/optical_flow/rad \
     -p gazebo_world_name:="$WORLD_NAME" \
     -p gazebo_model:=apm_iris \
     -p duration_s:="$ACCURACY_DURATION_S_PARAM" \
@@ -101,6 +116,7 @@ fi
 
 set +e
 ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
+  -p use_sim_time:=true \
   -p takeoff_alt:="$TAKEOFF_ALT_PARAM" \
   -p length_x:="$RECTANGLE_LENGTH_X_PARAM" \
   -p length_y:="$RECTANGLE_LENGTH_Y_PARAM" \
@@ -111,6 +127,7 @@ ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
   -p navigation_stable_s:="$NAVIGATION_STABLE_S_PARAM" \
   -p navigation_source:="$NAVIGATION_SOURCE" \
   -p flow_min_quality:="$FLOW_MIN_QUALITY" \
+  -p mavlink_takeoff_url:="$MAVLINK_TAKEOFF_URL" \
   2>&1 | tee "$LOG_DIR/guided_rectangle_waypoints.log"
 state_status="${PIPESTATUS[0]}"
 

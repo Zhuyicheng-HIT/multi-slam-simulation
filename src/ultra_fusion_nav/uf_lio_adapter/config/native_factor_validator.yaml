@@ -1,0 +1,7 @@
+/**:
+  ros__parameters:
+    topic: /fast_lio/native_lidar_factor
+    summary_period_s: 1.0
+    output_path: ""
+    summary_path: ""
+    min_dynamic_packets: 2

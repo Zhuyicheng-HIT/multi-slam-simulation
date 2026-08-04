@@ -634,23 +634,82 @@
         </inertia>
       </inertial>
       <sensor name="optical_flow_mono_down" type="camera">
-        <pose>0 0 0 0 1.57079632679 0</pose>
-        <always_on>1</always_on>
+        <pose>0 0 0 0 -1.57079632679 0</pose>
+        <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
         <topic>/camera/camera</topic>
         <camera>
           <horizontal_fov>1.21126</horizontal_fov>
           <image>
-            <width>640</width>
-            <height>480</height>
+            <width>100</width>
+            <height>100</height>
             <format>R8G8B8</format>
           </image>
           <clip>
             <near>0.105</near>
             <far>20.0</far>
           </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.003</stddev>
+          </noise>
         </camera>
+      </sensor>
+      <sensor name="optical_flow_range" type="gpu_lidar">
+        <pose>0 0 0 0 -1.57079632679 0</pose>
+        <always_on>0</always_on>
+        <update_rate>30</update_rate>
+        <visualize>false</visualize>
+        <topic>/flow/range</topic>
+        <lidar>
+          <scan>
+            <horizontal>
+              <!-- Harmonic produces NaN angular steps for a zero-width,
+                   single-ray GPU lidar. A narrow 3x3 footprint behaves like
+                   the MTF-01 rangefinder while keeping the scan trivial. -->
+              <samples>3</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.01</min_angle>
+              <max_angle>0.01</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>3</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.01</min_angle>
+              <max_angle>0.01</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.08</min>
+            <max>12.0</max>
+            <resolution>0.005</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+      <sensor name="optical_flow_imu" type="imu">
+        <pose>0 0 0 3.14159265359 0 0</pose>
+        <always_on>0</always_on>
+        <update_rate>200</update_rate>
+        <topic>/flow/imu</topic>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
       </sensor>
     </link>
     <joint name="flow_camera_mount_joint" type="fixed">
@@ -678,7 +737,8 @@
         </material>
       </visual>
       <sensor name="front_d435i_rgbd" type="rgbd_camera">
-        <always_on>1</always_on>
+        <!-- The Gazebo sensor wakes when its transport topics have subscribers. -->
+        <always_on>0</always_on>
         <update_rate>30</update_rate>
         <visualize>false</visualize>
         <topic>/front/d435i/gz</topic>
@@ -695,7 +755,7 @@
         </camera>
       </sensor>
       <sensor name="front_d435i_imu" type="imu">
-        <always_on>1</always_on>
+        <always_on>0</always_on>
         <update_rate>200</update_rate>
         <topic>/front/d435i/gz/imu</topic>
         <imu>
@@ -718,7 +778,7 @@
     </joint>
 
     <link name="mid360_link">
-      <pose>0.0 0.0 0.0 0 0 0</pose>
+      <pose>0.0 0.0 0.0 0 0.174532925199433 0</pose>
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>
@@ -750,7 +810,7 @@
         <pose>0 0 0 0 0 0</pose>
         <always_on>1</always_on>
         <update_rate>10</update_rate>
-        <visualize>true</visualize>
+        <visualize>false</visualize>
         <topic>/mid360/lidar</topic>
         <lidar>
           <scan>

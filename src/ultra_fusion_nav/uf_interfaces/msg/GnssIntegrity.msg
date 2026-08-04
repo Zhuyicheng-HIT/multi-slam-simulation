@@ -1,0 +1,11 @@
+std_msgs/Header header
+int8 fix_status
+uint16 service
+uint16 satellite_count
+float32 hdop
+float32 vdop
+float64 covariance_trace_m2
+float64 innovation_norm_m
+float32 outage_duration_s
+bool jump_detected
+bool synthetic_metadata

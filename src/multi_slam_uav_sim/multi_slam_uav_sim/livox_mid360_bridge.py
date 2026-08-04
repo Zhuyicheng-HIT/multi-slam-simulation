@@ -8,6 +8,12 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, PointCloud2, PointField
 
+from multi_slam_uav_sim.mid360_protocol import (
+    MID360_DEFAULT_TAG,
+    MID360_LINE_COUNT,
+    line_for_output_index,
+)
+
 try:
     from livox_ros_driver2.msg import CustomMsg, CustomPoint
 except Exception as exc:  # pragma: no cover - depends on the external LiDAR workspace overlay
@@ -58,11 +64,9 @@ class LivoxMid360Bridge(Node):
         self.declare_parameter("lidar_frame_id", "mid360_link")
         self.declare_parameter("imu_frame_id", "base_link")
         self.declare_parameter("restamp_imu", False)
-        self.declare_parameter("scan_lines", 40)
+        self.declare_parameter("scan_lines", MID360_LINE_COUNT)
         self.declare_parameter("frame_rate_hz", 10.0)
-        self.declare_parameter("vertical_min_deg", -7.0)
-        self.declare_parameter("vertical_max_deg", 52.0)
-        self.declare_parameter("max_points", 65000)
+        self.declare_parameter("max_points", 20000)
         self.declare_parameter("point_stride", 1)
 
         self.lidar_frame_id = self.get_parameter("lidar_frame_id").value
@@ -71,8 +75,6 @@ class LivoxMid360Bridge(Node):
         self.scan_lines = max(1, int(self.get_parameter("scan_lines").value))
         frame_rate_hz = max(0.1, float(self.get_parameter("frame_rate_hz").value))
         self.scan_period_ns = int(round(1.0e9 / frame_rate_hz))
-        self.vertical_min = math.radians(float(self.get_parameter("vertical_min_deg").value))
-        self.vertical_max = math.radians(float(self.get_parameter("vertical_max_deg").value))
         self.max_points = max(1, int(self.get_parameter("max_points").value))
         self.point_stride = max(1, int(self.get_parameter("point_stride").value))
 
@@ -120,12 +122,6 @@ class LivoxMid360Bridge(Node):
     def _stamp_to_ns(self, stamp):
         return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
-    def _line_from_pitch(self, x, y, z):
-        pitch = math.atan2(z, math.hypot(x, y))
-        span = max(1.0e-6, self.vertical_max - self.vertical_min)
-        ratio = (pitch - self.vertical_min) / span
-        return max(0, min(self.scan_lines - 1, int(ratio * self.scan_lines)))
-
     def _cloud_cb(self, msg):
         fields = _field_map(msg)
         if not {"x", "y", "z"}.issubset(fields):
@@ -171,11 +167,11 @@ class LivoxMid360Bridge(Node):
             if tag_field is not None:
                 p.tag = max(0, min(255, int(_read_float(raw, tag_field.offset, tag_field.datatype))))
             else:
-                p.tag = 0x10
+                p.tag = MID360_DEFAULT_TAG
             if line_field is not None:
                 p.line = max(0, min(self.scan_lines - 1, int(_read_float(raw, line_field.offset, line_field.datatype))))
             else:
-                p.line = self._line_from_pitch(x, y, z)
+                p.line = line_for_output_index(len(points), self.scan_lines)
             if time_field is not None:
                 point_time_s = _read_float(raw, time_field.offset, time_field.datatype)
                 p.offset_time = max(0, min(0xFFFFFFFF, int(round(point_time_s * 1.0e9))))

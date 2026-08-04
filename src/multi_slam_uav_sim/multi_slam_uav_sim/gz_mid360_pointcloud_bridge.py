@@ -14,6 +14,13 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import PointCloud2, PointField
 from tf2_ros import TransformBroadcaster
 
+from multi_slam_uav_sim.mid360_protocol import (
+    MID360_DEFAULT_TAG,
+    MID360_LINE_COUNT,
+    line_for_output_index,
+    relative_time_seconds,
+)
+
 
 def quat_multiply(a, b):
     ax, ay, az, aw = a
@@ -49,6 +56,7 @@ class GzMid360PointCloudBridge(RosNode):
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("point_stride", 1)
         self.declare_parameter("restamp", True)
+        self.declare_parameter("livox_scan_lines", MID360_LINE_COUNT)
 
         self.gz_topic = self.get_parameter("gz_topic").value
         self.raw_topic = self.get_parameter("raw_topic").value
@@ -63,6 +71,9 @@ class GzMid360PointCloudBridge(RosNode):
         self.publish_tf = bool(self.get_parameter("publish_tf").value)
         self.point_stride = max(1, int(self.get_parameter("point_stride").value))
         self.restamp = bool(self.get_parameter("restamp").value)
+        self.livox_scan_lines = max(
+            1, int(self.get_parameter("livox_scan_lines").value)
+        )
         self.last_stamp_ns = 0
         self.adjusted_stamp_count = 0
         self.pose_lock = threading.Lock()
@@ -169,10 +180,10 @@ class GzMid360PointCloudBridge(RosNode):
             y = r * cp * math.sin(yaw)
             z = r * math.sin(pitch)
             intensity = float(intensities[idx]) if idx < len(intensities) else 0.0
-            tag = 0x10
-            line = v_idx
+            tag = MID360_DEFAULT_TAG
+            line = line_for_output_index(len(points), self.livox_scan_lines)
             ring = line
-            point_time_s = (h_idx / max(1, h_count - 1)) * scan_period_s
+            point_time_s = relative_time_seconds(idx, point_count, scan_period_s)
             points.append((x, y, z, intensity, tag, line, ring, point_time_s))
         return points
 

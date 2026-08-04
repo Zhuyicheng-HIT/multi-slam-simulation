@@ -17,7 +17,8 @@
 
         preprocess:
             lidar_type: 1
-            scan_line: 40
+            # Livox SDK2 assigns Mid-360(S) points to four logical lines.
+            scan_line: 4
             blind: 0.10
             timestamp_unit: 3
             scan_rate: 10
@@ -30,11 +31,11 @@
             fov_degree: 360.0
             det_range: 40.0
             extrinsic_est_en: false
-            # Simulated FCU IMU and MID360 are co-located in base_link.
+            # R_body_lidar: MID360 optical axis pitches 10 deg nose-down.
             extrinsic_T: [0.0, 0.0, 0.0]
-            extrinsic_R: [1., 0., 0.,
+            extrinsic_R: [0.984807753, 0., 0.173648178,
                           0., 1., 0.,
-                          0., 0., 1.]
+                          -0.173648178, 0., 0.984807753]
 
         publish:
             path_en: true

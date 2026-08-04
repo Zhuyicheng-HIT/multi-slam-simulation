@@ -1,0 +1,10 @@
+std_msgs/Header header
+string modality
+float32 degradation_score
+float32 reliability_weight
+bool valid
+uint32 observation_count
+uint32 minimum_observation_count
+string[] reasons
+string[] evidence_names
+float64[] evidence_values

@@ -18,7 +18,7 @@ class MavrosStreamRequester(Node):
         self.declare_parameter("gps_rate_hz", 10.0)
         self.declare_parameter("attitude_rate_hz", 30.0)
         self.declare_parameter("timeout_s", 30.0)
-        self.declare_parameter("response_wait_s", 2.0)
+        self.declare_parameter("response_wait_s", 3.0)
 
         self.mavros_ns = str(self.get_parameter("mavros_ns").value).rstrip("/")
         self.stream_rate_hz = int(self.get_parameter("stream_rate_hz").value)
@@ -50,23 +50,25 @@ class MavrosStreamRequester(Node):
         self.get_logger().warning(f"Service unavailable, skipping {label}")
         return False
 
-    def _collect(self, futures):
-        end = time.monotonic() + max(0.1, self.response_wait_s)
-        pending = dict(futures)
-        while rclpy.ok() and pending and time.monotonic() < end:
-            rclpy.spin_once(self, timeout_sec=0.05)
-            for future, label in list(pending.items()):
-                if future.done():
-                    try:
-                        self.get_logger().info(f"{label}: {future.result()}")
-                    except Exception as exc:
-                        self.get_logger().warning(f"{label} failed: {exc}")
-                    pending.pop(future, None)
-        for label in pending.values():
+    def _call(self, client, request, label):
+        """Send one MAVLink rate command and wait for its ACK before the next."""
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=max(0.1, self.response_wait_s)
+        )
+        if not future.done():
+            future.cancel()
             self.get_logger().warning(f"No service response before deadline: {label}")
+            return False
+        try:
+            result = future.result()
+        except Exception as exc:
+            self.get_logger().warning(f"{label} failed: {exc}")
+            return False
+        self.get_logger().info(f"{label}: {result}")
+        return bool(getattr(result, "success", True))
 
     def _request_streams(self):
-        futures = {}
         stream_ids = [
             StreamRate.Request.STREAM_RAW_SENSORS,
             StreamRate.Request.STREAM_EXTENDED_STATUS,
@@ -75,38 +77,48 @@ class MavrosStreamRequester(Node):
             StreamRate.Request.STREAM_EXTRA2,
             StreamRate.Request.STREAM_EXTRA3,
         ]
+        # MAVLink common message IDs used by MAVROS local/global/IMU plugins.
+        # HIGHRES_IMU is first because FAST-LIO cannot start without it.
+        intervals = [
+            (105, float(self.get_parameter("imu_rate_hz").value)),    # HIGHRES_IMU
+            (24, float(self.get_parameter("gps_rate_hz").value)),     # GPS_RAW_INT
+            (30, float(self.get_parameter("attitude_rate_hz").value)),  # ATTITUDE
+            (31, float(self.get_parameter("attitude_rate_hz").value)),  # ATTITUDE_QUATERNION
+            (32, float(self.get_parameter("position_rate_hz").value)),  # LOCAL_POSITION_NED
+            (33, float(self.get_parameter("position_rate_hz").value)),  # GLOBAL_POSITION_INT
+            (74, 10.0),                                                   # VFR_HUD
+            (193, 2.0),                                                   # EKF_STATUS_REPORT
+            # Use one FCU source. HIGHRES_IMU feeds MAVROS data_raw directly;
+            # disabling RAW_IMU prevents multiple raw sensor sources.
+            (27, 0.0),                                                    # RAW_IMU off
+        ]
+        highres_imu_ok = False
+        if self._wait_service(self.interval_cli, "set_message_interval"):
+            for msg_id, rate_hz in intervals:
+                req = MessageInterval.Request()
+                req.message_id = int(msg_id)
+                req.message_rate = float(rate_hz)
+                accepted = self._call(
+                    self.interval_cli,
+                    req,
+                    f"message_interval id={msg_id} hz={rate_hz}",
+                )
+                if msg_id == 105:
+                    highres_imu_ok = accepted
+
         if self._wait_service(self.stream_cli, "set_stream_rate"):
             for stream_id in stream_ids:
+                if highres_imu_ok and stream_id == StreamRate.Request.STREAM_RAW_SENSORS:
+                    continue
                 req = StreamRate.Request()
                 req.stream_id = stream_id
                 req.message_rate = self.stream_rate_hz
                 req.on_off = True
-                futures[self.stream_cli.call_async(req)] = (
-                    f"stream_rate id={stream_id} hz={self.stream_rate_hz}"
+                self._call(
+                    self.stream_cli,
+                    req,
+                    f"stream_rate id={stream_id} hz={self.stream_rate_hz}",
                 )
-
-        # MAVLink common message IDs used by MAVROS local/global/IMU plugins.
-        intervals = {
-            24: float(self.get_parameter("gps_rate_hz").value),       # GPS_RAW_INT
-            30: float(self.get_parameter("attitude_rate_hz").value),  # ATTITUDE
-            31: float(self.get_parameter("attitude_rate_hz").value),  # ATTITUDE_QUATERNION
-            32: float(self.get_parameter("position_rate_hz").value),  # LOCAL_POSITION_NED
-            33: float(self.get_parameter("position_rate_hz").value),  # GLOBAL_POSITION_INT
-            74: 10.0,                                                  # VFR_HUD
-            # Use one FCU source. HIGHRES_IMU feeds MAVROS data_raw directly;
-            # disabling RAW_IMU prevents multiple raw sensor sources.
-            27: 0.0,                                                     # RAW_IMU off
-            105: float(self.get_parameter("imu_rate_hz").value),       # HIGHRES_IMU
-        }
-        if self._wait_service(self.interval_cli, "set_message_interval"):
-            for msg_id, rate_hz in intervals.items():
-                req = MessageInterval.Request()
-                req.message_id = int(msg_id)
-                req.message_rate = float(rate_hz)
-                futures[self.interval_cli.call_async(req)] = (
-                    f"message_interval id={msg_id} hz={rate_hz}"
-                )
-        self._collect(futures)
 
     def run(self):
         if not self.wait_connected():

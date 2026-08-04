@@ -1,0 +1,26 @@
+lio_adapter:
+  ros__parameters:
+    odom_input_topic: /Odometry
+    registered_cloud_topic: /cloud_registered
+    deskewed_cloud_topic: /cloud_registered_body
+    odom_output_topic: /lio/odom
+    path_output_topic: /lio/path
+    local_map_output_topic: /lio/local_map
+    deskewed_output_topic: /lidar/points_deskewed
+    diagnostics_topic: /lio/diagnostics
+    native_factor_topic: /fast_lio/native_lidar_factor
+    prefer_native_factor_diagnostics: true
+    native_factor_timeout_s: 2.0
+    voxel_size_m: 0.50
+    max_diagnostic_points: 1200
+    local_map_frames: 20
+    local_map_publish_period_s: 1.0
+    diagnostics_period_s: 1.0
+    temporal_window_frames: 5
+    temporal_min_static_support: 2
+    temporal_neighbor_radius: 1
+    static_cloud_output_topic: /lidar/static_cloud
+    dynamic_cloud_output_topic: /lidar/dynamic_cloud
+    uncertain_cloud_output_topic: /lidar/uncertain_cloud
+    path_publish_period_s: 1.0
+    max_path_poses: 3000

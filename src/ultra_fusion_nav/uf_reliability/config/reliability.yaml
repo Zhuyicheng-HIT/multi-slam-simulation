@@ -1,0 +1,64 @@
+reliability_monitor:
+  ros__parameters:
+    lidar.match_reference: 1000
+    lidar.tau_lambda: 1.0
+    lidar.tau_kappa: 100000.0
+    lidar.tau_normal: 0.02
+    lidar.weights: [0.35, 0.20, 0.20, 0.25]
+    lidar.minimum_matches: 50
+    lidar.extension.tau_residual_m: 0.15
+    lidar.extension.tau_dynamic_ratio: 0.20
+    lidar.extension.tau_uncertain_ratio: 0.25
+    lidar.extension.reference: 0.35
+    lidar.extension.paper_weight: 0.70
+    lidar.extension.weights: [0.20, 0.15, 0.20, 0.10, 0.15, 0.20]
+    lidar.factor.approximate_geometry_weight: 0.20
+    lidar.factor.native_geometry_weight: 0.60
+    lidar.factor.tau_position_innovation_m: 0.50
+    lidar.factor.tau_yaw_innovation_rad: 0.35
+    lidar.factor.innovation_weights: [0.70, 0.30]
+    lidar.factor.innovation_timeout_s: 2.0
+    lidar.map.tau_residual_m: 0.15
+    lidar.map.tau_dynamic_ratio: 0.20
+    lidar.map.tau_uncertain_ratio: 0.25
+    lidar.map.weights: [0.25, 0.20, 0.20, 0.15, 0.20]
+    gnss.tau_covariance: 25.0
+    gnss.tau_innovation: 5.0
+    gnss.weights: [0.25, 0.20, 0.55]
+    gnss.raw_topic: /sensors/gnss/raw
+    gnss.raw_timeout_s: 1.0
+    gnss.minimum_satellites: 5
+    gnss.good_satellites: 10
+    gnss.good_hdop: 1.0
+    gnss.maximum_hdop: 4.0
+    imu.tau_preintegration: 5.0
+    imu.accel_excitation_scale: 0.5
+    imu.gyro_excitation_scale: 0.15
+    imu.accel_saturation: 55.0
+    imu.gyro_saturation: 10.0
+    imu.weights: [0.35, 0.45, 0.20]
+    imu.minimum_window_samples: 20
+    optical_flow.tau_translation: 0.30
+    optical_flow.weights: [0.60, 0.25, 0.15]
+    # When the auxiliary LIO prediction is temporarily unavailable, retain a
+    # high-quality optical-flow observation using quality and range only.
+    optical_flow.allow_prediction_fallback: true
+    optical_flow.prediction_fallback_min_quality: 120
+    optical_flow.lio_max_gap_s: 0.5
+    optical_flow.lio_wait_s: 0.4
+    optical_flow.rotation_gate.lower_yaw_rate_radps: 0.08
+    optical_flow.rotation_gate.upper_yaw_rate_radps: 0.30
+    optical_flow.rotation_gate.recovery_dwell_s: 0.8
+    optical_flow.rotation_gate.recovery_ramp_s: 1.5
+    optical_flow.rotation_gate.minimum_translation_m: 0.01
+    # The monitor evaluates one OpticalFlowRad sample, so recovery must be
+    # rate-normalized. The backend retains its 0.01 m keyframe-interval gate.
+    optical_flow.rotation_gate.minimum_translation_speed_mps: 0.08
+    optical_flow.rotation_gate.recovery_max_base_score: 0.55
+    optical_flow.rotation_gate.imu_max_gap_s: 0.12
+    # Match APM: subtract the FCU/body gyro contribution before using flow.
+    optical_flow.rotation_gate.allow_compensated: true
+    vision.feature_reference: 150
+    vision.tau_reprojection_px: 3.0
+    vision.weights: [0.30, 0.25, 0.25, 0.20]
+    vision.minimum_features: 20

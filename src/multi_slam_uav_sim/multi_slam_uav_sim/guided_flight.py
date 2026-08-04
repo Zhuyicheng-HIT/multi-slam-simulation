@@ -74,13 +74,34 @@ class GuidedFlightDemo(Node):
         msg.pose.orientation.w = math.cos(yaw * 0.5)
         self.setpoint_pub.publish(msg)
 
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1.0e-9
+
+    def _wait_until_sim_time(self, target_s, previous_s):
+        observed_s = float(previous_s)
+        while rclpy.ok():
+            now_s = self._now_s()
+            if now_s + 1.0e-9 < observed_s:
+                raise RuntimeError('ROS clock moved backwards during mission')
+            if now_s >= target_s:
+                return now_s
+            observed_s = now_s
+            rclpy.spin_once(self, timeout_sec=0.01)
+        return observed_s
+
     def hold_setpoint(self, x, y, z, seconds, yaw=0.0):
         period = 1.0 / max(self.rate_hz, 1.0)
-        end = time.monotonic() + seconds
-        while rclpy.ok() and time.monotonic() < end:
+        started_s = self._now_s()
+        end_s = started_s + max(0.0, seconds)
+        next_publish_s = started_s
+        last_observed_s = started_s
+        while rclpy.ok() and self._now_s() < end_s:
             self.publish_setpoint(x, y, z, yaw)
             rclpy.spin_once(self, timeout_sec=0.0)
-            time.sleep(period)
+            next_publish_s = max(next_publish_s + period, self._now_s())
+            last_observed_s = self._wait_until_sim_time(
+                min(next_publish_s, end_s), last_observed_s
+            )
 
     def run_demo(self):
         self.wait_ready()

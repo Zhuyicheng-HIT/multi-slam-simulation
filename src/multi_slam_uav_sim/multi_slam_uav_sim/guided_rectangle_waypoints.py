@@ -5,18 +5,33 @@ from pymavlink import mavutil
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import OpticalFlow, State, StatusText
+from mavros.mavlink import convert_to_bytes
+from mavros_msgs.msg import Mavlink, OpticalFlow, State, StatusText
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
 
 
+def ekf_flags_have_absolute_position(flags):
+    flags = int(flags)
+    required = (
+        mavutil.mavlink.EKF_ATTITUDE
+        | mavutil.mavlink.EKF_VELOCITY_HORIZ
+        | mavutil.mavlink.EKF_POS_HORIZ_ABS
+    )
+    invalid = (
+        mavutil.mavlink.EKF_GPS_GLITCHING
+        | mavutil.mavlink.EKF_UNINITIALIZED
+    )
+    return flags & required == required and flags & invalid == 0
+
+
 class GuidedRectangleWaypoints(Node):
     """GPS/GUIDED rectangle flight using MAVROS local-position setpoints."""
 
-    def __init__(self):
-        super().__init__("guided_rectangle_waypoints")
+    def __init__(self, node_name="guided_rectangle_waypoints"):
+        super().__init__(node_name)
         self.declare_parameter("takeoff_alt", 3.0)
         self.declare_parameter("length_x", 2.0)
         self.declare_parameter("length_y", 1.2)
@@ -27,15 +42,19 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("preflight_wait_s", 45.0)
         self.declare_parameter("navigation_stable_s", 1.0)
         self.declare_parameter("navigation_source", "auto")
-        self.declare_parameter("flow_topic", "/sim/optical_flow/raw")
+        self.declare_parameter("flow_topic", "/mavros/optical_flow/raw/optical_flow")
+        self.declare_parameter("mavlink_source_topic", "/uas1/mavlink_source")
         self.declare_parameter("flow_min_quality", 0)
         self.declare_parameter("flow_max_age_s", 1.0)
         self.declare_parameter("command_retry_s", 60.0)
         self.declare_parameter("land_at_end", True)
-        self.declare_parameter("mavlink_takeoff_url", "tcp:127.0.0.1:5762")
+        # SERIAL1/5762 is reserved for the MTF01P. Use the independent
+        # SERIAL2 MAVLink endpoint for direct COMMAND_INT acknowledgements.
+        self.declare_parameter("mavlink_takeoff_url", "tcp:127.0.0.1:5763")
         self.declare_parameter("mavlink_target_component", 1)
         self.declare_parameter("takeoff_param3", 1.0)
         self.declare_parameter("takeoff_free_climb_s", 14.0)
+        self.declare_parameter("takeoff_command_attempts", 2)
         self.declare_parameter("takeoff_min_alt_fraction", 0.45)
         self.declare_parameter("takeoff_min_alt_m", 0.7)
 
@@ -60,6 +79,9 @@ class GuidedRectangleWaypoints(Node):
         self.mavlink_target_component = int(self.get_parameter("mavlink_target_component").value)
         self.takeoff_param3 = float(self.get_parameter("takeoff_param3").value)
         self.takeoff_free_climb_s = float(self.get_parameter("takeoff_free_climb_s").value)
+        self.takeoff_command_attempts = max(
+            1, int(self.get_parameter("takeoff_command_attempts").value)
+        )
         self.takeoff_min_alt_fraction = float(self.get_parameter("takeoff_min_alt_fraction").value)
         self.takeoff_min_alt_m = float(self.get_parameter("takeoff_min_alt_m").value)
 
@@ -68,6 +90,8 @@ class GuidedRectangleWaypoints(Node):
         self.fix = None
         self.last_statustext = ""
         self.ekf_using_gps = False
+        self.ekf_absolute_position_ready = False
+        self.mavlink_parser = mavutil.mavlink.MAVLink(None)
         self.last_flow_quality = 0
         self.last_flow_time = None
         self.home_x = 0.0
@@ -75,10 +99,17 @@ class GuidedRectangleWaypoints(Node):
         self.home_z = 0.0
         self.home_yaw = 0.0
         self.last_status_time = 0.0
+        self.last_commanded_setpoint = None
 
         self.create_subscription(State, "/mavros/state", self._state_cb, 10)
         self.create_subscription(
             StatusText, "/mavros/statustext/recv", self._status_cb, qos_profile_sensor_data
+        )
+        self.create_subscription(
+            Mavlink,
+            str(self.get_parameter("mavlink_source_topic").value),
+            self._mavlink_cb,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             PoseStamped,
@@ -121,23 +152,62 @@ class GuidedRectangleWaypoints(Node):
             self.ekf_using_gps = True
         self.get_logger().info(f"FCU: {msg.text}")
 
+    def _mavlink_cb(self, msg):
+        try:
+            decoded = self.mavlink_parser.parse_char(convert_to_bytes(msg))
+        except Exception:
+            return
+        if decoded is None or decoded.get_type() != "EKF_STATUS_REPORT":
+            return
+        self.ekf_absolute_position_ready = ekf_flags_have_absolute_position(
+            decoded.flags
+        )
+
     def _flow_cb(self, msg):
         self.last_flow_quality = int(msg.quality)
-        self.last_flow_time = time.monotonic()
+        stamp = msg.header.stamp
+        self.last_flow_time = (
+            float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+        )
+
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1.0e-9
+
+    def _wait_until_sim_time(self, target_s, previous_s):
+        """Yield callbacks until ROS simulation time reaches the next setpoint tick."""
+        observed_s = float(previous_s)
+        while rclpy.ok():
+            now_s = self._now_s()
+            if now_s + 1.0e-9 < observed_s:
+                raise RuntimeError("ROS clock moved backwards during mission")
+            if now_s >= target_s:
+                return now_s
+            observed_s = now_s
+            rclpy.spin_once(self, timeout_sec=0.01)
+        return observed_s
 
     def _gps_ready(self):
         return self.fix is not None and self.fix.status.status >= 0
 
+    def _gps_navigation_ready(self):
+        # A valid receiver fix does not prove that EKF3 has accepted GPS as a
+        # navigation source. Arming before that transition can leave a GUIDED
+        # takeoff acknowledged while the motors remain at idle.
+        return self._gps_ready() and (
+            self.ekf_using_gps or self.ekf_absolute_position_ready
+        )
+
     def _flow_ready(self):
         if self.last_flow_time is None:
             return False
+        age_s = self._now_s() - self.last_flow_time
         return (
-            time.monotonic() - self.last_flow_time <= self.flow_max_age_s
+            0.0 <= age_s <= self.flow_max_age_s
             and self.last_flow_quality >= self.flow_min_quality
         )
 
     def _navigation_source(self):
-        if self.navigation_source in ("auto", "gps") and self._gps_ready():
+        if self.navigation_source in ("auto", "gps") and self._gps_navigation_ready():
             return "gps"
         if self.navigation_source in ("auto", "optical_flow") and self._flow_ready():
             return "optical_flow"
@@ -155,14 +225,18 @@ class GuidedRectangleWaypoints(Node):
         return float(self.pose.pose.position.z)
 
     def _log_status(self, prefix):
-        now = time.monotonic()
+        now = self._now_s()
+        if now < self.last_status_time:
+            self.last_status_time = now - 2.0
         if now - self.last_status_time < 2.0:
             return
         self.last_status_time = now
         self.get_logger().info(
             f"{prefix}: connected={self.state.connected} mode={self.state.mode} "
             f"armed={self.state.armed} gps_fix_msg={self._gps_ready()} "
-            f"ekf_using_gps={self.ekf_using_gps} flow_quality={self.last_flow_quality} "
+            f"ekf_using_gps={self.ekf_using_gps} "
+            f"ekf_abs_position={self.ekf_absolute_position_ready} "
+            f"flow_quality={self.last_flow_quality} "
             f"navigation_source={self._navigation_source() or 'none'} {self._pose_text()}"
         )
 
@@ -189,10 +263,10 @@ class GuidedRectangleWaypoints(Node):
         )
 
     def wait_navigation_ready(self):
-        deadline = time.monotonic() + self.preflight_wait_s
+        deadline = self._now_s() + self.preflight_wait_s
         stable_source = None
         stable_since = None
-        while rclpy.ok() and time.monotonic() < deadline:
+        while rclpy.ok() and self._now_s() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
             source = self._navigation_source() if self.pose is not None else None
             self._log_status("navigation readiness")
@@ -200,7 +274,7 @@ class GuidedRectangleWaypoints(Node):
                 stable_source = None
                 stable_since = None
                 continue
-            now = time.monotonic()
+            now = self._now_s()
             if source != stable_source:
                 stable_source = source
                 stable_since = now
@@ -223,8 +297,10 @@ class GuidedRectangleWaypoints(Node):
             return source
         raise RuntimeError(
             "Navigation readiness timed out: require MAVROS local pose and either "
-            f"requested source={self.navigation_source}, valid GPS or fresh optical "
-            f"flow quality >= {self.flow_min_quality}"
+            f"requested source={self.navigation_source}, GPS accepted by EKF3 "
+            f"(fix_valid={self._gps_ready()}, ekf_using_gps={self.ekf_using_gps}, "
+            f"ekf_abs_position={self.ekf_absolute_position_ready}) "
+            f"or fresh optical flow quality >= {self.flow_min_quality}"
         )
 
     def call(self, client, request, label, timeout=10.0):
@@ -248,6 +324,12 @@ class GuidedRectangleWaypoints(Node):
         msg.pose.orientation.z = math.sin(yaw * 0.5)
         msg.pose.orientation.w = math.cos(yaw * 0.5)
         self.setpoint_pub.publish(msg)
+        self.last_commanded_setpoint = (
+            float(x), float(y), float(z), float(yaw)
+        )
+
+    def mission_safety_checkpoint(self, label):
+        """Hook for missions that supervise estimator health while moving."""
 
     def ensure_guided(self, label):
         if self.state.mode != "GUIDED":
@@ -259,18 +341,32 @@ class GuidedRectangleWaypoints(Node):
     def hold_setpoint(self, x, y, z, seconds, yaw=None, label="hold", require_guided=False):
         yaw = self.home_yaw if yaw is None else yaw
         period = 1.0 / self.rate_hz
-        end = time.monotonic() + max(0.0, seconds)
-        while rclpy.ok() and time.monotonic() < end:
+        start_ros_s = self._now_s()
+        end_ros_s = start_ros_s + max(0.0, seconds)
+        next_publish_ros_s = start_ros_s
+        last_observed_ros_s = start_ros_s
+        while rclpy.ok() and self._now_s() < end_ros_s:
+            if self._now_s() < start_ros_s:
+                raise RuntimeError("ROS clock moved backwards during hold")
             if require_guided:
                 self.ensure_guided(label)
+            self.mission_safety_checkpoint(label)
             self.publish_setpoint(x, y, z, yaw)
             rclpy.spin_once(self, timeout_sec=0.0)
             self._log_status(label)
-            time.sleep(period)
+            next_publish_ros_s = max(
+                next_publish_ros_s + period, self._now_s()
+            )
+            last_observed_ros_s = self._wait_until_sim_time(
+                min(next_publish_ros_s, end_ros_s), last_observed_ros_s
+            )
 
     def spin_without_setpoints(self, seconds, label="free climb"):
-        end = time.monotonic() + max(0.0, seconds)
-        while rclpy.ok() and time.monotonic() < end:
+        start_ros_s = self._now_s()
+        end_ros_s = start_ros_s + max(0.0, seconds)
+        while rclpy.ok() and self._now_s() < end_ros_s:
+            if self._now_s() < start_ros_s:
+                raise RuntimeError("ROS clock moved backwards during free climb")
             rclpy.spin_once(self, timeout_sec=0.1)
             self._log_status(label)
 
@@ -279,22 +375,41 @@ class GuidedRectangleWaypoints(Node):
             self.takeoff_min_alt_m,
             self.takeoff_alt * self.takeoff_min_alt_fraction,
         )
-        deadline = time.monotonic() + self.takeoff_free_climb_s
-        stable_since = None
-        while rclpy.ok() and time.monotonic() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.1)
-            self._log_status("apm free climb")
-            local_z = self._local_z()
-            if local_z is not None and local_z >= min_takeoff_z:
-                stable_since = stable_since or time.monotonic()
-                if time.monotonic() - stable_since >= 0.5:
-                    self.get_logger().info(
-                        f"Takeoff climb confirmed at local_z={local_z:.2f}m "
-                        f"(required>={min_takeoff_z:.2f}m)."
-                    )
-                    return
-            else:
-                stable_since = None
+        for attempt in range(1, self.takeoff_command_attempts + 1):
+            start_ros_s = self._now_s()
+            deadline = start_ros_s + self.takeoff_free_climb_s
+            stable_since = None
+            while rclpy.ok() and self._now_s() < deadline:
+                rclpy.spin_once(self, timeout_sec=0.1)
+                self._log_status(f"apm free climb attempt {attempt}")
+                local_z = self._local_z()
+                if local_z is not None and local_z >= min_takeoff_z:
+                    stable_since = stable_since or self._now_s()
+                    if self._now_s() - stable_since >= 0.5:
+                        self.get_logger().info(
+                            f"Takeoff climb confirmed at local_z={local_z:.2f}m "
+                            f"(required>={min_takeoff_z:.2f}m, attempt={attempt})."
+                        )
+                        return
+                else:
+                    stable_since = None
+            if attempt >= self.takeoff_command_attempts:
+                break
+            if not self.state.armed or self.state.mode != "GUIDED":
+                break
+            self.get_logger().warning(
+                f"Takeoff ACK produced no climb in {self.takeoff_free_climb_s:.1f}s; "
+                f"re-sending once (attempt {attempt + 1}/{self.takeoff_command_attempts})."
+            )
+            if not self.send_takeoff_command_int():
+                break
+        if self.state.armed:
+            try:
+                request = CommandBool.Request()
+                request.value = False
+                self.call(self.arming_cli, request, "safety disarm after failed takeoff")
+            except Exception as exc:
+                self.get_logger().error(f"Safety disarm failed: {exc}")
         raise RuntimeError(
             "Takeoff did not produce FCU local-position climb before timeout: "
             f"local_z={self._local_z() if self._local_z() is not None else 'none'}, "
@@ -303,8 +418,14 @@ class GuidedRectangleWaypoints(Node):
 
     def wait_for_state(self, predicate, label, timeout=12.0):
         end = time.monotonic() + timeout
+        next_publish_ros_s = self._now_s()
         while rclpy.ok() and time.monotonic() < end:
-            self.publish_setpoint(self.home_x, self.home_y, self.takeoff_alt, self.home_yaw)
+            now_ros_s = self._now_s()
+            if now_ros_s >= next_publish_ros_s:
+                self.publish_setpoint(
+                    self.home_x, self.home_y, self.takeoff_alt, self.home_yaw
+                )
+                next_publish_ros_s = now_ros_s + 1.0 / self.rate_hz
             rclpy.spin_once(self, timeout_sec=0.05)
             if predicate():
                 self.get_logger().info(
@@ -312,7 +433,6 @@ class GuidedRectangleWaypoints(Node):
                     f"armed={self.state.armed}, connected={self.state.connected}"
                 )
                 return True
-            time.sleep(1.0 / self.rate_hz)
         self.get_logger().warning(
             f"{label} not confirmed within {timeout:.1f}s: mode={self.state.mode}, "
             f"armed={self.state.armed}, connected={self.state.connected}, "
@@ -420,39 +540,68 @@ class GuidedRectangleWaypoints(Node):
         gx, gy, gz = goal
         dist = math.sqrt((gx - sx) ** 2 + (gy - sy) ** 2 + (gz - sz) ** 2)
         duration = max(dist / self.speed_mps, 1.0)
-        steps = max(1, int(duration * self.rate_hz))
         self.get_logger().info(
             f"{label}: ({sx:.2f},{sy:.2f},{sz:.2f}) -> "
             f"({gx:.2f},{gy:.2f},{gz:.2f}), duration={duration:.1f}s"
         )
-        for i in range(steps + 1):
+        started_ros_s = self._now_s()
+        next_publish_ros_s = started_ros_s
+        last_observed_ros_s = started_ros_s
+        while rclpy.ok():
             if not rclpy.ok():
                 return
+            now_ros_s = self._now_s()
+            if now_ros_s < started_ros_s:
+                raise RuntimeError("ROS clock moved backwards during flight segment")
             self.ensure_guided(label)
-            a = i / float(steps)
+            self.mission_safety_checkpoint(label)
+            a = min(1.0, (now_ros_s - started_ros_s) / duration)
             x = sx + (gx - sx) * a
             y = sy + (gy - sy) * a
             z = sz + (gz - sz) * a
             self.publish_setpoint(x, y, z, yaw)
             rclpy.spin_once(self, timeout_sec=0.0)
             self._log_status(label)
-            time.sleep(1.0 / self.rate_hz)
+            if a >= 1.0:
+                break
+            next_publish_ros_s = max(
+                next_publish_ros_s + 1.0 / self.rate_hz, self._now_s()
+            )
+            last_observed_ros_s = self._wait_until_sim_time(
+                next_publish_ros_s, last_observed_ros_s
+            )
         self.hold_setpoint(gx, gy, gz, self.hold_time, yaw, label=f"{label} hold", require_guided=True)
 
     def rotate_in_place(self, position, start_yaw, goal_yaw, label):
         delta = math.atan2(math.sin(goal_yaw - start_yaw), math.cos(goal_yaw - start_yaw))
         duration = abs(delta) / self.yaw_rate
-        steps = max(1, int(duration * self.rate_hz))
         self.get_logger().info(
             f"{label}: yaw {math.degrees(start_yaw):.1f} -> "
             f"{math.degrees(start_yaw + delta):.1f} deg, duration={duration:.1f}s"
         )
-        for i in range(steps + 1):
+        started_ros_s = self._now_s()
+        next_publish_ros_s = started_ros_s
+        last_observed_ros_s = started_ros_s
+        while rclpy.ok():
+            now_ros_s = self._now_s()
+            if now_ros_s < started_ros_s:
+                raise RuntimeError("ROS clock moved backwards during yaw segment")
             self.ensure_guided(label)
-            yaw = start_yaw + delta * (i / float(steps))
+            self.mission_safety_checkpoint(label)
+            progress = 1.0 if duration <= 0.0 else min(
+                1.0, (now_ros_s - started_ros_s) / duration
+            )
+            yaw = start_yaw + delta * progress
             self.publish_setpoint(*position, yaw)
             rclpy.spin_once(self, timeout_sec=0.0)
-            time.sleep(1.0 / self.rate_hz)
+            if progress >= 1.0:
+                break
+            next_publish_ros_s = max(
+                next_publish_ros_s + 1.0 / self.rate_hz, self._now_s()
+            )
+            last_observed_ros_s = self._wait_until_sim_time(
+                next_publish_ros_s, last_observed_ros_s
+            )
         self.hold_setpoint(*position, 1.0, goal_yaw, label=f"{label} settle", require_guided=True)
 
     def run(self):

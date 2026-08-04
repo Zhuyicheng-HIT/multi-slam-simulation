@@ -1,0 +1,107 @@
+import unittest
+import math
+
+from nav_msgs.msg import Odometry
+from uf_sensor_pipeline.external_nav_gate import (
+    capability_support_allowed,
+    odometry_state_guard_reason,
+    propagate_odometry,
+    scheduler_state_allowed,
+)
+
+
+class SchedulerStateGateTest(unittest.TestCase):
+    @staticmethod
+    def odometry(stamp_s, position=(0.0, 0.0, 0.0), yaw=0.0):
+        message = Odometry()
+        message.header.stamp.sec = int(stamp_s)
+        message.header.stamp.nanosec = int((stamp_s - int(stamp_s)) * 1.0e9)
+        message.pose.pose.position.x = position[0]
+        message.pose.pose.position.y = position[1]
+        message.pose.pose.position.z = position[2]
+        message.pose.pose.orientation.z = math.sin(0.5 * yaw)
+        message.pose.pose.orientation.w = math.cos(0.5 * yaw)
+        for index in (0, 7, 14, 21, 28, 35):
+            message.pose.covariance[index] = 0.01
+        return message
+
+    def test_only_explicit_control_safe_states_are_allowed(self):
+        allowed = ("NORMAL", "RECOVERED")
+        self.assertTrue(scheduler_state_allowed("NORMAL", allowed))
+        self.assertTrue(scheduler_state_allowed("recovered", allowed))
+        self.assertFalse(scheduler_state_allowed("DEGRADED", allowed))
+        self.assertFalse(scheduler_state_allowed("FAILSAFE", allowed))
+        self.assertFalse(scheduler_state_allowed("", allowed))
+
+    def test_degraded_state_can_be_explicitly_allowed(self):
+        allowed = ("NORMAL", "RECOVERED", "DEGRADED", "RISK")
+        self.assertTrue(scheduler_state_allowed("DEGRADED", allowed))
+        self.assertTrue(scheduler_state_allowed("RISK", allowed))
+        self.assertFalse(scheduler_state_allowed("FAILSAFE", allowed))
+
+    def test_required_capabilities_are_independent_of_optional_sensor(self):
+        support = {"propagation": 0.9, "horizontal_motion": 0.7}
+        self.assertTrue(capability_support_allowed(
+            support, ("propagation", "horizontal_motion"), 0.15
+        ))
+        support["horizontal_motion"] = 0.0
+        self.assertFalse(capability_support_allowed(
+            support, ("propagation", "horizontal_motion"), 0.15
+        ))
+
+    def test_short_horizon_propagation_uses_body_twist_and_inflates_covariance(self):
+        message = Odometry()
+        message.header.stamp.sec = 10
+        message.pose.pose.orientation.w = 1.0
+        message.pose.pose.position.x = 1.0
+        message.twist.twist.linear.x = 2.0
+        message.twist.twist.angular.z = math.pi
+        message.pose.covariance[0] = 0.01
+        output = propagate_odometry(message, 10.5, covariance_scale=2.0)
+        self.assertAlmostEqual(output.pose.pose.position.x, 2.0)
+        self.assertAlmostEqual(output.pose.pose.orientation.z, math.sin(math.pi / 4.0))
+        self.assertAlmostEqual(output.pose.pose.orientation.w, math.cos(math.pi / 4.0))
+        self.assertGreater(output.pose.covariance[0], 0.02)
+        self.assertEqual(output.header.stamp.sec, 10)
+        self.assertEqual(output.header.stamp.nanosec, 500000000)
+
+    def test_state_guard_accepts_bounded_motion(self):
+        previous = self.odometry(10.0)
+        current = self.odometry(10.1, position=(0.2, 0.0, 0.0), yaw=0.1)
+        self.assertEqual(
+            odometry_state_guard_reason(current, previous),
+            "ok",
+        )
+
+    def test_state_guard_rejects_divergent_covariance(self):
+        current = self.odometry(10.0)
+        current.pose.covariance[7] = 100000.0
+        self.assertEqual(
+            odometry_state_guard_reason(current),
+            "position_covariance_exceeds_limit",
+        )
+
+    def test_state_guard_rejects_position_and_orientation_jumps(self):
+        previous = self.odometry(10.0)
+        position_jump = self.odometry(10.1, position=(8.0, -2.0, 0.0))
+        self.assertEqual(
+            odometry_state_guard_reason(position_jump, previous),
+            "position_jump_exceeds_limit",
+        )
+        orientation_jump = self.odometry(10.1, yaw=2.0)
+        self.assertEqual(
+            odometry_state_guard_reason(orientation_jump, previous),
+            "orientation_jump_exceeds_limit",
+        )
+
+    def test_state_guard_rejects_nonmonotonic_timestamp(self):
+        previous = self.odometry(10.0)
+        current = self.odometry(10.0)
+        self.assertEqual(
+            odometry_state_guard_reason(current, previous),
+            "nonmonotonic_state_timestamp",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

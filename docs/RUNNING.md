@@ -20,6 +20,46 @@ bash tools/run_sim_with_nongps_flow.sh
 
 终端 1 统一管理 Gazebo、ArduPilot SITL、MAVROS2 和传感器。不要重复启动完整栈，否则会发生端口、进程和话题冲突。
 
+### GPS + 光流融合后输入 ExternalNav
+
+启动机载电脑侧 GPS/光流互补融合，并将唯一融合状态通过
+`/mavros/odometry/out` 送入 ArduPilot EKF3：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/run_sim_with_externalnav.sh
+```
+
+该入口默认使用图像 LK 光流、100x100 输入、关闭 D435 点云，并对光流图像采用
+best-effort、keep-last 深度 1。桥只保留最新图像并以 15 Hz 发布，旧帧不会排队：
+
+```bash
+FLOW_PUBLISH_ALL_FRAMES=false FLOW_BRIDGE_HZ=15.0 \
+  bash tools/run_sim_with_externalnav.sh
+```
+
+仅排查传感器模型时可设置 `FLOW_PUBLISH_ALL_FRAMES=true`。算法评测必须保持
+`FLOW_USE_PHYSICS=false`，否则光流会借助 Gazebo 位姿真值。Gazebo 真值评估器只写
+`externalnav_accuracy.json`，不会回灌融合器。性能门限和阶段耗时写入同目录的
+`simulation_performance.json`。
+
+ExternalNav 专用入口默认不启动 D435 和 MID360 的 ROS 数据转换桥，以避免在
+GPS/光流迭代期间复制无用的 RGB-D 和点云消息。需要同时观察这些传感器时显式恢复：
+
+```bash
+ENABLE_D435_BRIDGE=1 ENABLE_MID360_BRIDGE=1 \
+  bash tools/run_sim_with_externalnav.sh
+```
+
+只记录 GPS/光流导航链时使用轻量 rosbag 档：
+
+```bash
+UF_BAG_PROFILE=nav \
+  bash src/ultra_fusion_nav/scripts/record_sensor_bag.sh
+```
+
+完整多传感器里程碑仍使用 `UF_BAG_PROFILE=full`。
+
 ## 2. 终端 2：飞行状态机
 
 自动接受 GPS 或新鲜光流：
@@ -103,7 +143,7 @@ D435i 仿真话题：
 /front/d435i/color/camera_info
 /front/d435i/depth/image_rect_raw
 /front/d435i/aligned_depth_to_color/image_raw
-/front/d435i/depth/color/points
+/front/d435i/depth/color/points  # disabled by default; ENABLE_D435_POINTCLOUD=true to enable
 /front/d435i/accel/sample
 /front/d435i/gyro/sample
 /front/d435i/imu
