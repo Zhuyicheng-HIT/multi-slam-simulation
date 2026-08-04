@@ -83,13 +83,26 @@ bash tools/setup_ubuntu.sh
 
 外部大型源码默认保存在 `$HOME/ardupilot`、`$HOME/ardupilot_gazebo` 和 `$HOME/multi-slam-deps`，不会被提交到本仓库。
 
-## 5. 启动仿真
+## 5. 稳定启动入口
+
+本节中的 `tools/*.sh` 是项目公共启动接口。后续可以调整内部节点、参数和
+话题桥，但应保持这些命令可用。若关键架构调整确实无法兼容旧命令，必须在
+同一个版本中更新本节和迁移说明，并在合并或发布前明确告知，不允许静默失效。
+
+### 5.1 基础 Gazebo + FAST-LIO 可视化
 
 打开第 1 个 Ubuntu 终端，启动 Gazebo、APM、MAVROS2、D435i、MID360 和光流：
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
 bash tools/run_sim_with_flow.sh
+```
+
+需要同时打开 100x100 光流画面和跟踪矢量时，将上一条启动命令改为：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+SHOW_FLOW_WINDOW=1 bash tools/run_sim_with_flow.sh
 ```
 
 打开第 2 个 Ubuntu 终端，启动自动起飞和矩形飞行状态机：
@@ -105,6 +118,48 @@ bash tools/run_rectangle_state_machine.sh
 cd "$HOME/projects/multi-slam-simulation"
 bash tools/run_fastlio_mapping.sh
 ```
+
+要飞保守的长 S 航线，只替换第 2 个终端的命令，其他终端不变：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/run_s_curve_state_machine.sh
+```
+
+### 5.2 四源统一后端长 S 自动验证
+
+下面的单条命令自动启动无界面仿真、LiDAR 前端、统一后端、三圈长 S 航线、
+定量记录和退出清理。它默认不让 APM EKF3 消费 ExternalNav，适合算法验证，
+不等同于闭环飞控验收：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+VALIDATION_ROUTE=s_curve \
+S_CURVE_PASSES=3 \
+ENABLE_RELIABILITY_RECORD=1 \
+bash tools/run_unified_rectangle_validation.sh
+```
+
+验证运行期间，可在另一个终端打开统一轨迹和点云 RViz：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/run_unified_visualization.sh
+```
+
+若还要看光流窗口，在自动验证命令前增加 `SHOW_FLOW_WINDOW=1`：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+SHOW_FLOW_WINDOW=1 \
+VALIDATION_ROUTE=s_curve \
+S_CURVE_PASSES=3 \
+ENABLE_RELIABILITY_RECORD=1 \
+bash tools/run_unified_rectangle_validation.sh
+```
+
+`run_unified_rectangle_validation.sh` 的文件名为兼容旧实验保留；通过
+`VALIDATION_ROUTE=s_curve` 选择长 S，无需改脚本名。
 
 ## 6. 查看 RGB-D
 
