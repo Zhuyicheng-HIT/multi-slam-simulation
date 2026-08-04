@@ -114,9 +114,22 @@ fi
 source "$LIDAR_WS/install/setup.bash"
 
 START_LIVOX_POINTCLOUD_BRIDGE=${START_LIVOX_POINTCLOUD_BRIDGE:-auto}
+
+topic_publisher_count() {
+  local topic=$1
+  local info count
+  info=$(timeout 5s ros2 topic info --no-daemon --spin-time 1.0 "$topic" 2>/dev/null || true)
+  count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$info")
+  printf '%s' "${count:-0}"
+}
+
 if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "auto" ]]; then
+  # Capture topic info before matching it.  With `set -o pipefail`, piping
+  # `ros2 topic info` into a short-circuiting grep can report failure after a
+  # successful match because ros2 receives SIGPIPE.
+  existing_livox_publishers=$(topic_publisher_count /livox/lidar)
   if [[ "$FASTLIO_INPUT_MODE" == "livox" ]] \
-      && ros2 topic info /livox/lidar 2>/dev/null | grep -Eq 'Publisher count: [1-9]'; then
+      && (( existing_livox_publishers > 0 )); then
     START_LIVOX_POINTCLOUD_BRIDGE=0
   else
     START_LIVOX_POINTCLOUD_BRIDGE=1
@@ -217,6 +230,26 @@ if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "1" ]]; then
 else
   printf 'Using existing /livox/lidar and /livox/imu publishers; Python bridge is disabled.\n' \
     >"$LOG_DIR/livox_mid360_bridge.log"
+fi
+
+# FAST-LIO assumes one ordered LiDAR stream and one ordered IMU stream.  Two
+# adapters publishing the same topic interleave independent timestamp histories
+# and repeatedly clear its measurement buffers.
+livox_lidar_publishers=0
+livox_imu_publishers=0
+for _attempt in 1 2 3 4 5; do
+  livox_lidar_publishers=$(topic_publisher_count /livox/lidar)
+  livox_imu_publishers=$(topic_publisher_count /livox/imu)
+  if (( livox_lidar_publishers > 0 && livox_imu_publishers > 0 )); then
+    break
+  fi
+  sleep 0.5
+done
+if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 )); then
+  printf 'FAST-LIO input ownership error: /livox/lidar publishers=%s, /livox/imu publishers=%s; expected exactly one each.\n' \
+    "$livox_lidar_publishers" "$livox_imu_publishers" >&2
+  printf 'Stop duplicate Livox adapters, or set START_LIVOX_POINTCLOUD_BRIDGE=0 when the simulator/driver already provides /livox/*.\n' >&2
+  exit 3
 fi
 
 setsid ros2 launch fast_lio mapping.launch.py \

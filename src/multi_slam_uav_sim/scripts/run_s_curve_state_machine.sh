@@ -9,13 +9,14 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
 
-if ! timeout 8s bash -lc "ros2 topic list 2>/dev/null | grep -q '^/mavros/state$'"; then
+mavros_topics=$(timeout 8s ros2 topic list --no-daemon --spin-time 1.0 2>/dev/null || true)
+if ! grep -Fxq '/mavros/state' <<<"$mavros_topics"; then
   printf 'MAVROS / FCU topics are not visible. Start the simulation stack first.\n' >&2
   exit 2
 fi
 clock_ready=false
 for _attempt in 1 2 3; do
-  if timeout 8s ros2 topic echo /clock --once --field clock \
+  if timeout 8s ros2 topic echo /clock --no-daemon --spin-time 1.0 --once --field clock \
       --qos-reliability best_effort >/dev/null 2>&1; then
     clock_ready=true
     break
@@ -40,7 +41,7 @@ S_CURVE_HOLD_TIME=${S_CURVE_HOLD_TIME:-3.0}
 S_CURVE_WAYPOINT_SPACING=${S_CURVE_WAYPOINT_SPACING:-3.0}
 S_CURVE_WAYPOINT_HOLD=${S_CURVE_WAYPOINT_HOLD:-1.0}
 S_CURVE_WAYPOINT_TOLERANCE=${S_CURVE_WAYPOINT_TOLERANCE:-0.60}
-LOCALIZATION_SAFETY_ENABLED=${LOCALIZATION_SAFETY_ENABLED:-true}
+LOCALIZATION_SAFETY_ENABLED=${LOCALIZATION_SAFETY_ENABLED:-auto}
 LOCALIZATION_HOLD_S=${LOCALIZATION_HOLD_S:-1.0}
 MINIMUM_CLEARANCE_ALT=${MINIMUM_CLEARANCE_ALT:-3.5}
 CALIBRATION_YAW_SWEEP_DEG=${CALIBRATION_YAW_SWEEP_DEG:-12.0}
@@ -80,7 +81,26 @@ esac
 case "${LOCALIZATION_SAFETY_ENABLED,,}" in
   1|true|yes|on) LOCALIZATION_SAFETY_ENABLED_ARG=true ;;
   0|false|no|off) LOCALIZATION_SAFETY_ENABLED_ARG=false ;;
-  *) printf 'LOCALIZATION_SAFETY_ENABLED must be true/false or 1/0, got %s.\n' "$LOCALIZATION_SAFETY_ENABLED" >&2; exit 2 ;;
+  auto)
+    scheduler_publishers=0
+    for _attempt in 1 2 3; do
+      scheduler_info=$(timeout 5s ros2 topic info --no-daemon --spin-time 1.0 \
+        /reliability/scheduler_state 2>/dev/null || true)
+      scheduler_publishers=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' \
+        <<<"$scheduler_info")
+      scheduler_publishers=${scheduler_publishers:-0}
+      (( scheduler_publishers > 0 )) && break
+      sleep 0.5
+    done
+    if (( scheduler_publishers > 0 )); then
+      LOCALIZATION_SAFETY_ENABLED_ARG=true
+      printf 'Localization safety auto mode: scheduler publisher detected; strict supervision enabled.\n'
+    else
+      LOCALIZATION_SAFETY_ENABLED_ARG=false
+      printf 'Localization safety auto mode: no scheduler publisher; basic GPS/FCU demonstration will run without scheduler supervision.\n' >&2
+    fi
+    ;;
+  *) printf 'LOCALIZATION_SAFETY_ENABLED must be auto, true/false, or 1/0, got %s.\n' "$LOCALIZATION_SAFETY_ENABLED" >&2; exit 2 ;;
 esac
 
 cat <<EOF
@@ -92,7 +112,8 @@ Route: span=$S_CURVE_SPAN m, lateral_amplitude=$S_CURVE_AMPLITUDE m,
        passes=$S_CURVE_PASSES, speed=$S_CURVE_SPEED m/s
 Stops: every $S_CURVE_WAYPOINT_SPACING m for at least $S_CURVE_WAYPOINT_HOLD s,
        endpoint hold=$S_CURVE_HOLD_TIME s, tolerance=$S_CURVE_WAYPOINT_TOLERANCE m
-Safety: enabled=$LOCALIZATION_SAFETY_ENABLED, minimum localization-loss hold=$LOCALIZATION_HOLD_S s
+Safety: requested=$LOCALIZATION_SAFETY_ENABLED, enabled=$LOCALIZATION_SAFETY_ENABLED_ARG,
+        minimum localization-loss hold=$LOCALIZATION_HOLD_S s
 Yaw: calibration_sweep=$CALIBRATION_YAW_SWEEP_DEG deg, then locked at home+$LOCKED_YAW_OFFSET_DEG deg
 Altitude: takeoff=$TAKEOFF_ALT m, minimum_clearance=$MINIMUM_CLEARANCE_ALT m
 EOF

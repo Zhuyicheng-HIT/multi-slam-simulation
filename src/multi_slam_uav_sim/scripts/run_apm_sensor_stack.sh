@@ -153,13 +153,18 @@ pids+=("$!")
 
 read_clock_ns() {
   local sample sec nanosec
-  sample=$(timeout 10 ros2 topic echo /clock rosgraph_msgs/msg/Clock \
-    --once --field clock 2>/dev/null) \
-    || return 1
-  sec=$(awk '$1 == "sec:" {print $2; exit}' <<<"$sample")
-  nanosec=$(awk '$1 == "nanosec:" {print $2; exit}' <<<"$sample")
-  [[ "$sec" =~ ^[0-9]+$ && "$nanosec" =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "$((sec * 1000000000 + nanosec))"
+  for _attempt in 1 2 3; do
+    sample=$(timeout 8 ros2 topic echo /clock rosgraph_msgs/msg/Clock \
+      --no-daemon --spin-time 2.0 --once --field clock 2>/dev/null) || sample=
+    sec=$(awk '$1 == "sec:" {print $2; exit}' <<<"$sample")
+    nanosec=$(awk '$1 == "nanosec:" {print $2; exit}' <<<"$sample")
+    if [[ "$sec" =~ ^[0-9]+$ && "$nanosec" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$((sec * 1000000000 + nanosec))"
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
 }
 
 clock_first_ns=$(read_clock_ns) || {
