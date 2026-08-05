@@ -1,0 +1,24 @@
+seed: 20260805
+scene_extent_m: [29.0, 24.0, 6.5]
+required_structures:
+  - ground
+  - main_building
+  - annex
+  - facades
+  - roofs
+  - curb
+  - columns
+route:
+  description: Front traversal followed by right-side traversal while looking at the building.
+  unit_keyframes: 10
+  benchmark_keyframes: 30
+truth_lidar_to_visual_xyz_rpy_rad:
+  - 1.20
+  - -0.80
+  - 0.22
+  - 0.017453292519943295
+  - -0.026179938779914945
+  - 0.13962634015954636
+notes:
+  - This small specification is tracked; generated PCD files remain build/log artifacts.
+  - It exercises overlap, missing surfaces, cross-source density and a known SE(3) transform.

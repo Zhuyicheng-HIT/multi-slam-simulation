@@ -1,0 +1,95 @@
+# HybridFusion does not publish TF or modify either input map.  Every threshold
+# absent from Wang et al. (2023) is explicitly marked as an engineering default.
+hybridfusion:
+  preprocess:
+    # Engineering defaults: below the simulated MID360 0.10 m map voxel while
+    # bounding ESF/NDT cost.  The paper names VoxelGrid but gives no leaf size.
+    visual_voxel_leaf_m: 0.12
+    lidar_voxel_leaf_m: 0.12
+  grid:
+    # 0 selects the paper's stated patch step: one tenth of max XY scene size.
+    cell_size_m: 0.0
+    auto_scene_divisor: 10.0
+    # Engineering validity threshold; ESF needs enough samples for a stable histogram.
+    min_points: 80
+    neighbor_radius_cells: 1
+  candidate:
+    # Engineering candidate ring/angle widths; the paper defines lambda/theta
+    # but does not provide numerical values.
+    radial_scale_lambda: 0.35
+    angular_tolerance_deg: 55.0
+    max_centroid_distance_m: 4.5
+    # Paper Eq. (6) explicitly accepts Pearson correlation greater than 0.6.
+    esf_correlation_threshold: 0.60
+    # Engineering neighborhood filter defaults; not numerically specified.
+    neighbor_correlation_threshold: 0.52
+    min_consistent_neighbors: 1
+    max_candidates_per_block: 6
+    # Engineering runtime bound after keeping the best candidate per source block.
+    max_local_registrations: 18
+  boundary:
+    # Engineering ground-plane and XY raster defaults.  The paper defines d>h
+    # and boundary extraction but gives neither h nor raster resolution.
+    ground_quantile: 0.12
+    ground_clearance_m: 0.18
+    raster_resolution_m: 0.18
+    max_occupied_neighbors: 7
+    min_boundary_points: 24
+  ndt_2d:
+    # Engineering SE(2) Gaussian-grid NDT parameters; the paper gives no values.
+    resolution_m: 0.45
+    step_size_m: 0.18
+    transformation_epsilon: 0.001
+    max_iterations: 55
+    max_fitness: 1.50
+    fitness_max_range_m: 2.0
+  ndt_3d:
+    resolution_m: 0.55
+    step_size_m: 0.20
+    transformation_epsilon: 0.001
+    max_iterations: 60
+    max_fitness: 1.00
+    fitness_max_range_m: 2.0
+  gicp:
+    # Comparison baseline, not a claimed paper setting.
+    max_iterations: 80
+    max_correspondence_distance_m: 2.0
+    transformation_epsilon: 0.00001
+    fitness_epsilon: 0.00001
+  cluster:
+    # Engineering epsilon/omega for paper Eq. (7); values are configurable.
+    translation_threshold_m: 0.65
+    rotation_threshold_deg: 9.0
+    min_cluster_size: 2
+    enable_global_ndt_refine: true
+    max_refine_fitness_ratio: 1.08
+  metrics:
+    inlier_distance_m: 0.35
+    overlap_max_distance_m: 1.2
+    volume_voxel_m: 0.20
+
+hybridfusion_rgbd_map_exporter:
+  ros__parameters:
+    enabled: false
+    rgb_topic: /sensors/rgbd/color
+    depth_topic: /sensors/rgbd/depth
+    camera_info_topic: /front/d435i/color/camera_info
+    global_frame: odom
+    camera_frame: front_d435i_color_optical_frame
+    output_dir: ~/.ros/hybridfusion_export/visual
+    min_keyframe_translation_m: 0.20
+    min_keyframe_rotation_deg: 7.5
+    min_keyframe_period_s: 0.75
+    depth_min_m: 0.25
+    depth_max_m: 12.0
+    pixel_stride: 3
+    max_points_per_keyframe: 45000
+    map_voxel_leaf_m: 0.06
+    save_keyframes: true
+
+hybridfusion_lidar_map_exporter:
+  ros__parameters:
+    enabled: false
+    map_topic: /fastlio_denoised_map
+    output_dir: ~/.ros/hybridfusion_export/lidar
+    voxel_leaf_m: 0.10
