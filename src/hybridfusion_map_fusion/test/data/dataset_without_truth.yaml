@@ -1,0 +1,7 @@
+dataset:
+  id: live_without_truth
+  visual_map: visual_map.pcd
+  lidar_map: lidar_map.pcd
+  visual_frame: odom
+  lidar_frame: camera_init
+  initial_lidar_to_visual: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
