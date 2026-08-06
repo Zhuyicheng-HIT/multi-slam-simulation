@@ -13,7 +13,13 @@ def generate_launch_description():
     reliability_config = reliability_share + "/config/reliability.yaml"
     scheduler_config = (
         reliability_share + "/config/scheduler_visual_config.yaml")
+    use_sim_time = LaunchConfiguration("use_sim_time")
     return LaunchDescription([
+        DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument(
+            "frontend_state_seed_enabled", default_value="false"),
+        DeclareLaunchArgument(
+            "frontend_scan_prediction_enabled", default_value="false"),
         DeclareLaunchArgument("preserve_lio_anchor", default_value="true"),
         DeclareLaunchArgument("input_trigger_mode", default_value="native_factor"),
         DeclareLaunchArgument("native_lidar_factor_enabled", default_value="true"),
@@ -25,7 +31,10 @@ def generate_launch_description():
             name="reliability_monitor",
             parameters=[
                 reliability_config,
-                {"vision.internal_score_enabled": False},
+                {
+                    "use_sim_time": use_sim_time,
+                    "vision.internal_score_enabled": False,
+                },
             ],
             output="screen",
         ),
@@ -33,7 +42,7 @@ def generate_launch_description():
             package="uf_reliability",
             executable="reliability_scheduler",
             name="reliability_scheduler",
-            parameters=[scheduler_config],
+            parameters=[scheduler_config, {"use_sim_time": use_sim_time}],
             output="screen",
         ),
         Node(
@@ -43,6 +52,7 @@ def generate_launch_description():
             parameters=[
                 backend_config,
                 {
+                    "use_sim_time": use_sim_time,
                     "preserve_lio_anchor": ParameterValue(
                         LaunchConfiguration("preserve_lio_anchor"),
                         value_type=bool,
@@ -61,6 +71,14 @@ def generate_launch_description():
                         LaunchConfiguration("imu_factor_enabled"),
                         value_type=bool,
                     ),
+                    "frontend_state_seed_enabled": ParameterValue(
+                        LaunchConfiguration("frontend_state_seed_enabled"),
+                        value_type=bool,
+                    ),
+                    "frontend_scan_prediction_enabled": ParameterValue(
+                        LaunchConfiguration("frontend_scan_prediction_enabled"),
+                        value_type=bool,
+                    ),
                 },
             ],
             output="screen",
@@ -70,6 +88,7 @@ def generate_launch_description():
             executable="external_nav_gate",
             name="unified_external_nav_gate",
             parameters=[{
+                "use_sim_time": use_sim_time,
                 "input_topic": "/fusion/unified/odom",
                 "output_topic": "/mavros/odometry/out",
                 "expected_map_frame": "camera_init",
@@ -86,7 +105,20 @@ def generate_launch_description():
                 ],
                 "require_capability_support": False,
                 "maximum_propagation_age_s": 0.35,
+                "maximum_position_variance_m2": 25.0,
+                "maximum_orientation_variance_rad2": 1.0,
+                "maximum_position_step_m": 1.0,
+                "maximum_linear_speed_mps": 10.0,
+                "maximum_orientation_step_rad": 0.5,
+                "maximum_angular_speed_radps": 5.0,
             }],
+            output="screen",
+        ),
+        Node(
+            package="uf_relocalization",
+            executable="relocalization_node",
+            name="relocalization_node",
+            parameters=[{"use_sim_time": use_sim_time}],
             output="screen",
         ),
     ])

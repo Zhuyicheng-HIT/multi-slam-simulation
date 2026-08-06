@@ -104,7 +104,10 @@ def generate_launch_description():
         include(
             "uf_backend_fusion",
             "online_backend_visual.launch.py",
-            {"preserve_lio_anchor": "true"},
+            {
+                "use_sim_time": use_sim_time,
+                "preserve_lio_anchor": "true",
+            },
             condition=IfCondition(start_backend),
         ),
     ])
