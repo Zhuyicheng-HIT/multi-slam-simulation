@@ -1,0 +1,64 @@
+relocalization_node:
+  ros__parameters:
+    # Store a short rolling submap built only from temporally confirmed static
+    # points. A single Livox frame is too sparse and viewpoint-dependent for
+    # safe cross-yaw relocalization.
+    keyframe_cloud_topic: /lio/local_map
+    query_cloud_topic: /lidar/points_deskewed
+    # LiDAR-gated optimized poses preserve the cloud timestamp contract.
+    # Generic unified odometry also contains asynchronous IMU/GNSS/flow states.
+    fused_pose_topic: /fusion/unified/map_pose
+    source_lio_pose_topic: /lio/odom
+    diagnostics_topic: /lio/diagnostics
+    lidar_score_topic: /reliability/lidar_score
+    scheduler_topic: /reliability/scheduler_state
+    keyframe_allowed_scheduler_states: [NORMAL, DEGRADED, RISK, RECOVERED]
+    request_topic: /relocalization/request
+    result_topic: /relocalization/result
+    ready_topic: /relocalization/ready
+    keyframe_attempt_period_s: 0.5
+    query_attempt_period_s: 0.5
+    search_timeout_s: 6.0
+    minimum_database_keyframes: 6
+    maximum_candidates: 3
+    exclude_recent_keyframes: 3
+    maximum_descriptor_distance: 0.35
+    # A MID360 single frame and a rolling submap sample the same surfaces at
+    # different tangential locations. Optimize scan -> dense submap once, then
+    # verify fixed-transform mutual-nearest-neighbor support. Re-optimizing the
+    # dense submap against a sparse scan creates a non-symmetric false cycle.
+    registration_method: point_to_plane
+    maximum_registration_fitness: 0.25
+    maximum_alignment_translation_m: 30.0
+    maximum_alignment_rotation_rad: 1.6
+    maximum_roll_pitch_correction_rad: 0.35
+    minimum_registration_overlap_ratio: 0.35
+    minimum_registration_correspondences: 120
+    minimum_registration_reciprocal_ratio: 0.20
+    minimum_registration_reciprocal_correspondences: 80
+    maximum_registration_inlier_rmse_m: 0.35
+    maximum_registration_cycle_translation_m: 0.30
+    maximum_registration_cycle_rotation_rad: 0.20
+    minimum_verified_score_margin: 0.05
+    equivalent_candidate_translation_m: 0.50
+    equivalent_candidate_rotation_rad: 0.25
+    # Publish SUCCESS only after independent query stamps agree on the final
+    # map_from_lio transform. Keyframe candidate IDs are intentionally ignored.
+    success_consistency_required_queries: 3
+    success_consistency_translation_m: 0.15
+    success_consistency_rotation_rad: 0.05
+    keyframe_pose_tolerance_s: 0.12
+    query_pose_tolerance_s: 0.08
+    # Uses ROS time; a missing synchronization stream cannot retain one stale
+    # map cloud indefinitely, even when wall time is dilated by Gazebo RTF.
+    keyframe_sync_timeout_s: 0.5
+    maximum_quality_age_s: 2.0
+    pose_history_size: 200
+    query_cloud_history_size: 32
+    keyframe_consistency_diagnostics_enabled: true
+    expected_keyframe_frame_id: camera_init
+    expected_query_frame_id: body
+    maximum_cloud_points: 1800
+    voxel_size_m: 0.25
+    minimum_registration_points: 30
+    maximum_search_attempts: 10

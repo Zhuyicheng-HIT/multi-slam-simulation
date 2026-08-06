@@ -209,6 +209,27 @@ def integrate_gyro(samples, start_s, end_s, max_gap_s=0.12):
     return tuple(float(value) for value in integral)
 
 
+def integrate_preferred_gyro(
+    primary_samples,
+    fallback_samples,
+    start_s,
+    end_s,
+    max_gap_s=0.12,
+):
+    """Use the source that actually covers the exposure, not its latest stamp."""
+    primary = integrate_gyro(
+        primary_samples, start_s, end_s, max_gap_s=max_gap_s
+    )
+    if primary is not None:
+        return primary, "primary"
+    fallback = integrate_gyro(
+        fallback_samples, start_s, end_s, max_gap_s=max_gap_s
+    )
+    if fallback is not None:
+        return fallback, "fallback"
+    return None, "unavailable"
+
+
 def _grid_coverage(points, width, height, cols=4, rows=3):
     if len(points) == 0 or width <= 0 or height <= 0:
         return 0.0

@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(livox_ros_driver2 REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common features filters registration)
 find_package(pcl_conversions REQUIRED)
@@ -26,6 +27,21 @@ target_include_directories(registration_core PUBLIC
 )
 target_link_libraries(registration_core PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
 target_compile_definitions(registration_core PUBLIC ${PCL_DEFINITIONS})
+
+add_library(multi_frame_consistency_gate src/multi_frame_consistency_gate.cpp)
+target_compile_features(multi_frame_consistency_gate PUBLIC cxx_std_17)
+target_include_directories(multi_frame_consistency_gate PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(multi_frame_consistency_gate PUBLIC Eigen3::Eigen)
+
+add_library(keyframe_synchronization src/keyframe_synchronization.cpp)
+target_compile_features(keyframe_synchronization PUBLIC cxx_std_17)
+target_include_directories(keyframe_synchronization PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
 
 add_library(keyframe_database src/keyframe_database.cpp)
 target_compile_features(keyframe_database PUBLIC cxx_std_17)
@@ -54,7 +70,8 @@ target_include_directories(relocalization_node PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 target_link_libraries(relocalization_node
-  registration_core keyframe_database descriptor_core
+  registration_core keyframe_database descriptor_core multi_frame_consistency_gate
+  keyframe_synchronization
   Eigen3::Eigen ${PCL_LIBRARIES}
 )
 ament_target_dependencies(relocalization_node
@@ -63,21 +80,44 @@ ament_target_dependencies(relocalization_node
 )
 target_compile_definitions(relocalization_node PRIVATE ${PCL_DEFINITIONS})
 
-install(TARGETS registration_core keyframe_database descriptor_core
+add_executable(lidar_calibration_motion_node src/lidar_calibration_motion_node.cpp)
+target_compile_features(lidar_calibration_motion_node PUBLIC cxx_std_17)
+target_include_directories(lidar_calibration_motion_node PRIVATE
+  ${PCL_INCLUDE_DIRS}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(lidar_calibration_motion_node
+  registration_core Eigen3::Eigen ${PCL_LIBRARIES}
+)
+ament_target_dependencies(lidar_calibration_motion_node
+  livox_ros_driver2 rclcpp uf_interfaces
+)
+target_compile_definitions(lidar_calibration_motion_node PRIVATE ${PCL_DEFINITIONS})
+
+install(TARGETS registration_core keyframe_database descriptor_core multi_frame_consistency_gate
+  keyframe_synchronization
   EXPORT export_registration_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
-install(TARGETS relocalization_node
+install(TARGETS relocalization_node lidar_calibration_motion_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_registration_core test/test_registration_core.cpp)
   target_link_libraries(test_registration_core registration_core)
+  ament_add_gtest(
+    test_multi_frame_consistency_gate test/test_multi_frame_consistency_gate.cpp)
+  target_link_libraries(
+    test_multi_frame_consistency_gate multi_frame_consistency_gate)
+  ament_add_gtest(
+    test_keyframe_synchronization test/test_keyframe_synchronization.cpp)
+  target_link_libraries(test_keyframe_synchronization keyframe_synchronization)
   ament_add_gtest(test_keyframe_database test/test_keyframe_database.cpp)
   target_link_libraries(test_keyframe_database keyframe_database)
   ament_add_gtest(test_relocalization_pipeline test/test_relocalization_pipeline.cpp)

@@ -1,0 +1,92 @@
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index a64728f..2d5606e 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -156,6 +156,10 @@ uint64_t backend_trajectories_contract_rejected = 0;
+ uint64_t backend_trajectories_queued = 0;
+ uint64_t backend_trajectories_time_mismatched = 0;
+ uint64_t backend_trajectories_duplicate = 0;
++bool backend_trajectory_reset_initialized = false;
++uint32_t backend_trajectory_last_reset_counter = 0;
++uint64_t backend_trajectory_stale_epoch_rejected = 0;
++uint64_t backend_trajectory_epoch_flushes = 0;
+ double backend_trajectory_ack_latency_sum_s = 0.0;
+ double backend_trajectory_ack_latency_max_s = 0.0;
+
+@@ -644,20 +648,47 @@ void backend_deskew_trajectory_callback(
+         record.begin_orientation_xyzw[i] = message->begin_orientation_xyzw[i];
+         record.end_orientation_xyzw[i] = message->end_orientation_xyzw[i];
+     }
+-    lock_guard<mutex> lock(backend_trajectory_mutex);
+-    for (auto &pending : pending_backend_trajectories)
++    bool epoch_changed = false;
+     {
+-        if (pending.sequence == record.sequence)
++        lock_guard<mutex> lock(backend_trajectory_mutex);
++        if (backend_trajectory_reset_initialized &&
++            record.reset_counter < backend_trajectory_last_reset_counter)
+         {
+-            pending = record;
+-            ++backend_trajectories_duplicate;
++            ++backend_trajectory_stale_epoch_rejected;
+             return;
+         }
++        epoch_changed = !backend_trajectory_reset_initialized ||
++            record.reset_counter > backend_trajectory_last_reset_counter;
++        if (epoch_changed)
++        {
++            pending_backend_trajectories.clear();
++            backend_trajectory_last_reset_counter = record.reset_counter;
++            backend_trajectory_reset_initialized = true;
++            ++backend_trajectory_epoch_flushes;
++        }
++        for (auto &pending : pending_backend_trajectories)
++        {
++            if (pending.sequence == record.sequence)
++            {
++                pending = record;
++                ++backend_trajectories_duplicate;
++                return;
++            }
++        }
++        pending_backend_trajectories.push_back(record);
++        ++backend_trajectories_queued;
++        while (pending_backend_trajectories.size() > 16)
++            pending_backend_trajectories.pop_front();
++    }
++
++    if (epoch_changed)
++    {
++        lock_guard<mutex> map_lock(backend_map_mutex);
++        backend_map_frames_dropped += pending_backend_map_frames.size();
++        backend_map_poses_unmatched += pending_backend_map_poses.size();
++        pending_backend_map_frames.clear();
++        pending_backend_map_poses.clear();
+     }
+-    pending_backend_trajectories.push_back(record);
+-    ++backend_trajectories_queued;
+-    while (pending_backend_trajectories.size() > 16)
+-        pending_backend_trajectories.pop_front();
+ }
+
+ Eigen::Quaterniond trajectory_quaternion(
+@@ -1757,7 +1788,7 @@ public:
+         {
+             RCLCPP_INFO(
+                 this->get_logger(),
+-                "Backend trajectory frontend summary: activation_states_received=%lu activation_states_rejected=%lu bootstrap_frames=%lu requests=%lu initial_requests=%lu request_retries=%lu request_timeouts=%lu requests_without_subscriber=%lu acks=%lu ack_latency_mean_ms=%.3f ack_latency_max_ms=%.3f wait_cycles=%lu factor_frames=%lu legacy_ekf_updates=%lu ekf_updates_after_activation=%lu trajectories_received=%lu trajectories_queued=%lu trajectories_duplicate=%lu trajectories_contract_rejected=%lu trajectories_time_mismatched=%lu",
++                "Backend trajectory frontend summary: activation_states_received=%lu activation_states_rejected=%lu bootstrap_frames=%lu requests=%lu initial_requests=%lu request_retries=%lu request_timeouts=%lu requests_without_subscriber=%lu acks=%lu ack_latency_mean_ms=%.3f ack_latency_max_ms=%.3f wait_cycles=%lu factor_frames=%lu legacy_ekf_updates=%lu ekf_updates_after_activation=%lu trajectories_received=%lu trajectories_queued=%lu trajectories_duplicate=%lu trajectories_contract_rejected=%lu trajectories_time_mismatched=%lu trajectory_epoch_flushes=%lu trajectory_stale_epoch_rejected=%lu trajectory_reset_counter=%u",
+                 backend_activation_states_received,
+                 backend_activation_states_rejected,
+                 backend_trajectory_bootstrap_frames,
+@@ -1779,7 +1810,10 @@ public:
+                 backend_trajectories_queued,
+                 backend_trajectories_duplicate,
+                 backend_trajectories_contract_rejected,
+-                backend_trajectories_time_mismatched);
++                backend_trajectories_time_mismatched,
++                backend_trajectory_epoch_flushes,
++                backend_trajectory_stale_epoch_rejected,
++                backend_trajectory_last_reset_counter);
+         }
+     }

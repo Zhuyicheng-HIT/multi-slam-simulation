@@ -9,9 +9,18 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
 
-if ! timeout 8s bash -lc "ros2 topic list 2>/dev/null | grep -q '^/mavros/state$'"; then
+mavros_ready=false
+for _attempt in $(seq 1 10); do
+  mavros_topics=$(timeout 5s ros2 topic list --no-daemon --spin-time 2.0 2>/dev/null || true)
+  if grep -q '^/mavros/state$' <<<"$mavros_topics"; then
+    mavros_ready=true
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$mavros_ready" != true ]]; then
   cat <<EOF
-MAVROS / FCU topics are not visible yet.
+MAVROS / FCU topics are not visible after bounded ROS graph discovery.
 
 Start the first-window stack first and wait for:
   MAVROS FCU connected.
@@ -19,10 +28,9 @@ Start the first-window stack first and wait for:
 First-window command:
   install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_sim_with_flow.sh
 
-This script only starts the state machine; it will not start Gazebo, SITL, or MAVROS.
-The state-machine node itself will wait for /mavros/state.connected.
+Continuing because the state-machine node has its own bounded wait for
+/mavros/state.connected. This script will not start Gazebo, SITL, or MAVROS.
 EOF
-  exit 2
 fi
 clock_ready=false
 for _attempt in 1 2 3; do
@@ -45,7 +53,9 @@ RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-2.0}
 RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-1.2}
 RECTANGLE_SPEED=${RECTANGLE_SPEED:-0.20}
 HOLD_TIME=${HOLD_TIME:-2.0}
+POST_TAKEOFF_HOLD_TIME=${POST_TAKEOFF_HOLD_TIME:-3.0}
 LAND_AT_END=${LAND_AT_END:-true}
+FINAL_HOLD_TIME=${FINAL_HOLD_TIME:-0.0}
 WORLD_NAME=${WORLD_NAME:-simple_apm_rgbd_mid360}
 PREFLIGHT_WAIT_S=${PREFLIGHT_WAIT_S:-45.0}
 NAVIGATION_STABLE_S=${NAVIGATION_STABLE_S:-1.0}
@@ -67,6 +77,8 @@ RECTANGLE_LENGTH_X_PARAM=$(float_param "$RECTANGLE_LENGTH_X")
 RECTANGLE_LENGTH_Y_PARAM=$(float_param "$RECTANGLE_LENGTH_Y")
 RECTANGLE_SPEED_PARAM=$(float_param "$RECTANGLE_SPEED")
 HOLD_TIME_PARAM=$(float_param "$HOLD_TIME")
+POST_TAKEOFF_HOLD_TIME_PARAM=$(float_param "$POST_TAKEOFF_HOLD_TIME")
+FINAL_HOLD_TIME_PARAM=$(float_param "$FINAL_HOLD_TIME")
 PREFLIGHT_WAIT_S_PARAM=$(float_param "$PREFLIGHT_WAIT_S")
 NAVIGATION_STABLE_S_PARAM=$(float_param "$NAVIGATION_STABLE_S")
 ACCURACY_DURATION_S_PARAM=$(float_param "$ACCURACY_DURATION_S")
@@ -85,6 +97,8 @@ Parameters:
   length_y=$RECTANGLE_LENGTH_Y
   speed_mps=$RECTANGLE_SPEED
   hold_time=$HOLD_TIME
+  post_takeoff_hold_time_s=$POST_TAKEOFF_HOLD_TIME
+  final_hold_time_s=$FINAL_HOLD_TIME
   land_at_end=$LAND_AT_END
   preflight_timeout_s=$PREFLIGHT_WAIT_S
   navigation_stable_s=$NAVIGATION_STABLE_S
@@ -122,6 +136,8 @@ ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
   -p length_y:="$RECTANGLE_LENGTH_Y_PARAM" \
   -p speed_mps:="$RECTANGLE_SPEED_PARAM" \
   -p hold_time:="$HOLD_TIME_PARAM" \
+  -p post_takeoff_hold_time_s:="$POST_TAKEOFF_HOLD_TIME_PARAM" \
+  -p final_hold_time_s:="$FINAL_HOLD_TIME_PARAM" \
   -p land_at_end:="$LAND_AT_END" \
   -p preflight_wait_s:="$PREFLIGHT_WAIT_S_PARAM" \
   -p navigation_stable_s:="$NAVIGATION_STABLE_S_PARAM" \

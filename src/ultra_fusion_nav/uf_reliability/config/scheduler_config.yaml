@@ -9,6 +9,23 @@ reliability_scheduler:
     required_modalities: [imu]
     minimum_usable_modalities: 2
     score_timeout_s: 1.0
+    # Native point-to-plane diagnostics are intentionally throttled to 1 Hz.
+    # Allow bounded processing jitter without extending IMU/flow freshness.
+    lidar_score_timeout_s: 1.6
+    # Trigger recovery from persistent LiDAR loss, not from a single bad frame
+    # or an optional GNSS/flow degradation.
+    automatic_relocalization_enabled: true
+    automatic_relocalization_degradation_threshold: 0.85
+    automatic_relocalization_hold_s: 1.0
+    automatic_relocalization_cooldown_s: 15.0
+    automatic_relocalization_startup_grace_s: 10.0
+    # LiDAR degradation alone only down-weights that factor. Relocalize when
+    # several fresh LiDAR scores agree and no independent horizontal-position
+    # source remains observable.
+    automatic_relocalization_minimum_lidar_observations: 3
+    automatic_relocalization_position_support_threshold: 0.15
+    relocalization_commit_timeout_s: 2.0
+    relocalization_ready_topic: /relocalization/ready
     degraded_threshold: 0.35
     risk_threshold: 0.60
     failsafe_threshold: 0.85

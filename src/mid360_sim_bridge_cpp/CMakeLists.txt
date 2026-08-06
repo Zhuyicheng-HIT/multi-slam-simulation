@@ -6,6 +6,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(gz-msgs10 REQUIRED)
 find_package(gz-transport13 REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
@@ -21,6 +22,7 @@ target_include_directories(gz_livox_bridge_node PUBLIC
   $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(
   gz_livox_bridge_node
+  builtin_interfaces
   livox_ros_driver2
   nav_msgs
   rclcpp

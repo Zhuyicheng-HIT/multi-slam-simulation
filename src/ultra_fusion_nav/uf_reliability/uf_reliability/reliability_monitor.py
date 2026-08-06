@@ -18,6 +18,7 @@ from .flow_rotation_gate import (
     FlowRotationGateConfig,
     OpticalFlowRotationGate,
     interval_mean_absolute_yaw_rate,
+    interval_mean_vector,
 )
 from .scoring import (
     gnss_integrity_quality,
@@ -28,6 +29,7 @@ from .scoring import (
     lidar_map_score,
     lidar_score,
     optical_flow_displacement_frd,
+    optical_flow_lever_arm_displacement_flu,
     optical_flow_score,
     vision_score,
 )
@@ -204,6 +206,8 @@ class ReliabilityMonitor(Node):
             # APM's FCU optical-flow path compensates body rotation before
             # fusion.  Keep the same behavior for the direct companion path.
             "optical_flow.rotation_gate.allow_compensated": True,
+            "optical_flow.lever_arm_compensation_enabled": True,
+            "optical_flow.flow_sensor_offset_body_m": [0.0, 0.0, -0.35],
             "vision.feature_reference": 150,
             "vision.tau_reprojection_px": 3.0,
             "vision.weights": [0.30, 0.25, 0.25, 0.20],
@@ -223,6 +227,9 @@ class ReliabilityMonitor(Node):
         self.last_imu_publish_ns = None
         self.imu_window = deque(maxlen=100)
         self.flow_imu_yaw_samples = deque(maxlen=2000)
+        self.flow_imu_samples = deque(maxlen=3000)
+        self.flow_lever_arm_compensated = 0
+        self.flow_lever_arm_unavailable = 0
         self.imu_preintegration_residual = None
         self.imu_preintegration_residual_arrival = None
         self.lidar_innovation_position = None
@@ -255,6 +262,23 @@ class ReliabilityMonitor(Node):
                     "optical_flow.rotation_gate.allow_compensated").value),
             )
         )
+        self.flow_lever_arm_compensation_enabled = bool(
+            self.get_parameter(
+                "optical_flow.lever_arm_compensation_enabled"
+            ).value
+        )
+        flow_sensor_offset = tuple(
+            float(value) for value in self.get_parameter(
+                "optical_flow.flow_sensor_offset_body_m"
+            ).value
+        )
+        if len(flow_sensor_offset) != 3 or not all(
+            math.isfinite(value) for value in flow_sensor_offset
+        ):
+            raise ValueError(
+                "optical_flow.flow_sensor_offset_body_m must be a finite 3-vector"
+            )
+        self.flow_sensor_offset_body_m = tuple(flow_sensor_offset)
         self.latest_depth_ratio = -1.0
         self.latest_blur_energy = -1.0
         self.latest_feature_count = 0
@@ -520,12 +544,18 @@ class ReliabilityMonitor(Node):
         ], dtype=float)
         timestamp_s = current_ns * 1.0e-9
         self.flow_imu_yaw_samples.append((timestamp_s, float(gyro[2])))
+        self.flow_imu_samples.append((timestamp_s, tuple(float(value) for value in gyro)))
         cutoff_s = timestamp_s - 5.0
         while (
             self.flow_imu_yaw_samples
             and self.flow_imu_yaw_samples[0][0] < cutoff_s
         ):
             self.flow_imu_yaw_samples.popleft()
+        while (
+            self.flow_imu_samples
+            and self.flow_imu_samples[0][0] < cutoff_s
+        ):
+            self.flow_imu_samples.popleft()
         self.imu_window.append((accel, gyro))
         if self.last_imu_publish_ns is not None and current_ns - self.last_imu_publish_ns < 100_000_000:
             return
@@ -577,6 +607,36 @@ class ReliabilityMonitor(Node):
             self.get_parameter("imu.minimum_window_samples").value,
         )
 
+    def _flow_lever_arm_displacement(self, msg):
+        """Return the FLU sensor-point displacement for one flow exposure."""
+        if not self.flow_lever_arm_compensation_enabled:
+            return np.zeros(3, dtype=float), "disabled"
+        integration_s = float(msg.integration_time_us) * 1.0e-6
+        end_s = stamp_ns(msg.header) * 1.0e-9
+        if integration_s <= 0.0 or end_s <= 0.0:
+            self.flow_lever_arm_unavailable += 1
+            return None, "invalid_integration"
+        angular_velocity = interval_mean_vector(
+            list(self.flow_imu_samples),
+            end_s - integration_s,
+            end_s,
+            float(self.get_parameter(
+                "optical_flow.rotation_gate.imu_max_gap_s").value),
+        )
+        if angular_velocity is None:
+            self.flow_lever_arm_unavailable += 1
+            return None, "imu_interval_unavailable"
+        correction = optical_flow_lever_arm_displacement_flu(
+            angular_velocity,
+            self.flow_sensor_offset_body_m,
+            integration_s,
+        )
+        if correction is None:
+            self.flow_lever_arm_unavailable += 1
+            return None, "invalid_gyro_or_mount"
+        self.flow_lever_arm_compensated += 1
+        return np.asarray(correction, dtype=float), "per_exposure_imu"
+
     def _flow(self, msg):
         self.pending_flows.append((self._now_s(), copy.deepcopy(msg)))
         self._flush_flows()
@@ -612,11 +672,23 @@ class ReliabilityMonitor(Node):
             self._publish_flow(msg, prediction)
 
     def _publish_flow(self, msg, prediction):
-        flow_displacement = optical_flow_displacement_frd(
+        raw_flow_displacement = optical_flow_displacement_frd(
             msg.integrated_x, msg.integrated_y,
             msg.integrated_xgyro, msg.integrated_ygyro,
             msg.distance,
         )
+        flow_displacement = raw_flow_displacement
+        lever_correction = None
+        lever_reason = "not_attempted"
+        if raw_flow_displacement is not None:
+            lever_correction, lever_reason = self._flow_lever_arm_displacement(msg)
+            if lever_correction is not None:
+                # Convert the FLU correction to FRD before removing it from the
+                # APM-compatible sensor displacement.
+                flow_displacement = (
+                    float(raw_flow_displacement[0]) - float(lever_correction[0]),
+                    float(raw_flow_displacement[1]) + float(lever_correction[1]),
+                )
         prediction_fallback_allowed = (
             prediction is None
             and flow_displacement is not None
@@ -685,6 +757,41 @@ class ReliabilityMonitor(Node):
             reasons.append(rotation_gate.reason)
         if rotation_gate.hard_disabled:
             reasons.append("flow_rotation_gate_marks_observation_unavailable")
+        if lever_reason not in {"per_exposure_imu", "disabled", "not_attempted"}:
+            reasons.append(f"flow_lever_arm_{lever_reason}")
+        evidence.update({
+            "flow_lever_arm_compensation_enabled": (
+                1.0 if self.flow_lever_arm_compensation_enabled else 0.0
+            ),
+            "flow_lever_arm_compensation_valid": (
+                1.0 if lever_correction is not None else 0.0
+            ),
+            "flow_lever_arm_source": (
+                1.0 if lever_reason == "per_exposure_imu" else 0.0
+            ),
+            "flow_lever_arm_displacement_x_m": (
+                -1.0 if lever_correction is None else float(lever_correction[0])
+            ),
+            "flow_lever_arm_displacement_y_m": (
+                -1.0 if lever_correction is None else float(lever_correction[1])
+            ),
+            "flow_delta_sensor_x_m": (
+                -1.0 if raw_flow_displacement is None
+                else float(raw_flow_displacement[0])
+            ),
+            "flow_delta_sensor_y_m": (
+                -1.0 if raw_flow_displacement is None
+                else float(raw_flow_displacement[1])
+            ),
+            "flow_delta_compensated_x_m": (
+                -1.0 if flow_displacement is None
+                else float(flow_displacement[0])
+            ),
+            "flow_delta_compensated_y_m": (
+                -1.0 if flow_displacement is None
+                else float(flow_displacement[1])
+            ),
+        })
         result = score, evidence, reasons
         gyro_available = flow_displacement is not None
         result[1]["gyro_compensation_available"] = 1.0 if gyro_available else 0.0
@@ -767,6 +874,11 @@ def main(args=None):
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        # Humble may surface RCLError instead of ExternalShutdownException
+        # when launch invalidates the context while the executor is waiting.
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():

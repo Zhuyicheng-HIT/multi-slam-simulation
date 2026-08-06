@@ -7,6 +7,7 @@ uint8 state
 string state_name
 bool request_active
 bool accepted
+uint64 transaction_id
 uint32 candidate_id
 float32 descriptor_distance
 float32 registration_fitness

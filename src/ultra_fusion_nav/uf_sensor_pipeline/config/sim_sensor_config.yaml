@@ -69,6 +69,10 @@ fault_injector_imu:
     modality: imu
     input_topic: /mavros/imu/data_raw
     output_topic: /sensors/imu
+    # SITL's FCU telemetry clock can jump backwards under low RTF. Align the
+    # simulation output to ROS time while keeping the real-hardware default
+    # (source timestamps) unchanged in the generic injector.
+    restamp_output: true
     fault_type: none
     fault_start_s: 0.0
     fault_duration_s: 0.0
@@ -83,6 +87,10 @@ fault_injector_gnss:
     # No FCU local-position or fused-global-position topic is used here.
     input_topic: /mavros/global_position/raw/fix
     output_topic: /sensors/gnss/fix
+    # MAVROS' FCU timesync can reset when Gazebo runs below real time, while
+    # every estimator in this simulation uses /clock. Normalize only this
+    # simulation-facing stream; real NMEA and rosbag paths keep source time.
+    restamp_output: true
     fault_type: none
     fault_start_s: 0.0
     fault_duration_s: 0.0

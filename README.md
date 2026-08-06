@@ -223,6 +223,7 @@ python3 tools/analyze_slam_drift.py --duration 120
 
 ## 9. 进一步阅读
 
+- [四源融合稳定候选版与视觉协作接口](docs/RELEASE_FOUR_SOURCE_V1.md)
 - [详细配置教程](README_详细配置教程.md)
 - [安装与依赖说明](docs/INSTALL.md)
 - [运行与排错](docs/RUNNING.md)

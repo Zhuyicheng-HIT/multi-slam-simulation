@@ -6,16 +6,24 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 FAST_LIO_SRC=${FAST_LIO_SRC:-$LIDAR_WS/src/FAST_LIO_ROS2}
 EXPECTED_COMMIT=a4743b095409588842a5b30ddfa27e29d2f99164
-PATCH_FILE="$REPO_ROOT/src/ultra_fusion_nav/uf_lio_adapter/fast_lio_patches/0001-native-lidar-factor-export.patch"
+PATCH_DIR="$REPO_ROOT/src/ultra_fusion_nav/uf_lio_adapter/fast_lio_patches"
+PATCH_FILES=(
+  "$PATCH_DIR/0001-native-lidar-factor-export.patch"
+  "$PATCH_DIR/0002-backend-trajectory-map-activation-decoupling.patch"
+  "$PATCH_DIR/0003-relocalization-epoch-gate.patch"
+  "$PATCH_DIR/0004-native-lidar-factor-epoch-contract.patch"
+)
 
 if ! git -C "$FAST_LIO_SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "FAST-LIO source checkout not found: $FAST_LIO_SRC" >&2
   exit 2
 fi
-if [[ ! -f "$PATCH_FILE" ]]; then
-  echo "Patch file not found: $PATCH_FILE" >&2
-  exit 2
-fi
+for patch_file in "${PATCH_FILES[@]}"; do
+  if [[ ! -f "$patch_file" ]]; then
+    echo "Patch file not found: $patch_file" >&2
+    exit 2
+  fi
+done
 
 actual_commit=$(git -C "$FAST_LIO_SRC" rev-parse HEAD)
 if [[ "$actual_commit" != "$EXPECTED_COMMIT" ]]; then
@@ -29,9 +37,10 @@ if ! git -C "$FAST_LIO_SRC" diff --quiet; then
   exit 4
 fi
 
-# The packaged diff intentionally has zero context because a patch stored
-# inside Git otherwise trips whitespace checks on blank context markers. The
-# exact upstream commit gate above keeps this application deterministic.
-git -C "$FAST_LIO_SRC" apply --unidiff-zero --check "$PATCH_FILE"
-git -C "$FAST_LIO_SRC" apply --unidiff-zero "$PATCH_FILE"
-echo "Applied native LiDAR factor export patch to $FAST_LIO_SRC"
+# Later patches build on files introduced or changed by earlier patches, so
+# validate and apply the pinned series in order.
+for patch_file in "${PATCH_FILES[@]}"; do
+  git -C "$FAST_LIO_SRC" apply --unidiff-zero --check "$patch_file"
+  git -C "$FAST_LIO_SRC" apply --unidiff-zero "$patch_file"
+done
+echo "Applied FAST-LIO downstream-backend patch series to $FAST_LIO_SRC"

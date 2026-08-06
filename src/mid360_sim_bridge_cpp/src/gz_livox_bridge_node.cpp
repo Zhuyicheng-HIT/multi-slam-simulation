@@ -1,4 +1,5 @@
 #include <gz/msgs/laserscan.pb.h>
+#include <gz/msgs/pose_v.pb.h>
 #include <gz/msgs/world_stats.pb.h>
 #include <gz/transport/Node.hh>
 
@@ -17,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include <builtin_interfaces/msg/time.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include <livox_ros_driver2/msg/custom_point.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -46,6 +48,13 @@ public:
     map_frame_id_ = declare_parameter<std::string>("map_frame_id", "camera_init");
     ground_truth_odom_topic_ = declare_parameter<std::string>(
       "ground_truth_odom_topic", "/sim/mid360/ground_truth_odom");
+    gazebo_world_name_ = declare_parameter<std::string>(
+      "gazebo_world_name", "simple_apm_rgbd_mid360");
+    gazebo_model_name_ = declare_parameter<std::string>("gazebo_model", "apm_iris");
+    dynamic_pose_topic_ = declare_parameter<std::string>(
+      "dynamic_pose_topic", "/world/" + gazebo_world_name_ + "/dynamic_pose/info");
+    pose_topic_ = declare_parameter<std::string>(
+      "pose_topic", "/world/" + gazebo_world_name_ + "/pose/info");
     world_stats_topic_ = declare_parameter<std::string>(
       "world_stats_topic", "/world/simple_apm_rgbd_mid360/stats");
     rtf_topic_ = declare_parameter<std::string>("rtf_topic", "/simulation/rtf");
@@ -122,6 +131,16 @@ public:
       throw std::runtime_error(
               "Failed to subscribe to Gazebo topic " + world_stats_topic_);
     }
+    if (publish_ground_truth_odom_) {
+      const bool dynamic_pose_ok = gz_node_.Subscribe(
+        dynamic_pose_topic_, &GzLivoxBridgeNode::on_model_poses, this);
+      const bool pose_ok = gz_node_.Subscribe(
+        pose_topic_, &GzLivoxBridgeNode::on_model_poses, this);
+      if (!dynamic_pose_ok && !pose_ok) {
+        throw std::runtime_error(
+                "Failed to subscribe to Gazebo model pose topics for evaluation truth");
+      }
+    }
 
     status_timer_ = create_wall_timer(
       std::chrono::seconds(2), std::bind(&GzLivoxBridgeNode::report_status, this));
@@ -146,10 +165,41 @@ public:
         "z=[%.2f, %.2f] m",
         body_bounds_[0], body_bounds_[1], body_bounds_[2], body_bounds_[3],
         body_bounds_[4], body_bounds_[5]);
+      RCLCPP_INFO(
+        get_logger(),
+        "MID360 lidar origin in body frame: [%.3f, %.3f, %.3f] m",
+        lidar_to_body_translation_[0], lidar_to_body_translation_[1],
+        lidar_to_body_translation_[2]);
     }
   }
 
 private:
+  static bool entity_name_matches_model(
+    const std::string & entity_name, const std::string & model_name)
+  {
+    if (entity_name == model_name) {
+      return true;
+    }
+    const std::string suffix = "::" + model_name;
+    return entity_name.size() > suffix.size() &&
+           entity_name.compare(entity_name.size() - suffix.size(), suffix.size(), suffix) == 0;
+  }
+
+  static bool assign_positive_stamp(
+    builtin_interfaces::msg::Time & output, const std::int64_t stamp_ns)
+  {
+    if (stamp_ns <= 0) {
+      return false;
+    }
+    const auto seconds = stamp_ns / 1000000000LL;
+    if (seconds > std::numeric_limits<std::int32_t>::max()) {
+      return false;
+    }
+    output.sec = static_cast<std::int32_t>(seconds);
+    output.nanosec = static_cast<std::uint32_t>(stamp_ns % 1000000000LL);
+    return true;
+  }
+
   template<std::size_t SizeT>
   static std::array<double, SizeT> finite_parameter_array(
     const std::vector<double> & values, const std::string & name)
@@ -172,13 +222,15 @@ private:
     if (!msg.has_header() || !msg.header().has_stamp()) {
       return 0;
     }
-    return static_cast<std::int64_t>(msg.header().stamp().sec()) * 1000000000LL +
-           static_cast<std::int64_t>(msg.header().stamp().nsec());
+    return checked_nonnegative_stamp_ns(
+      static_cast<std::int64_t>(msg.header().stamp().sec()),
+      static_cast<std::int64_t>(msg.header().stamp().nsec()));
   }
 
   std::int64_t monotonic_lidar_stamp(const gz::msgs::LaserScan & msg)
   {
     const auto source_stamp_ns = protobuf_stamp_ns(msg);
+    const auto fallback_ns = now().nanoseconds();
     std::int64_t stamp_ns = 0;
     const auto latest_imu_stamp_ns =
       last_imu_stamp_ns_.load(std::memory_order_relaxed);
@@ -187,23 +239,20 @@ private:
     } else if (preserve_sim_scan_clock_ && source_stamp_ns > 0) {
       if (lidar_source_origin_ns_ <= 0) {
         lidar_source_origin_ns_ = source_stamp_ns;
-        lidar_epoch_origin_ns_ = now().nanoseconds();
+        lidar_epoch_origin_ns_ = fallback_ns > 0 ? fallback_ns : 1;
       }
       stamp_ns = epoch_aligned_stamp_ns(
         source_stamp_ns, lidar_source_origin_ns_, lidar_epoch_origin_ns_);
     } else {
-      stamp_ns = restamp_lidar_ ? now().nanoseconds() : source_stamp_ns;
-    }
-    if (stamp_ns <= 0) {
-      stamp_ns = now().nanoseconds();
+      stamp_ns = restamp_lidar_ ? fallback_ns : source_stamp_ns;
     }
     const auto previous = last_lidar_stamp_ns_.load(std::memory_order_relaxed);
-    if (stamp_ns <= previous) {
-      stamp_ns = previous + 1;
+    const auto sanitized = monotonic_positive_stamp_ns(stamp_ns, previous, fallback_ns);
+    if (sanitized != stamp_ns) {
       adjusted_lidar_stamps_.fetch_add(1, std::memory_order_relaxed);
     }
-    last_lidar_stamp_ns_.store(stamp_ns, std::memory_order_relaxed);
-    return stamp_ns;
+    last_lidar_stamp_ns_.store(sanitized, std::memory_order_relaxed);
+    return sanitized;
   }
 
   void refresh_angle_cache(const gz::msgs::LaserScan & msg)
@@ -260,7 +309,10 @@ private:
     const auto acquisition_stamp_ns = monotonic_lidar_stamp(msg);
     const auto packet_stamp_ns = packet_begin_stamp_ns(
       acquisition_stamp_ns, scan_period_ns_, synthetic_scan_timing_);
-    output.header.stamp = rclcpp::Time(packet_stamp_ns, RCL_SYSTEM_TIME);
+    if (!assign_positive_stamp(output.header.stamp, packet_stamp_ns)) {
+      dropped_invalid_stamps_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
     output.header.frame_id = lidar_frame_id_;
     output.timebase = static_cast<std::uint64_t>(packet_stamp_ns);
     output.lidar_id = 1U;
@@ -332,32 +384,85 @@ private:
       return;
     }
     nav_msgs::msg::Odometry odom;
-    odom.header.stamp = rclcpp::Time(stamp_ns, RCL_SYSTEM_TIME);
+    if (!assign_positive_stamp(odom.header.stamp, stamp_ns)) {
+      dropped_invalid_stamps_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
     odom.header.frame_id = map_frame_id_;
     odom.child_frame_id = lidar_frame_id_;
-    const auto & pose = msg.world_pose();
-    odom.pose.pose.position.x = pose.position().x();
-    odom.pose.pose.position.y = pose.position().y();
-    odom.pose.pose.position.z = pose.position().z();
-    odom.pose.pose.orientation.x = pose.orientation().x();
-    odom.pose.pose.orientation.y = pose.orientation().y();
-    odom.pose.pose.orientation.z = pose.orientation().z();
-    odom.pose.pose.orientation.w = pose.orientation().w();
+    bool model_pose_available = false;
+    {
+      std::lock_guard<std::mutex> lock(model_pose_mutex_);
+      if (latest_model_pose_valid_) {
+        odom.pose.pose.position.x = latest_model_position_[0];
+        odom.pose.pose.position.y = latest_model_position_[1];
+        odom.pose.pose.position.z = latest_model_position_[2];
+        odom.pose.pose.orientation.x = latest_model_orientation_xyzw_[0];
+        odom.pose.pose.orientation.y = latest_model_orientation_xyzw_[1];
+        odom.pose.pose.orientation.z = latest_model_orientation_xyzw_[2];
+        odom.pose.pose.orientation.w = latest_model_orientation_xyzw_[3];
+        model_pose_available = true;
+      }
+    }
+    if (model_pose_available) {
+      ground_truth_model_pose_count_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      const auto & pose = msg.world_pose();
+      odom.pose.pose.position.x = pose.position().x();
+      odom.pose.pose.position.y = pose.position().y();
+      odom.pose.pose.position.z = pose.position().z();
+      odom.pose.pose.orientation.x = pose.orientation().x();
+      odom.pose.pose.orientation.y = pose.orientation().y();
+      odom.pose.pose.orientation.z = pose.orientation().z();
+      odom.pose.pose.orientation.w = pose.orientation().w();
+      ground_truth_scan_pose_fallback_count_.fetch_add(1, std::memory_order_relaxed);
+    }
     ground_truth_odom_pub_->publish(std::move(odom));
+  }
+
+  void on_model_poses(const gz::msgs::Pose_V & msg)
+  {
+    for (const auto & pose : msg.pose()) {
+      if (!entity_name_matches_model(pose.name(), gazebo_model_name_)) {
+        continue;
+      }
+      const double quaternion_norm = std::sqrt(
+        pose.orientation().x() * pose.orientation().x() +
+        pose.orientation().y() * pose.orientation().y() +
+        pose.orientation().z() * pose.orientation().z() +
+        pose.orientation().w() * pose.orientation().w());
+      if (!std::isfinite(quaternion_norm) || quaternion_norm <= 1.0e-12) {
+        return;
+      }
+      std::lock_guard<std::mutex> lock(model_pose_mutex_);
+      latest_model_position_ = {
+        pose.position().x(), pose.position().y(), pose.position().z()};
+      latest_model_orientation_xyzw_ = {
+        pose.orientation().x() / quaternion_norm,
+        pose.orientation().y() / quaternion_norm,
+        pose.orientation().z() / quaternion_norm,
+        pose.orientation().w() / quaternion_norm};
+      latest_model_pose_valid_ = true;
+      return;
+    }
   }
 
   void on_imu(const sensor_msgs::msg::Imu::SharedPtr input)
   {
     sensor_msgs::msg::Imu output = *input;
-    if (restamp_imu_) {
-      output.header.stamp = now();
-    }
-    auto stamp_ns = rclcpp::Time(output.header.stamp).nanoseconds();
+    const auto fallback_ns = now().nanoseconds();
+    const auto input_stamp_ns = checked_nonnegative_stamp_ns(
+      static_cast<std::int64_t>(input->header.stamp.sec),
+      static_cast<std::int64_t>(input->header.stamp.nanosec));
+    const auto candidate_ns = restamp_imu_ ? fallback_ns : input_stamp_ns;
     const auto previous = last_imu_stamp_ns_.load(std::memory_order_relaxed);
-    if (stamp_ns <= previous) {
-      stamp_ns = previous + 1;
-      output.header.stamp = rclcpp::Time(stamp_ns, RCL_SYSTEM_TIME);
+    const auto stamp_ns = monotonic_positive_stamp_ns(candidate_ns, previous, fallback_ns);
+    if (stamp_ns != candidate_ns) {
       adjusted_imu_stamps_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!assign_positive_stamp(output.header.stamp, stamp_ns)) {
+      dropped_invalid_stamps_.fetch_add(1, std::memory_order_relaxed);
+      return;
     }
     output.header.frame_id = imu_frame_id_;
     last_imu_stamp_ns_.store(stamp_ns, std::memory_order_relaxed);
@@ -418,7 +523,8 @@ private:
       get_logger(),
       "direct bridge clouds=%lu points=%u input_valid=%u body_removed=%u "
       "body_removed_ratio=%.5f cloud_hz=%.2f imu_hz=%.2f "
-      "cloud_minus_imu_ms=%.1f adjusted_lidar=%lu adjusted_imu=%lu",
+      "cloud_minus_imu_ms=%.1f adjusted_lidar=%lu adjusted_imu=%lu "
+      "truth_model_pose=%lu truth_scan_pose_fallback=%lu dropped_invalid=%lu",
       static_cast<unsigned long>(clouds), last_point_count_.load(std::memory_order_relaxed),
       last_valid_input_point_count_.load(std::memory_order_relaxed),
       last_body_removed_point_count_.load(std::memory_order_relaxed),
@@ -427,7 +533,13 @@ private:
         1U, valid_input_point_count_.load(std::memory_order_relaxed))),
       cloud_hz, imu_hz, stamp_delta_ms,
       static_cast<unsigned long>(adjusted_lidar_stamps_.load(std::memory_order_relaxed)),
-      static_cast<unsigned long>(adjusted_imu_stamps_.load(std::memory_order_relaxed)));
+      static_cast<unsigned long>(adjusted_imu_stamps_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(
+        ground_truth_model_pose_count_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(
+        ground_truth_scan_pose_fallback_count_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(
+        dropped_invalid_stamps_.load(std::memory_order_relaxed)));
     last_status_time_ = current_time;
     last_status_cloud_count_ = clouds;
     last_status_imu_count_ = imus;
@@ -441,6 +553,10 @@ private:
   std::string imu_frame_id_;
   std::string map_frame_id_;
   std::string ground_truth_odom_topic_;
+  std::string gazebo_world_name_;
+  std::string gazebo_model_name_;
+  std::string dynamic_pose_topic_;
+  std::string pose_topic_;
   std::string world_stats_topic_;
   std::string rtf_topic_;
   std::string body_removed_ratio_topic_;
@@ -458,6 +574,10 @@ private:
   std::array<double, 6> body_bounds_{};
   std::array<double, 9> lidar_to_body_rotation_{};
   std::array<double, 3> lidar_to_body_translation_{};
+  std::mutex model_pose_mutex_;
+  std::array<double, 3> latest_model_position_{};
+  std::array<double, 4> latest_model_orientation_xyzw_{};
+  bool latest_model_pose_valid_{false};
 
   gz::transport::Node gz_node_;
   rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar_pub_;
@@ -483,6 +603,9 @@ private:
   std::atomic<std::uint64_t> imu_count_{0U};
   std::atomic<std::uint64_t> adjusted_lidar_stamps_{0U};
   std::atomic<std::uint64_t> adjusted_imu_stamps_{0U};
+  std::atomic<std::uint64_t> dropped_invalid_stamps_{0U};
+  std::atomic<std::uint64_t> ground_truth_model_pose_count_{0U};
+  std::atomic<std::uint64_t> ground_truth_scan_pose_fallback_count_{0U};
   std::atomic<std::uint32_t> last_point_count_{0U};
   std::atomic<std::uint32_t> last_valid_input_point_count_{0U};
   std::atomic<std::uint32_t> last_body_removed_point_count_{0U};

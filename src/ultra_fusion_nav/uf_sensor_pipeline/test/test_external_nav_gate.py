@@ -2,8 +2,11 @@ import unittest
 import math
 
 from nav_msgs.msg import Odometry
+from uf_interfaces.msg import FusionEpoch
 from uf_sensor_pipeline.external_nav_gate import (
+    ExternalNavGate,
     capability_support_allowed,
+    fusion_epoch_advances,
     odometry_state_guard_reason,
     propagate_odometry,
     scheduler_state_allowed,
@@ -48,6 +51,54 @@ class SchedulerStateGateTest(unittest.TestCase):
         self.assertFalse(capability_support_allowed(
             support, ("propagation", "horizontal_motion"), 0.15
         ))
+
+    def test_only_new_applied_fusion_epoch_resets_jump_reference(self):
+        self.assertTrue(fusion_epoch_advances(True, 4, 3))
+        self.assertFalse(fusion_epoch_advances(False, 4, 3))
+        self.assertFalse(fusion_epoch_advances(True, 3, 3))
+        self.assertFalse(fusion_epoch_advances(True, 2, 3))
+
+    def test_session_and_transaction_epoch_reset_is_ordered(self):
+        gate = object.__new__(ExternalNavGate)
+        gate.current_fusion_epoch = 4
+        gate.current_fusion_session = 10
+        gate.current_fusion_transaction = 90
+        gate.minimum_epoch_stamp_s = 8.0
+        gate.latest_source = object()
+        gate.fusion_epoch_events = 0
+        gate.fusion_session_events = 0
+        gate.last_reason = "ok"
+
+        new_session = FusionEpoch()
+        new_session.session_id = 11
+        new_session.reset_counter = 0
+        new_session.applied = False
+        gate._fusion_epoch(new_session)
+        self.assertEqual(gate.current_fusion_session, 11)
+        self.assertEqual(gate.current_fusion_epoch, 0)
+        self.assertIsNone(gate.latest_source)
+        self.assertIsNone(gate.minimum_epoch_stamp_s)
+
+        committed = FusionEpoch()
+        committed.header.stamp.sec = 12
+        committed.header.stamp.nanosec = 250000000
+        committed.applied = True
+        committed.session_id = 11
+        committed.transaction_id = 101
+        committed.reset_counter = 1
+        gate._fusion_epoch(committed)
+        self.assertEqual(gate.current_fusion_transaction, 101)
+        self.assertAlmostEqual(gate.minimum_epoch_stamp_s, 12.25)
+        self.assertEqual(gate.fusion_epoch_events, 1)
+
+        stale_session = FusionEpoch()
+        stale_session.applied = True
+        stale_session.session_id = 10
+        stale_session.transaction_id = 102
+        stale_session.reset_counter = 9
+        gate._fusion_epoch(stale_session)
+        self.assertEqual(gate.current_fusion_session, 11)
+        self.assertEqual(gate.current_fusion_transaction, 101)
 
     def test_short_horizon_propagation_uses_body_twist_and_inflates_covariance(self):
         message = Odometry()

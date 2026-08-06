@@ -9,14 +9,21 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
 
-mavros_topics=$(timeout 8s ros2 topic list --no-daemon --spin-time 1.0 2>/dev/null || true)
-if ! grep -Fxq '/mavros/state' <<<"$mavros_topics"; then
-  printf 'MAVROS / FCU topics are not visible. Start the simulation stack first.\n' >&2
-  exit 2
+mavros_ready=false
+for _attempt in $(seq 1 10); do
+  mavros_topics=$(timeout 5s ros2 topic list --no-daemon --spin-time 2.0 2>/dev/null || true)
+  if grep -q '^/mavros/state$' <<<"$mavros_topics"; then
+    mavros_ready=true
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$mavros_ready" != true ]]; then
+  printf 'MAVROS topics are not visible yet; continuing to the node bounded FCU wait.\n' >&2
 fi
 clock_ready=false
 for _attempt in 1 2 3; do
-  if timeout 8s ros2 topic echo /clock --no-daemon --spin-time 1.0 --once --field clock \
+  if timeout 8s ros2 topic echo /clock --once --field clock \
       --qos-reliability best_effort >/dev/null 2>&1; then
     clock_ready=true
     break
@@ -41,6 +48,8 @@ S_CURVE_HOLD_TIME=${S_CURVE_HOLD_TIME:-3.0}
 S_CURVE_WAYPOINT_SPACING=${S_CURVE_WAYPOINT_SPACING:-3.0}
 S_CURVE_WAYPOINT_HOLD=${S_CURVE_WAYPOINT_HOLD:-1.0}
 S_CURVE_WAYPOINT_TOLERANCE=${S_CURVE_WAYPOINT_TOLERANCE:-0.60}
+POST_TAKEOFF_HOLD_TIME=${POST_TAKEOFF_HOLD_TIME:-3.0}
+FINAL_HOLD_TIME=${FINAL_HOLD_TIME:-0.0}
 LOCALIZATION_SAFETY_ENABLED=${LOCALIZATION_SAFETY_ENABLED:-auto}
 LOCALIZATION_HOLD_S=${LOCALIZATION_HOLD_S:-1.0}
 MINIMUM_CLEARANCE_ALT=${MINIMUM_CLEARANCE_ALT:-3.5}
@@ -69,6 +78,8 @@ S_CURVE_HOLD_TIME_ARG=$(as_double "$S_CURVE_HOLD_TIME")
 S_CURVE_WAYPOINT_SPACING_ARG=$(as_double "$S_CURVE_WAYPOINT_SPACING")
 S_CURVE_WAYPOINT_HOLD_ARG=$(as_double "$S_CURVE_WAYPOINT_HOLD")
 S_CURVE_WAYPOINT_TOLERANCE_ARG=$(as_double "$S_CURVE_WAYPOINT_TOLERANCE")
+POST_TAKEOFF_HOLD_TIME_ARG=$(as_double "$POST_TAKEOFF_HOLD_TIME")
+FINAL_HOLD_TIME_ARG=$(as_double "$FINAL_HOLD_TIME")
 LOCALIZATION_HOLD_S_ARG=$(as_double "$LOCALIZATION_HOLD_S")
 MINIMUM_CLEARANCE_ALT_ARG=$(as_double "$MINIMUM_CLEARANCE_ALT")
 CALIBRATION_YAW_SWEEP_DEG_ARG=$(as_double "$CALIBRATION_YAW_SWEEP_DEG")
@@ -132,6 +143,8 @@ ros2 run multi_slam_uav_sim guided_s_curve_waypoints --ros-args \
   -p waypoint_spacing_m:="$S_CURVE_WAYPOINT_SPACING_ARG" \
   -p waypoint_hold_s:="$S_CURVE_WAYPOINT_HOLD_ARG" \
   -p waypoint_position_tolerance_m:="$S_CURVE_WAYPOINT_TOLERANCE_ARG" \
+  -p post_takeoff_hold_time_s:="$POST_TAKEOFF_HOLD_TIME_ARG" \
+  -p final_hold_time_s:="$FINAL_HOLD_TIME_ARG" \
   -p localization_safety_enabled:="$LOCALIZATION_SAFETY_ENABLED_ARG" \
   -p localization_hold_s:="$LOCALIZATION_HOLD_S_ARG" \
   -p minimum_clearance_alt:="$MINIMUM_CLEARANCE_ALT_ARG" \

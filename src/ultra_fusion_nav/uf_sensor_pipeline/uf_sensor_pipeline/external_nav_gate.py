@@ -1,14 +1,20 @@
 import copy
 import math
 import time
-from collections import deque
+from collections import Counter, deque
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from uf_interfaces.msg import SchedulerState
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
+from uf_interfaces.msg import FusionEpoch, SchedulerState
 
 
 def stamp_seconds(stamp):
@@ -26,6 +32,10 @@ def scheduler_state_allowed(health_state, allowed_states):
 
 def capability_support_allowed(support, required, minimum_support):
     return all(float(support.get(name, 0.0)) >= minimum_support for name in required)
+
+
+def fusion_epoch_advances(applied, candidate_counter, current_counter):
+    return bool(applied) and int(candidate_counter) > int(current_counter)
 
 
 def odometry_state_guard_reason(
@@ -220,6 +230,7 @@ class ExternalNavGate(Node):
         self.declare_parameter("enabled", True)
         self.declare_parameter("require_scheduler_health", False)
         self.declare_parameter("scheduler_topic", "/reliability/scheduler_state")
+        self.declare_parameter("fusion_epoch_topic", "/fusion/unified/epoch")
         self.declare_parameter("scheduler_timeout_s", 0.5)
         self.declare_parameter("allowed_scheduler_states", ["NORMAL", "RECOVERED"])
         self.declare_parameter("require_capability_support", False)
@@ -290,6 +301,7 @@ class ExternalNavGate(Node):
         self.callback_ms = deque(maxlen=500)
         self.accepted_inputs = 0
         self.rejected_inputs = 0
+        self.rejection_reasons = Counter()
         self.published = 0
         self.latest_source = None
         self.last_arrival = None
@@ -299,6 +311,12 @@ class ExternalNavGate(Node):
         self.last_scheduler_state = "WAITING"
         self.last_estimator_support = 0.0
         self.capability_support = {}
+        self.current_fusion_epoch = 0
+        self.current_fusion_session = 0
+        self.current_fusion_transaction = 0
+        self.minimum_epoch_stamp_s = None
+        self.fusion_epoch_events = 0
+        self.fusion_session_events = 0
 
         self.publisher = self.create_publisher(
             Odometry, str(self.get_parameter("output_topic").value), 10
@@ -308,6 +326,18 @@ class ExternalNavGate(Node):
         )
         self.create_subscription(
             Odometry, str(self.get_parameter("input_topic").value), self._odom, 20
+        )
+        self.fusion_epoch_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            FusionEpoch,
+            str(self.get_parameter("fusion_epoch_topic").value),
+            self._fusion_epoch,
+            self.fusion_epoch_qos,
         )
         if self.require_scheduler_health or self.require_capability_support:
             self.create_subscription(
@@ -333,6 +363,43 @@ class ExternalNavGate(Node):
         }
         self.last_estimator_support = float(msg.estimator_support)
 
+    def _fusion_epoch(self, msg):
+        session_id = int(msg.session_id)
+        if session_id <= 0:
+            return
+        if (
+            self.current_fusion_session > 0
+            and session_id < self.current_fusion_session
+        ):
+            return
+        session_changed = session_id != self.current_fusion_session
+        if session_changed:
+            self.current_fusion_session = session_id
+            self.current_fusion_epoch = int(msg.reset_counter)
+            self.current_fusion_transaction = 0
+            self.minimum_epoch_stamp_s = None
+            self.latest_source = None
+            self.fusion_session_events += 1
+            self.last_reason = "fusion_session_reset"
+        elif not fusion_epoch_advances(
+            msg.applied, msg.reset_counter, self.current_fusion_epoch
+        ):
+            return
+        if not bool(msg.applied):
+            return
+        self.current_fusion_epoch = int(msg.reset_counter)
+        self.current_fusion_transaction = int(msg.transaction_id)
+        epoch_stamp_s = stamp_seconds(msg.header.stamp)
+        self.minimum_epoch_stamp_s = (
+            epoch_stamp_s if math.isfinite(epoch_stamp_s) and epoch_stamp_s > 0.0
+            else None
+        )
+        # The next estimator state belongs to a new coordinate epoch. It must
+        # not be compared with the previous epoch's jump/speed reference.
+        self.latest_source = None
+        self.fusion_epoch_events += 1
+        self.last_reason = "fusion_epoch_reset"
+
     def _scheduler_reason(self):
         if not (self.require_scheduler_health or self.require_capability_support):
             return "ok"
@@ -357,7 +424,13 @@ class ExternalNavGate(Node):
             return "unexpected_map_frame"
         if msg.child_frame_id != self.expected_body_frame:
             return "unexpected_body_frame"
-        age_s = self.get_clock().now().nanoseconds * 1.0e-9 - stamp_seconds(msg.header.stamp)
+        source_stamp_s = stamp_seconds(msg.header.stamp)
+        if (
+            self.minimum_epoch_stamp_s is not None
+            and source_stamp_s <= self.minimum_epoch_stamp_s
+        ):
+            return "pre_reset_epoch_state"
+        age_s = self.get_clock().now().nanoseconds * 1.0e-9 - source_stamp_s
         if not math.isfinite(age_s) or age_s < -0.05 or age_s > self.maximum_input_age:
             return "stale_timestamp"
         pose = msg.pose.pose
@@ -412,6 +485,7 @@ class ExternalNavGate(Node):
             self.accepted_inputs += 1
         else:
             self.rejected_inputs += 1
+            self.rejection_reasons[reason] += 1
             self.last_reason = reason
         self.callback_ms.append((time.perf_counter_ns() - started) * 1.0e-6)
 
@@ -498,6 +572,13 @@ class ExternalNavGate(Node):
         status.values = [
             self._value("accepted_inputs", self.accepted_inputs),
             self._value("rejected_inputs", self.rejected_inputs),
+            self._value(
+                "rejection_reasons",
+                ",".join(
+                    f"{name}:{count}"
+                    for name, count in sorted(self.rejection_reasons.items())
+                ) or "none",
+            ),
             self._value("published", self.published),
             self._value("input_rate_hz", f"{input_rate:.3f}"),
             self._value("output_rate_hz", f"{output_rate:.3f}"),
@@ -528,6 +609,13 @@ class ExternalNavGate(Node):
                 if self.callback_ms else "0.0",
             ),
             self._value("mavros_quality_reset_supported", "false"),
+            self._value("fusion_session", self.current_fusion_session),
+            self._value("fusion_epoch", self.current_fusion_epoch),
+            self._value(
+                "fusion_transaction", self.current_fusion_transaction
+            ),
+            self._value("fusion_epoch_events", self.fusion_epoch_events),
+            self._value("fusion_session_events", self.fusion_session_events),
         ]
         output.status.append(status)
         self.diagnostic_pub.publish(output)

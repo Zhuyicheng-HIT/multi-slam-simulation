@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -12,6 +13,16 @@ RELOCALIZING_HOLD = "RELOCALIZING_HOLD"
 RECOVERY_PENDING = "RECOVERY_PENDING"
 
 
+def diagnostic_level_value(value) -> int:
+    """Normalize ROS diagnostic levels across integer and byte bindings."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+        if len(raw) != 1:
+            raise ValueError("diagnostic level byte value must have length one")
+        return raw[0]
+    return int(value)
+
+
 def scheduler_localization_loss(
     health_state: str,
     estimator_support: float,
@@ -19,24 +30,45 @@ def scheduler_localization_loss(
     capability_observable,
     minimum_support: float,
     fresh: bool = True,
+    estimator_fresh: bool = True,
+    estimator_finite: bool = True,
+    external_nav_gate_fresh: bool = True,
+    external_nav_gate_healthy: bool = True,
+    external_nav_gate_reason: str = "publishing",
 ):
     """Return only clear loss-of-pose evidence, not a generic degraded state."""
     if not fresh:
         return True, "scheduler_stale"
-    if str(health_state) == "FAILSAFE":
-        return True, "scheduler_failsafe"
-    if float(estimator_support) < float(minimum_support):
-        return True, "estimator_support_low"
+    if not estimator_fresh:
+        return True, "unified_odom_stale"
+    if not estimator_finite:
+        return True, "unified_odom_nonfinite"
+    if not external_nav_gate_fresh:
+        return True, "external_nav_gate_stale"
+    if not external_nav_gate_healthy:
+        reason = str(external_nav_gate_reason).strip() or "rejected"
+        return True, f"external_nav_gate_{reason}"
     capabilities = {
         name: bool(observable)
         for name, observable in zip(capability_names, capability_observable)
     }
+    required = ("propagation", "horizontal_motion", "yaw_tracking")
+    absent = [name for name in required if name not in capabilities]
+    if absent:
+        return True, "missing_capability_status_" + "+".join(absent)
     missing = [
-        name for name in ("propagation", "horizontal_motion", "yaw_tracking")
-        if name in capabilities and not capabilities[name]
+        name for name in required if not capabilities[name]
     ]
     if missing:
         return True, "unobservable_" + "+".join(missing)
+    if (
+        not math.isfinite(float(estimator_support))
+        or float(estimator_support) < float(minimum_support)
+    ):
+        return True, "estimator_support_low"
+    # FAILSAFE can also describe a failed recovery service. When the estimator
+    # output is live and all critical capabilities remain observable, it is not
+    # evidence of pose loss by itself.
     return False, "observable"
 
 
@@ -81,12 +113,12 @@ class LocalizationSafetyStateMachine:
                 self._transition(TRACKING, now_s)
             elif now_s - self.state_since >= self.loss_dwell_s:
                 self._transition(HOLDING, now_s)
-                request = True
 
         elif self.state == HOLDING:
             if now_s - self.state_since >= self.minimum_hold_s:
                 if obvious_loss:
                     self._transition(RELOCALIZING_HOLD, now_s)
+                    request = True
                 else:
                     self._transition(RECOVERY_PENDING, now_s)
 

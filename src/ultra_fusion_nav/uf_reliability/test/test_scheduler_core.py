@@ -17,7 +17,7 @@ def score(value, valid=True, arrival_s=0.0, reasons=(), count=1, minimum=1,
 
 
 class SchedulerCoreTest(unittest.TestCase):
-    def test_relocalization_failure_latches_failsafe_until_new_request(self):
+    def test_relocalization_failure_does_not_override_healthy_capabilities(self):
         core = ReliabilitySchedulerCore(SchedulerConfig(
             active_modalities=("imu",),
             required_modalities=("imu",),
@@ -33,9 +33,23 @@ class SchedulerCoreTest(unittest.TestCase):
         result = core.update(scores, 0.0)
         self.assertIn(result.health_state, ("NORMAL", "RECOVERED"))
         failed = core.update(scores, 1.0, relocalization_failed=True)
-        self.assertEqual(failed.health_state, "FAILSAFE")
+        self.assertIn(failed.health_state, ("NORMAL", "RECOVERED"))
         cleared = core.update(scores, 2.0, relocalization_requested=True)
         self.assertEqual(cleared.health_state, "RELOCALIZING")
+
+    def test_relocalization_failure_cannot_hide_real_required_sensor_loss(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("imu", "gnss"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            transition_dwell_s=0.0,
+            recovery_dwell_s=0.0,
+        ))
+        result = core.update({
+            "imu": score(1.0, valid=False),
+            "gnss": score(0.1),
+        }, 0.0, relocalization_failed=True)
+        self.assertEqual(result.health_state, "FAILSAFE")
     def setUp(self):
         self.core = ReliabilitySchedulerCore(SchedulerConfig(
             active_modalities=("gnss", "optical_flow"),
@@ -94,6 +108,34 @@ class SchedulerCoreTest(unittest.TestCase):
             "optical_flow": score(0.10),
         }, 0.1)
         self.assertEqual(result.health_state, "FAILSAFE")
+
+    def test_lidar_can_use_a_longer_score_timeout_without_extending_imu(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "imu"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=2,
+            stale_after_s=0.5,
+            modality_stale_after_s=(("lidar", 1.6),),
+            transition_dwell_s=0.0,
+            recovery_dwell_s=0.0,
+        ))
+        healthy = core.update({
+            "lidar": score(0.10, arrival_s=0.0),
+            "imu": score(0.10, arrival_s=0.0),
+        }, 0.1)
+        self.assertEqual(healthy.health_state, "NORMAL")
+
+        lidar_still_fresh = core.update({
+            "lidar": score(0.10, arrival_s=0.0),
+            "imu": score(0.10, arrival_s=0.8),
+        }, 0.8)
+        self.assertNotEqual(lidar_still_fresh.health_state, "FAILSAFE")
+
+        lidar_stale = core.update({
+            "lidar": score(0.10, arrival_s=0.0),
+            "imu": score(0.10, arrival_s=1.7),
+        }, 1.7)
+        self.assertEqual(lidar_stale.health_state, "FAILSAFE")
 
     def test_high_dynamic_imu_remains_propagation_factor(self):
         core = ReliabilitySchedulerCore(SchedulerConfig(

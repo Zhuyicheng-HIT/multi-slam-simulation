@@ -6,7 +6,9 @@
 #include "mid360_sim_bridge_cpp/conversion.hpp"
 
 using mid360_sim_bridge_cpp::epoch_aligned_stamp_ns;
+using mid360_sim_bridge_cpp::checked_nonnegative_stamp_ns;
 using mid360_sim_bridge_cpp::line_for_output_index;
+using mid360_sim_bridge_cpp::monotonic_positive_stamp_ns;
 using mid360_sim_bridge_cpp::packet_begin_stamp_ns;
 using mid360_sim_bridge_cpp::point_in_body_exclusion_box;
 using mid360_sim_bridge_cpp::point_offset_time_ns;
@@ -27,6 +29,28 @@ TEST(Conversion, PreservesSourceClockRateAfterEpochAlignment)
   EXPECT_EQ(
     epoch_aligned_stamp_ns(2600000000LL, source_origin_ns, epoch_origin_ns),
     epoch_origin_ns + 100000000LL);
+}
+
+TEST(Conversion, RejectsMalformedOrNegativeClockStamps)
+{
+  EXPECT_EQ(checked_nonnegative_stamp_ns(-1, 0), 0);
+  EXPECT_EQ(checked_nonnegative_stamp_ns(1, -1), 0);
+  EXPECT_EQ(checked_nonnegative_stamp_ns(1, 1000000000LL), 0);
+  EXPECT_EQ(checked_nonnegative_stamp_ns(2, 500000000), 2500000000LL);
+}
+
+TEST(Conversion, SanitizesClockResetToStrictlyIncreasingPositiveStamp)
+{
+  EXPECT_EQ(monotonic_positive_stamp_ns(-10, 100, 50), 101);
+  EXPECT_EQ(monotonic_positive_stamp_ns(90, 100, 50), 101);
+  EXPECT_EQ(monotonic_positive_stamp_ns(120, 100, 50), 120);
+  EXPECT_EQ(monotonic_positive_stamp_ns(0, 0, 0), 1);
+}
+
+TEST(Conversion, RejectsInvalidEpochAlignment)
+{
+  EXPECT_EQ(epoch_aligned_stamp_ns(-1, 1, 100), 0);
+  EXPECT_EQ(epoch_aligned_stamp_ns(2, 1, 100), 101);
 }
 
 TEST(Conversion, SpansConfiguredScanPeriod)
@@ -55,6 +79,13 @@ TEST(Conversion, SynchronousSnapshotPacketEndsAtAcquisitionStamp)
     acquisition_ns - static_cast<std::int64_t>(period_ns));
   EXPECT_EQ(
     packet_begin_stamp_ns(acquisition_ns, period_ns, true), acquisition_ns);
+}
+
+TEST(Conversion, ClampsPacketBeginWhenAcquisitionIsInvalidOrTooEarly)
+{
+  EXPECT_EQ(packet_begin_stamp_ns(-1, 100000000ULL, false), 1);
+  EXPECT_EQ(packet_begin_stamp_ns(50000000LL, 100000000ULL, false), 1);
+  EXPECT_EQ(packet_begin_stamp_ns(-1, 100000000ULL, true), 1);
 }
 
 TEST(Conversion, ClampsReflectivity)

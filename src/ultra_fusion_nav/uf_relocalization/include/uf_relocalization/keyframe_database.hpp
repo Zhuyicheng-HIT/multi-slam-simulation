@@ -23,7 +23,6 @@ struct KeyframeQuality
 
 struct KeyframeDatabaseConfig
 {
-  double minimum_map_quality{0.60};
   double minimum_feature_repeatability{0.70};
   double maximum_dynamic_ratio{0.15};
   double maximum_lidar_degradation{0.75};
@@ -67,6 +66,8 @@ public:
     const Cloud::ConstPtr & cloud,
     const std::vector<float> & descriptor,
     const KeyframeQuality & quality);
+
+  AdmissionResult quality_admission(const KeyframeQuality & quality) const;
 
   std::vector<CandidateMatch> query(
     const std::vector<float> & descriptor,

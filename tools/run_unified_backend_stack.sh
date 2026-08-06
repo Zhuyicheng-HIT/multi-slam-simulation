@@ -6,11 +6,14 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 LOG_DIR=${LOG_DIR:-"$REPO_ROOT/logs/unified_backend_$(date +%Y%m%d_%H%M%S)"}
 LIDAR_WS=${LIDAR_WS:-"$HOME/multi-slam-deps/mid360_ws"}
 ENABLE_VISION=${ENABLE_VISION:-false}
-PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-true}
+PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-false}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 USE_SIM_TIME=${USE_SIM_TIME:-true}
 FRONTEND_STATE_SEED_ENABLED=${FRONTEND_STATE_SEED_ENABLED:-false}
-FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-false}
+# The unified backend owns the trajectory by default.  Keep the legacy
+# FAST-LIO-local trajectory available only as an explicit compatibility mode.
+FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-true}
+EXTERNAL_NAV_OUTPUT_TOPIC=${EXTERNAL_NAV_OUTPUT_TOPIC:-/mavros/odometry/out}
 
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
@@ -83,6 +86,7 @@ setsid env \
   preserve_lio_anchor:="$PRESERVE_LIO_ANCHOR" \
   frontend_state_seed_enabled:="$FRONTEND_STATE_SEED_ENABLED_ARG" \
   frontend_scan_prediction_enabled:="$FRONTEND_SCAN_PREDICTION_ENABLED_ARG" \
+  external_nav_output_topic:="$EXTERNAL_NAV_OUTPUT_TOPIC" \
   >"$LOG_DIR/online_backend.log" 2>&1 &
 pids+=("$!")
 

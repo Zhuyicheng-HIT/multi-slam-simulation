@@ -7,6 +7,7 @@ from uf_backend_fusion.imu_preintegration import ImuSample
 from uf_backend_fusion.manifold import so3_exp, so3_log
 from uf_backend_fusion.spatiotemporal_calibration import (
     CalibrationUpdate,
+    LidarMotionSample,
     OnlineSpatiotemporalCalibrator,
     effective_time_offset,
     estimate_time_offset,
@@ -64,10 +65,6 @@ class SpatiotemporalCalibrationTest(unittest.TestCase):
             update_alpha=1.0,
             lock_count=1,
         )
-        imu_samples = []
-        body_rotation = np.eye(3)
-        stamp = 0.0
-        calibrator.update(stamp, body_rotation, extrinsic, imu_samples)
         increments = [
             np.asarray([0.08, 0.00, 0.02]),
             np.asarray([0.00, -0.07, 0.03]),
@@ -77,16 +74,27 @@ class SpatiotemporalCalibrationTest(unittest.TestCase):
             np.asarray([0.06, 0.03, 0.04]),
             np.asarray([-0.02, 0.06, -0.03]),
         ]
+        body_gyros = [extrinsic @ increment / 0.1 for increment in increments]
+        imu_samples = []
+        for index in range(701):
+            stamp_s = index * 0.001
+            segment = min(len(body_gyros) - 1, int(stamp_s / 0.1))
+            imu_samples.append(ImuSample(
+                stamp_s, (0.0, 0.0, 0.0), tuple(body_gyros[segment])
+            ))
+        body_rotation = np.eye(3)
+        stamp = 0.0
+        calibrator.set_initial_rotation(extrinsic)
         for increment in increments:
             next_body = body_rotation @ extrinsic @ so3_exp(increment) @ extrinsic.T
             next_stamp = stamp + 0.1
-            body_gyro = so3_log(body_rotation.T @ next_body) / 0.1
-            imu_samples.extend([
-                ImuSample(stamp, (0.0, 0.0, 0.0), tuple(body_gyro)),
-                ImuSample(next_stamp, (0.0, 0.0, 0.0), tuple(body_gyro)),
-            ])
             body_rotation, stamp = next_body, next_stamp
-            update = calibrator.update(stamp, body_rotation, extrinsic, imu_samples)
+            update = calibrator.update(
+                LidarMotionSample(
+                    stamp - 0.1, stamp, so3_exp(increment), weight=0.9
+                ),
+                imu_samples,
+            )
         self.assertTrue(update.accepted)
         self.assertGreater(update.excitation_eigenvalues[0], 1.0e-6)
         self.assertLess(
@@ -102,36 +110,107 @@ class SpatiotemporalCalibrationTest(unittest.TestCase):
             minimum_excitation_eigenvalue=1.0e-5,
         )
         samples = []
-        rotation = np.eye(3)
-        calibrator.update(0.0, rotation, np.eye(3), samples)
         for index in range(1, 8):
             stamp = index * 0.1
             increment = np.asarray([0.0, 0.0, 0.04 + 0.01 * (index % 2)])
-            next_rotation = rotation @ so3_exp(increment)
             gyro = increment / 0.1
             samples.append(ImuSample(stamp - 0.1, (0.0, 0.0, 0.0), tuple(gyro)))
             samples.append(ImuSample(stamp, (0.0, 0.0, 0.0), tuple(gyro)))
-            update = calibrator.update(stamp, next_rotation, np.eye(3), samples)
-            rotation = next_rotation
+            update = calibrator.update(
+                LidarMotionSample(stamp - 0.1, stamp, so3_exp(increment)),
+                samples,
+            )
         self.assertLess(update.excitation_eigenvalues[0], 1.0e-5)
         self.assertFalse(calibrator.rotation_locked)
         np.testing.assert_allclose(
             update.lidar_to_body_rotation, np.eye(3), atol=1.0e-12
         )
+        self.assertEqual(calibrator.last_time_candidate.reason,
+                         "candidate_ready")
+        self.assertGreater(calibrator.last_accumulated_rotation_rad, 0.0)
+        self.assertGreaterEqual(
+            calibrator.last_unweighted_accumulated_rotation_rad,
+            calibrator.last_accumulated_rotation_rad,
+        )
+        self.assertGreater(calibrator.last_imu_accumulated_rotation_rad, 0.0)
+        self.assertAlmostEqual(calibrator.last_motion_weight_mean, 1.0)
+        self.assertEqual(calibrator.last_rotation_inlier_ratio, 0.0)
+
+    def test_low_quality_weights_do_not_shrink_physical_rotation_gate(self):
+        calibrator = OnlineSpatiotemporalCalibrator(
+            minimum_pairs=3,
+            time_offset_range_s=0.0,
+            minimum_correlation=0.2,
+            minimum_correlation_margin=0.0,
+            minimum_excitation_eigenvalue=1.0e-6,
+            minimum_excitation_ratio=0.05,
+            minimum_accumulated_rotation_rad=0.20,
+            minimum_rotation_inlier_ratio=0.70,
+            maximum_rotation_residual_rad=0.08,
+            lock_count=1,
+        )
+        increments = [
+            np.asarray([0.08, 0.0, 0.0]),
+            np.asarray([0.0, 0.08, 0.0]),
+            np.asarray([0.0, 0.0, 0.08]),
+        ]
+        imu_samples = []
+        for index in range(301):
+            stamp_s = index * 0.001
+            segment = min(len(increments) - 1, int(stamp_s / 0.1))
+            imu_samples.append(ImuSample(
+                stamp_s,
+                (0.0, 0.0, 0.0),
+                tuple(increments[segment] / 0.1),
+            ))
+        for index, increment in enumerate(increments):
+            update = calibrator.update(
+                LidarMotionSample(
+                    round(index * 0.1, 10),
+                    round((index + 1) * 0.1, 10),
+                    so3_exp(increment),
+                    weight=0.1,
+                ),
+                imu_samples,
+            )
+
+        self.assertAlmostEqual(calibrator.last_accumulated_rotation_rad, 0.24)
+        self.assertAlmostEqual(
+            calibrator.last_weighted_accumulated_rotation_rad, 0.024
+        )
+        self.assertTrue(calibrator.rotation_locked)
+        self.assertGreaterEqual(update.rotation_residual_rad, 0.0)
 
     def test_solve_throttle_keeps_collecting_lidar_poses(self):
         calibrator = OnlineSpatiotemporalCalibrator(
             minimum_pairs=3,
             solve_period_s=1.0,
         )
-        first = calibrator.update(0.0, np.eye(3), np.eye(3), [])
-        throttled = calibrator.update(0.1, np.eye(3), np.eye(3), [])
-        next_solve = calibrator.update(1.0, np.eye(3), np.eye(3), [])
+        first = calibrator.update(
+            LidarMotionSample(0.0, 0.1, np.eye(3)), []
+        )
+        throttled = calibrator.update(
+            LidarMotionSample(0.1, 0.2, np.eye(3)), []
+        )
+        next_solve = calibrator.update(
+            LidarMotionSample(0.9, 1.1, np.eye(3)), []
+        )
 
         self.assertNotEqual(first.reason, "update_throttled")
         self.assertEqual(throttled.reason, "update_throttled")
         self.assertNotEqual(next_solve.reason, "update_throttled")
-        self.assertEqual(len(calibrator.poses), 3)
+        self.assertEqual(len(calibrator.motions), 3)
+
+    def test_backend_or_imu_pose_cannot_be_passed_as_calibration_motion(self):
+        calibrator = OnlineSpatiotemporalCalibrator(minimum_pairs=3)
+        with self.assertRaisesRegex(ValueError, "LidarMotionSample"):
+            calibrator.update((0.0, 0.1, np.eye(3)), [])
+
+    def test_nonmonotonic_independent_motion_is_rejected(self):
+        calibrator = OnlineSpatiotemporalCalibrator(minimum_pairs=3)
+        calibrator.update(LidarMotionSample(0.0, 0.1, np.eye(3)), [])
+        with self.assertRaisesRegex(ValueError, "nonmonotonic"):
+            calibrator.update(LidarMotionSample(0.05, 0.15, np.eye(3)), [])
 
 
 if __name__ == "__main__":

@@ -3,7 +3,9 @@
 The implementation follows the paper's observable-first calibration order:
 estimate a scalar time offset from angular-speed correlation, then solve the
 rotation hand-eye relation only when the relative-rotation excitation matrix
-has rank in all three axes.  Translation is intentionally not estimated here.
+has rank in all three axes.  LiDAR motion must come from an isolated
+scan-to-scan registration branch; an IMU-propagated backend pose is not an
+independent calibration observation. Translation is intentionally fixed.
 """
 
 from bisect import bisect_left, bisect_right
@@ -117,6 +119,16 @@ class CalibrationUpdate:
     reason: str
 
 
+@dataclass(frozen=True)
+class LidarMotionSample:
+    """One quality-gated scan-to-scan LiDAR relative rotation."""
+
+    start_s: float
+    end_s: float
+    relative_rotation: np.ndarray
+    weight: float = 1.0
+
+
 def effective_time_offset(update, enabled=True):
     """Expose a calibration offset only after all observability locks hold."""
     if not enabled or not bool(update.locked):
@@ -138,7 +150,8 @@ def estimate_time_offset(
     for offset_s in candidate_offsets_s:
         lidar_values = []
         imu_values = []
-        for stamp_s, lidar_rate in lidar_rates:
+        for item in lidar_rates:
+            stamp_s, lidar_rate = item[:2]
             gyro = _interpolate_gyro(imu_samples, stamp_s + float(offset_s))
             if gyro is None:
                 continue
@@ -174,6 +187,9 @@ class OnlineSpatiotemporalCalibrator:
         minimum_correlation=0.70,
         minimum_correlation_margin=0.05,
         minimum_excitation_eigenvalue=1.0e-4,
+        minimum_excitation_ratio=0.05,
+        minimum_accumulated_rotation_rad=0.25,
+        minimum_rotation_inlier_ratio=0.70,
         maximum_rotation_residual_rad=0.08,
         sharp_turn_rate_radps=1.5,
         history_length=4,
@@ -200,6 +216,11 @@ class OnlineSpatiotemporalCalibrator:
         self.minimum_correlation = float(minimum_correlation)
         self.minimum_correlation_margin = float(minimum_correlation_margin)
         self.minimum_excitation_eigenvalue = float(minimum_excitation_eigenvalue)
+        self.minimum_excitation_ratio = float(minimum_excitation_ratio)
+        self.minimum_accumulated_rotation_rad = float(
+            minimum_accumulated_rotation_rad
+        )
+        self.minimum_rotation_inlier_ratio = float(minimum_rotation_inlier_ratio)
         self.maximum_rotation_residual_rad = float(maximum_rotation_residual_rad)
         self.sharp_turn_rate_radps = float(sharp_turn_rate_radps)
         self.history_length = int(history_length)
@@ -209,13 +230,33 @@ class OnlineSpatiotemporalCalibrator:
         self.update_alpha = float(update_alpha)
         self.solve_period_s = float(solve_period_s)
         self.last_solve_stamp_s = None
-        self.poses = deque()
+        if (
+            not 0.0 < self.minimum_excitation_ratio <= 1.0
+            or self.minimum_accumulated_rotation_rad <= 0.0
+            or not 0.0 < self.minimum_rotation_inlier_ratio <= 1.0
+        ):
+            raise ValueError("invalid calibration observability limits")
+        self.motions = deque()
         self.time_offset_history = deque(maxlen=self.history_length)
         self.rotation_history = deque(maxlen=self.history_length)
         self.time_offset_s = 0.0
         self.lidar_to_body_rotation = np.eye(3)
         self.time_locked = False
         self.rotation_locked = False
+        self.initial_rotation_set = False
+        # Keep the observability evidence alongside the last update so the
+        # runtime diagnostic can distinguish pair starvation from a failed
+        # correlation or a rank-deficient rotation solve.
+        self.last_time_candidate = TimeOffsetCandidate(
+            False, 0.0, -1.0, 0.0, 0, "not_run"
+        )
+        self.last_excitation_ratio = 0.0
+        self.last_accumulated_rotation_rad = 0.0
+        self.last_weighted_accumulated_rotation_rad = 0.0
+        self.last_unweighted_accumulated_rotation_rad = 0.0
+        self.last_imu_accumulated_rotation_rad = 0.0
+        self.last_motion_weight_mean = 0.0
+        self.last_rotation_inlier_ratio = 0.0
         self.last_update = CalibrationUpdate(
             False, False, 0.0, self.lidar_to_body_rotation.copy(),
             -1.0, 0.0, -1.0, (0.0, 0.0, 0.0), 0, "waiting_for_observable_motion",
@@ -223,30 +264,71 @@ class OnlineSpatiotemporalCalibrator:
 
     def _trim(self, latest_stamp_s):
         cutoff = float(latest_stamp_s) - self.window_s
-        while self.poses and self.poses[0][0] < cutoff:
-            self.poses.popleft()
+        while self.motions and self.motions[0].end_s < cutoff:
+            self.motions.popleft()
 
     def _lidar_rates(self):
         rates = []
         intervals = []
-        for left, right in zip(self.poses, list(self.poses)[1:]):
-            dt_s = right[0] - left[0]
+        for motion in self.motions:
+            dt_s = motion.end_s - motion.start_s
             if dt_s <= 0.0 or dt_s > 0.5:
                 continue
-            relative = left[2].T @ right[2]
-            rotation_vector = so3_log(relative)
-            intervals.append((left[0], right[0], rotation_vector))
-            rates.append((0.5 * (left[0] + right[0]), np.linalg.norm(rotation_vector) / dt_s))
+            rotation_vector = so3_log(motion.relative_rotation)
+            intervals.append(
+                (motion.start_s, motion.end_s, rotation_vector, motion.weight)
+            )
+            rates.append((
+                0.5 * (motion.start_s + motion.end_s),
+                np.linalg.norm(rotation_vector) / dt_s,
+                motion.weight,
+            ))
         return rates, intervals
 
-    def update(self, stamp_s, body_rotation, lidar_to_body_rotation, imu_samples):
-        stamp_s = float(stamp_s)
-        body_rotation = np.asarray(body_rotation, dtype=float)
-        extrinsic = np.asarray(lidar_to_body_rotation, dtype=float)
-        if body_rotation.shape != (3, 3) or extrinsic.shape != (3, 3):
-            raise ValueError("calibration rotations must be 3x3")
-        lidar_rotation = body_rotation @ extrinsic
-        self.poses.append((stamp_s, body_rotation.copy(), lidar_rotation.copy()))
+    def set_initial_rotation(self, lidar_to_body_rotation):
+        """Seed the fixed installation rotation before any calibration lock."""
+        rotation = np.asarray(lidar_to_body_rotation, dtype=float)
+        if rotation.shape != (3, 3) or np.any(~np.isfinite(rotation)):
+            raise ValueError("initial calibration rotation must be finite and 3x3")
+        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1.0e-6):
+            raise ValueError("initial calibration rotation must be orthonormal")
+        if not math.isclose(float(np.linalg.det(rotation)), 1.0, abs_tol=1.0e-6):
+            raise ValueError("initial calibration rotation must have determinant one")
+        if self.initial_rotation_set:
+            return
+        self.lidar_to_body_rotation = rotation.copy()
+        self.initial_rotation_set = True
+        self.last_update = CalibrationUpdate(
+            False, False, self.time_offset_s,
+            self.lidar_to_body_rotation.copy(), -1.0, 0.0, -1.0,
+            (0.0, 0.0, 0.0), 0, "waiting_for_independent_lidar_motion",
+        )
+
+    def update(self, motion, imu_samples):
+        if not isinstance(motion, LidarMotionSample):
+            raise ValueError("calibration requires a LidarMotionSample")
+        start_s = float(motion.start_s)
+        stamp_s = float(motion.end_s)
+        relative = np.asarray(motion.relative_rotation, dtype=float)
+        weight = float(motion.weight)
+        if (
+            not math.isfinite(start_s)
+            or not math.isfinite(stamp_s)
+            or stamp_s <= start_s
+            or stamp_s - start_s > 0.5
+            or relative.shape != (3, 3)
+            or np.any(~np.isfinite(relative))
+            or not np.allclose(relative.T @ relative, np.eye(3), atol=1.0e-5)
+            or not math.isclose(float(np.linalg.det(relative)), 1.0, abs_tol=1.0e-5)
+            or not math.isfinite(weight)
+            or weight <= 0.0
+        ):
+            raise ValueError("invalid independent LiDAR motion sample")
+        if self.motions and start_s < self.motions[-1].end_s - 1.0e-6:
+            raise ValueError("LiDAR calibration motion is nonmonotonic")
+        self.motions.append(LidarMotionSample(
+            start_s, stamp_s, relative.copy(), min(1.0, weight)
+        ))
         self._trim(stamp_s)
         if (
             self.last_solve_stamp_s is not None
@@ -265,6 +347,31 @@ class OnlineSpatiotemporalCalibrator:
         imu_samples = tuple(sorted(imu_samples, key=_sample_stamp))
         lidar_rates, intervals = self._lidar_rates()
         if len(intervals) < self.minimum_pairs:
+            self.last_time_candidate = TimeOffsetCandidate(
+                False, 0.0, -1.0, 0.0, 0, "insufficient_relative_rotations"
+            )
+            self.last_excitation_ratio = 0.0
+            weighted_accumulated_rotation = float(sum(
+                interval_weight * np.linalg.norm(rotation_vector)
+                for _, _, rotation_vector, interval_weight in intervals
+            ))
+            physical_accumulated_rotation = float(sum(
+                np.linalg.norm(rotation_vector)
+                for _, _, rotation_vector, _ in intervals
+            ))
+            self.last_accumulated_rotation_rad = physical_accumulated_rotation
+            self.last_weighted_accumulated_rotation_rad = (
+                weighted_accumulated_rotation
+            )
+            self.last_unweighted_accumulated_rotation_rad = (
+                physical_accumulated_rotation
+            )
+            self.last_imu_accumulated_rotation_rad = 0.0
+            self.last_motion_weight_mean = float(np.mean([
+                interval_weight
+                for _, _, _, interval_weight in intervals
+            ])) if intervals else 0.0
+            self.last_rotation_inlier_ratio = 0.0
             self.last_update = CalibrationUpdate(
                 False, self.time_locked and self.rotation_locked,
                 self.time_offset_s, self.lidar_to_body_rotation.copy(),
@@ -275,6 +382,7 @@ class OnlineSpatiotemporalCalibrator:
         time_candidate = estimate_time_offset(
             lidar_rates, imu_samples, self.candidate_offsets_s, self.minimum_pairs
         )
+        self.last_time_candidate = time_candidate
         sharp_turn = False
         if imu_samples:
             recent = [
@@ -305,7 +413,8 @@ class OnlineSpatiotemporalCalibrator:
         rotation_offset = time_candidate.offset_s if time_candidate.valid else self.time_offset_s
         imu_rotation_vectors = []
         lidar_rotation_vectors = []
-        for start_s, end_s, lidar_vector in intervals:
+        interval_weights = []
+        for start_s, end_s, lidar_vector, interval_weight in intervals:
             imu_rotation = _integrate_gyro(
                 imu_samples, start_s + rotation_offset, end_s + rotation_offset
             )
@@ -313,22 +422,53 @@ class OnlineSpatiotemporalCalibrator:
                 continue
             imu_rotation_vectors.append(so3_log(imu_rotation))
             lidar_rotation_vectors.append(lidar_vector)
+            interval_weights.append(float(interval_weight))
         excitation = np.zeros((3, 3))
+        weighted_accumulated_rotation = 0.0
+        physical_accumulated_rotation = 0.0
         if lidar_rotation_vectors:
-            for vector in lidar_rotation_vectors:
-                excitation += np.outer(vector, vector)
+            for vector, interval_weight in zip(
+                lidar_rotation_vectors, interval_weights
+            ):
+                magnitude = float(np.linalg.norm(vector))
+                weighted_accumulated_rotation += interval_weight * magnitude
+                physical_accumulated_rotation += magnitude
+                if magnitude > 1.0e-9:
+                    axis = vector / magnitude
+                    excitation += interval_weight * np.outer(axis, axis)
         eigenvalues = np.linalg.eigvalsh(excitation)
+        excitation_ratio = (
+            float(eigenvalues[0] / eigenvalues[-1])
+            if eigenvalues[-1] > 1.0e-12 else 0.0
+        )
+        self.last_excitation_ratio = excitation_ratio
+        self.last_accumulated_rotation_rad = physical_accumulated_rotation
+        self.last_weighted_accumulated_rotation_rad = (
+            weighted_accumulated_rotation
+        )
+        self.last_unweighted_accumulated_rotation_rad = (
+            physical_accumulated_rotation
+        )
+        self.last_imu_accumulated_rotation_rad = float(sum(
+            np.linalg.norm(vector) for vector in imu_rotation_vectors
+        ))
+        self.last_motion_weight_mean = float(np.mean(interval_weights)) \
+            if interval_weights else 0.0
+        self.last_rotation_inlier_ratio = 0.0
         rotation_accepted = bool(
             len(imu_rotation_vectors) >= self.minimum_pairs
             and eigenvalues[-1] > self.minimum_excitation_eigenvalue
             and eigenvalues[0] > self.minimum_excitation_eigenvalue
+            and excitation_ratio >= self.minimum_excitation_ratio
+            and physical_accumulated_rotation
+            >= self.minimum_accumulated_rotation_rad
         )
         rotation_residual = -1.0
         if rotation_accepted:
             cross_covariance = sum(
-                np.outer(imu_vector, lidar_vector)
-                for imu_vector, lidar_vector in zip(
-                    imu_rotation_vectors, lidar_rotation_vectors
+                interval_weight * np.outer(imu_vector, lidar_vector)
+                for imu_vector, lidar_vector, interval_weight in zip(
+                    imu_rotation_vectors, lidar_rotation_vectors, interval_weights
                 )
             )
             left, _, right_t = np.linalg.svd(cross_covariance)
@@ -341,8 +481,38 @@ class OnlineSpatiotemporalCalibrator:
                     imu_rotation_vectors, lidar_rotation_vectors
                 )
             ]
+            inliers = np.asarray(errors) <= self.maximum_rotation_residual_rad
+            inlier_ratio = float(np.mean(inliers)) if len(inliers) else 0.0
+            self.last_rotation_inlier_ratio = inlier_ratio
+            rotation_accepted = bool(
+                np.count_nonzero(inliers) >= self.minimum_pairs
+                and inlier_ratio >= self.minimum_rotation_inlier_ratio
+            )
+            if rotation_accepted and not np.all(inliers):
+                cross_covariance = sum(
+                    interval_weight * np.outer(imu_vector, lidar_vector)
+                    for imu_vector, lidar_vector, interval_weight, keep in zip(
+                        imu_rotation_vectors, lidar_rotation_vectors,
+                        interval_weights, inliers
+                    )
+                    if keep
+                )
+                left, _, right_t = np.linalg.svd(cross_covariance)
+                correction = np.eye(3)
+                correction[2, 2] = np.linalg.det(left @ right_t)
+                candidate_rotation = left @ correction @ right_t
+                errors = [
+                    np.linalg.norm(imu_vector - candidate_rotation @ lidar_vector)
+                    for imu_vector, lidar_vector, keep in zip(
+                        imu_rotation_vectors, lidar_rotation_vectors, inliers
+                    )
+                    if keep
+                ]
             rotation_residual = float(np.sqrt(np.mean(np.square(errors))))
-            rotation_accepted = rotation_residual <= self.maximum_rotation_residual_rad
+            rotation_accepted = bool(
+                rotation_accepted
+                and rotation_residual <= self.maximum_rotation_residual_rad
+            )
             if rotation_accepted:
                 self.rotation_history.append(candidate_rotation)
                 if len(self.rotation_history) >= 2:

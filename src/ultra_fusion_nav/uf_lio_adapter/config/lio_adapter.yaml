@@ -13,6 +13,9 @@ lio_adapter:
     native_factor_timeout_s: 2.0
     voxel_size_m: 0.50
     max_diagnostic_points: 1200
+    # Dynamic/repeatability diagnostics stay lightweight, while the static
+    # cloud keeps enough spatial density for geometric relocalization.
+    max_temporal_filter_points: 6000
     local_map_frames: 20
     local_map_publish_period_s: 1.0
     diagnostics_period_s: 1.0

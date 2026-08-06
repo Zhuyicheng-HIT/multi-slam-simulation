@@ -42,25 +42,28 @@ Eigen::Isometry3d pose(const double x, const double yaw = 0.0)
 
 TEST(KeyframeDatabase, RejectsUnhealthyObservations)
 {
-  uf_relocalization::StaticKeyframeDatabase database;
+  uf_relocalization::StaticKeyframeDatabase disabled_database;
   auto quality = healthy_quality();
   quality.scheduler_lidar_enabled = false;
   EXPECT_EQ(
-    database.try_insert(1.0, pose(0.0), cloud(), {1.0F, 0.0F}, quality).reason,
+    disabled_database.try_insert(
+      1.0, pose(0.0), cloud(), {1.0F, 0.0F}, quality).reason,
     "scheduler_lidar_disabled");
 
+  uf_relocalization::StaticKeyframeDatabase diagnostic_database;
   quality = healthy_quality();
-  quality.map_quality = 0.4;
-  EXPECT_EQ(
-    database.try_insert(1.0, pose(0.0), cloud(), {1.0F, 0.0F}, quality).reason,
-    "low_map_quality");
+  quality.map_quality = 0.2;
+  EXPECT_TRUE(diagnostic_database.try_insert(
+    1.0, pose(0.0), cloud(), {1.0F, 0.0F}, quality).accepted);
 
+  uf_relocalization::StaticKeyframeDatabase dynamic_database;
   quality = healthy_quality();
   quality.dynamic_ratio = 0.4;
   EXPECT_EQ(
-    database.try_insert(1.0, pose(0.0), cloud(), {1.0F, 0.0F}, quality).reason,
+    dynamic_database.try_insert(
+      1.0, pose(0.0), cloud(), {1.0F, 0.0F}, quality).reason,
     "high_dynamic_ratio");
-  EXPECT_TRUE(database.keyframes().empty());
+  EXPECT_TRUE(dynamic_database.keyframes().empty());
 }
 
 TEST(KeyframeDatabase, EnforcesPoseSpacingAndBoundedStorage)

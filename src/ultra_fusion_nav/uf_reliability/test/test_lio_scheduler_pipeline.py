@@ -1,5 +1,10 @@
+import os
 import time
 import unittest
+
+os.environ["ROS_DOMAIN_ID"] = os.environ.get(
+    "UF_TEST_ROS_DOMAIN_ID", str(200 + os.getpid() % 30)
+)
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor

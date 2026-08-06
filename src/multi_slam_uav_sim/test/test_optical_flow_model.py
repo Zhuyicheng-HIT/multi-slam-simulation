@@ -9,6 +9,7 @@ from multi_slam_uav_sim.optical_flow_model import (
     gazebo_downward_gyro_to_mavlink,
     gazebo_downward_image_flow_to_mavlink,
     integrate_gyro,
+    integrate_preferred_gyro,
     pixel_flow_to_radians,
     ros_flu_gyro_to_sensor_frd,
     scale_mavlink_translation,
@@ -107,6 +108,38 @@ class OpticalFlowModelTest(unittest.TestCase):
         ]
         integral = integrate_gyro(samples, 0.0, 0.10)
         np.testing.assert_allclose(integral, (0.1, -0.2, -0.3), atol=1.0e-12)
+
+    def test_cached_primary_gyro_is_used_even_when_newer_samples_are_far_ahead(self):
+        primary = [
+            (0.0, 1.0, 2.0, 3.0),
+            (0.1, 1.0, 2.0, 3.0),
+            (0.8, 9.0, 9.0, 9.0),
+        ]
+        fallback = [
+            (0.0, -1.0, -2.0, -3.0),
+            (0.1, -1.0, -2.0, -3.0),
+        ]
+
+        integral, source = integrate_preferred_gyro(
+            primary, fallback, 0.0, 0.1
+        )
+
+        self.assertEqual(source, "primary")
+        np.testing.assert_allclose(integral, (0.1, 0.2, 0.3), atol=1.0e-12)
+
+    def test_preferred_gyro_falls_back_only_when_primary_lacks_coverage(self):
+        primary = [(1.0, 9.0, 9.0, 9.0)]
+        fallback = [
+            (0.0, -1.0, -2.0, -3.0),
+            (0.1, -1.0, -2.0, -3.0),
+        ]
+
+        integral, source = integrate_preferred_gyro(
+            primary, fallback, 0.0, 0.1
+        )
+
+        self.assertEqual(source, "fallback")
+        np.testing.assert_allclose(integral, (-0.1, -0.2, -0.3), atol=1.0e-12)
 
     def test_compensated_velocity_matches_mavlink_axis_definition(self):
         velocity = compensated_planar_velocity(

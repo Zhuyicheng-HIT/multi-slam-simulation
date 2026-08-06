@@ -28,6 +28,7 @@ class NativeLidarPoseNormal:
     stamp_ns: int
     stamp_s: float
     scan_sequence: int
+    reset_counter: int
     matched_points: int
     candidate_points: int
     linearization_pose: np.ndarray
@@ -346,6 +347,9 @@ def native_factor_from_message(msg) -> NativeLidarPoseNormal:
         raise ValueError("native LiDAR Jacobian must have 12 columns")
     matched = int(msg.matched_points)
     candidate = int(msg.candidate_points)
+    reset_counter = int(getattr(msg, "reset_counter", 0))
+    if reset_counter < 0 or reset_counter > 0xFFFFFFFF:
+        raise ValueError("native LiDAR reset counter is outside uint32 range")
     correspondences_valid = bool(msg.correspondences_valid)
     if matched < 0 or candidate < matched:
         raise ValueError("native LiDAR match counts are inconsistent")
@@ -406,6 +410,7 @@ def native_factor_from_message(msg) -> NativeLidarPoseNormal:
             scan_begin_s=begin_s,
             scan_end_s=end_s,
             scan_sequence=int(msg.scan_sequence),
+            reset_counter=reset_counter,
             matched_points=0,
             candidate_points=candidate,
             linearization_pose=np.concatenate((position, rpy)),
@@ -462,6 +467,7 @@ def native_factor_from_message(msg) -> NativeLidarPoseNormal:
         scan_begin_s=begin_s,
         scan_end_s=end_s,
         scan_sequence=int(msg.scan_sequence),
+        reset_counter=reset_counter,
         matched_points=matched,
         candidate_points=candidate,
         linearization_pose=np.concatenate((position, rpy)),
@@ -519,6 +525,12 @@ class NativeFactorBuffer:
         self._items.sort(key=lambda item: item.stamp_s)
         if len(self._items) > self.max_size:
             self._items = self._items[-self.max_size:]
+
+    def clear(self) -> int:
+        """Discard all factors and return the number removed."""
+        count = len(self._items)
+        self._items.clear()
+        return count
 
     def pop_nearest(self, stamp_s: float, tolerance_s: float) -> NativeLidarPoseNormal | None:
         stamp_s = float(stamp_s)

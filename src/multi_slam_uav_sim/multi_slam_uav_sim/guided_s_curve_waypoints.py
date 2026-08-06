@@ -5,17 +5,33 @@ from __future__ import annotations
 import math
 
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from mavros_msgs.srv import CommandTOL
+from nav_msgs.msg import Odometry
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from std_msgs.msg import Bool
 from uf_interfaces.msg import SchedulerState
 
 from .guided_rectangle_waypoints import GuidedRectangleWaypoints
 from .localization_safety import (
     LocalizationSafetyStateMachine,
+    RELOCALIZING_HOLD,
     TRACKING,
+    diagnostic_level_value,
     scheduler_localization_loss,
 )
-from .s_curve_path import generate_s_curve, polyline_length, resample_polyline
+from .s_curve_path import (
+    generate_calibration_figure_eight,
+    generate_s_curve,
+    polyline_length,
+    resample_polyline,
+)
 
 
 class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
@@ -30,6 +46,10 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.declare_parameter("minimum_clearance_alt", 3.5)
         self.declare_parameter("locked_yaw_offset_deg", 0.0)
         self.declare_parameter("calibration_yaw_sweep_deg", 12.0)
+        self.declare_parameter("calibration_motion_enabled", True)
+        self.declare_parameter("calibration_motion_radius_m", 1.0)
+        self.declare_parameter("calibration_motion_speed_mps", 0.60)
+        self.declare_parameter("calibration_motion_samples", 161)
         self.declare_parameter("return_home_before_land", True)
         self.declare_parameter("waypoint_spacing_m", 3.0)
         self.declare_parameter("waypoint_hold_s", 1.0)
@@ -41,7 +61,16 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             "scheduler_topic", "/reliability/scheduler_state")
         self.declare_parameter(
             "relocalization_request_topic", "/relocalization/request")
+        self.declare_parameter(
+            "relocalization_ready_topic", "/relocalization/ready")
+        self.declare_parameter(
+            "unified_odom_topic", "/fusion/unified/odom")
+        self.declare_parameter(
+            "external_nav_diagnostics_topic", "/external_nav/diagnostics")
         self.declare_parameter("scheduler_timeout_s", 1.0)
+        self.declare_parameter("unified_odom_timeout_s", 0.60)
+        self.declare_parameter("external_nav_gate_timeout_s", 1.50)
+        self.declare_parameter("relocalization_retry_cooldown_s", 5.0)
         self.declare_parameter("localization_min_support", 0.15)
         self.declare_parameter("localization_loss_dwell_s", 0.30)
         self.declare_parameter("localization_hold_s", 1.0)
@@ -62,6 +91,20 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             self.get_parameter("locked_yaw_offset_deg").value))
         self.calibration_yaw_sweep = math.radians(max(
             0.0, float(self.get_parameter("calibration_yaw_sweep_deg").value)))
+        self.calibration_motion_enabled = bool(
+            self.get_parameter("calibration_motion_enabled").value)
+        self.calibration_motion_radius_m = max(
+            0.2,
+            float(self.get_parameter("calibration_motion_radius_m").value),
+        )
+        self.calibration_motion_speed_mps = max(
+            0.2,
+            float(self.get_parameter("calibration_motion_speed_mps").value),
+        )
+        self.calibration_motion_samples = max(
+            33,
+            int(self.get_parameter("calibration_motion_samples").value),
+        )
         self.return_home_before_land = bool(
             self.get_parameter("return_home_before_land").value)
         self.waypoint_spacing_m = max(
@@ -79,10 +122,30 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             self.get_parameter("localization_safety_enabled").value)
         self.scheduler_timeout_s = max(
             0.1, float(self.get_parameter("scheduler_timeout_s").value))
+        self.unified_odom_timeout_s = max(
+            0.1, float(self.get_parameter("unified_odom_timeout_s").value))
+        self.external_nav_gate_timeout_s = max(
+            0.5,
+            float(self.get_parameter("external_nav_gate_timeout_s").value),
+        )
+        self.relocalization_retry_cooldown_s = max(
+            0.0,
+            float(
+                self.get_parameter("relocalization_retry_cooldown_s").value
+            ),
+        )
         self.localization_min_support = max(
             0.0, float(self.get_parameter("localization_min_support").value))
         self.latest_scheduler = None
         self.latest_scheduler_arrival = None
+        self.latest_unified_odom = None
+        self.latest_external_nav_gate_stamp_s = None
+        self.latest_external_nav_gate_healthy = False
+        self.latest_external_nav_gate_reason = "missing"
+        self.relocalization_ready = False
+        self.relocalization_request_active = False
+        self.last_relocalization_release_s = None
+        self.relocalization_deferred_logged = False
         self.last_safety_state = TRACKING
         self.localization_safety = LocalizationSafetyStateMachine(
             loss_dwell_s=float(
@@ -92,9 +155,18 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             recovery_dwell_s=float(
                 self.get_parameter("localization_recovery_dwell_s").value),
         )
+        relocalization_request_topic = str(
+            self.get_parameter("relocalization_request_topic").value
+        )
         self.relocalization_request_pub = self.create_publisher(
             Bool,
-            str(self.get_parameter("relocalization_request_topic").value),
+            relocalization_request_topic,
+            10,
+        )
+        self.create_subscription(
+            Bool,
+            relocalization_request_topic,
+            self._relocalization_request_state_cb,
             10,
         )
         self.create_subscription(
@@ -102,6 +174,32 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             str(self.get_parameter("scheduler_topic").value),
             self._scheduler_cb,
             20,
+        )
+        self.create_subscription(
+            Odometry,
+            str(self.get_parameter("unified_odom_topic").value),
+            self._unified_odom_cb,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            DiagnosticArray,
+            str(
+                self.get_parameter("external_nav_diagnostics_topic").value
+            ),
+            self._external_nav_diagnostics_cb,
+            10,
+        )
+        readiness_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            Bool,
+            str(self.get_parameter("relocalization_ready_topic").value),
+            self._relocalization_ready_cb,
+            readiness_qos,
         )
 
         if self.pass_count < 1:
@@ -117,6 +215,58 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             + float(msg.header.stamp.nanosec) * 1.0e-9
         )
 
+    def _unified_odom_cb(self, msg):
+        self.latest_unified_odom = msg
+
+    def _external_nav_diagnostics_cb(self, msg):
+        for status in msg.status:
+            if status.name != "external_nav/gate":
+                continue
+            stamp = msg.header.stamp
+            self.latest_external_nav_gate_stamp_s = (
+                float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+            )
+            self.latest_external_nav_gate_healthy = (
+                diagnostic_level_value(status.level)
+                == diagnostic_level_value(DiagnosticStatus.OK)
+                and str(status.message) == "publishing"
+            )
+            self.latest_external_nav_gate_reason = str(status.message)
+
+    def _relocalization_request_state_cb(self, msg):
+        active = bool(msg.data)
+        if self.relocalization_request_active and not active:
+            self.last_relocalization_release_s = self._now_s()
+        self.relocalization_request_active = active
+
+    def _relocalization_ready_cb(self, msg):
+        self.relocalization_ready = bool(msg.data)
+        if self.relocalization_ready:
+            self.relocalization_deferred_logged = False
+
+    def _unified_odom_health(self, now):
+        if self.latest_unified_odom is None:
+            return False, False
+        stamp = self.latest_unified_odom.header.stamp
+        source_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+        fresh = (
+            source_s > 0.0
+            and 0.0 <= now - source_s <= self.unified_odom_timeout_s
+        )
+        pose = self.latest_unified_odom.pose.pose
+        values = (
+            float(pose.position.x), float(pose.position.y),
+            float(pose.position.z), float(pose.orientation.x),
+            float(pose.orientation.y), float(pose.orientation.z),
+            float(pose.orientation.w),
+        )
+        quaternion_norm = math.sqrt(sum(value * value for value in values[3:]))
+        finite = (
+            all(math.isfinite(value) for value in values)
+            and quaternion_norm > 1.0e-6
+        )
+        return fresh, finite
+
     def _scheduler_is_fresh(self, now):
         return (
             self.latest_scheduler is not None
@@ -125,12 +275,33 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             <= self.scheduler_timeout_s
         )
 
+    def _external_nav_gate_health(self, now):
+        stamp_s = self.latest_external_nav_gate_stamp_s
+        fresh = (
+            stamp_s is not None
+            and stamp_s > 0.0
+            and 0.0 <= now - stamp_s <= self.external_nav_gate_timeout_s
+        )
+        return (
+            fresh,
+            self.latest_external_nav_gate_healthy,
+            self.latest_external_nav_gate_reason,
+        )
+
     def _obvious_localization_loss(self, now):
         fresh = self._scheduler_is_fresh(now)
+        estimator_fresh, estimator_finite = self._unified_odom_health(now)
+        gate_fresh, gate_healthy, gate_reason = (
+            self._external_nav_gate_health(now)
+        )
         if not fresh:
             return scheduler_localization_loss(
                 "UNAVAILABLE", 0.0, (), (), self.localization_min_support,
-                fresh=False)
+                fresh=False, estimator_fresh=estimator_fresh,
+                estimator_finite=estimator_finite,
+                external_nav_gate_fresh=gate_fresh,
+                external_nav_gate_healthy=gate_healthy,
+                external_nav_gate_reason=gate_reason)
         msg = self.latest_scheduler
         return scheduler_localization_loss(
             msg.health_state,
@@ -139,12 +310,67 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             msg.capability_observable,
             self.localization_min_support,
             fresh=True,
+            estimator_fresh=estimator_fresh,
+            estimator_finite=estimator_finite,
+            external_nav_gate_fresh=gate_fresh,
+            external_nav_gate_healthy=gate_healthy,
+            external_nav_gate_reason=gate_reason,
         )
 
     def _publish_relocalization_request(self, active):
+        previous = self.relocalization_request_active
         message = Bool()
         message.data = bool(active)
         self.relocalization_request_pub.publish(message)
+        self.relocalization_request_active = bool(active)
+        if previous and not self.relocalization_request_active:
+            self.last_relocalization_release_s = self._now_s()
+
+    def _update_relocalization_request(self, decision):
+        if decision.clear_relocalization_request:
+            if self.relocalization_request_active:
+                self._publish_relocalization_request(False)
+            return
+        should_request = decision.request_relocalization or (
+            decision.hold and decision.state == RELOCALIZING_HOLD
+        )
+        if not should_request or self.relocalization_request_active:
+            return
+        now = self._now_s()
+        if (
+            self.last_relocalization_release_s is not None
+            and now >= self.last_relocalization_release_s
+            and now - self.last_relocalization_release_s
+            < self.relocalization_retry_cooldown_s
+        ):
+            return
+        if not self.relocalization_ready:
+            if not self.relocalization_deferred_logged:
+                self.get_logger().warning(
+                    "Localization hold active, but relocalization database is "
+                    "not ready; deferring the recovery request.")
+                self.relocalization_deferred_logged = True
+            return
+        self._publish_relocalization_request(True)
+
+    def _current_hold_target(self):
+        if self.pose is None:
+            return self.last_commanded_setpoint
+        position = self.pose.pose.position
+        orientation = self.pose.pose.orientation
+        yaw = math.atan2(
+            2.0 * (
+                orientation.w * orientation.z
+                + orientation.x * orientation.y
+            ),
+            1.0 - 2.0 * (
+                orientation.y * orientation.y
+                + orientation.z * orientation.z
+            ),
+        )
+        return (
+            float(position.x), float(position.y), float(position.z), float(yaw)
+        )
 
     def wait_localization_safety_ready(self):
         if not self.localization_safety_enabled:
@@ -182,12 +408,11 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 f"Localization safety {self.last_safety_state} -> "
                 f"{decision.state}: {reason}; mission={label}")
             self.last_safety_state = decision.state
-        if decision.request_relocalization:
-            self._publish_relocalization_request(True)
+        self._update_relocalization_request(decision)
         if not decision.hold:
             return
 
-        hold_target = self.last_commanded_setpoint
+        hold_target = self._current_hold_target()
         if hold_target is None:
             hold_target = (
                 self.home_x, self.home_y, self.takeoff_alt, self.home_yaw)
@@ -212,10 +437,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                     f"Localization safety {self.last_safety_state} -> "
                     f"{decision.state}: {reason}; holding the last safe setpoint")
                 self.last_safety_state = decision.state
-            if decision.request_relocalization:
-                self._publish_relocalization_request(True)
-            if decision.clear_relocalization_request:
-                self._publish_relocalization_request(False)
+            self._update_relocalization_request(decision)
         self.get_logger().info(
             f"Localization recovered; resuming {label} after conservative hold.")
 
@@ -279,16 +501,34 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             for x, y, z in relative
         ]
 
-    def fly_path(self, path, yaw, label):
-        spacing = self.speed_mps / self.rate_hz
+    def fly_path(
+        self,
+        path,
+        yaw,
+        label,
+        *,
+        speed_mps=None,
+        checkpoint_spacing_m=None,
+        yaw_sweep_rad=0.0,
+    ):
+        speed_mps = self.speed_mps if speed_mps is None else max(
+            0.1, float(speed_mps)
+        )
+        checkpoint_spacing_m = (
+            self.waypoint_spacing_m
+            if checkpoint_spacing_m is None
+            else float(checkpoint_spacing_m)
+        )
+        spacing = speed_mps / self.rate_hz
         points = resample_polyline(path, spacing)
         length = polyline_length(points)
         self.get_logger().info(
             f"{label}: points={len(points)}, distance={length:.2f}m, "
-            f"duration={length / self.speed_mps:.1f}s, "
-            f"locked_yaw={math.degrees(yaw):.1f}deg")
+            f"duration={length / speed_mps:.1f}s, "
+            f"center_yaw={math.degrees(yaw):.1f}deg, "
+            f"yaw_sweep={math.degrees(yaw_sweep_rad):.1f}deg")
         travelled = 0.0
-        next_waypoint_distance = self.waypoint_spacing_m
+        next_waypoint_distance = checkpoint_spacing_m
         last_progress_ros_s = self._now_s()
         next_publish_ros_s = last_progress_ros_s
         last_observed_ros_s = last_progress_ros_s
@@ -299,17 +539,21 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 raise RuntimeError("ROS clock moved backwards during S-curve")
             travelled = min(
                 length,
-                travelled + self.speed_mps * (now_ros_s - last_progress_ros_s),
+                travelled + speed_mps * (now_ros_s - last_progress_ros_s),
             )
             last_progress_ros_s = now_ros_s
             index = min(len(points) - 1, int(travelled / max(spacing, 1.0e-6)))
             if travelled >= length:
                 index = len(points) - 1
             point = points[index]
+            progress = travelled / max(length, 1.0e-9)
+            commanded_yaw = yaw + yaw_sweep_rad * math.sin(
+                2.0 * math.pi * progress
+            )
             self.ensure_guided(label)
             self.mission_safety_checkpoint(label)
             last_progress_ros_s = self._now_s()
-            self.publish_setpoint(*point, yaw)
+            self.publish_setpoint(*point, commanded_yaw)
             rclpy.spin_once(self, timeout_sec=0.0)
             self._log_status(label)
             is_endpoint = index == len(points) - 1
@@ -319,9 +563,9 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 and travelled + 1.0e-6 >= next_waypoint_distance
             ):
                 self.settle_waypoint(
-                    point, yaw,
+                    point, commanded_yaw,
                     f"{label} checkpoint {travelled:.1f}m")
-                next_waypoint_distance += self.waypoint_spacing_m
+                next_waypoint_distance += checkpoint_spacing_m
                 last_progress_ros_s = self._now_s()
             last_index = index
             next_publish_ros_s = max(
@@ -333,7 +577,37 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.publish_setpoint(*points[-1], yaw)
 
     def calibration_warmup(self, position, locked_yaw):
-        if self.calibration_yaw_sweep <= math.radians(0.5):
+        if (
+            not self.calibration_motion_enabled
+            and self.calibration_yaw_sweep <= math.radians(0.5)
+        ):
+            return
+        self._publish_mission_phase("calibration_excitation")
+        if self.calibration_motion_enabled:
+            path = generate_calibration_figure_eight(
+                position,
+                self.calibration_motion_radius_m,
+                self.calibration_motion_samples,
+            )
+            self.get_logger().info(
+                "Continuous multi-axis calibration excitation begins; "
+                "the mission yaw is locked after it."
+            )
+            self.fly_path(
+                path,
+                locked_yaw,
+                "calibration figure-eight",
+                speed_mps=self.calibration_motion_speed_mps,
+                checkpoint_spacing_m=math.inf,
+                yaw_sweep_rad=self.calibration_yaw_sweep,
+            )
+            self.hold_setpoint(
+                *position,
+                seconds=1.0,
+                yaw=locked_yaw,
+                label="calibration settle",
+                require_guided=True,
+            )
             return
         self.get_logger().info(
             "Short calibration warmup begins; the mission yaw is locked after it.")
@@ -349,6 +623,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             "calibration yaw settle")
 
     def run(self):
+        self._publish_mission_phase("preflight")
         self.wait_ready()
         navigation_source = self.wait_navigation_ready()
         self.wait_localization_safety_ready()
@@ -359,8 +634,9 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.wait_for_takeoff_climb()
         self.ensure_guided("post-takeoff")
         locked_yaw = self.home_yaw + self.locked_yaw_offset
+        self._publish_mission_phase("post_takeoff_hold")
         self.hold_setpoint(
-            *start, seconds=3.0, yaw=locked_yaw,
+            *start, seconds=self.post_takeoff_hold_time_s, yaw=locked_yaw,
             label="post-takeoff hold", require_guided=True)
         self.calibration_warmup(start, locked_yaw)
 
@@ -372,6 +648,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             f"altitude_range={self.takeoff_alt - self.vertical_amplitude:.2f}.."
             f"{self.takeoff_alt + self.vertical_amplitude:.2f}m")
         current = start
+        self._publish_mission_phase("route_active")
         for pass_index in range(self.pass_count):
             path = base_path if pass_index % 2 == 0 else list(reversed(base_path))
             first = path[0]
@@ -399,7 +676,14 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 current, locked_yaw, "return-home convergence",
                 hold_s=self.hold_time)
 
+        if self.final_hold_time_s > 0.0:
+            self._publish_mission_phase("final_loop_hold")
+            self.hold_setpoint(
+                *current, seconds=self.final_hold_time_s, yaw=locked_yaw,
+                label="final loop-closure hold", require_guided=True)
+
         if self.land_at_end:
+            self._publish_mission_phase("landing")
             if self.land_cli.wait_for_service(timeout_sec=5.0):
                 land_req = CommandTOL.Request()
                 land_req.min_pitch = 0.0
@@ -409,6 +693,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 land_req.altitude = 0.0
                 self.call(self.land_cli, land_req, "land")
         else:
+            self._publish_mission_phase("complete_hold")
             self.get_logger().info(
                 "S-curve mission complete. Holding final setpoint; Ctrl+C to stop.")
             while rclpy.ok():

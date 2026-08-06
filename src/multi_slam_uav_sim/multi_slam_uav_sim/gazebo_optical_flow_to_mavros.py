@@ -24,7 +24,7 @@ from multi_slam_uav_sim.optical_flow_model import (
     compensated_planar_velocity,
     gazebo_downward_gyro_to_mavlink,
     gazebo_downward_image_flow_to_mavlink,
-    integrate_gyro,
+    integrate_preferred_gyro,
     pixel_flow_to_radians,
     ros_flu_gyro_to_sensor_frd,
     scale_mavlink_translation,
@@ -463,13 +463,18 @@ class GazeboOpticalFlowToMavros(Node):
         raw_flow = gazebo_downward_image_flow_to_mavlink(
             tracking.dx_px, tracking.dy_px, fx_small, fy_small
         )
-        use_gazebo_imu = (
-            self.latest_gazebo_imu_stamp_s is not None
-            and abs(end_s - self.latest_gazebo_imu_stamp_s) <= 0.25
+        gyro, gyro_selection = integrate_preferred_gyro(
+            list(self.gazebo_imu_samples),
+            list(self.fcu_imu_samples),
+            start_s,
+            end_s,
+            max_gap_s=self.max_imu_gap,
         )
-        gyro_samples = self.gazebo_imu_samples if use_gazebo_imu else self.fcu_imu_samples
-        gyro_source = "gazebo_internal" if use_gazebo_imu else "fcu_fallback"
-        gyro = integrate_gyro(list(gyro_samples), start_s, end_s, max_gap_s=self.max_imu_gap)
+        gyro_source = {
+            "primary": "gazebo_internal",
+            "fallback": "fcu_fallback",
+            "unavailable": "unavailable",
+        }[gyro_selection]
         gyro_valid = gyro is not None
         if gyro is None:
             gyro = (float("nan"), float("nan"), float("nan"))

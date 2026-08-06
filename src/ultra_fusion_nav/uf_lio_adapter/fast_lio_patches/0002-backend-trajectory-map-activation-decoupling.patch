@@ -1,0 +1,966 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 82a984f..3ccad30 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -49,6 +49,7 @@ find_path(MATPLOTLIB_CPP_INCLUDE_DIRS "matplotlibcpp.h")
+
+ # ROS dependencies
+ find_package(ament_cmake REQUIRED)
++find_package(builtin_interfaces REQUIRED)
+ find_package(rclcpp REQUIRED)
+ find_package(rclcpp_components REQUIRED)
+ find_package(geometry_msgs REQUIRED)
+@@ -65,6 +66,7 @@ find_package(rosidl_default_generators REQUIRED)
+ set(dependencies
+   rclcpp
+   rclcpp_components
++  builtin_interfaces
+   geometry_msgs
+   nav_msgs
+   sensor_msgs
+@@ -87,11 +89,13 @@ set(msg_files
+   "msg/Pose6D.msg"
+   "msg/NativeLidarFactor.msg"
+   "msg/BackendStateSeed.msg"
++  "msg/FrontendScanRequest.msg"
++  "msg/BackendDeskewTrajectory.msg"
+ )
+
+ rosidl_generate_interfaces(${PROJECT_NAME}
+   ${msg_files}
+-  DEPENDENCIES std_msgs
++  DEPENDENCIES builtin_interfaces std_msgs
+ )
+ ament_export_dependencies(rosidl_default_runtime)
+
+diff --git a/launch/mapping.launch.py b/launch/mapping.launch.py
+index 61b2cdf..f326fdb 100644
+--- a/launch/mapping.launch.py
++++ b/launch/mapping.launch.py
+@@ -35,6 +35,8 @@ def generate_launch_description():
+         'downstream_map_insertion_mode')
+     downstream_backend_state_topic = LaunchConfiguration(
+         'downstream_backend_state_topic')
++    downstream_backend_activation_state_topic = LaunchConfiguration(
++        'downstream_backend_activation_state_topic')
+     frontend_state_seed_mode = LaunchConfiguration('frontend_state_seed_mode')
+     frontend_state_seed_topic = LaunchConfiguration('frontend_state_seed_topic')
+     frontend_state_seed_tolerance_s = LaunchConfiguration(
+@@ -47,6 +49,16 @@ def generate_launch_description():
+         'frontend_state_seed_max_translation_correction_m')
+     frontend_state_seed_max_rotation_correction_rad = LaunchConfiguration(
+         'frontend_state_seed_max_rotation_correction_rad')
++    backend_trajectory_frontend_enable = LaunchConfiguration(
++        'backend_trajectory_frontend_enable')
++    backend_trajectory_frontend_topic = LaunchConfiguration(
++        'backend_trajectory_frontend_topic')
++    frontend_scan_request_topic = LaunchConfiguration(
++        'frontend_scan_request_topic')
++    frontend_scan_request_retry_period_s = LaunchConfiguration(
++        'frontend_scan_request_retry_period_s')
++    frontend_scan_request_timeout_s = LaunchConfiguration(
++        'frontend_scan_request_timeout_s')
+
+     declare_use_sim_time_cmd = DeclareLaunchArgument(
+         'use_sim_time', default_value='false',
+@@ -104,6 +116,10 @@ def generate_launch_description():
+         'downstream_backend_state_topic', default_value='/fusion/unified/odom',
+         description='Optimized backend state for backend-confirmed map insertion'
+     )
++    declare_downstream_backend_activation_state_topic_cmd = DeclareLaunchArgument(
++        'downstream_backend_activation_state_topic', default_value='',
++        description='Continuous backend state used only to activate trajectory requests; empty reuses downstream_backend_state_topic'
++    )
+     declare_frontend_state_seed_mode_cmd = DeclareLaunchArgument(
+         'frontend_state_seed_mode', default_value='disabled',
+         description='Backend state feedback mode: disabled, shadow, or backend_seeded'
+@@ -133,6 +149,28 @@ def generate_launch_description():
+         'frontend_state_seed_max_rotation_correction_rad', default_value='0.50',
+         description='Maximum backend/frontend rotation correction accepted per seed'
+     )
++    declare_backend_trajectory_frontend_enable_cmd = DeclareLaunchArgument(
++        'backend_trajectory_frontend_enable', default_value='false',
++        description='Use backend-owned scan prediction and bypass FAST-LIO ESIKF after bootstrap'
++    )
++    declare_backend_trajectory_frontend_topic_cmd = DeclareLaunchArgument(
++        'backend_trajectory_frontend_topic',
++        default_value='/fusion/unified/backend_deskew_trajectory',
++        description='Backend-owned begin/end scan trajectory topic'
++    )
++    declare_frontend_scan_request_topic_cmd = DeclareLaunchArgument(
++        'frontend_scan_request_topic',
++        default_value='/fast_lio/frontend_scan_request',
++        description='Front-end scan request topic'
++    )
++    declare_frontend_scan_request_retry_period_cmd = DeclareLaunchArgument(
++        'frontend_scan_request_retry_period_s', default_value='0.20',
++        description='ROS-time interval between retries of an unacknowledged scan request'
++    )
++    declare_frontend_scan_request_timeout_cmd = DeclareLaunchArgument(
++        'frontend_scan_request_timeout_s', default_value='2.0',
++        description='ROS-time threshold for reporting an unacknowledged scan request'
++    )
+
+     fast_lio_node = Node(
+         package='fast_lio',
+@@ -148,13 +186,19 @@ def generate_launch_description():
+                      'downstream_backend.publish_diagnostic_tf': downstream_publish_diagnostic_tf,
+                      'downstream_backend.map_insertion_mode': downstream_map_insertion_mode,
+                      'downstream_backend.state_topic': downstream_backend_state_topic,
++                     'downstream_backend.activation_state_topic': downstream_backend_activation_state_topic,
+                      'frontend_state_seed.mode': frontend_state_seed_mode,
+                      'frontend_state_seed.topic': frontend_state_seed_topic,
+                      'frontend_state_seed.tolerance_s': frontend_state_seed_tolerance_s,
+                      'frontend_state_seed.minimum_quality': frontend_state_seed_minimum_quality,
+                      'frontend_state_seed.history_size': frontend_state_seed_history_size,
+                      'frontend_state_seed.max_translation_correction_m': frontend_state_seed_max_translation_correction_m,
+-                     'frontend_state_seed.max_rotation_correction_rad': frontend_state_seed_max_rotation_correction_rad}],
++                     'frontend_state_seed.max_rotation_correction_rad': frontend_state_seed_max_rotation_correction_rad,
++                     'backend_trajectory_frontend.enable': backend_trajectory_frontend_enable,
++                     'backend_trajectory_frontend.topic': backend_trajectory_frontend_topic,
++                     'backend_trajectory_frontend.request_topic': frontend_scan_request_topic,
++                     'backend_trajectory_frontend.request_retry_period_s': frontend_scan_request_retry_period_s,
++                     'backend_trajectory_frontend.request_timeout_s': frontend_scan_request_timeout_s}],
+         output='screen'
+     )
+     rviz_node = Node(
+@@ -179,6 +223,7 @@ def generate_launch_description():
+     ld.add_action(declare_downstream_publish_diagnostic_tf_cmd)
+     ld.add_action(declare_downstream_map_insertion_mode_cmd)
+     ld.add_action(declare_downstream_backend_state_topic_cmd)
++    ld.add_action(declare_downstream_backend_activation_state_topic_cmd)
+     ld.add_action(declare_frontend_state_seed_mode_cmd)
+     ld.add_action(declare_frontend_state_seed_topic_cmd)
+     ld.add_action(declare_frontend_state_seed_tolerance_cmd)
+@@ -186,6 +231,11 @@ def generate_launch_description():
+     ld.add_action(declare_frontend_state_seed_history_size_cmd)
+     ld.add_action(declare_frontend_state_seed_max_translation_cmd)
+     ld.add_action(declare_frontend_state_seed_max_rotation_cmd)
++    ld.add_action(declare_backend_trajectory_frontend_enable_cmd)
++    ld.add_action(declare_backend_trajectory_frontend_topic_cmd)
++    ld.add_action(declare_frontend_scan_request_topic_cmd)
++    ld.add_action(declare_frontend_scan_request_retry_period_cmd)
++    ld.add_action(declare_frontend_scan_request_timeout_cmd)
+
+     ld.add_action(fast_lio_node)
+     ld.add_action(rviz_node)
+diff --git a/msg/BackendDeskewTrajectory.msg b/msg/BackendDeskewTrajectory.msg
+new file mode 100644
+index 0000000..c378b39
+--- /dev/null
++++ b/msg/BackendDeskewTrajectory.msg
+@@ -0,0 +1,24 @@
++std_msgs/Header header
++
++# Backend-owned scan segment used by the LiDAR front-end. Point poses are
++# queried with Slerp(begin_orientation, end_orientation, alpha) and linear
++# translation interpolation, following Ultra-Fusion's intra-scan model.
++uint64 scan_sequence
++uint32 reset_counter
++uint8 quality
++bool valid
++string reason
++string map_frame
++string body_frame
++builtin_interfaces/Time scan_begin_stamp
++builtin_interfaces/Time scan_end_stamp
++
++float64[3] begin_position
++float64[4] begin_orientation_xyzw
++float64[3] end_position
++float64[4] end_orientation_xyzw
++float64[3] end_velocity_map
++float64[3] accel_bias
++float64[3] gyro_bias
++float64[225] end_covariance
++
+diff --git a/msg/FrontendScanRequest.msg b/msg/FrontendScanRequest.msg
+new file mode 100644
+index 0000000..96284a4
+--- /dev/null
++++ b/msg/FrontendScanRequest.msg
+@@ -0,0 +1,12 @@
++std_msgs/Header header
++
++# The front-end publishes one request after a complete LiDAR scan and its
++# source timestamps have been assembled. header.stamp equals scan_end_stamp.
++uint64 scan_sequence
++builtin_interfaces/Time scan_begin_stamp
++builtin_interfaces/Time scan_end_stamp
++string map_frame
++string body_frame
++string sensor_frame
++uint32 point_count
++
+diff --git a/msg/NativeLidarFactor.msg b/msg/NativeLidarFactor.msg
+index e10cc3b..2807e74 100755
+--- a/msg/NativeLidarFactor.msg
++++ b/msg/NativeLidarFactor.msg
+@@ -1,5 +1,10 @@
+ std_msgs/Header header
+
++# Exact scan interval in the shared ROS/source clock domain. header.stamp is
++# the scan end timestamp for compatibility with existing consumers.
++builtin_interfaces/Time scan_begin_stamp
++builtin_interfaces/Time scan_end_stamp
++
+ # Identity of the linearized factor and coordinate frames.
+ string source
+ string map_frame
+diff --git a/package.xml b/package.xml
+index 8c39e18..3d0e56f 100644
+--- a/package.xml
++++ b/package.xml
+@@ -22,6 +22,7 @@
+   <depend>nav_msgs</depend>
+   <depend>rclcpp</depend>
+   <depend>std_msgs</depend>
++  <depend>builtin_interfaces</depend>
+   <depend>sensor_msgs</depend>
+   <depend>common_interfaces</depend>
+   <depend>tf2</depend>
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index 901e6f0..a64728f 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -41,12 +41,14 @@
+ #include <chrono>
+ #include <array>
+ #include <algorithm>
++#include <atomic>
+ #include <deque>
+ #include <unistd.h>
+ #include <Python.h>
+ #include <so3_math.h>
+ #include <rclcpp/rclcpp.hpp>
+ #include <Eigen/Core>
++#include <Eigen/Geometry>
+ #include <Eigen/Eigenvalues>
+ #include "IMU_Processing.hpp"
+ #include <nav_msgs/msg/odometry.hpp>
+@@ -65,6 +67,8 @@
+ #include <geometry_msgs/msg/vector3.hpp>
+ #include <livox_ros_driver2/msg/custom_msg.hpp>
+ #include "fast_lio/msg/backend_state_seed.hpp"
++#include "fast_lio/msg/backend_deskew_trajectory.hpp"
++#include "fast_lio/msg/frontend_scan_request.hpp"
+ #include "fast_lio/msg/native_lidar_factor.hpp"
+ #include "preprocess.h"
+ #include <ikd-Tree/ikd_Tree.h>
+@@ -97,7 +101,7 @@ double res_mean_last = 0.05, total_residual = 0.0;
+ double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
+ double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
+ double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
+-double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
++double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, lidar_begin_time = 0.0, first_lidar_time = 0.0;
+ int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
+ int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
+ bool   point_selected_surf[100000] = {0};
+@@ -106,11 +110,15 @@ bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
+ bool    is_first_lidar = true;
+ bool native_factor_export_en = false;
+ bool native_factor_debug_jacobian_en = false;
++int native_factor_max_correspondences = 400;
+ bool downstream_backend_en = false;
+ bool downstream_publish_diagnostic_odometry = false;
+ bool downstream_publish_diagnostic_path = false;
+ bool downstream_publish_diagnostic_tf = false;
+ bool downstream_backend_confirmed_map = false;
++bool backend_trajectory_frontend_en = false;
++string backend_deskew_trajectory_topic = "/fusion/unified/backend_deskew_trajectory";
++string frontend_scan_request_topic = "/fast_lio/frontend_scan_request";
+ double downstream_backend_state_tolerance_s = 0.010;
+ double downstream_backend_max_map_translation_disagreement_m = 0.50;
+ double downstream_backend_max_map_rotation_disagreement_rad = 0.35;
+@@ -118,6 +126,7 @@ int downstream_backend_max_pending_map_frames = 16;
+ string native_factor_topic = "/fast_lio/native_lidar_factor";
+ string native_factor_sensor_frame = "lidar";
+ string downstream_backend_state_topic = "/fusion/unified/odom";
++string downstream_backend_activation_state_topic;
+ string frontend_state_seed_mode = "disabled";
+ string frontend_state_seed_topic = "/fusion/unified/frontend_state_seed";
+ double frontend_state_seed_tolerance_s = 0.015;
+@@ -125,7 +134,30 @@ double frontend_state_seed_max_translation_correction_m = 1.0;
+ double frontend_state_seed_max_rotation_correction_rad = 0.50;
+ int frontend_state_seed_min_quality = 20;
+ int frontend_state_seed_history_size = 64;
++double backend_trajectory_request_retry_period_s = 0.20;
++double backend_trajectory_request_timeout_s = 2.0;
+ uint64_t native_factor_sequence = 0;
++atomic<bool> backend_state_seen{false};
++uint64_t backend_activation_states_received = 0;
++uint64_t backend_activation_states_rejected = 0;
++uint64_t backend_trajectory_bootstrap_frames = 0;
++uint64_t backend_trajectory_requests = 0;
++uint64_t backend_trajectory_initial_requests = 0;
++uint64_t backend_trajectory_request_retries = 0;
++uint64_t backend_trajectory_request_timeouts = 0;
++uint64_t backend_trajectory_requests_without_subscriber = 0;
++uint64_t backend_trajectory_acks = 0;
++uint64_t backend_trajectory_wait_cycles = 0;
++uint64_t backend_trajectory_factor_frames = 0;
++uint64_t backend_trajectory_legacy_ekf_updates = 0;
++uint64_t backend_trajectory_ekf_updates_after_activation = 0;
++uint64_t backend_trajectories_received = 0;
++uint64_t backend_trajectories_contract_rejected = 0;
++uint64_t backend_trajectories_queued = 0;
++uint64_t backend_trajectories_time_mismatched = 0;
++uint64_t backend_trajectories_duplicate = 0;
++double backend_trajectory_ack_latency_sum_s = 0.0;
++double backend_trajectory_ack_latency_max_s = 0.0;
+
+ struct PendingBackendMapFrame
+ {
+@@ -168,6 +200,20 @@ struct BackendStateSeedRecord
+     std::array<double, 225> covariance{};
+ };
+
++struct BackendDeskewTrajectoryRecord
++{
++    double begin_stamp = 0.0;
++    double end_stamp = 0.0;
++    uint64_t sequence = 0;
++    uint32_t reset_counter = 0;
++    uint8_t quality = 0;
++    bool valid = false;
++    std::array<double, 3> begin_position{};
++    std::array<double, 4> begin_orientation_xyzw{};
++    std::array<double, 3> end_position{};
++    std::array<double, 4> end_orientation_xyzw{};
++};
++
+ mutex backend_map_mutex;
+ deque<PendingBackendMapFrame> pending_backend_map_frames;
+ deque<BackendMapPose> pending_backend_map_poses;
+@@ -177,6 +223,8 @@ uint64_t backend_map_frames_dropped = 0;
+ uint64_t backend_map_poses_unmatched = 0;
+ uint64_t backend_map_frames_rejected = 0;
+ mutex frontend_state_seed_mutex;
++mutex backend_trajectory_mutex;
++deque<BackendDeskewTrajectoryRecord> pending_backend_trajectories;
+ deque<FrontendStateRecord> frontend_state_history;
+ deque<BackendStateSeedRecord> pending_backend_state_seeds;
+ bool frontend_state_seed_sequence_initialized = false;
+@@ -487,7 +535,8 @@ bool sync_packages(MeasureGroup &meas)
+     if(!lidar_pushed)
+     {
+         meas.lidar = lidar_buffer.front();
+-        meas.lidar_beg_time = time_buffer.front();
++    meas.lidar_beg_time = time_buffer.front();
++    lidar_begin_time = meas.lidar_beg_time;
+         if (meas.lidar->points.size() <= 1) // time too little
+         {
+             lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
+@@ -531,6 +580,137 @@ bool sync_packages(MeasureGroup &meas)
+     return true;
+ }
+
++double trajectory_stamp(const builtin_interfaces::msg::Time &stamp)
++{
++    return static_cast<double>(stamp.sec) +
++        static_cast<double>(stamp.nanosec) * 1.0e-9;
++}
++
++bool take_backend_trajectory(double begin_stamp, double end_stamp,
++    uint64_t sequence,
++    BackendDeskewTrajectoryRecord &output)
++{
++    lock_guard<mutex> lock(backend_trajectory_mutex);
++    auto best = pending_backend_trajectories.end();
++    for (auto it = pending_backend_trajectories.begin();
++         it != pending_backend_trajectories.end(); ++it)
++    {
++        if (it->sequence == sequence)
++        {
++            best = it;
++            break;
++        }
++    }
++    if (best == pending_backend_trajectories.end())
++        return false;
++    const double stamp_delta = fabs(best->end_stamp - end_stamp) +
++        fabs(best->begin_stamp - begin_stamp);
++    if (stamp_delta > 0.005)
++    {
++        ++backend_trajectories_time_mismatched;
++        pending_backend_trajectories.erase(best);
++        return false;
++    }
++    output = *best;
++    pending_backend_trajectories.erase(best);
++    return true;
++}
++
++void backend_deskew_trajectory_callback(
++    const fast_lio::msg::BackendDeskewTrajectory::SharedPtr message)
++{
++    ++backend_trajectories_received;
++    BackendDeskewTrajectoryRecord record;
++    record.begin_stamp = trajectory_stamp(message->scan_begin_stamp);
++    record.end_stamp = trajectory_stamp(message->scan_end_stamp);
++    record.sequence = message->scan_sequence;
++    record.reset_counter = message->reset_counter;
++    record.quality = message->quality;
++    record.valid = message->valid;
++    if (message->map_frame != "camera_init" || message->body_frame != "body" ||
++        record.begin_stamp <= 0.0 || record.end_stamp <= record.begin_stamp ||
++        record.begin_stamp > record.end_stamp)
++    {
++        ++backend_trajectories_contract_rejected;
++        return;
++    }
++    for (int i = 0; i < 3; ++i)
++    {
++        record.begin_position[i] = message->begin_position[i];
++        record.end_position[i] = message->end_position[i];
++    }
++    for (int i = 0; i < 4; ++i)
++    {
++        record.begin_orientation_xyzw[i] = message->begin_orientation_xyzw[i];
++        record.end_orientation_xyzw[i] = message->end_orientation_xyzw[i];
++    }
++    lock_guard<mutex> lock(backend_trajectory_mutex);
++    for (auto &pending : pending_backend_trajectories)
++    {
++        if (pending.sequence == record.sequence)
++        {
++            pending = record;
++            ++backend_trajectories_duplicate;
++            return;
++        }
++    }
++    pending_backend_trajectories.push_back(record);
++    ++backend_trajectories_queued;
++    while (pending_backend_trajectories.size() > 16)
++        pending_backend_trajectories.pop_front();
++}
++
++Eigen::Quaterniond trajectory_quaternion(
++    const std::array<double, 4> &coefficients)
++{
++    Eigen::Quaterniond quaternion(
++        coefficients[3], coefficients[0], coefficients[1], coefficients[2]);
++    if (quaternion.norm() <= 1.0e-12)
++        return Eigen::Quaterniond::Identity();
++    quaternion.normalize();
++    return quaternion;
++}
++
++bool undistort_with_backend_trajectory(
++    const BackendDeskewTrajectoryRecord &trajectory,
++    PointCloudXYZI &cloud)
++{
++    const double scan_duration = trajectory.end_stamp - trajectory.begin_stamp;
++    if (!trajectory.valid || scan_duration <= 1.0e-9)
++        return false;
++    const Eigen::Quaterniond begin_rotation =
++        trajectory_quaternion(trajectory.begin_orientation_xyzw);
++    const Eigen::Quaterniond end_rotation =
++        trajectory_quaternion(trajectory.end_orientation_xyzw);
++    const Eigen::Vector3d begin_position(
++        trajectory.begin_position[0], trajectory.begin_position[1],
++        trajectory.begin_position[2]);
++    const Eigen::Vector3d end_position(
++        trajectory.end_position[0], trajectory.end_position[1],
++        trajectory.end_position[2]);
++    for (auto &point : cloud.points)
++    {
++        const double alpha = min(1.0, max(0.0,
++            static_cast<double>(point.curvature) / 1000.0 / scan_duration));
++        const Eigen::Quaterniond rotation = begin_rotation.slerp(alpha, end_rotation);
++        const Eigen::Vector3d position =
++            (1.0 - alpha) * begin_position + alpha * end_position;
++        const Eigen::Vector3d point_sensor(point.x, point.y, point.z);
++        const Eigen::Vector3d point_body =
++            Lidar_R_wrt_IMU * point_sensor + Lidar_T_wrt_IMU;
++        const Eigen::Vector3d point_world = rotation * point_body + position;
++        const Eigen::Vector3d point_end_body =
++            end_rotation.conjugate() * (point_world - end_position);
++        const Eigen::Vector3d point_end_lidar =
++            Lidar_R_wrt_IMU.transpose() * point_end_body -
++            Lidar_R_wrt_IMU.transpose() * Lidar_T_wrt_IMU;
++        point.x = point_end_lidar.x();
++        point.y = point_end_lidar.y();
++        point.z = point_end_lidar.z();
++    }
++    return true;
++}
++
+ int process_increments = 0;
+ void map_incremental()
+ {
+@@ -933,6 +1113,8 @@ void reset_native_lidar_factor(const state_ikfom &s)
+ {
+     native_factor_msg = fast_lio::msg::NativeLidarFactor();
+     native_factor_msg.header.stamp = get_ros_time(lidar_end_time);
++    native_factor_msg.scan_begin_stamp = get_ros_time(lidar_begin_time);
++    native_factor_msg.scan_end_stamp = get_ros_time(lidar_end_time);
+     native_factor_msg.header.frame_id = "camera_init";
+     native_factor_msg.source = "fast_lio_ikfom";
+     native_factor_msg.map_frame = "camera_init";
+@@ -1088,18 +1270,25 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+
+     if (native_factor_export_en)
+     {
+-        native_factor_msg.matched_points = static_cast<uint32_t>(effct_feat_num);
+-        native_factor_msg.lidar_points_xyz.reserve(static_cast<size_t>(effct_feat_num) * 3);
+-        native_factor_msg.plane_normals_xyz.reserve(static_cast<size_t>(effct_feat_num) * 3);
+-        native_factor_msg.plane_points_xyz.reserve(static_cast<size_t>(effct_feat_num) * 3);
+-        native_factor_msg.residuals.reserve(static_cast<size_t>(effct_feat_num));
++        const int export_count = native_factor_max_correspondences > 0
++            ? std::min(effct_feat_num, native_factor_max_correspondences)
++            : effct_feat_num;
++        native_factor_msg.matched_points = static_cast<uint32_t>(export_count);
++        native_factor_msg.lidar_points_xyz.reserve(static_cast<size_t>(export_count) * 3);
++        native_factor_msg.plane_normals_xyz.reserve(static_cast<size_t>(export_count) * 3);
++        native_factor_msg.plane_points_xyz.reserve(static_cast<size_t>(export_count) * 3);
++        native_factor_msg.residuals.reserve(static_cast<size_t>(export_count));
+         if (native_factor_debug_jacobian_en)
+-            native_factor_msg.jacobian.reserve(static_cast<size_t>(effct_feat_num) * 12);
++            native_factor_msg.jacobian.reserve(static_cast<size_t>(export_count) * 12);
+
+-        MatrixXd normal_matrix = ekfom_data.h_x.transpose() * ekfom_data.h_x;
+-        VectorXd residual_vector(effct_feat_num);
+-        for (int i = 0; i < effct_feat_num; i++)
++        MatrixXd normal_matrix = MatrixXd::Zero(12, 12);
++        VectorXd gradient = VectorXd::Zero(12);
++        for (int export_index = 0; export_index < export_count; export_index++)
+         {
++            // Uniform deterministic sampling preserves the scan's spatial spread
++            // while bounding the raw factor cost in the downstream window.
++            const int i = static_cast<int>(
++                (static_cast<int64_t>(export_index) * effct_feat_num) / export_count);
+             const PointType &laser_p = laserCloudOri->points[i];
+             const PointType &norm_p = corr_normvect->points[i];
+             V3D point_this_be(laser_p.x, laser_p.y, laser_p.z);
+@@ -1121,7 +1310,9 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+             native_factor_msg.plane_points_xyz.push_back(plane_point(1));
+             native_factor_msg.plane_points_xyz.push_back(plane_point(2));
+             native_factor_msg.residuals.push_back(static_cast<double>(norm_p.intensity));
+-            residual_vector(i) = static_cast<double>(norm_p.intensity);
++            const VectorXd row = ekfom_data.h_x.row(i).transpose();
++            normal_matrix.noalias() += row * row.transpose();
++            gradient.noalias() += row * static_cast<double>(norm_p.intensity);
+             if (native_factor_debug_jacobian_en)
+             {
+                 for (int j = 0; j < 12; j++)
+@@ -1129,7 +1320,6 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+             }
+         }
+
+-        VectorXd gradient = ekfom_data.h_x.transpose() * residual_vector;
+         for (int r = 0; r < 12; r++)
+         {
+             native_factor_msg.state_gradient[r] = gradient(r);
+@@ -1141,6 +1331,15 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+     solve_time += omp_get_wtime() - solve_start_;
+ }
+
++bool build_native_lidar_factor_at_state(state_ikfom &state)
++{
++    esekfom::dyn_share_datastruct<double> geometry;
++    geometry.valid = true;
++    geometry.converge = true;
++    h_share_model(state, geometry);
++    return geometry.valid && native_factor_msg.correspondences_valid;
++}
++
+ void publish_native_lidar_factor()
+ {
+     if (!native_factor_export_en || !pubNativeLidarFactor)
+@@ -1207,6 +1406,7 @@ public:
+         this->declare_parameter<bool>("downstream_backend.publish_diagnostic_tf", false);
+         this->declare_parameter<string>("downstream_backend.map_insertion_mode", "fast_lio_posterior");
+         this->declare_parameter<string>("downstream_backend.state_topic", "/fusion/unified/odom");
++        this->declare_parameter<string>("downstream_backend.activation_state_topic", "");
+         this->declare_parameter<double>("downstream_backend.state_tolerance_s", 0.010);
+         this->declare_parameter<int>("downstream_backend.max_pending_map_frames", 16);
+         this->declare_parameter<double>("downstream_backend.max_map_translation_disagreement_m", 0.50);
+@@ -1221,6 +1421,18 @@ public:
+             "frontend_state_seed.max_translation_correction_m", 1.0);
+         this->declare_parameter<double>(
+             "frontend_state_seed.max_rotation_correction_rad", 0.50);
++        this->declare_parameter<bool>(
++            "backend_trajectory_frontend.enable", false);
++        this->declare_parameter<string>(
++            "backend_trajectory_frontend.topic",
++            "/fusion/unified/backend_deskew_trajectory");
++        this->declare_parameter<string>(
++            "backend_trajectory_frontend.request_topic",
++            "/fast_lio/frontend_scan_request");
++        this->declare_parameter<double>(
++            "backend_trajectory_frontend.request_retry_period_s", 0.20);
++        this->declare_parameter<double>(
++            "backend_trajectory_frontend.request_timeout_s", 2.0);
+
+         this->get_parameter_or<bool>("publish.path_en", path_en, true);
+         this->get_parameter_or<bool>("publish.effect_map_en", effect_pub_en, false);
+@@ -1259,6 +1471,8 @@ public:
+         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
+         this->get_parameter_or<bool>("native_factor_export.enable", native_factor_export_en, false);
+         this->get_parameter_or<bool>("native_factor_export.include_debug_jacobian", native_factor_debug_jacobian_en, false);
++        this->get_parameter_or<int>("native_factor_export.max_correspondences", native_factor_max_correspondences, 400);
++        native_factor_max_correspondences = std::max(0, native_factor_max_correspondences);
+         this->get_parameter_or<string>("native_factor_export.topic", native_factor_topic, "/fast_lio/native_lidar_factor");
+         this->get_parameter_or<string>("native_factor_export.sensor_frame", native_factor_sensor_frame, "lidar");
+         this->get_parameter_or<bool>("downstream_backend.enable", downstream_backend_en, false);
+@@ -1268,6 +1482,12 @@ public:
+         string downstream_map_insertion_mode;
+         this->get_parameter_or<string>("downstream_backend.map_insertion_mode", downstream_map_insertion_mode, "fast_lio_posterior");
+         this->get_parameter_or<string>("downstream_backend.state_topic", downstream_backend_state_topic, "/fusion/unified/odom");
++        this->get_parameter_or<string>(
++            "downstream_backend.activation_state_topic",
++            downstream_backend_activation_state_topic, "");
++        if (downstream_backend_activation_state_topic.empty())
++            downstream_backend_activation_state_topic =
++                downstream_backend_state_topic;
+         this->get_parameter_or<double>("downstream_backend.state_tolerance_s", downstream_backend_state_tolerance_s, 0.010);
+         this->get_parameter_or<int>("downstream_backend.max_pending_map_frames", downstream_backend_max_pending_map_frames, 16);
+         this->get_parameter_or<double>("downstream_backend.max_map_translation_disagreement_m", downstream_backend_max_map_translation_disagreement_m, 0.50);
+@@ -1292,6 +1512,31 @@ public:
+         this->get_parameter_or<double>(
+             "frontend_state_seed.max_rotation_correction_rad",
+             frontend_state_seed_max_rotation_correction_rad, 0.50);
++        this->get_parameter_or<bool>(
++            "backend_trajectory_frontend.enable",
++            backend_trajectory_frontend_en, false);
++        this->get_parameter_or<string>(
++            "backend_trajectory_frontend.topic",
++            backend_deskew_trajectory_topic,
++            "/fusion/unified/backend_deskew_trajectory");
++        this->get_parameter_or<string>(
++            "backend_trajectory_frontend.request_topic",
++            frontend_scan_request_topic,
++            "/fast_lio/frontend_scan_request");
++        this->get_parameter_or<double>(
++            "backend_trajectory_frontend.request_retry_period_s",
++            backend_trajectory_request_retry_period_s, 0.20);
++        this->get_parameter_or<double>(
++            "backend_trajectory_frontend.request_timeout_s",
++            backend_trajectory_request_timeout_s, 2.0);
++        if (backend_trajectory_request_retry_period_s <= 0.0 ||
++            backend_trajectory_request_timeout_s <
++                backend_trajectory_request_retry_period_s)
++            throw invalid_argument(
++                "backend trajectory request retry/timeout values are invalid");
++        if (backend_trajectory_frontend_en && !downstream_backend_en)
++            throw invalid_argument(
++                "backend trajectory frontend requires downstream_backend.enable=true");
+         if (downstream_map_insertion_mode != "fast_lio_posterior" &&
+             downstream_map_insertion_mode != "backend_confirmed")
+             throw invalid_argument(
+@@ -1301,6 +1546,9 @@ public:
+         if (downstream_backend_confirmed_map && !downstream_backend_en)
+             throw invalid_argument(
+                 "backend_confirmed map insertion requires downstream_backend.enable=true");
++        if (backend_trajectory_frontend_en && !downstream_backend_confirmed_map)
++            throw invalid_argument(
++                "backend trajectory frontend requires backend_confirmed map insertion");
+         if (downstream_backend_state_tolerance_s <= 0.0 ||
+             downstream_backend_max_pending_map_frames < 2 ||
+             downstream_backend_max_map_translation_disagreement_m <= 0.0 ||
+@@ -1338,10 +1586,11 @@ public:
+                 downstream_publish_diagnostic_tf ? "on" : "off");
+             RCLCPP_INFO(
+                 this->get_logger(),
+-                "Map insertion owner: %s; backend_state_topic=%s",
++                "Map insertion owner: %s; map_pose_topic=%s; trajectory_activation_state_topic=%s",
+                 downstream_backend_confirmed_map ?
+                     "unified_backend" : "fast_lio_posterior",
+-                downstream_backend_state_topic.c_str());
++                downstream_backend_state_topic.c_str(),
++                downstream_backend_activation_state_topic.c_str());
+         }
+         if (frontend_state_seed_mode != "disabled")
+         {
+@@ -1425,6 +1674,31 @@ public:
+                         &LaserMappingNode::frontend_state_seed_callback, this,
+                         std::placeholders::_1));
+         }
++        if (backend_trajectory_frontend_en)
++        {
++            sub_backend_activation_state_ =
++                this->create_subscription<nav_msgs::msg::Odometry>(
++                    downstream_backend_activation_state_topic, 20,
++                    std::bind(
++                        &LaserMappingNode::backend_activation_state_callback,
++                        this, std::placeholders::_1));
++            auto scan_request_qos = rclcpp::QoS(rclcpp::KeepLast(4));
++            scan_request_qos.reliable().transient_local();
++            auto backend_trajectory_qos = rclcpp::QoS(rclcpp::KeepLast(4));
++            backend_trajectory_qos.reliable().durability_volatile();
++            pub_frontend_scan_request_ =
++                this->create_publisher<fast_lio::msg::FrontendScanRequest>(
++                    frontend_scan_request_topic, scan_request_qos);
++            sub_backend_trajectory_ =
++                this->create_subscription<fast_lio::msg::BackendDeskewTrajectory>(
++                    backend_deskew_trajectory_topic, backend_trajectory_qos,
++                    std::bind(
++                        &backend_deskew_trajectory_callback,
++                        std::placeholders::_1));
++            RCLCPP_WARN(
++                this->get_logger(),
++                "Backend trajectory frontend enabled: ESIKF update is bypassed after initialization; map writes remain backend-confirmed only.");
++        }
+         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
+         pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
+         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
+@@ -1479,12 +1753,113 @@ public:
+                 frontend_state_seed_max_observed_translation_correction_m,
+                 frontend_state_seed_max_observed_rotation_correction_rad);
+         }
++        if (backend_trajectory_frontend_en)
++        {
++            RCLCPP_INFO(
++                this->get_logger(),
++                "Backend trajectory frontend summary: activation_states_received=%lu activation_states_rejected=%lu bootstrap_frames=%lu requests=%lu initial_requests=%lu request_retries=%lu request_timeouts=%lu requests_without_subscriber=%lu acks=%lu ack_latency_mean_ms=%.3f ack_latency_max_ms=%.3f wait_cycles=%lu factor_frames=%lu legacy_ekf_updates=%lu ekf_updates_after_activation=%lu trajectories_received=%lu trajectories_queued=%lu trajectories_duplicate=%lu trajectories_contract_rejected=%lu trajectories_time_mismatched=%lu",
++                backend_activation_states_received,
++                backend_activation_states_rejected,
++                backend_trajectory_bootstrap_frames,
++                backend_trajectory_requests,
++                backend_trajectory_initial_requests,
++                backend_trajectory_request_retries,
++                backend_trajectory_request_timeouts,
++                backend_trajectory_requests_without_subscriber,
++                backend_trajectory_acks,
++                backend_trajectory_acks > 0 ?
++                    1000.0 * backend_trajectory_ack_latency_sum_s /
++                        static_cast<double>(backend_trajectory_acks) : 0.0,
++                1000.0 * backend_trajectory_ack_latency_max_s,
++                backend_trajectory_wait_cycles,
++                backend_trajectory_factor_frames,
++                backend_trajectory_legacy_ekf_updates,
++                backend_trajectory_ekf_updates_after_activation,
++                backend_trajectories_received,
++                backend_trajectories_queued,
++                backend_trajectories_duplicate,
++                backend_trajectories_contract_rejected,
++                backend_trajectories_time_mismatched);
++        }
+     }
+
+ private:
++    void backend_activation_state_callback(
++        const nav_msgs::msg::Odometry::SharedPtr message)
++    {
++        ++backend_activation_states_received;
++        if (message->header.frame_id != "camera_init" ||
++            message->child_frame_id != "body")
++        {
++            ++backend_activation_states_rejected;
++            RCLCPP_WARN_THROTTLE(
++                this->get_logger(), *this->get_clock(), 5000,
++                "Ignoring backend trajectory activation state with frames %s -> %s",
++                message->header.frame_id.c_str(), message->child_frame_id.c_str());
++            return;
++        }
++        const auto &position = message->pose.pose.position;
++        const auto &orientation = message->pose.pose.orientation;
++        const double quaternion_norm = sqrt(
++            orientation.x * orientation.x + orientation.y * orientation.y +
++            orientation.z * orientation.z + orientation.w * orientation.w);
++        if (!isfinite(position.x) || !isfinite(position.y) ||
++            !isfinite(position.z) || !isfinite(quaternion_norm) ||
++            quaternion_norm <= 1.0e-12)
++        {
++            ++backend_activation_states_rejected;
++            return;
++        }
++        const bool was_seen = backend_state_seen.exchange(true);
++        if (!was_seen)
++        {
++            RCLCPP_INFO(
++                this->get_logger(),
++                "Backend trajectory activation state accepted on %s",
++                downstream_backend_activation_state_topic.c_str());
++        }
++    }
++
++    void publish_frontend_scan_request(bool retry)
++    {
++        if (!pub_frontend_scan_request_ || !Measures.lidar)
++            return;
++        fast_lio::msg::FrontendScanRequest request;
++        request.header.stamp = get_ros_time(lidar_end_time);
++        request.header.frame_id = "camera_init";
++        request.scan_sequence = native_factor_sequence;
++        request.scan_begin_stamp = get_ros_time(Measures.lidar_beg_time);
++        request.scan_end_stamp = get_ros_time(lidar_end_time);
++        request.map_frame = "camera_init";
++        request.body_frame = "body";
++        request.sensor_frame = native_factor_sensor_frame;
++        request.point_count = static_cast<uint32_t>(Measures.lidar->points.size());
++        pub_frontend_scan_request_->publish(request);
++        const double now_s = this->get_clock()->now().seconds();
++        backend_scan_request_last_publish_s_ = now_s;
++        if (!retry)
++        {
++            backend_scan_request_start_s_ = now_s;
++            backend_scan_timeout_reported_ = false;
++            ++backend_trajectory_initial_requests;
++        }
++        else
++        {
++            ++backend_trajectory_request_retries;
++        }
++        if (pub_frontend_scan_request_->get_subscription_count() == 0)
++            ++backend_trajectory_requests_without_subscriber;
++        ++backend_trajectory_requests;
++    }
++
+     void timer_callback()
+     {
+-        if(sync_packages(Measures))
++        const bool backend_trajectory_active =
++            backend_trajectory_frontend_en && backend_state_seen.load();
++        const bool scan_ready =
++            (backend_trajectory_active && backend_scan_waiting_) ||
++            sync_packages(Measures);
++        if(scan_ready)
+         {
+             if (flg_first_scan)
+             {
+@@ -1503,8 +1878,84 @@ private:
+             svd_time   = 0;
+             t0 = omp_get_wtime();
+
+-            apply_pending_frontend_state_seed();
+-            p_imu->Process(Measures, kf, feats_undistort);
++            BackendDeskewTrajectoryRecord backend_trajectory;
++            bool have_backend_trajectory = false;
++            if (backend_trajectory_active && !backend_scan_waiting_)
++            {
++                publish_frontend_scan_request(false);
++                backend_scan_waiting_ = true;
++                return;
++            }
++            if (backend_trajectory_active)
++                have_backend_trajectory = take_backend_trajectory(
++                    Measures.lidar_beg_time, lidar_end_time,
++                    native_factor_sequence, backend_trajectory);
++            if (backend_trajectory_active && !have_backend_trajectory)
++            {
++                ++backend_trajectory_wait_cycles;
++                const double now_s = this->get_clock()->now().seconds();
++                const double since_publish_s =
++                    now_s - backend_scan_request_last_publish_s_;
++                const double total_wait_s = now_s - backend_scan_request_start_s_;
++                if (since_publish_s < 0.0 ||
++                    since_publish_s >= backend_trajectory_request_retry_period_s)
++                    publish_frontend_scan_request(true);
++                if (!backend_scan_timeout_reported_ &&
++                    total_wait_s >= backend_trajectory_request_timeout_s)
++                {
++                    backend_scan_timeout_reported_ = true;
++                    ++backend_trajectory_request_timeouts;
++                    RCLCPP_ERROR(
++                        this->get_logger(),
++                        "Backend trajectory request timed out: sequence=%lu wait=%.3f s; retaining scan and retrying",
++                        native_factor_sequence, total_wait_s);
++                }
++                RCLCPP_WARN_THROTTLE(
++                    this->get_logger(), *this->get_clock(), 5000,
++                    "Waiting for backend-owned scan trajectory; scan held without map update");
++                return;
++            }
++            if (backend_trajectory_active)
++            {
++                backend_scan_waiting_ = false;
++                const double ack_latency_s = std::max(
++                    0.0,
++                    this->get_clock()->now().seconds() -
++                        backend_scan_request_start_s_);
++                ++backend_trajectory_acks;
++                backend_trajectory_ack_latency_sum_s += ack_latency_s;
++                backend_trajectory_ack_latency_max_s = std::max(
++                    backend_trajectory_ack_latency_max_s, ack_latency_s);
++            }
++            if (!backend_trajectory_active)
++            {
++                if (backend_trajectory_frontend_en)
++                    ++backend_trajectory_bootstrap_frames;
++                apply_pending_frontend_state_seed();
++                p_imu->Process(Measures, kf, feats_undistort);
++            }
++            else
++            {
++                *feats_undistort = *Measures.lidar;
++                if (!undistort_with_backend_trajectory(
++                        backend_trajectory, *feats_undistort))
++                {
++                    RCLCPP_WARN(
++                        this->get_logger(),
++                        "Backend trajectory was invalid for scan %.6f; scan dropped",
++                        lidar_end_time);
++                    return;
++                }
++                state_point = kf.get_x();
++                state_point.pos = V3D(
++                    backend_trajectory.end_position[0],
++                    backend_trajectory.end_position[1],
++                    backend_trajectory.end_position[2]);
++                Eigen::Quaterniond end_rotation = trajectory_quaternion(
++                    backend_trajectory.end_orientation_xyzw);
++                state_point.rot = end_rotation.toRotationMatrix();
++                kf.change_x(state_point);
++            }
+             state_point = kf.get_x();
+             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+
+@@ -1585,7 +2036,27 @@ private:
+             /*** iterated state estimation ***/
+             double t_update_start = omp_get_wtime();
+             double solve_H_time = 0;
+-            kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
++            if (!backend_trajectory_active)
++            {
++                kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
++                if (backend_trajectory_frontend_en)
++                {
++                    ++backend_trajectory_legacy_ekf_updates;
++                    if (backend_state_seen.load())
++                        ++backend_trajectory_ekf_updates_after_activation;
++                }
++            }
++            else
++            {
++                if (!build_native_lidar_factor_at_state(state_point))
++                {
++                    RCLCPP_WARN_THROTTLE(
++                        this->get_logger(), *this->get_clock(), 5000,
++                        "Backend-owned LiDAR geometry produced no valid point-to-plane correspondences");
++                }
++                ++backend_trajectory_factor_frames;
++                state_point = kf.get_x();
++            }
+             state_point = kf.get_x();
+             euler_cur = SO3ToEuler(state_point.rot);
+             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+@@ -2001,10 +2472,16 @@ private:
+     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap_;
+     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
+     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
++    rclcpp::Publisher<fast_lio::msg::FrontendScanRequest>::SharedPtr
++        pub_frontend_scan_request_;
+     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
+     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
+     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
+     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_backend_state_;
++    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr
++        sub_backend_activation_state_;
++    rclcpp::Subscription<fast_lio::msg::BackendDeskewTrajectory>::SharedPtr
++        sub_backend_trajectory_;
+     rclcpp::Subscription<fast_lio::msg::BackendStateSeed>::SharedPtr
+         sub_frontend_state_seed_;
+
+@@ -2012,6 +2489,10 @@ private:
+     rclcpp::TimerBase::SharedPtr timer_;
+     rclcpp::TimerBase::SharedPtr map_pub_timer_;
+     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_srv_;
++    bool backend_scan_waiting_ = false;
++    bool backend_scan_timeout_reported_ = false;
++    double backend_scan_request_start_s_ = 0.0;
++    double backend_scan_request_last_publish_s_ = 0.0;
+
+     bool effect_pub_en = false, map_pub_en = false;
+     int effect_feat_num = 0, frame_num = 0;

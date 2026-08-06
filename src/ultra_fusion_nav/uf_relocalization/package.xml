@@ -2,7 +2,7 @@
 <package format="3">
   <name>uf_relocalization</name>
   <version>0.1.0</version>
-  <description>Offline registration and relocalization verification for Ultra-Fusion reproduction.</description>
+  <description>Registration, independent LiDAR calibration motion, and relocalization for Ultra-Fusion reproduction.</description>
   <maintainer email="zyc@example.com">zyc</maintainer>
   <license>MIT</license>
 
@@ -12,6 +12,7 @@
   <depend>libpcl-all-dev</depend>
   <depend>ament_index_cpp</depend>
   <depend>geometry_msgs</depend>
+  <depend>livox_ros_driver2</depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>

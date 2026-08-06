@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace mid360_sim_bridge_cpp
 {
@@ -12,12 +13,66 @@ namespace mid360_sim_bridge_cpp
 constexpr std::uint8_t kDefaultTag = 0U;
 constexpr std::size_t kDefaultLineCount = 4U;
 
+// Convert a seconds/nanoseconds pair without allowing malformed or negative
+// input to reach rclcpp::Time. Gazebo and ROS messages can contain a transient
+// reset value while a simulation is restarting.
+inline std::int64_t checked_nonnegative_stamp_ns(
+  const std::int64_t seconds, const std::int64_t nanoseconds)
+{
+  if (seconds < 0 || nanoseconds < 0 || nanoseconds >= 1000000000LL) {
+    return 0;
+  }
+  constexpr std::int64_t kNanosecondsPerSecond = 1000000000LL;
+  const auto max_value = std::numeric_limits<std::int64_t>::max();
+  if (seconds > max_value / kNanosecondsPerSecond) {
+    return 0;
+  }
+  const auto whole_seconds = seconds * kNanosecondsPerSecond;
+  if (nanoseconds > max_value - whole_seconds) {
+    return 0;
+  }
+  const auto value = whole_seconds + nanoseconds;
+  return value > 0 ? value : 0;
+}
+
+// Return a strictly increasing, positive timestamp for an output stream.
+// Invalid input falls back to the current clock value; if that clock is also
+// unavailable (e.g. before /clock starts), a minimal positive epoch is used.
+inline std::int64_t monotonic_positive_stamp_ns(
+  const std::int64_t candidate_ns,
+  const std::int64_t previous_ns,
+  const std::int64_t fallback_ns)
+{
+  std::int64_t candidate = candidate_ns > 0 ? candidate_ns : fallback_ns;
+  if (candidate <= 0) {
+    candidate = 1;
+  }
+  if (candidate <= previous_ns) {
+    if (previous_ns == std::numeric_limits<std::int64_t>::max()) {
+      return previous_ns;
+    }
+    candidate = previous_ns + 1;
+  }
+  return candidate;
+}
+
 inline std::int64_t epoch_aligned_stamp_ns(
   const std::int64_t source_stamp_ns,
   const std::int64_t source_origin_ns,
   const std::int64_t epoch_origin_ns)
 {
-  return epoch_origin_ns + (source_stamp_ns - source_origin_ns);
+  if (source_stamp_ns <= 0 || source_origin_ns <= 0 || epoch_origin_ns <= 0) {
+    return 0;
+  }
+  if (epoch_origin_ns >= source_origin_ns) {
+    const auto delta = epoch_origin_ns - source_origin_ns;
+    if (delta > std::numeric_limits<std::int64_t>::max() - source_stamp_ns) {
+      return 0;
+    }
+    return delta + source_stamp_ns;
+  }
+  const auto deficit = source_origin_ns - epoch_origin_ns;
+  return source_stamp_ns > deficit ? source_stamp_ns - deficit : 0;
 }
 
 inline std::uint8_t line_for_output_index(
@@ -59,11 +114,17 @@ inline std::int64_t packet_begin_stamp_ns(
   const bool synthetic_scan_timing)
 {
   if (synthetic_scan_timing) {
-    return acquisition_stamp_ns;
+    return acquisition_stamp_ns > 0 ? acquisition_stamp_ns : 1;
   }
   const auto period = static_cast<std::int64_t>(std::min<std::uint64_t>(
     scan_period_ns, static_cast<std::uint64_t>(INT64_MAX)));
-  return std::max<std::int64_t>(1, acquisition_stamp_ns - period);
+  if (acquisition_stamp_ns <= 0) {
+    return 1;
+  }
+  if (acquisition_stamp_ns <= period) {
+    return 1;
+  }
+  return acquisition_stamp_ns - period;
 }
 
 inline std::uint8_t reflectivity_from_intensity(const double intensity)

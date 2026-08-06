@@ -47,6 +47,7 @@ def make_message(stamp_s=10.0):
             )
         ),
         scan_sequence=7,
+        reset_counter=3,
         source="fast_lio_ikfom",
         map_frame="camera_init",
         state_frame="body",
@@ -71,7 +72,17 @@ class NativeLidarConversionTest(unittest.TestCase):
         np.testing.assert_allclose(factor.linearization_pose, [1, 2, 3, 0, 0, 0])
         self.assertAlmostEqual(factor.residual_squared, 0.0525)
         self.assertEqual(factor.stamp_ns, 10_000_000_000)
+        self.assertEqual(factor.reset_counter, 3)
         self.assertTrue(factor.correspondences_valid)
+
+    def test_reset_counter_defaults_for_old_packets_and_rejects_invalid_range(self):
+        message = make_message()
+        del message.reset_counter
+        self.assertEqual(native_factor_from_message(message).reset_counter, 0)
+
+        message.reset_counter = -1
+        with self.assertRaisesRegex(ValueError, "uint32"):
+            native_factor_from_message(message)
 
     def test_directional_observability_preserves_strong_subspace(self):
         message = make_message()
@@ -165,6 +176,45 @@ class NativeLidarConversionTest(unittest.TestCase):
         np.testing.assert_allclose(residual, [0.0, 1.0, 2.0])
         np.testing.assert_allclose(jacobian[:, :3], np.eye(3))
         self.assertEqual(jacobian.shape, (3, 6))
+
+    def test_body_tilt_and_fixed_lidar_pitch_are_both_applied(self):
+        msg = make_message()
+        lidar_points = np.asarray([
+            [2.0, 0.3, -0.2],
+            [0.4, 1.7, 0.5],
+            [-0.6, 0.2, 2.2],
+        ])
+        lidar_pitch = rpy_to_rotation_matrix([0.0, math.radians(10.0), 0.0])
+        body_pose = np.asarray([1.2, -0.7, 2.8, 0.18, -0.14, 0.35])
+        body_rotation = rpy_to_rotation_matrix(body_pose[3:])
+        world_points = (lidar_points @ lidar_pitch.T) @ body_rotation.T + body_pose[:3]
+        normals = np.eye(3)
+        msg.lidar_points_xyz = lidar_points.reshape(-1).tolist()
+        msg.plane_normals_xyz = normals.reshape(-1).tolist()
+        msg.plane_points_xyz = world_points.reshape(-1).tolist()
+        msg.residuals = [0.0, 0.0, 0.0]
+        msg.lidar_to_body_quaternion = list(
+            rpy_to_quaternion_xyzw([0.0, math.radians(10.0), 0.0])
+        )
+        factor = native_factor_from_message(msg)
+
+        residual, jacobian = point_plane_residual_jacobian(factor, body_pose)
+        np.testing.assert_allclose(residual, np.zeros(3), atol=1.0e-12)
+        self.assertTrue(np.all(np.isfinite(jacobian)))
+
+        level_body_pose = body_pose.copy()
+        level_body_pose[3:5] = 0.0
+        uncompensated_tilt, _ = point_plane_residual_jacobian(
+            factor, level_body_pose
+        )
+        self.assertGreater(float(np.linalg.norm(uncompensated_tilt)), 0.1)
+
+        msg.lidar_to_body_quaternion = [0.0, 0.0, 0.0, 1.0]
+        missing_mount_pitch = native_factor_from_message(msg)
+        uncompensated_mount, _ = point_plane_residual_jacobian(
+            missing_mount_pitch, body_pose
+        )
+        self.assertGreater(float(np.linalg.norm(uncompensated_mount)), 0.1)
 
     def test_map_alignment_preserves_point_plane_residuals(self):
         msg = make_message()

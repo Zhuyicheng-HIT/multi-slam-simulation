@@ -22,7 +22,8 @@ FASTLIO_DIAGNOSTIC_ODOMETRY=${FASTLIO_DIAGNOSTIC_ODOMETRY:-0}
 FASTLIO_DIAGNOSTIC_PATH=${FASTLIO_DIAGNOSTIC_PATH:-0}
 FASTLIO_DIAGNOSTIC_TF=${FASTLIO_DIAGNOSTIC_TF:-0}
 FASTLIO_MAP_INSERTION_MODE=${FASTLIO_MAP_INSERTION_MODE:-fast_lio_posterior}
-FASTLIO_BACKEND_STATE_TOPIC=${FASTLIO_BACKEND_STATE_TOPIC:-/fusion/unified/odom}
+FASTLIO_BACKEND_STATE_TOPIC=${FASTLIO_BACKEND_STATE_TOPIC:-/fusion/unified/map_pose}
+FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC=${FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC:-/fusion/unified/odom}
 FASTLIO_STATE_SEED_MODE=${FASTLIO_STATE_SEED_MODE:-disabled}
 FASTLIO_STATE_SEED_TOPIC=${FASTLIO_STATE_SEED_TOPIC:-/fusion/unified/frontend_state_seed}
 FASTLIO_STATE_SEED_TOLERANCE_S=${FASTLIO_STATE_SEED_TOLERANCE_S:-0.015}
@@ -188,7 +189,8 @@ Outputs:
   native factor export: $FASTLIO_NATIVE_FACTOR_EXPORT -> $FASTLIO_NATIVE_FACTOR_TOPIC
   downstream backend mode: $FASTLIO_DOWNSTREAM_BACKEND
   map insertion mode: $FASTLIO_MAP_INSERTION_MODE
-  backend state topic: $FASTLIO_BACKEND_STATE_TOPIC
+  backend map pose topic: $FASTLIO_BACKEND_STATE_TOPIC
+  backend trajectory activation topic: $FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC
   frontend state seed: mode=$FASTLIO_STATE_SEED_MODE topic=$FASTLIO_STATE_SEED_TOPIC
   backend trajectory frontend: $FASTLIO_BACKEND_TRAJECTORY_FRONTEND
   diagnostic pose outputs: odom=$FASTLIO_DIAGNOSTIC_ODOMETRY path=$FASTLIO_DIAGNOSTIC_PATH tf=$FASTLIO_DIAGNOSTIC_TF
@@ -266,6 +268,7 @@ setsid ros2 launch fast_lio mapping.launch.py \
   downstream_publish_diagnostic_tf:="$FASTLIO_DIAGNOSTIC_TF_BOOL" \
   downstream_map_insertion_mode:="$FASTLIO_MAP_INSERTION_MODE" \
   downstream_backend_state_topic:="$FASTLIO_BACKEND_STATE_TOPIC" \
+  downstream_backend_activation_state_topic:="$FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC" \
   frontend_state_seed_mode:="$FASTLIO_STATE_SEED_MODE" \
   frontend_state_seed_topic:="$FASTLIO_STATE_SEED_TOPIC" \
   frontend_state_seed_tolerance_s:="$FASTLIO_STATE_SEED_TOLERANCE_S" \

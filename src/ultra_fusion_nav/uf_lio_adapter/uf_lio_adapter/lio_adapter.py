@@ -53,6 +53,7 @@ class LioAdapter(Node):
             self.declare_parameter(name, value)
         self.declare_parameter("voxel_size_m", 0.5)
         self.declare_parameter("max_diagnostic_points", 1200)
+        self.declare_parameter("max_temporal_filter_points", 6000)
         self.declare_parameter("local_map_frames", 20)
         self.declare_parameter("local_map_publish_period_s", 1.0)
         self.declare_parameter("diagnostics_period_s", 1.0)
@@ -66,6 +67,14 @@ class LioAdapter(Node):
 
         self.voxel_size = float(self.get_parameter("voxel_size_m").value)
         self.max_points = int(self.get_parameter("max_diagnostic_points").value)
+        self.max_temporal_points = int(
+            self.get_parameter("max_temporal_filter_points").value
+        )
+        if self.max_points < 30 or self.max_temporal_points < self.max_points:
+            raise ValueError(
+                "point limits require max_temporal_filter_points >= "
+                "max_diagnostic_points >= 30"
+            )
         self.max_path = int(self.get_parameter("max_path_poses").value)
         self.path = Path()
         self.previous_cloud = None
@@ -229,8 +238,9 @@ class LioAdapter(Node):
                 return
         self.last_diagnostic_ns = stamp_ns
         points = cloud_xyz(msg, self.max_points)
+        temporal_points = cloud_xyz(msg, self.max_temporal_points)
         metrics = geometry_diagnostics(points, self.previous_cloud, self.voxel_size)
-        temporal = self.temporal_filter.classify(points, self.voxel_size)
+        temporal = self.temporal_filter.classify(temporal_points, self.voxel_size)
         input_voxels = int(temporal["input_voxels"])
         static_count = len(temporal["static_points"])
         dynamic_count = len(temporal["dynamic_points"])

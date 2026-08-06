@@ -1,0 +1,38 @@
+diff --git a/msg/NativeLidarFactor.msg b/msg/NativeLidarFactor.msg
+--- a/msg/NativeLidarFactor.msg
++++ b/msg/NativeLidarFactor.msg
+@@ -10,6 +10,7 @@ string source
+ string map_frame
+ string sensor_frame
+ uint64 scan_sequence
++uint32 reset_counter
+
+ # The arrays below are row-major and use one row per accepted point-to-plane match.
+ uint32 candidate_points
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -136,6 +136,7 @@ int frontend_state_seed_history_size = 64;
+ double backend_trajectory_request_retry_period_s = 0.20;
+ double backend_trajectory_request_timeout_s = 2.0;
+ uint64_t native_factor_sequence = 0;
++uint32_t native_factor_reset_counter = 0;
+ atomic<bool> backend_state_seen{false};
+ uint64_t backend_activation_states_received = 0;
+ uint64_t backend_activation_states_rejected = 0;
+@@ -1157,6 +1158,7 @@ void reset_native_lidar_factor(const state_ikfom &s)
+         "lidar_to_body_translation_x", "lidar_to_body_translation_y", "lidar_to_body_translation_z"
+     };
+     native_factor_msg.scan_sequence = native_factor_sequence;
++    native_factor_msg.reset_counter = native_factor_reset_counter;
+     native_factor_msg.candidate_points = static_cast<uint32_t>(feats_down_size);
+     native_factor_msg.jacobian_columns = 12;
+     native_factor_msg.linearization_position[0] = s.pos(0);
+@@ -1951,6 +1953,7 @@ public:
+             if (backend_trajectory_active)
+             {
+                 backend_scan_waiting_ = false;
++                native_factor_reset_counter = backend_trajectory.reset_counter;
+                 const double ack_latency_s = std::max(
+                     0.0,
+                     this->get_clock()->now().seconds() -

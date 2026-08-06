@@ -7,7 +7,16 @@ unified_backend_fusion:
     imu_topic: /sensors/imu
     scheduler_topic: /reliability/scheduler_state
     relocalization_result_topic: /relocalization/result
+    fusion_epoch_topic: /fusion/unified/epoch
     output_topic: /fusion/unified/odom
+    # FAST-LIO may insert a scan into its static map only from this gated
+    # stream. Final odometry remains continuous even when map writes pause.
+    frontend_map_pose_topic: /fusion/unified/map_pose
+    # RISK can mean optional GNSS/flow loss while LiDAR remains healthy. Map
+    # admission still requires LiDAR-specific quality and covariance gates.
+    frontend_map_commit_allowed_health_states: [NORMAL, DEGRADED, RISK, RECOVERED]
+    frontend_map_max_position_variance_m2: 4.0
+    frontend_map_max_orientation_variance_rad2: 0.25
     path_topic: /fusion/unified/path
     diagnostic_topic: /fusion/unified/diagnostics
     # These names are part of the FAST-LIO factor contract. Use an explicit TF
@@ -80,9 +89,10 @@ unified_backend_fusion:
     # ROS-FLU optical-flow-to-IMU vector on the aircraft.
     flow_lever_arm_compensation_enabled: true
     imu_factor_enabled: true
-    # Until an independently validated visual heading factor is present, IMU
-    # alone only propagates relative yaw. Keep a weak native LiDAR anchor.
-    preserve_lio_anchor: true
+    # The shared window owns the trajectory. A weak FAST-LIO anchor is kept
+    # only for an explicit legacy A/B run; it must not pull a drifting local
+    # map into the fused state by default.
+    preserve_lio_anchor: false
     lidar_anchor_minimum_effective_weight: 0.10
     lidar_anchor_maximum_covariance_inflation: 5.0
     native_lidar_factor_enabled: true
@@ -100,6 +110,13 @@ unified_backend_fusion:
     native_worker_queue_size: 1
     imu_qos_depth: 64
     imu_covariance_scale: 50.0
+    # Keep high-rate output alive during a LiDAR pause without creating graph
+    # states. These propagated samples never update the map or optimizer anchor.
+    live_propagation_enabled: true
+    live_propagation_rate_hz: 10.0
+    live_propagation_lidar_silence_timeout_s: 0.25
+    live_propagation_minimum_interval_s: 0.08
+    live_propagation_maximum_imu_age_s: 0.20
     # Re-integrate the active IMU interval once the optimized start bias moves
     # beyond these conservative thresholds (m/s^2 and rad/s).
     imu_reintegration_accel_bias_threshold: 0.05
@@ -109,13 +126,23 @@ unified_backend_fusion:
     marginal_rank_tolerance: 1.0e-9
     marginal_covariance_update_period_s: 1.0
     online_calibration_enabled: true
-    calibration_window_s: 5.0
+    calibration_motion_topic: /calibration/lidar_relative_motion
+    # Shadow-only until the locked bundle is also applied to scan timing,
+    # deskew, and the front-end extrinsic while preserving world LiDAR pose.
+    calibration_apply_locked_values: false
+    # The paper's OSC default uses a long asynchronous overlap window. Keep
+    # the acceptance gates unchanged while allowing enough independent scan
+    # pairs to accumulate under the low-rate calibration-motion worker.
+    calibration_window_s: 12.0
     calibration_minimum_pairs: 8
     calibration_time_offset_range_s: 0.10
     calibration_time_offset_step_s: 0.005
     calibration_minimum_correlation: 0.70
     calibration_minimum_correlation_margin: 0.05
     calibration_minimum_excitation_eigenvalue: 1.0e-4
+    calibration_minimum_excitation_ratio: 0.05
+    calibration_minimum_accumulated_rotation_rad: 0.25
+    calibration_minimum_rotation_inlier_ratio: 0.70
     calibration_maximum_rotation_residual_rad: 0.08
     calibration_sharp_turn_rate_radps: 1.5
     calibration_solve_period_s: 1.0
@@ -134,19 +161,32 @@ unified_backend_fusion:
     # node stores quality-gated static keyframes and waits for a request; it
     # never fires merely because one optional sensor is degraded.
     relocalization_enabled: true
+    relocalization_pending_timeout_s: 2.0
+    # Registration runs outside the estimator callback and may finish after
+    # the query state has left the short optimization window. Accept a bounded
+    # delayed absolute map alignment, then transport the latest backend state
+    # into the new epoch instead of rewinding to the query pose.
+    relocalization_state_tolerance_s: 0.25
+    relocalization_result_max_age_s: 2.0
     # Commit one keyframe only after the optimized state, cost and information
     # matrix pass the integrity gate. Failed updates restore the full window.
     transactional_update_enabled: true
+    # Do not let a FAST-LIO local-map jump enter the shared window. A rejected
+    # frame latches the backend until an accepted relocalization resets it.
+    lidar_prediction_gate_enabled: true
+    lidar_prediction_gate_max_position_m: 1.0
+    lidar_prediction_gate_max_yaw_rad: 0.50
     optimization_max_translation_correction_m: 1.0
     optimization_max_rotation_correction_rad: 0.50
     optimization_max_velocity_correction_mps: 5.0
     optimization_max_accel_bias_correction_mps2: 1.5
     optimization_max_gyro_bias_correction_radps: 0.30
     optimization_max_information_condition: 1.0e12
-    # Opt-in for shadow/backend-seeded A-B tests. The baseline remains disabled.
+    # Backend-owned scan prediction keeps deskew and native factors in the
+    # same trajectory frame. Disable only for a legacy FAST-LIO-local A/B run.
     frontend_state_seed_enabled: false
     frontend_state_seed_topic: /fusion/unified/frontend_state_seed
-    frontend_scan_prediction_enabled: false
+    frontend_scan_prediction_enabled: true
     frontend_scan_request_topic: /fast_lio/frontend_scan_request
     backend_deskew_trajectory_topic: /fusion/unified/backend_deskew_trajectory
     scan_prediction_maximum_begin_gap_s: 0.02

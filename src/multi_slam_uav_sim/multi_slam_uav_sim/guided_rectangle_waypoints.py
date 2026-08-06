@@ -11,6 +11,7 @@ from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
+from std_msgs.msg import String
 
 
 def ekf_flags_have_absolute_position(flags):
@@ -37,6 +38,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("length_y", 1.2)
         self.declare_parameter("speed_mps", 0.20)
         self.declare_parameter("hold_time", 2.0)
+        self.declare_parameter("post_takeoff_hold_time_s", 3.0)
         self.declare_parameter("yaw_rate_deg_s", 12.0)
         self.declare_parameter("setpoint_rate_hz", 10.0)
         self.declare_parameter("preflight_wait_s", 45.0)
@@ -48,6 +50,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("flow_max_age_s", 1.0)
         self.declare_parameter("command_retry_s", 60.0)
         self.declare_parameter("land_at_end", True)
+        self.declare_parameter("final_hold_time_s", 0.0)
         # SERIAL1/5762 is reserved for the MTF01P. Use the independent
         # SERIAL2 MAVLink endpoint for direct COMMAND_INT acknowledgements.
         self.declare_parameter("mavlink_takeoff_url", "tcp:127.0.0.1:5763")
@@ -63,6 +66,9 @@ class GuidedRectangleWaypoints(Node):
         self.length_y = float(self.get_parameter("length_y").value)
         self.speed_mps = max(0.05, float(self.get_parameter("speed_mps").value))
         self.hold_time = float(self.get_parameter("hold_time").value)
+        self.post_takeoff_hold_time_s = max(
+            0.0, float(self.get_parameter("post_takeoff_hold_time_s").value)
+        )
         self.yaw_rate = math.radians(max(1.0, float(self.get_parameter("yaw_rate_deg_s").value)))
         self.rate_hz = max(1.0, float(self.get_parameter("setpoint_rate_hz").value))
         self.preflight_wait_s = float(self.get_parameter("preflight_wait_s").value)
@@ -75,6 +81,9 @@ class GuidedRectangleWaypoints(Node):
         self.flow_max_age_s = float(self.get_parameter("flow_max_age_s").value)
         self.command_retry_s = float(self.get_parameter("command_retry_s").value)
         self.land_at_end = bool(self.get_parameter("land_at_end").value)
+        self.final_hold_time_s = max(
+            0.0, float(self.get_parameter("final_hold_time_s").value)
+        )
         self.mavlink_takeoff_url = str(self.get_parameter("mavlink_takeoff_url").value)
         self.mavlink_target_component = int(self.get_parameter("mavlink_target_component").value)
         self.takeoff_param3 = float(self.get_parameter("takeoff_param3").value)
@@ -136,6 +145,13 @@ class GuidedRectangleWaypoints(Node):
         self.mode_cli = self.create_client(SetMode, "/mavros/set_mode")
         self.takeoff_cli = self.create_client(CommandTOL, "/mavros/cmd/takeoff")
         self.land_cli = self.create_client(CommandTOL, "/mavros/cmd/land")
+        self.mission_phase_pub = self.create_publisher(String, "/mission/phase", 10)
+
+    def _publish_mission_phase(self, phase):
+        message = String()
+        message.data = str(phase)
+        self.mission_phase_pub.publish(message)
+        self.get_logger().info(f"Mission phase: {message.data}")
 
     def _state_cb(self, msg):
         self.state = msg
@@ -263,10 +279,13 @@ class GuidedRectangleWaypoints(Node):
         )
 
     def wait_navigation_ready(self):
-        deadline = self._now_s() + self.preflight_wait_s
+        # Bound startup with wall time because /clock can still be zero here and
+        # then jump to Gazebo's current time on the first callback.  Navigation
+        # stability itself remains measured in ROS time.
+        deadline = time.monotonic() + self.preflight_wait_s
         stable_source = None
         stable_since = None
-        while rclpy.ok() and self._now_s() < deadline:
+        while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
             source = self._navigation_source() if self.pose is not None else None
             self._log_status("navigation readiness")
@@ -312,6 +331,7 @@ class GuidedRectangleWaypoints(Node):
                 resp = future.result()
                 self.get_logger().info(f"{label}: {resp}")
                 return resp
+        client.remove_pending_request(future)
         raise RuntimeError(f"Timeout calling {label}")
 
     def publish_setpoint(self, x, y, z, yaw=0.0):
@@ -498,25 +518,66 @@ class GuidedRectangleWaypoints(Node):
                 mode_req = SetMode.Request()
                 mode_req.base_mode = 0
                 mode_req.custom_mode = "GUIDED"
-                resp = self.call(self.mode_cli, mode_req, "set GUIDED")
-                if not bool(getattr(resp, "mode_sent", False)):
-                    self.get_logger().warning("GUIDED mode command was not accepted for sending; retrying.")
-                    self.hold_setpoint(self.home_x, self.home_y, self.takeoff_alt, 2.0, label="guided retry")
-                    continue
-            guided_ok = self.wait_for_state(lambda: self.state.mode == "GUIDED", "GUIDED mode", timeout=15.0)
+                try:
+                    resp = self.call(self.mode_cli, mode_req, "set GUIDED")
+                except RuntimeError as exc:
+                    self.get_logger().warning(
+                        f"{exc}; checking FCU state before retrying GUIDED."
+                    )
+                    guided_ok = self.wait_for_state(
+                        lambda: self.state.mode == "GUIDED",
+                        "GUIDED after service timeout",
+                        timeout=3.0,
+                    )
+                    if not guided_ok:
+                        continue
+                else:
+                    if not bool(getattr(resp, "mode_sent", False)):
+                        self.get_logger().warning(
+                            "GUIDED mode command was not accepted for sending; retrying."
+                        )
+                        self.hold_setpoint(
+                            self.home_x, self.home_y, self.takeoff_alt, 2.0,
+                            label="guided retry",
+                        )
+                        continue
+            guided_ok = self.wait_for_state(
+                lambda: self.state.mode == "GUIDED", "GUIDED mode", timeout=15.0
+            )
             if not guided_ok:
-                self.hold_setpoint(self.home_x, self.home_y, self.takeoff_alt, 2.0, label="guided wait")
+                self.hold_setpoint(
+                    self.home_x, self.home_y, self.takeoff_alt, 2.0,
+                    label="guided wait",
+                )
                 continue
 
             if not self.state.armed:
                 arm_req = CommandBool.Request()
                 arm_req.value = True
-                resp = self.call(self.arming_cli, arm_req, "arm")
-                if not bool(getattr(resp, "success", False)):
-                    self.get_logger().warning("Arm rejected; waiting and retrying.")
-                    self.hold_setpoint(self.home_x, self.home_y, self.takeoff_alt, 3.0, label="arm retry")
-                    continue
-            armed_ok = self.wait_for_state(lambda: self.state.armed, "armed state", timeout=15.0)
+                try:
+                    resp = self.call(self.arming_cli, arm_req, "arm")
+                except RuntimeError as exc:
+                    self.get_logger().warning(
+                        f"{exc}; checking FCU state before retrying arm."
+                    )
+                    armed_ok = self.wait_for_state(
+                        lambda: self.state.armed,
+                        "armed after service timeout",
+                        timeout=3.0,
+                    )
+                    if not armed_ok:
+                        continue
+                else:
+                    if not bool(getattr(resp, "success", False)):
+                        self.get_logger().warning("Arm rejected; waiting and retrying.")
+                        self.hold_setpoint(
+                            self.home_x, self.home_y, self.takeoff_alt, 3.0,
+                            label="arm retry",
+                        )
+                        continue
+            armed_ok = self.wait_for_state(
+                lambda: self.state.armed, "armed state", timeout=15.0
+            )
             if not armed_ok:
                 self.hold_setpoint(self.home_x, self.home_y, self.takeoff_alt, 2.0, label="arm wait")
                 continue
@@ -605,6 +666,7 @@ class GuidedRectangleWaypoints(Node):
         self.hold_setpoint(*position, 1.0, goal_yaw, label=f"{label} settle", require_guided=True)
 
     def run(self):
+        self._publish_mission_phase("preflight")
         self.wait_ready()
         navigation_source = self.wait_navigation_ready()
         z = self.takeoff_alt
@@ -622,8 +684,9 @@ class GuidedRectangleWaypoints(Node):
 
         self.get_logger().info("Switching to local setpoints for rectangle hold/waypoints...")
         self.ensure_guided("post-takeoff")
+        self._publish_mission_phase("post_takeoff_hold")
         self.hold_setpoint(
-            *start, seconds=3.0, yaw=self.home_yaw,
+            *start, seconds=self.post_takeoff_hold_time_s, yaw=self.home_yaw,
             label="post-takeoff hold", require_guided=True)
 
         points = [
@@ -635,6 +698,7 @@ class GuidedRectangleWaypoints(Node):
         ]
         current = points[0][:3]
         current_yaw = points[0][3]
+        self._publish_mission_phase("route_active")
         for idx, (x, y, target_z, yaw) in enumerate(points[1:], start=1):
             goal = (x, y, target_z)
             if abs(math.atan2(math.sin(yaw - current_yaw), math.cos(yaw - current_yaw))) > math.radians(1.0):
@@ -643,7 +707,14 @@ class GuidedRectangleWaypoints(Node):
             current = goal
             current_yaw = yaw
 
+        if self.final_hold_time_s > 0.0:
+            self._publish_mission_phase("final_loop_hold")
+            self.hold_setpoint(
+                *current, seconds=self.final_hold_time_s, yaw=points[-1][3],
+                label="final loop-closure hold", require_guided=True)
+
         if self.land_at_end:
+            self._publish_mission_phase("landing")
             if self.land_cli.wait_for_service(timeout_sec=5.0):
                 land_req = CommandTOL.Request()
                 land_req.min_pitch = 0.0
@@ -653,6 +724,7 @@ class GuidedRectangleWaypoints(Node):
                 land_req.altitude = 0.0
                 self.call(self.land_cli, land_req, "land")
         else:
+            self._publish_mission_phase("complete_hold")
             self.get_logger().info("Rectangle complete. Holding final setpoint; Ctrl+C to stop.")
             while rclpy.ok():
                 self.hold_setpoint(

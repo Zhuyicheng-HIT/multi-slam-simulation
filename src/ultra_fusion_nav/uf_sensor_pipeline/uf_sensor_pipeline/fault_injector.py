@@ -42,8 +42,12 @@ class FaultInjector(Node):
         self.declare_parameter("magnitude", 0.0)
         self.declare_parameter("secondary_magnitude", 0.0)
         self.declare_parameter("seed", 7)
+        # Simulation-only clock alignment. Real hardware and rosbag replay
+        # keep source timestamps unless this option is explicitly enabled.
+        self.declare_parameter("restamp_output", False)
 
         self.modality = str(self.get_parameter("modality").value)
+        self.restamp_output = bool(self.get_parameter("restamp_output").value)
         if self.modality not in MESSAGE_TYPES:
             raise ValueError(f"Unsupported modality: {self.modality}")
         message_type = MESSAGE_TYPES[self.modality]
@@ -67,7 +71,8 @@ class FaultInjector(Node):
         self.get_logger().info(
             f"fault injector modality={self.modality} "
             f"input={self.get_parameter('input_topic').value} "
-            f"output={self.get_parameter('output_topic').value}"
+            f"output={self.get_parameter('output_topic').value} "
+            f"restamp_output={self.restamp_output}"
         )
 
     def _settings(self):
@@ -161,6 +166,9 @@ class FaultInjector(Node):
             self._apply(msg, fault_type, magnitude, secondary, fault_elapsed_s)
             if active else msg
         )
+        if self.restamp_output:
+            output = copy.deepcopy(output)
+            output.header.stamp = self.get_clock().now().to_msg()
         self.last_output_stamp_ns, repaired = ensure_monotonic_stamp(
             output.header.stamp, self.last_output_stamp_ns
         )

@@ -35,6 +35,7 @@ def plane_factor(point, normal, plane_point):
         stamp_ns=1_000_000_000,
         stamp_s=1.0,
         scan_sequence=1,
+        reset_counter=0,
         matched_points=1,
         candidate_points=1,
         linearization_pose=np.zeros(6),

@@ -24,6 +24,7 @@ class SchedulerConfig:
     required_modalities: tuple = ()
     minimum_usable_modalities: int = 1
     stale_after_s: float = 1.0
+    modality_stale_after_s: tuple = ()
     degraded_threshold: float = 0.35
     risk_threshold: float = 0.60
     failsafe_threshold: float = 0.85
@@ -62,6 +63,18 @@ class ReliabilitySchedulerCore:
         )
         if not self.active_modalities:
             raise ValueError("at least one active modality is required")
+        if self.config.stale_after_s <= 0.0:
+            raise ValueError("score stale timeout must be positive")
+        self.stale_after_s_by_modality = {
+            name: float(self.config.stale_after_s) for name in MODALITIES
+        }
+        for entry in self.config.modality_stale_after_s:
+            if len(entry) != 2 or entry[0] not in MODALITIES:
+                raise ValueError("modality stale timeout entries must name a modality")
+            timeout_s = float(entry[1])
+            if timeout_s <= 0.0:
+                raise ValueError("modality stale timeout must be positive")
+            self.stale_after_s_by_modality[entry[0]] = timeout_s
         unknown_required = set(self.config.required_modalities).difference(
             self.active_modalities
         )
@@ -114,8 +127,10 @@ class ReliabilitySchedulerCore:
         relocalization_requested,
         relocalization_failed,
     ):
-        if relocalization_failed:
-            return "FAILSAFE"
+        # A relocalization search is a recovery service, not an estimator
+        # measurement. Its failure must not invalidate capabilities that are
+        # still supported by live IMU/GNSS/flow/LiDAR factors. True pose loss
+        # remains covered below by required_usable and usable_count.
         if relocalization_requested:
             return "RELOCALIZING"
         if (
@@ -219,7 +234,10 @@ class ReliabilitySchedulerCore:
             else:
                 observation_count = 0
                 minimum_observation_count = 1
-            stale = sample is None or sample_age > self.config.stale_after_s
+            stale = (
+                sample is None
+                or sample_age > self.stale_after_s_by_modality[name]
+            )
             if stale or not valid:
                 value = 1.0
                 valid = False

@@ -19,6 +19,20 @@ bash tools/apply_fast_lio_native_factor_patch.sh
 The script refuses a different commit or a dirty checkout. It never commits
 external source into this repository.
 
+The patch series also carries the backend-owned deskew trajectory frontend.
+Its state inputs are deliberately separated:
+
+- `downstream_backend.activation_state_topic` is the continuous backend odometry
+  used only to activate scan requests and backend trajectory prediction;
+- `downstream_backend.state_topic` is the health-gated optimized pose used only
+  to confirm irreversible static-map insertion.
+
+The activation topic defaults to an empty string at the FAST-LIO launch layer.
+An empty value reuses `downstream_backend.state_topic`, preserving the previous
+single-topic behavior. The repository simulation wrapper explicitly uses
+`/fusion/unified/odom` for activation and `/fusion/unified/map_pose` for map
+confirmation so a closed map-health gate cannot deadlock frontend startup.
+
 ## Packet contract
 
 The patched node publishes `fast_lio/msg/NativeLidarFactor` when enabled.

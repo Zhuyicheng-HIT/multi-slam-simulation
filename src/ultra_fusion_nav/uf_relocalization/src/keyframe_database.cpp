@@ -60,7 +60,6 @@ StaticKeyframeDatabase::StaticKeyframeDatabase(const KeyframeDatabaseConfig & co
 : config_(config)
 {
   const bool thresholds_valid =
-    config_.minimum_map_quality >= 0.0 && config_.minimum_map_quality <= 1.0 &&
     config_.minimum_feature_repeatability >= 0.0 &&
     config_.minimum_feature_repeatability <= 1.0 &&
     config_.maximum_dynamic_ratio >= 0.0 && config_.maximum_dynamic_ratio <= 1.0 &&
@@ -73,12 +72,8 @@ StaticKeyframeDatabase::StaticKeyframeDatabase(const KeyframeDatabaseConfig & co
   }
 }
 
-AdmissionResult StaticKeyframeDatabase::try_insert(
-  const double stamp_s,
-  const Eigen::Isometry3d & world_from_sensor,
-  const Cloud::ConstPtr & cloud,
-  const std::vector<float> & descriptor,
-  const KeyframeQuality & quality)
+AdmissionResult StaticKeyframeDatabase::quality_admission(
+  const KeyframeQuality & quality) const
 {
   if (!quality.scheduler_lidar_enabled) {
     return reject("scheduler_lidar_disabled");
@@ -86,9 +81,9 @@ AdmissionResult StaticKeyframeDatabase::try_insert(
   if (!finite_quality(quality)) {
     return reject("non_finite_quality");
   }
-  if (quality.map_quality < config_.minimum_map_quality) {
-    return reject("low_map_quality");
-  }
+  // map_quality is a diagnostic derived from adjacent-frame overlap,
+  // repeatability, and dynamic ratio. Reusing it as a hard threshold would
+  // count the same evidence twice and reject healthy moving keyframes.
   if (quality.feature_repeatability < config_.minimum_feature_repeatability) {
     return reject("low_feature_repeatability");
   }
@@ -97,6 +92,20 @@ AdmissionResult StaticKeyframeDatabase::try_insert(
   }
   if (quality.lidar_degradation > config_.maximum_lidar_degradation) {
     return reject("high_lidar_degradation");
+  }
+  return AdmissionResult{true, kInvalidKeyframeId, "quality_accepted"};
+}
+
+AdmissionResult StaticKeyframeDatabase::try_insert(
+  const double stamp_s,
+  const Eigen::Isometry3d & world_from_sensor,
+  const Cloud::ConstPtr & cloud,
+  const std::vector<float> & descriptor,
+  const KeyframeQuality & quality)
+{
+  const auto quality_result = quality_admission(quality);
+  if (!quality_result.accepted) {
+    return quality_result;
   }
   if (!std::isfinite(stamp_s) || !world_from_sensor.matrix().allFinite()) {
     return reject("invalid_pose_or_stamp");

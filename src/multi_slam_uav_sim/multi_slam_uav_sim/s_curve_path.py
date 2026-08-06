@@ -10,6 +10,35 @@ from typing import Iterable, Sequence
 Point3 = tuple[float, float, float]
 
 
+def generate_calibration_figure_eight(
+    center: Point3,
+    radius: float,
+    samples: int = 161,
+) -> list[Point3]:
+    """Generate a level, closed figure-eight around the current hold point."""
+    center = tuple(float(value) for value in center)
+    radius = float(radius)
+    samples = int(samples)
+    if len(center) != 3 or not all(math.isfinite(value) for value in center):
+        raise ValueError("calibration center must be a finite 3-vector")
+    if not math.isfinite(radius) or radius <= 0.0 or samples < 9:
+        raise ValueError("calibration radius must be positive and samples at least 9")
+
+    cx, cy, cz = center
+    points: list[Point3] = []
+    for index in range(samples):
+        phase = index / float(samples - 1)
+        angle = 2.0 * math.pi * phase
+        points.append((
+            cx + radius * math.sin(angle),
+            cy + radius * math.sin(angle) * math.cos(angle),
+            cz,
+        ))
+    points[0] = center
+    points[-1] = center
+    return points
+
+
 def generate_s_curve(
     longitudinal_span: float,
     lateral_amplitude: float,
