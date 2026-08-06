@@ -189,7 +189,8 @@ d435i_component_command_owned() {
            "$command" == *"online_backend_visual.launch.py"* ) ||
          "$command" == *"$project_root/install/uf_backend_fusion/"* ||
          "$command" == *"$project_root/install/uf_reliability/"* ||
-         "$command" == *"$project_root/install/uf_sensor_pipeline/"* ]]
+         "$command" == *"$project_root/install/uf_sensor_pipeline/"* ||
+         "$command" == *"$project_root/install/uf_relocalization/"* ]]
       ;;
     rectangle_motion)
       [[ "$command" == *"ros2 run multi_slam_uav_sim"* &&

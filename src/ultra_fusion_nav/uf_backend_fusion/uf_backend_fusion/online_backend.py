@@ -86,17 +86,20 @@ from uf_reliability.flow_rotation_gate import (
 )
 
 try:
+    from fast_lio.msg import NativeLidarFactor
+except ImportError:  # pragma: no cover - unit tests run without the external overlay
+    NativeLidarFactor = None
+
+try:
     from fast_lio.msg import (
         BackendDeskewTrajectory,
         BackendStateSeed,
         FrontendScanRequest,
-        NativeLidarFactor,
     )
-except ImportError:  # pragma: no cover - unit tests run without the external overlay
+except ImportError:  # Optional backend-owned FAST-LIO trajectory extension.
     BackendStateSeed = None
     BackendDeskewTrajectory = None
     FrontendScanRequest = None
-    NativeLidarFactor = None
 
 
 WGS84_A_M = 6378137.0
@@ -2797,6 +2800,17 @@ class UnifiedBackendNode(Node):
             int(current.header.stamp.sec) * 1_000_000_000
             + int(current.header.stamp.nanosec)
         )
+        orientation = current.pose.pose.orientation
+        orientation_norm = math.sqrt(
+            orientation.x * orientation.x
+            + orientation.y * orientation.y
+            + orientation.z * orientation.z
+            + orientation.w * orientation.w
+        )
+        if not math.isfinite(orientation_norm) or orientation_norm <= 1.0e-9:
+            self.counts["visual_motion_rejected"] += 1
+            self.last_visual_reason = "invalid_sample:quaternion norm must be positive"
+            return
         previous = self.last_visual_odom
         if previous is None:
             self.last_visual_odom = current
@@ -2815,13 +2829,9 @@ class UnifiedBackendNode(Node):
                 self.visual_default_rotation_variance,
             )
         except ValueError as error:
-            self.last_visual_odom = current
-            self.last_visual_stamp_ns = current_stamp_ns
             self.counts["visual_motion_rejected"] += 1
             self.last_visual_reason = f"invalid_increment:{error}"
             return
-        self.last_visual_odom = current
-        self.last_visual_stamp_ns = current_stamp_ns
         translation_m = float(np.linalg.norm(delta_body))
         rotation_rad = float(np.linalg.norm(delta_rotation))
         self.last_visual_translation_m = translation_m
@@ -2832,6 +2842,11 @@ class UnifiedBackendNode(Node):
         ):
             self.last_visual_reason = "motion_below_threshold"
             return
+        # Keep the last accepted/bounded baseline while motion is below the
+        # keyframe gate so small RTAB increments accumulate instead of being
+        # discarded one callback at a time.
+        self.last_visual_odom = current
+        self.last_visual_stamp_ns = current_stamp_ns
         if (
             translation_m > self.visual_maximum_translation_m
             or rotation_rad > self.visual_maximum_rotation_rad

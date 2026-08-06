@@ -70,7 +70,8 @@ trap cleanup EXIT INT TERM
 wait_for_topic() {
   local topic=$1 timeout_s=${2:-90} started=$SECONDS
   while (( SECONDS - started < timeout_s )); do
-    if timeout 3s ros2 topic echo "$topic" --once >/dev/null 2>&1; then
+    if timeout 5s ros2 topic echo "$topic" --no-daemon --spin-time 2.0 \
+        --once --qos-reliability best_effort >/dev/null 2>&1; then
       printf 'ready: %s\n' "$topic"
       return 0
     fi
@@ -80,11 +81,26 @@ wait_for_topic() {
   return 1
 }
 
+wait_for_publisher() {
+  local topic=$1 timeout_s=${2:-45} started=$SECONDS info=
+  while (( SECONDS - started < timeout_s )); do
+    info=$(timeout 5s ros2 topic info "$topic" --no-daemon 2>/dev/null || true)
+    if grep -Eq 'Publisher count: [1-9][0-9]*' <<<"$info"; then
+      printf 'ready publisher: %s\n' "$topic"
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'Timed out waiting for publisher %s\n' "$topic" >&2
+  return 1
+}
+
 wait_for_valid_vision() {
   local timeout_s=${1:-60} started=$SECONDS sample=
   while (( SECONDS - started < timeout_s )); do
-    sample=$(timeout 3s ros2 topic echo /reliability/vision_score \
-      --once --field valid 2>/dev/null || true)
+    sample=$(timeout 5s ros2 topic echo /reliability/vision_score \
+      --no-daemon --spin-time 2.0 --once --field valid \
+      --qos-reliability best_effort 2>/dev/null || true)
     if grep -qi '^true$' <<<"$sample"; then
       printf 'ready: D_V_rgbd valid\n'
       return 0
@@ -110,27 +126,10 @@ setsid env \
   >"$RUN_DIR/sensor_stack_supervisor.log" 2>&1 &
 record_pid stack_supervisor "$!"
 
-# PR #6's sensor supervisor runs Gazebo without a ROS /clock bridge. RTAB uses
-# simulation time, so this wrapper owns exactly one clock publisher.
-setsid ros2 run ros_gz_bridge parameter_bridge \
-  '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock' \
-  >"$RUN_DIR/clock_bridge.log" 2>&1 &
-CLOCK_BRIDGE_PID=$!
-record_pid clock_bridge "$CLOCK_BRIDGE_PID"
-
-if ! wait_for_topic /clock 45; then
-  # ros_gz_bridge occasionally starts before the fresh Gazebo Transport
-  # partition is discoverable.  Restart only this owned bridge once, after the
-  # simulator and FCU have had time to become ready.
-  kill -INT -- "-$CLOCK_BRIDGE_PID" 2>/dev/null || true
-  timeout 5s tail --pid="$CLOCK_BRIDGE_PID" -f /dev/null 2>/dev/null || true
-  setsid ros2 run ros_gz_bridge parameter_bridge \
-    '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock' \
-    >"$RUN_DIR/clock_bridge_retry.log" 2>&1 &
-  CLOCK_BRIDGE_PID=$!
-  record_pid clock_bridge_retry "$CLOCK_BRIDGE_PID"
-  wait_for_topic /clock 45
-fi
+# The latest mainline sensor supervisor owns the single Gazebo-to-ROS clock
+# bridge and validates that it advances. Reuse it here to avoid a duplicate
+# publisher and subscribe with the offered best-effort clock QoS.
+wait_for_topic /clock 90
 wait_for_topic /livox/lidar 120
 wait_for_topic /mavros/imu/data_raw 120
 wait_for_topic /sim/optical_flow/rad 90
@@ -150,7 +149,8 @@ BACKEND_NATIVE_FACTOR=true
 BACKEND_LIO_FALLBACK=false
 BACKEND_IMU_FACTOR=true
 INTEGRATION_START_BACKEND=true
-if ! timeout 15s ros2 topic echo /fast_lio/native_lidar_factor --once \
+if ! timeout 15s ros2 topic echo /fast_lio/native_lidar_factor \
+    --no-daemon --spin-time 2.0 --once --qos-reliability best_effort \
     >/dev/null 2>&1; then
   wait_for_topic /Odometry 30
   BACKEND_INPUT_TRIGGER=lio_pair
@@ -193,9 +193,8 @@ wait_for_topic /front/d435i/color/camera_info 45
 wait_for_topic /reliability/vision_score 45
 if [[ "$PR6_START_RTABMAP" == 1 ]]; then
   wait_for_topic /rtabmap/odom 120
-  wait_for_valid_vision 60
 fi
-wait_for_topic /reliability/scheduler_state 45
+wait_for_publisher /reliability/scheduler_state 45
 wait_for_topic /fusion/unified/odom 120
 
 if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
@@ -205,6 +204,12 @@ if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
     >"$RUN_DIR/small_rectangle.log" 2>&1 &
   RECTANGLE_PID=$!
   record_pid rectangle_motion "$RECTANGLE_PID"
+fi
+if [[ "$PR6_START_RTABMAP" == 1 && "$RUN_SMALL_RECTANGLE" == 1 ]]; then
+  # RTAB odometry can require initial camera motion before its first valid
+  # increment.  Start the optional mission first so validation does not
+  # deadlock waiting for motion that the wrapper has not yet launched.
+  wait_for_valid_vision 120
 fi
 
 printf 'PR #6 + D435i visual integration is ready.\n'

@@ -337,6 +337,11 @@ class GuidedRectangleWaypoints(Node):
                 f"{label}: FCU left GUIDED mode; current mode={self.state.mode}, "
                 f"armed={self.state.armed}, last_fcu_text={self.last_statustext}"
             )
+        if not self.state.armed:
+            raise RuntimeError(
+                f"{label}: FCU disarmed before LAND; current mode={self.state.mode}, "
+                f"last_fcu_text={self.last_statustext}"
+            )
 
     def hold_setpoint(self, x, y, z, seconds, yaw=None, label="hold", require_guided=False):
         yaw = self.home_yaw if yaw is None else yaw
@@ -652,6 +657,19 @@ class GuidedRectangleWaypoints(Node):
                 land_req.longitude = 0.0
                 land_req.altitude = 0.0
                 self.call(self.land_cli, land_req, "land")
+                deadline = time.monotonic() + 90.0
+                while rclpy.ok() and time.monotonic() < deadline:
+                    rclpy.spin_once(self, timeout_sec=0.1)
+                    self._log_status("landing")
+                    if not self.state.armed:
+                        self.get_logger().info(
+                            "Rectangle mission complete: LAND confirmed and vehicle disarmed."
+                        )
+                        break
+                else:
+                    raise RuntimeError(
+                        "LAND was accepted but vehicle did not disarm within 90 seconds"
+                    )
         else:
             self.get_logger().info("Rectangle complete. Holding final setpoint; Ctrl+C to stop.")
             while rclpy.ok():
