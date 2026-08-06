@@ -221,9 +221,64 @@ source install/setup.bash
 python3 tools/analyze_slam_drift.py --duration 120
 ```
 
+### 8.1 点云轨迹可视化与审计
+
+启动第 3 个终端的 FAST-LIO 入口后，RViz 配置会显示注册点云、可靠点云、
+局部地图、占据栅格和算法轨迹：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+RVIZ=1 bash tools/run_fastlio_mapping.sh
+```
+
+关键话题和用途如下：
+
+| 话题 | 用途 | 是否允许作为定位输入 |
+|---|---|---|
+| `/livox/lidar` (`livox_ros_driver2/msg/CustomMsg`) | MID360 兼容输入，含包时间和点时间偏移 | 是，FAST-LIO 输入 |
+| `/cloud_registered` | FAST-LIO 去畸变/注册后的算法点云，坐标系通常为 `camera_init` | 是，供算法地图与视觉协作层使用 |
+| `/fastlio_denoised_map` | 项目侧可靠性过滤后的局部地图 | 仅地图质量与可视化 |
+| `/fastlio_occupancy_grid` | 注册点云生成的占据栅格 | 仅规划/可视化 |
+| `/sim/mid360/cloud_registered` | Gazebo 真值注册点云 | 否，仅评估对照 |
+| `/sim/mid360/ground_truth_odom` | Gazebo 真值位姿 | 否，仅评估对照 |
+
+建议在运行前显式加载外部 Livox 消息类型支持，然后生成 JSON 审计报告：
+
+```bash
+source /opt/ros/humble/setup.bash
+source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
+cd "$HOME/projects/multi-slam-simulation"
+source install/setup.bash
+python3 tools/analyze_slam_drift.py \
+  --duration 120 \
+  --wall-timeout 900 \
+  --output /tmp/multi_slam_pointcloud_audit.json
+```
+
+报告将分别给出轨迹误差和点云质量：Livox 包点数 P05、有限点比例、机身剔除比例、
+注册点坐标范围、连续帧体素重叠率、点云质心跳变、时间戳回退/重复以及 `/livox/lidar`
+和 `/livox/imu` 发布者数量。发布者必须各为一个；点云坐标突然超过 80 m 或同时出现
+质心大跳变与低体素重叠才判定为地图/位姿发散。长航线在场景边缘点数变少属于覆盖
+告警，不会被误报为坐标发散；应通过增加环境几何或降低航线范围处理，不能用 Gazebo
+真值修正轨迹。
+
+仓库内的场景覆盖审计图由 SDF、光流纹理和航线定义自动生成：
+
+![S 航线与 LiDAR/光流覆盖审计图](docs/assets/s_curve_world_audit.png)
+
+重新生成：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+python3 tools/plot_s_curve_world_audit.py \
+  --output docs/assets/s_curve_world_audit.png \
+  --json docs/assets/s_curve_world_audit.json
+```
+
 ## 9. 进一步阅读
 
 - [四源融合稳定候选版与视觉协作接口](docs/RELEASE_FOUR_SOURCE_V1.md)
+- [LiDAR 点云稳定候选版与视觉点云接口](docs/RELEASE_LIDAR_POINTCLOUD_V1.md)
 - [详细配置教程](README_详细配置教程.md)
 - [安装与依赖说明](docs/INSTALL.md)
 - [运行与排错](docs/RUNNING.md)

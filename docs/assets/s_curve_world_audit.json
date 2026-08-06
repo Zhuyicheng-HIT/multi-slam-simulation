@@ -1,0 +1,12 @@
+{
+  "expanded_grid_max_nearest_lidar_landmark_m": 7.280109889280518,
+  "flow_grid_x_lines": 19,
+  "flow_grid_y_lines": 19,
+  "flow_markers": 32,
+  "lidar_landmarks": 32,
+  "route_max_nearest_lidar_landmark_m": 4.12310562561766,
+  "texture_bounds_m": [
+    -18.0,
+    18.0
+  ]
+}

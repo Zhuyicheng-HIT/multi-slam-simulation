@@ -32,7 +32,7 @@
             det_range: 40.0
             extrinsic_est_en: false
             # R_body_lidar: MID360 optical axis pitches 10 deg nose-down.
-            extrinsic_T: [0.0, 0.0, 0.0]
+            extrinsic_T: [0.05, 0.0, 0.10]
             extrinsic_R: [0.984807753, 0., 0.173648178,
                           0., 1., 0.,
                           -0.173648178, 0., 0.984807753]

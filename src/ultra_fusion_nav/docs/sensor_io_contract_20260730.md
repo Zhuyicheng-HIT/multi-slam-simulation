@@ -47,7 +47,7 @@ ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
 
 Vision is disabled by default. Enabling it activates the color/depth fault
 adapters, contract checks, and a configurable `base_link -> d435i_link` mount
-transform. The default simulated mount is `xyz=[0.30, 0.0, 0.02] m` and
+transform. The default simulated mount is `xyz=[0.20, 0.0, 0.02] m` and
 `rpy=[0, 0, 0] rad`. Real mounting values must be measured or calibrated and
 passed through `d435_x/y/z` and `d435_roll/pitch/yaw`; the RealSense driver owns
 the camera optical-frame transforms below `d435i_link`.

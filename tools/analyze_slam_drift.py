@@ -2,6 +2,8 @@
 import argparse
 import json
 import math
+import os
+from pathlib import Path
 import struct
 import sys
 import time
@@ -13,6 +15,21 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Imu, PointCloud2, PointField
+from std_msgs.msg import Float32
+
+# Keep the evaluator usable from a normal ROS workspace shell.  The Livox
+# interface is built in the external MID360 workspace, so it is not included
+# by the repository's setup.bash unless the mapping wrapper sourced it first.
+_livox_python_path = Path(
+    os.environ.get("LIDAR_WS", str(Path.home() / "multi-slam-deps" / "mid360_ws"))
+) / "install/livox_ros_driver2/local/lib/python3.10/dist-packages"
+if _livox_python_path.is_dir() and str(_livox_python_path) not in sys.path:
+    sys.path.insert(0, str(_livox_python_path))
+
+try:
+    from livox_ros_driver2.msg import CustomMsg
+except ImportError:  # The legacy PointCloud2-only workspace remains supported.
+    CustomMsg = None
 
 
 def stamp_ns(header):
@@ -53,6 +70,18 @@ def wrap_angle(values):
     return np.arctan2(np.sin(values), np.cos(values))
 
 
+def yaw_alignment_offset(fast_yaws, truth_yaws, alignment_rotation, truth_xy,
+                         min_translation_m=0.5):
+    """Choose a yaw-frame alignment that remains defined for a static test."""
+    truth_xy = np.asarray(truth_xy, dtype=float)
+    excitation_m = float(np.max(np.linalg.norm(truth_xy - truth_xy[0], axis=1)))
+    if excitation_m < min_translation_m:
+        offset = float(wrap_angle(float(truth_yaws[0]) - float(fast_yaws[0])))
+        return offset, "initial_heading_low_translation", excitation_m
+    offset = math.atan2(alignment_rotation[1, 0], alignment_rotation[0, 0])
+    return offset, "trajectory_xy", excitation_m
+
+
 def cloud_xyz(msg, max_points=6000):
     fields = {field.name: field for field in msg.fields}
     if not {"x", "y", "z"}.issubset(fields) or msg.point_step <= 0:
@@ -82,6 +111,21 @@ def cloud_xyz(msg, max_points=6000):
     return np.asarray(points, dtype=np.float64)
 
 
+def livox_xyz(msg, max_points=6000):
+    """Extract finite XYZ samples from a Livox CustomMsg packet."""
+    points = getattr(msg, "points", [])
+    count = min(int(getattr(msg, "point_num", len(points))), len(points))
+    if count <= 0:
+        return np.empty((0, 3), dtype=np.float64)
+    stride = max(1, count // max_points)
+    result = []
+    for point in points[0:count:stride]:
+        xyz = (float(point.x), float(point.y), float(point.z))
+        if all(math.isfinite(value) for value in xyz):
+            result.append(xyz)
+    return np.asarray(result, dtype=np.float64)
+
+
 class SlamDriftAnalyzer(Node):
     def __init__(self, voxel_size):
         super().__init__("slam_drift_analyzer")
@@ -98,10 +142,25 @@ class SlamDriftAnalyzer(Node):
         self.last_raw_stamp = 0
         self.last_registered_stamp = 0
         self.last_imu_stamp = 0
+        self.last_livox_stamp = 0
+        self.last_livox_timebase = 0
         self.raw_timing = []
         self.registered_timing = []
         self.cloud_overlaps = []
         self.cloud_centroid_jumps = []
+        self.livox_timing = []
+        self.livox_point_counts = []
+        self.livox_finite_point_counts = []
+        self.livox_range_max_m = []
+        self.livox_stamp_regressions = 0
+        self.livox_stamp_duplicates = 0
+        self.livox_timebase_regressions = 0
+        self.livox_point_offset_regressions = 0
+        self.body_removed_ratios = []
+        self.registered_point_counts = []
+        self.registered_abs_max_m = []
+        self.registered_frame_ids = set()
+        self.publisher_samples = []
         self.previous_voxels = None
         self.previous_centroid = None
 
@@ -114,6 +173,12 @@ class SlamDriftAnalyzer(Node):
             PointCloud2, "/sim/mid360/points_raw", self._raw_cloud_cb, qos_profile_sensor_data)
         self.create_subscription(
             PointCloud2, "/cloud_registered", self._registered_cloud_cb, qos_profile_sensor_data)
+        if CustomMsg is not None:
+            self.create_subscription(
+                CustomMsg, "/livox/lidar", self._livox_cb, qos_profile_sensor_data)
+        self.create_subscription(
+            Float32, "/sensors/lidar/body_removed_ratio",
+            self._body_removed_ratio_cb, qos_profile_sensor_data)
 
     @staticmethod
     def _odom_record(msg):
@@ -160,6 +225,9 @@ class SlamDriftAnalyzer(Node):
         points = cloud_xyz(msg)
         if len(points) < 20:
             return
+        self.registered_point_counts.append(len(points))
+        self.registered_frame_ids.add(str(msg.header.frame_id))
+        self.registered_abs_max_m.append(float(np.max(np.abs(points))))
         centroid = np.median(points, axis=0)
         voxels = {tuple(row) for row in np.floor(points / self.voxel_size).astype(np.int32)}
         if self.previous_voxels:
@@ -170,6 +238,41 @@ class SlamDriftAnalyzer(Node):
             self.cloud_centroid_jumps.append(float(np.linalg.norm(centroid - self.previous_centroid)))
         self.previous_voxels = voxels
         self.previous_centroid = centroid
+
+    def _livox_cb(self, msg):
+        arrival = time.monotonic()
+        stamp = stamp_ns(msg.header)
+        if stamp < self.last_livox_stamp:
+            self.livox_stamp_regressions += 1
+        elif stamp == self.last_livox_stamp and stamp != 0:
+            self.livox_stamp_duplicates += 1
+        self.last_livox_stamp = max(stamp, self.last_livox_stamp)
+
+        timebase = int(getattr(msg, "timebase", 0))
+        if timebase < self.last_livox_timebase:
+            self.livox_timebase_regressions += 1
+        self.last_livox_timebase = max(timebase, self.last_livox_timebase)
+        offsets = [int(getattr(point, "offset_time", 0)) for point in msg.points]
+        if any(later < earlier for earlier, later in zip(offsets, offsets[1:])):
+            self.livox_point_offset_regressions += 1
+
+        points = livox_xyz(msg)
+        self.livox_timing.append((arrival, stamp))
+        self.livox_point_counts.append(int(getattr(msg, "point_num", len(msg.points))))
+        self.livox_finite_point_counts.append(len(points))
+        if len(points):
+            self.livox_range_max_m.append(float(np.max(np.linalg.norm(points, axis=1))))
+
+    def _body_removed_ratio_cb(self, msg):
+        value = float(msg.data)
+        if math.isfinite(value):
+            self.body_removed_ratios.append(value)
+
+    def sample_publisher_counts(self):
+        self.publisher_samples.append({
+            "livox_lidar": int(self.count_publishers("/livox/lidar")),
+            "livox_imu": int(self.count_publishers("/livox/imu")),
+        })
 
 
 def nearest_records(source, target, max_delta_s=0.05):
@@ -247,22 +350,48 @@ def build_report(node, sim_duration, wall_duration=None):
             "matched_odom": len(matches),
             "fast_lio_fcu_imu": len(node.imu),
             "registered_cloud_pairs": len(node.cloud_overlaps),
+            "livox_custom_packets": len(node.livox_point_counts),
         },
         "timestamp_regressions": {
             "raw_cloud": node.raw_stamp_regressions,
             "registered_cloud": node.registered_stamp_regressions,
             "fast_lio_fcu_imu": node.imu_stamp_regressions,
+            "livox_custom_msg": node.livox_stamp_regressions,
+            "livox_timebase": node.livox_timebase_regressions,
+            "livox_point_offset": node.livox_point_offset_regressions,
         },
         "timestamp_duplicates": {
             "raw_cloud": node.raw_stamp_duplicates,
             "registered_cloud": node.registered_stamp_duplicates,
             "fast_lio_fcu_imu": node.imu_stamp_duplicates,
+            "livox_custom_msg": node.livox_stamp_duplicates,
         },
         "pointcloud": {
+            "source": "/livox/lidar (livox_ros_driver2/msg/CustomMsg)",
+            "livox_packet_p05_points": percentile(node.livox_point_counts, 5),
+            "livox_packet_median_points": percentile(node.livox_point_counts, 50),
+            "livox_finite_packet_p05_points": percentile(node.livox_finite_point_counts, 5),
+            "livox_range_max_p99_m": percentile(node.livox_range_max_m, 99),
+            "body_removed_ratio_p95": percentile(node.body_removed_ratios, 95),
+            "registered_point_p05": percentile(node.registered_point_counts, 5),
+            "registered_frame_ids": sorted(node.registered_frame_ids),
+            "registered_abs_coordinate_p99_m": percentile(node.registered_abs_max_m, 99),
+            "registered_abs_coordinate_max_m": max(node.registered_abs_max_m, default=None),
             "voxel_overlap_p05": percentile(node.cloud_overlaps, 5),
             "voxel_overlap_median": percentile(node.cloud_overlaps, 50),
             "centroid_jump_p95_m": percentile(node.cloud_centroid_jumps, 95),
             "centroid_jump_max_m": max(node.cloud_centroid_jumps, default=None),
+        },
+        "input_ownership": {
+            "publisher_samples": len(node.publisher_samples),
+            "livox_lidar_min": min(
+                (sample["livox_lidar"] for sample in node.publisher_samples), default=None),
+            "livox_lidar_max": max(
+                (sample["livox_lidar"] for sample in node.publisher_samples), default=None),
+            "livox_imu_min": min(
+                (sample["livox_imu"] for sample in node.publisher_samples), default=None),
+            "livox_imu_max": max(
+                (sample["livox_imu"] for sample in node.publisher_samples), default=None),
         },
         "timing": {
             "association_basis": "header_stamp",
@@ -291,7 +420,8 @@ def build_report(node, sim_duration, wall_duration=None):
     position_errors = np.linalg.norm(aligned_fast_xy - truth_xy, axis=1)
     fast_yaws = np.unwrap([row[5] for row in fast_rows])
     truth_yaws = np.unwrap([row[5] for row in truth_rows])
-    alignment_yaw = math.atan2(alignment_rotation[1, 0], alignment_rotation[0, 0])
+    alignment_yaw, yaw_alignment_basis, position_excitation_m = yaw_alignment_offset(
+        fast_yaws, truth_yaws, alignment_rotation, truth_xy)
     aligned_fast_yaw = fast_yaws + alignment_yaw
     yaw_errors = np.rad2deg(wrap_angle(aligned_fast_yaw - truth_yaws))
 
@@ -348,10 +478,31 @@ def build_report(node, sim_duration, wall_duration=None):
         "coupling_reference_valid": bool(
             truth_imu_corr is not None and truth_imu_corr >= 0.65
         ),
+        "yaw_alignment_basis": yaw_alignment_basis,
+        "position_excitation_m": position_excitation_m,
     }
 
     failures = []
     warnings = []
+    if yaw_alignment_basis == "initial_heading_low_translation":
+        warnings.append(
+            "XY trajectory excitation was below 0.5 m; yaw used initial-heading alignment")
+    if CustomMsg is not None and report["samples"]["livox_custom_packets"] == 0:
+        failures.append("/livox/lidar 没有收到 Livox CustomMsg 数据包")
+    ownership = report["input_ownership"]
+    if ownership["livox_lidar_max"] is not None and ownership["livox_lidar_max"] > 1:
+        failures.append("/livox/lidar 存在多个发布者，输入流不具备唯一所有权")
+    if ownership["livox_imu_max"] is not None and ownership["livox_imu_max"] > 1:
+        failures.append("/livox/imu 存在多个发布者，输入流不具备唯一所有权")
+    packet_p05 = report["pointcloud"]["livox_packet_p05_points"]
+    if packet_p05 is not None and packet_p05 < 100:
+        warnings.append("Livox 数据包 P05 点数低于 100，航线局部几何覆盖不足")
+    body_ratio_p95 = report["pointcloud"]["body_removed_ratio_p95"]
+    if body_ratio_p95 is not None and body_ratio_p95 > 0.90:
+        failures.append("机身剔除比例 P95 超过 90%，有效环境点不足")
+    registered_abs_p99 = report["pointcloud"]["registered_abs_coordinate_p99_m"]
+    if registered_abs_p99 is not None and registered_abs_p99 > 80.0:
+        failures.append("注册点云坐标 P99 超过 80 m，疑似地图/位姿发散")
     if any(report["timestamp_regressions"].values()):
         failures.append("存在点云或 IMU 时间戳回退")
     if report["trajectory"]["position_rmse_m"] > 0.75:
@@ -370,14 +521,20 @@ def build_report(node, sim_duration, wall_duration=None):
     if settled_p95 is not None and settled_p95 > 15.0:
         failures.append("非转向阶段偏航误差 P95 超过 15 度")
     _, coupling_failures, coupling_warnings = assess_coupling(coupling_corr, truth_imu_corr)
+    if (yaw_alignment_basis == "initial_heading_low_translation" and
+            coupling_failures == ["有效偏航转动样本不足"]):
+        coupling_failures = []
+        coupling_warnings.append("低激励测试没有偏航转动样本，跳过 IMU 耦合裁决")
     failures.extend(coupling_failures)
     warnings.extend(coupling_warnings)
     overlap_p05 = report["pointcloud"]["voxel_overlap_p05"]
     if overlap_p05 is not None and overlap_p05 < 0.05:
         failures.append("连续注册点云体素重叠率出现突降")
     centroid_p95 = report["pointcloud"]["centroid_jump_p95_m"]
-    if (centroid_p95 is not None and centroid_p95 > 3.5 and
-            overlap_p05 is not None and overlap_p05 < 0.15):
+    if centroid_p95 is not None and centroid_p95 > 1.5:
+        warnings.append("注册点云质心 P95 跳变超过 1.5 m，需结合覆盖率判断")
+    if (centroid_p95 is not None and centroid_p95 > 2.5 and
+            overlap_p05 is not None and overlap_p05 < 0.20):
         failures.append("注册点云质心跳变且体素重叠率过低")
     report["failures"] = failures
     report["warnings"] = warnings
@@ -408,9 +565,13 @@ def main():
     )
     ros_started = None
     last_ros_s = None
+    last_graph_sample = 0.0
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.1)
+            if time.monotonic() - last_graph_sample >= 1.0:
+                node.sample_publisher_counts()
+                last_graph_sample = time.monotonic()
             now_ros_s = node.get_clock().now().nanoseconds * 1.0e-9
             if now_ros_s > 0.0 and ros_started is None:
                 ros_started = now_ros_s
