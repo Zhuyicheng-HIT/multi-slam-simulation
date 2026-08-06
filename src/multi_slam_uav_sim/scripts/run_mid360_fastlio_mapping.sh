@@ -115,6 +115,9 @@ fi
 source "$LIDAR_WS/install/setup.bash"
 
 START_LIVOX_POINTCLOUD_BRIDGE=${START_LIVOX_POINTCLOUD_BRIDGE:-auto}
+LIVOX_INPUT_WAIT_S=${LIVOX_INPUT_WAIT_S:-90}
+LIVOX_INPUT_CHECK_PERIOD_S=${LIVOX_INPUT_CHECK_PERIOD_S:-1}
+LIVOX_INPUT_MISSED_CHECKS=${LIVOX_INPUT_MISSED_CHECKS:-5}
 
 topic_publisher_count() {
   local topic=$1
@@ -128,12 +131,13 @@ topic_publisher_count() {
 }
 
 if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "auto" ]]; then
-  # Capture topic info before matching it.  With `set -o pipefail`, piping
-  # `ros2 topic info` into a short-circuiting grep can report failure after a
-  # successful match because ros2 receives SIGPIPE.
-  existing_livox_publishers=$(topic_publisher_count /livox/lidar)
-  if [[ "$FASTLIO_INPUT_MODE" == "livox" ]] \
-      && (( existing_livox_publishers > 0 )); then
+  # `livox` is the hardware-compatible CustomMsg path.  The simulator owns
+  # this path through the C++ Gazebo bridge, which may start several seconds
+  # after this wrapper.  A one-shot publisher check races that startup and can
+  # launch the legacy Python adapter as a second /livox/imu publisher.  That
+  # interleaves two timestamp histories and makes FAST-LIO clear its buffers.
+  # Keep the Python bridge an explicit opt-in for pointcloud/legacy tests.
+  if [[ "$FASTLIO_INPUT_MODE" == "livox" ]]; then
     START_LIVOX_POINTCLOUD_BRIDGE=0
   else
     START_LIVOX_POINTCLOUD_BRIDGE=1
@@ -237,13 +241,14 @@ else
     >"$LOG_DIR/livox_mid360_bridge.log"
 fi
 
-# FAST-LIO assumes one ordered LiDAR stream and one ordered IMU stream.  Two
-# adapters publishing the same topic interleave independent timestamp histories
-# and repeatedly clear its measurement buffers.
+# FAST-LIO assumes one ordered LiDAR stream and one ordered IMU stream.  Wait
+# for the selected adapter to become ready, then continuously enforce that
+# ownership contract while FAST-LIO is running.
 livox_lidar_publishers=0
 livox_imu_publishers=0
 ownership_stable_samples=0
-for _attempt in {1..20}; do
+wait_attempts=$(( LIVOX_INPUT_WAIT_S * 2 ))
+for (( _attempt=1; _attempt<=wait_attempts; _attempt++ )); do
   livox_lidar_publishers=$(topic_publisher_count /livox/lidar)
   livox_imu_publishers=$(topic_publisher_count /livox/imu)
   if (( livox_lidar_publishers > 1 || livox_imu_publishers > 1 )); then
@@ -257,7 +262,7 @@ for _attempt in {1..20}; do
   else
     ownership_stable_samples=0
   fi
-  sleep 1
+  sleep 0.5
 done
 if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 || \
       ownership_stable_samples < 2 )); then
@@ -295,6 +300,33 @@ setsid ros2 launch fast_lio mapping.launch.py \
   frontend_scan_request_retry_period_s:="$FASTLIO_FRONTEND_SCAN_REQUEST_RETRY_S" \
   frontend_scan_request_timeout_s:="$FASTLIO_FRONTEND_SCAN_REQUEST_TIMEOUT_S" \
   >"$LOG_DIR/fast_lio.log" 2>&1 &
+fastlio_pid="$!"
+pids+=("$fastlio_pid")
+
+monitor_livox_ownership() {
+  local ownership_misses=0
+  while kill -0 "$fastlio_pid" 2>/dev/null; do
+    local lidar_count imu_count
+    lidar_count=$(topic_publisher_count /livox/lidar)
+    imu_count=$(topic_publisher_count /livox/imu)
+    if (( lidar_count != 1 || imu_count != 1 )); then
+      ownership_misses=$((ownership_misses + 1))
+      printf 'FAST-LIO input ownership check %s/%s: /livox/lidar publishers=%s, /livox/imu publishers=%s.\n' \
+        "$ownership_misses" "$LIVOX_INPUT_MISSED_CHECKS" "$lidar_count" "$imu_count" \
+        >>"$LOG_DIR/livox_mid360_bridge.log"
+      if (( ownership_misses >= LIVOX_INPUT_MISSED_CHECKS )); then
+        printf 'FAST-LIO input ownership lost continuously: expected exactly one publisher for each topic.\n' \
+          | tee -a "$LOG_DIR/livox_mid360_bridge.log" >&2
+        kill -TERM "$fastlio_pid" 2>/dev/null || true
+        return 3
+      fi
+    else
+      ownership_misses=0
+    fi
+    sleep "$LIVOX_INPUT_CHECK_PERIOD_S"
+  done
+}
+monitor_livox_ownership &
 pids+=("$!")
 
 sleep 3

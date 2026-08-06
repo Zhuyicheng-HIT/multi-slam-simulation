@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -72,6 +73,35 @@ class AnalyzerTimingTest(unittest.TestCase):
 
         np.testing.assert_allclose(
             np.rad2deg(wrapped), [-90.0, 90.0, 1.0], atol=1.0e-9)
+
+    def test_static_yaw_alignment_uses_initial_heading(self):
+        truth_xy = np.asarray([[2.0, -1.0], [2.001, -1.002]])
+        arbitrary_xy_rotation = np.asarray([[0.0, -1.0], [1.0, 0.0]])
+        offset, basis, excitation = MODULE.yaw_alignment_offset(
+            np.deg2rad([100.0, 100.0]),
+            np.deg2rad([5.0, 5.0]),
+            arbitrary_xy_rotation,
+            truth_xy,
+        )
+
+        self.assertEqual(basis, "initial_heading_low_translation")
+        self.assertLess(excitation, 0.5)
+        self.assertAlmostEqual(np.rad2deg(offset), -95.0, places=6)
+
+    def test_livox_custom_packet_extractor_rejects_nonfinite_points(self):
+        message = SimpleNamespace(
+            point_num=3,
+            points=[
+                SimpleNamespace(x=1.0, y=2.0, z=3.0),
+                SimpleNamespace(x=float("nan"), y=0.0, z=0.0),
+                SimpleNamespace(x=4.0, y=5.0, z=6.0),
+            ],
+        )
+
+        points = MODULE.livox_xyz(message, max_points=10)
+
+        self.assertEqual(points.shape, (2, 3))
+        np.testing.assert_allclose(points[0], [1.0, 2.0, 3.0])
 
 
 if __name__ == "__main__":

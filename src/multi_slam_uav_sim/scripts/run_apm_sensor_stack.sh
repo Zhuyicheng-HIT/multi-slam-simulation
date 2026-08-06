@@ -46,6 +46,9 @@ MID360_BODY_MIN_Y_M=${MID360_BODY_MIN_Y_M:--0.45}
 MID360_BODY_MAX_Y_M=${MID360_BODY_MAX_Y_M:-0.45}
 MID360_BODY_MIN_Z_M=${MID360_BODY_MIN_Z_M:--0.35}
 MID360_BODY_MAX_Z_M=${MID360_BODY_MAX_Z_M:-0.15}
+MID360_LIDAR_TO_BODY_X_M=${MID360_LIDAR_TO_BODY_X_M:-0.05}
+MID360_LIDAR_TO_BODY_Y_M=${MID360_LIDAR_TO_BODY_Y_M:-0.0}
+MID360_LIDAR_TO_BODY_Z_M=${MID360_LIDAR_TO_BODY_Z_M:-0.10}
 
 if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
   if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
@@ -127,6 +130,9 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     "$MID360_BODY_MIN_X_M" "$MID360_BODY_MAX_X_M" \
     "$MID360_BODY_MIN_Y_M" "$MID360_BODY_MAX_Y_M" \
     "$MID360_BODY_MIN_Z_M" "$MID360_BODY_MAX_Z_M"
+  printf 'MID360 body extrinsic: lidar origin [%.3f, %.3f, %.3f] m; pitch=+10 deg\n' \
+    "$MID360_LIDAR_TO_BODY_X_M" "$MID360_LIDAR_TO_BODY_Y_M" \
+    "$MID360_LIDAR_TO_BODY_Z_M"
 fi
 
 GPU_REPORT="$LOG_DIR/gpu_acceleration.log"
@@ -154,8 +160,11 @@ pids+=("$!")
 read_clock_ns() {
   local sample sec nanosec
   for _attempt in 1 2 3 4 5 6; do
+    # Humble's ros2topic CLI does not reliably emit the nested Clock.clock
+    # field when --field is combined with --no-daemon.  Read the complete
+    # one-message sample; the parser below already selects sec/nanosec.
     sample=$(timeout 8 ros2 topic echo /clock rosgraph_msgs/msg/Clock \
-      --no-daemon --spin-time 2.0 --once --field clock \
+      --no-daemon --spin-time 2.0 --once \
       --qos-reliability best_effort 2>/dev/null) || sample=
     sec=$(awk '$1 == "sec:" {print $2; exit}' <<<"$sample")
     nanosec=$(awk '$1 == "nanosec:" {print $2; exit}' <<<"$sample")
@@ -431,6 +440,7 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p body_max_y_m:="$MID360_BODY_MAX_Y_M" \
     -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
     -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
+    -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
     -p restamp_imu:=${MID360_SIM_RESTAMP_IMU:-true} \
     -p publish_ground_truth_odom:=true \
     >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &

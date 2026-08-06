@@ -723,7 +723,7 @@
 
     <!-- Front-facing D435i-style RGB-D camera. Gazebo camera +X is forward. -->
     <link name="front_d435i_link">
-      <pose>0.30 0.0 0.02 0 0 0</pose>
+      <pose>0.20 0.0 0.02 0 0 0</pose>
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>
@@ -782,7 +782,9 @@
     </joint>
 
     <link name="mid360_link">
-      <pose>0.0 0.0 0.0 0 0.174532925199433 0</pose>
+      <!-- Measured simulation mount: 5 cm forward, 10 cm above body origin,
+           with a 10 degree nose-down pitch. -->
+      <pose>0.05 0.0 0.10 0 0.174532925199433 0</pose>
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>

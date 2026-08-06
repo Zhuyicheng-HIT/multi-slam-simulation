@@ -91,7 +91,10 @@ public:
       "lidar_to_body_rotation");
     lidar_to_body_translation_ = finite_parameter_array<3>(
       declare_parameter<std::vector<double>>(
-        "lidar_to_body_translation", {0.0, 0.0, 0.0}),
+        // Simulation default: MID360 is 5 cm forward and 10 cm above the
+        // FCU/body origin.  Hardware launch files can override this with the
+        // measured FAST-Calib translation.
+        "lidar_to_body_translation", {0.05, 0.0, 0.10}),
       "lidar_to_body_translation");
     if (body_bounds_[0] > body_bounds_[1] ||
       body_bounds_[2] > body_bounds_[3] ||

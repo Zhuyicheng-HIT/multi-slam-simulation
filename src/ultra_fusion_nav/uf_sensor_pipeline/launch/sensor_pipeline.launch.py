@@ -190,7 +190,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("d435_parent_frame", default_value="base_link"),
         DeclareLaunchArgument("d435_child_frame", default_value="d435i_link"),
-        DeclareLaunchArgument("d435_x", default_value="0.30"),
+        DeclareLaunchArgument("d435_x", default_value="0.20"),
         DeclareLaunchArgument("d435_y", default_value="0.0"),
         DeclareLaunchArgument("d435_z", default_value="0.02"),
         DeclareLaunchArgument("d435_roll", default_value="0.0"),

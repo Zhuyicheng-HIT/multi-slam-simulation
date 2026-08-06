@@ -270,7 +270,8 @@ class D435iSimBridge(Node):
     def _publish_static_tf(self):
         self.tf_broadcaster = StaticTransformBroadcaster(self)
         transforms = [
-            self._transform("base_link", "front_d435i_link", (0.30, 0.0, 0.02)),
+            # Keep the bridge TF identical to the Gazebo model mount.
+            self._transform("base_link", "front_d435i_link", (0.20, 0.0, 0.02)),
             self._transform("front_d435i_link", "front_d435i_color_frame"),
             self._transform("front_d435i_color_frame", self.color_frame, optical=True),
             self._transform("front_d435i_link", "front_d435i_depth_frame"),
