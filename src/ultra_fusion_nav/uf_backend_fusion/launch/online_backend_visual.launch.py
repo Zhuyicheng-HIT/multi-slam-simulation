@@ -1,6 +1,7 @@
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -14,10 +15,28 @@ def generate_launch_description():
     scheduler_config = (
         reliability_share + "/config/scheduler_visual_config.yaml")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    start_lidar_relocalization = LaunchConfiguration(
+        "start_lidar_relocalization")
+    visual_factor_trace_enabled = LaunchConfiguration(
+        "visual_factor_trace_enabled")
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument(
+            "start_lidar_relocalization",
+            default_value="false",
+            description=(
+                "Start the LiDAR static-cloud relocalizer. RTAB visual "
+                "cross-session localization remains a separate pipeline."),
+        ),
+        DeclareLaunchArgument(
             "frontend_state_seed_enabled", default_value="false"),
+        DeclareLaunchArgument(
+            "visual_factor_trace_enabled",
+            default_value="false",
+            description=(
+                "Emit detailed per-factor admission and optimization traces. "
+                "Keep disabled outside short diagnostic runs."),
+        ),
         DeclareLaunchArgument(
             "frontend_scan_prediction_enabled", default_value="false"),
         DeclareLaunchArgument("preserve_lio_anchor", default_value="true"),
@@ -71,6 +90,10 @@ def generate_launch_description():
                         LaunchConfiguration("imu_factor_enabled"),
                         value_type=bool,
                     ),
+                    "visual_factor_trace_enabled": ParameterValue(
+                        visual_factor_trace_enabled,
+                        value_type=bool,
+                    ),
                     "frontend_state_seed_enabled": ParameterValue(
                         LaunchConfiguration("frontend_state_seed_enabled"),
                         value_type=bool,
@@ -120,5 +143,6 @@ def generate_launch_description():
             name="relocalization_node",
             parameters=[{"use_sim_time": use_sim_time}],
             output="screen",
+            condition=IfCondition(start_lidar_relocalization),
         ),
     ])

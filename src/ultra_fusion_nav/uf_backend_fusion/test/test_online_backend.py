@@ -35,6 +35,8 @@ from uf_backend_fusion.online_backend import (
     path_sample_due,
     scheduler_decision,
     select_gnss_observation,
+    timestamp_age_s,
+    timestamp_is_fresh,
     unwrap_yaw,
     UnifiedBackendNode,
     validate_optimized_state,
@@ -56,6 +58,15 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             "maximum_information_condition": 1.0e12,
             "information_rank_tolerance": 1.0e-9,
         }
+
+    def test_visual_score_freshness_uses_one_ros_clock_domain(self):
+        # The old PR #8 used monotonic arrival time at both ends. Stage3 moved
+        # reliability headers to ROS simulation time, so a monotonic "now"
+        # must never be mixed with that source timestamp.
+        self.assertTrue(timestamp_is_fresh(125.40, 125.00, 0.50))
+        self.assertAlmostEqual(timestamp_age_s(125.40, 125.00), 0.40)
+        self.assertFalse(timestamp_is_fresh(6_427_044.0, 125.00, 0.50))
+        self.assertTrue(math.isinf(timestamp_age_s(124.90, 125.00)))
 
     def test_optimization_integrity_accepts_finite_cost_reducing_state(self):
         initial = np.zeros(15)

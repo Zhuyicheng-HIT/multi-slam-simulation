@@ -1043,6 +1043,47 @@ class ManifoldSlidingWindowBackend:
             )
         return None
 
+    def latest_factor_diagnostics(self, name):
+        """Expose one factor's residual/Jacobian contract for runtime audits."""
+        for factor in reversed(self._factors):
+            if factor["name"] != name:
+                continue
+            residual = np.asarray(
+                self._residual(factor, self._states), dtype=float
+            )
+            jacobians = {
+                int(index): numerical_state_jacobian(
+                    lambda values: self._residual(factor, values),
+                    self._states,
+                    index,
+                )
+                for index in factor["indices"]
+            }
+            return {
+                "name": name,
+                "state_indices": [int(value) for value in factor["indices"]],
+                "enabled": bool(factor["enabled"]),
+                "reliability_weight": float(factor["reliability_weight"]),
+                "covariance_inflation": float(factor["covariance_inflation"]),
+                "effective_weight": float(factor["effective_weight"]),
+                "variance": [float(value) for value in factor["variance"]],
+                "residual": [float(value) for value in residual],
+                "residual_norm": float(np.linalg.norm(residual)),
+                "jacobian_frobenius_norms": {
+                    str(index): float(np.linalg.norm(jacobian))
+                    for index, jacobian in jacobians.items()
+                },
+                "jacobian_max_abs": {
+                    str(index): float(np.max(np.abs(jacobian)))
+                    for index, jacobian in jacobians.items()
+                },
+                "finite": bool(
+                    np.all(np.isfinite(residual))
+                    and all(np.all(np.isfinite(value)) for value in jacobians.values())
+                ),
+            }
+        return None
+
     def factor_summary(self):
         return [
             FactorRecord(

@@ -21,9 +21,15 @@ RUN_DIR=${RUN_DIR:-$WS_ROOT/logs/pr6_d435i_visual/$RUN_ID}
 ACTIVE_FILE=${ACTIVE_FILE:-$WS_ROOT/logs/d435i_visual_slam/.active_headless}
 RUN_SMALL_RECTANGLE=${RUN_SMALL_RECTANGLE:-0}
 EXIT_AFTER_RECTANGLE=${EXIT_AFTER_RECTANGLE:-0}
+VISUAL_FACTOR_TRACE_ENABLED=${VISUAL_FACTOR_TRACE_ENABLED:-0}
 case "$EXIT_AFTER_RECTANGLE" in
   0|1) ;;
   *) printf 'EXIT_AFTER_RECTANGLE must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$VISUAL_FACTOR_TRACE_ENABLED" in
+  0) VISUAL_FACTOR_TRACE_BOOL=false ;;
+  1) VISUAL_FACTOR_TRACE_BOOL=true ;;
+  *) printf 'VISUAL_FACTOR_TRACE_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 PR6_START_RTABMAP=${PR6_START_RTABMAP:-1}
 case "$PR6_START_RTABMAP" in
@@ -169,6 +175,7 @@ printf 'input_trigger=%s\nnative_factor=%s\nlio_pose_fallback=%s\nimu_factor=%s\
 setsid ros2 launch multi_slam_uav_sim pr6_d435i_visual_integration.launch.py \
   use_sim_time:=true start_backend:="$INTEGRATION_START_BACKEND" \
   start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
+  visual_factor_trace_enabled:="$VISUAL_FACTOR_TRACE_BOOL" \
   database_path:="$RUN_DIR/rtabmap.db" \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"
@@ -183,6 +190,7 @@ if [[ "$INTEGRATION_START_BACKEND" == false ]]; then
     native_lidar_factor_enabled:="$BACKEND_NATIVE_FACTOR" \
     allow_lio_pose_fallback:="$BACKEND_LIO_FALLBACK" \
     imu_factor_enabled:="$BACKEND_IMU_FACTOR" \
+    visual_factor_trace_enabled:="$VISUAL_FACTOR_TRACE_BOOL" \
     >"$RUN_DIR/backend_fallback.log" 2>&1 &
   record_pid backend_fallback "$!"
 fi
@@ -192,7 +200,10 @@ wait_for_topic /sensors/rgbd/depth 45
 wait_for_topic /front/d435i/color/camera_info 45
 wait_for_topic /reliability/vision_score 45
 if [[ "$PR6_START_RTABMAP" == 1 ]]; then
-  wait_for_topic /rtabmap/odom 120
+  # An idle camera may publish only a short odometry burst before the mission
+  # starts.  Publisher discovery proves that RTAB is wired; the valid-score
+  # check below validates actual odometry after motion begins.
+  wait_for_publisher /rtabmap/odom 120
 fi
 wait_for_publisher /reliability/scheduler_state 45
 wait_for_topic /fusion/unified/odom 120

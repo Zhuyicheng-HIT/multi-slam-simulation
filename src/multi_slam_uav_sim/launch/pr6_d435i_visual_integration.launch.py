@@ -25,11 +25,15 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     start_backend = LaunchConfiguration("start_backend")
     start_rtabmap = LaunchConfiguration("start_rtabmap")
+    visual_factor_trace_enabled = LaunchConfiguration(
+        "visual_factor_trace_enabled")
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("start_backend", default_value="true"),
         DeclareLaunchArgument("start_rtabmap", default_value="true"),
+        DeclareLaunchArgument(
+            "visual_factor_trace_enabled", default_value="false"),
         DeclareLaunchArgument(
             "rtab_config",
             default_value=str(
@@ -107,6 +111,7 @@ def generate_launch_description():
             {
                 "use_sim_time": use_sim_time,
                 "preserve_lio_anchor": "true",
+                "visual_factor_trace_enabled": visual_factor_trace_enabled,
             },
             condition=IfCondition(start_backend),
         ),

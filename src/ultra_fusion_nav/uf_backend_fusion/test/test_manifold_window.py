@@ -113,6 +113,13 @@ class ManifoldWindowTest(unittest.TestCase):
         np.testing.assert_allclose(estimate[:3], [1.0, 0.0, 0.0], atol=2.0e-3)
         np.testing.assert_allclose(estimate[3:6], [0.0, 0.0, 0.2], atol=2.0e-3)
         self.assertEqual(backend.factor_summary()[-1].name, "visual_odometry")
+        diagnostics = backend.latest_factor_diagnostics("visual_odometry")
+        self.assertTrue(diagnostics["enabled"])
+        self.assertTrue(diagnostics["finite"])
+        self.assertEqual(diagnostics["state_indices"], [0, 1])
+        self.assertEqual(len(diagnostics["residual"]), 6)
+        self.assertEqual(set(diagnostics["jacobian_frobenius_norms"]), {"0", "1"})
+        self.assertLess(diagnostics["residual_norm"], 0.01)
     def test_huber_loss_is_symmetric_and_continuous_at_threshold(self):
         residual = np.asarray([0.0, 2.5, -2.5, 10.0, -10.0])
         loss, weight = huber_loss_and_weight(residual, 2.5)

@@ -3,128 +3,76 @@
   <model name="s_curve_lidar_landmarks">
     <static>true</static>
     <link name="landmarks">
+      <!-- Collision-only landmarks preserve stage3 LiDAR observability without
+           occluding the RGB scene stored in the frozen RTAB reference map. -->
       <collision name="west_south_slab">
         <pose>-6.2 -5.2 1.35 0 0 0.30</pose>
         <geometry><box><size>0.75 1.50 2.70</size></box></geometry>
       </collision>
-      <visual name="west_south_slab_visual">
-        <pose>-6.2 -5.2 1.35 0 0 0.30</pose>
-        <geometry><box><size>0.75 1.50 2.70</size></box></geometry>
-        <material><diffuse>0.75 0.18 0.12 1</diffuse></material>
-      </visual>
 
       <collision name="east_south_column">
         <pose>6.2 -4.0 1.65 0 0 0</pose>
         <geometry><cylinder><radius>0.48</radius><length>3.30</length></cylinder></geometry>
       </collision>
-      <visual name="east_south_column_visual">
-        <pose>6.2 -4.0 1.65 0 0 0</pose>
-        <geometry><cylinder><radius>0.48</radius><length>3.30</length></cylinder></geometry>
-        <material><diffuse>0.16 0.40 0.78 1</diffuse></material>
-      </visual>
 
       <collision name="west_mid_wedge">
         <pose>-6.3 -1.8 1.10 0 0 -0.55</pose>
         <geometry><box><size>1.25 0.65 2.20</size></box></geometry>
       </collision>
-      <visual name="west_mid_wedge_visual">
-        <pose>-6.3 -1.8 1.10 0 0 -0.55</pose>
-        <geometry><box><size>1.25 0.65 2.20</size></box></geometry>
-        <material><diffuse>0.15 0.62 0.30 1</diffuse></material>
-      </visual>
 
       <collision name="east_mid_tower">
         <pose>6.35 -0.3 1.90 0 0 0.18</pose>
         <geometry><box><size>0.60 0.90 3.80</size></box></geometry>
       </collision>
-      <visual name="east_mid_tower_visual">
-        <pose>6.35 -0.3 1.90 0 0 0.18</pose>
-        <geometry><box><size>0.60 0.90 3.80</size></box></geometry>
-        <material><diffuse>0.88 0.68 0.10 1</diffuse></material>
-      </visual>
 
       <collision name="west_north_column">
         <pose>-6.15 1.5 1.50 0 0 0</pose>
         <geometry><cylinder><radius>0.62</radius><length>3.00</length></cylinder></geometry>
       </collision>
-      <visual name="west_north_column_visual">
-        <pose>-6.15 1.5 1.50 0 0 0</pose>
-        <geometry><cylinder><radius>0.62</radius><length>3.00</length></cylinder></geometry>
-        <material><diffuse>0.52 0.20 0.68 1</diffuse></material>
-      </visual>
 
       <collision name="east_north_slab">
         <pose>6.25 2.8 1.25 0 0 -0.40</pose>
         <geometry><box><size>1.40 0.55 2.50</size></box></geometry>
       </collision>
-      <visual name="east_north_slab_visual">
-        <pose>6.25 2.8 1.25 0 0 -0.40</pose>
-        <geometry><box><size>1.40 0.55 2.50</size></box></geometry>
-        <material><diffuse>0.12 0.62 0.68 1</diffuse></material>
-      </visual>
 
       <collision name="west_end_tower">
         <pose>-6.35 4.7 1.75 0 0 0.12</pose>
         <geometry><box><size>0.70 1.10 3.50</size></box></geometry>
       </collision>
-      <visual name="west_end_tower_visual">
-        <pose>-6.35 4.7 1.75 0 0 0.12</pose>
-        <geometry><box><size>0.70 1.10 3.50</size></box></geometry>
-        <material><diffuse>0.82 0.32 0.10 1</diffuse></material>
-      </visual>
 
       <collision name="east_end_block">
         <pose>6.15 5.5 1.05 0 0 0.62</pose>
         <geometry><box><size>1.10 0.80 2.10</size></box></geometry>
       </collision>
-      <visual name="east_end_block_visual">
-        <pose>6.15 5.5 1.05 0 0 0.62</pose>
-        <geometry><box><size>1.10 0.80 2.10</size></box></geometry>
-        <material><diffuse>0.35 0.38 0.42 1</diffuse></material>
-      </visual>
 
       <collision name="center_west_pillar"><pose>-4.0 -1.0 1.45 0 0 0.25</pose><geometry><box><size>0.55 0.90 2.90</size></box></geometry></collision>
-      <visual name="center_west_pillar_visual"><pose>-4.0 -1.0 1.45 0 0 0.25</pose><geometry><box><size>0.55 0.90 2.90</size></box></geometry><material><diffuse>0.78 0.20 0.18 1</diffuse></material></visual>
 
       <collision name="center_east_column"><pose>4.0 1.0 1.65 0 0 0</pose><geometry><cylinder><radius>0.42</radius><length>3.30</length></cylinder></geometry></collision>
-      <visual name="center_east_column_visual"><pose>4.0 1.0 1.65 0 0 0</pose><geometry><cylinder><radius>0.42</radius><length>3.30</length></cylinder></geometry><material><diffuse>0.12 0.52 0.74 1</diffuse></material></visual>
 
       <collision name="south_endpoint_gate"><pose>3.5 -6.0 1.70 0 0 -0.32</pose><geometry><box><size>0.62 1.00 3.40</size></box></geometry></collision>
-      <visual name="south_endpoint_gate_visual"><pose>3.5 -6.0 1.70 0 0 -0.32</pose><geometry><box><size>0.62 1.00 3.40</size></box></geometry><material><diffuse>0.82 0.54 0.08 1</diffuse></material></visual>
 
       <collision name="north_endpoint_gate"><pose>-3.5 6.0 1.55 0 0 0.44</pose><geometry><box><size>0.70 0.88 3.10</size></box></geometry></collision>
-      <visual name="north_endpoint_gate_visual"><pose>-3.5 6.0 1.55 0 0 0.44</pose><geometry><box><size>0.70 0.88 3.10</size></box></geometry><material><diffuse>0.18 0.58 0.28 1</diffuse></material></visual>
 
       <!-- Sparse asymmetric geometry extends LiDAR observability into the outer 38 m test area. -->
       <collision name="outer_southwest_tower"><pose>-15 -14 1.9 0 0 0.22</pose><geometry><box><size>0.75 1.20 3.80</size></box></geometry></collision>
-      <visual name="outer_southwest_tower_visual"><pose>-15 -14 1.9 0 0 0.22</pose><geometry><box><size>0.75 1.20 3.80</size></box></geometry><material><diffuse>0.72 0.16 0.12 1</diffuse></material></visual>
 
       <collision name="outer_south_column"><pose>0 -15.5 1.6 0 0 0</pose><geometry><cylinder><radius>0.58</radius><length>3.20</length></cylinder></geometry></collision>
-      <visual name="outer_south_column_visual"><pose>0 -15.5 1.6 0 0 0</pose><geometry><cylinder><radius>0.58</radius><length>3.20</length></cylinder></geometry><material><diffuse>0.10 0.38 0.76 1</diffuse></material></visual>
 
       <collision name="outer_southeast_slab"><pose>14.8 -13.8 1.35 0 0 -0.58</pose><geometry><box><size>1.55 0.55 2.70</size></box></geometry></collision>
-      <visual name="outer_southeast_slab_visual"><pose>14.8 -13.8 1.35 0 0 -0.58</pose><geometry><box><size>1.55 0.55 2.70</size></box></geometry><material><diffuse>0.16 0.62 0.30 1</diffuse></material></visual>
 
       <collision name="outer_west_column"><pose>-15.5 -5.0 1.75 0 0 0</pose><geometry><cylinder><radius>0.46</radius><length>3.50</length></cylinder></geometry></collision>
-      <visual name="outer_west_column_visual"><pose>-15.5 -5.0 1.75 0 0 0</pose><geometry><cylinder><radius>0.46</radius><length>3.50</length></cylinder></geometry><material><diffuse>0.82 0.58 0.08 1</diffuse></material></visual>
 
       <collision name="outer_east_tower"><pose>15.4 -3.0 2.1 0 0 0.10</pose><geometry><box><size>0.65 0.85 4.20</size></box></geometry></collision>
-      <visual name="outer_east_tower_visual"><pose>15.4 -3.0 2.1 0 0 0.10</pose><geometry><box><size>0.65 0.85 4.20</size></box></geometry><material><diffuse>0.50 0.18 0.66 1</diffuse></material></visual>
 
       <collision name="outer_west_slab"><pose>-15.2 4.2 1.25 0 0 0.68</pose><geometry><box><size>1.45 0.60 2.50</size></box></geometry></collision>
-      <visual name="outer_west_slab_visual"><pose>-15.2 4.2 1.25 0 0 0.68</pose><geometry><box><size>1.45 0.60 2.50</size></box></geometry><material><diffuse>0.10 0.58 0.66 1</diffuse></material></visual>
 
       <collision name="outer_east_column"><pose>15.5 7.0 1.55 0 0 0</pose><geometry><cylinder><radius>0.68</radius><length>3.10</length></cylinder></geometry></collision>
-      <visual name="outer_east_column_visual"><pose>15.5 7.0 1.55 0 0 0</pose><geometry><cylinder><radius>0.68</radius><length>3.10</length></cylinder></geometry><material><diffuse>0.70 0.28 0.08 1</diffuse></material></visual>
 
       <collision name="outer_northwest_tower"><pose>-14.2 14.5 2.0 0 0 -0.20</pose><geometry><box><size>0.80 1.15 4.00</size></box></geometry></collision>
-      <visual name="outer_northwest_tower_visual"><pose>-14.2 14.5 2.0 0 0 -0.20</pose><geometry><box><size>0.80 1.15 4.00</size></box></geometry><material><diffuse>0.20 0.44 0.78 1</diffuse></material></visual>
 
       <collision name="outer_north_wedge"><pose>0.8 15.4 1.30 0 0 0.78</pose><geometry><box><size>1.70 0.52 2.60</size></box></geometry></collision>
-      <visual name="outer_north_wedge_visual"><pose>0.8 15.4 1.30 0 0 0.78</pose><geometry><box><size>1.70 0.52 2.60</size></box></geometry><material><diffuse>0.10 0.64 0.32 1</diffuse></material></visual>
 
       <collision name="outer_northeast_column"><pose>14.5 14.2 1.85 0 0 0</pose><geometry><cylinder><radius>0.52</radius><length>3.70</length></cylinder></geometry></collision>
-      <visual name="outer_northeast_column_visual"><pose>14.5 14.2 1.85 0 0 0</pose><geometry><cylinder><radius>0.52</radius><length>3.70</length></cylinder></geometry><material><diffuse>0.78 0.16 0.14 1</diffuse></material></visual>
     </link>
   </model>
 </sdf>
