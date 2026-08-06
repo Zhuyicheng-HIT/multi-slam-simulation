@@ -1,0 +1,23 @@
+reliability_scheduler:
+  ros__parameters:
+    # D_V_rgbd publishes the only vision score. RTAB odometry is the only
+    # visual factor, avoiding image-feature/odom double counting.
+    active_modalities: [lidar, gnss, imu, optical_flow, vision]
+    required_modalities: [imu]
+    minimum_usable_modalities: 2
+    score_timeout_s: 1.0
+    degraded_threshold: 0.35
+    risk_threshold: 0.60
+    failsafe_threshold: 0.85
+    factor_disable_threshold: 0.80
+    factor_enable_threshold: 0.55
+    minimum_weight: 0.05
+    maximum_covariance_inflation: 20.0
+    # Keep the latest mainline's high-dynamic IMU propagation contract.
+    # Stale, invalid, or saturated IMU remains hard-disabled.
+    imu_soft_max_degradation: 0.80
+    transition_dwell_s: 0.5
+    recovery_dwell_s: 1.5
+    recovered_hold_s: 1.0
+    capability_observable_threshold: 0.15
+    publish_rate_hz: 10.0
