@@ -15,7 +15,7 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from uf_interfaces.msg import SchedulerState
 
 from .guided_rectangle_waypoints import GuidedRectangleWaypoints
@@ -26,6 +26,7 @@ from .localization_safety import (
     diagnostic_level_value,
     scheduler_localization_loss,
 )
+from .relocalization_checkpoints import MissionCheckpoint, encode_checkpoint
 from .s_curve_path import (
     backend_error_to_fcu_setpoint,
     generate_calibration_figure_eight,
@@ -177,6 +178,9 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.backend_to_fcu_yaw = None
         self.last_route_fcu_setpoint = None
         self.route_hold_fcu_setpoint = None
+        self.route_checkpoint_index = 0
+        self.mission_checkpoint_pub = self.create_publisher(
+            String, "/mission/checkpoint", 10)
         self.localization_safety = LocalizationSafetyStateMachine(
             loss_dwell_s=float(
                 self.get_parameter("localization_loss_dwell_s").value),
@@ -621,6 +625,21 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         return math.dist(
             (float(position.x), float(position.y), float(position.z)), point)
 
+    def _publish_route_checkpoint(self, label, distance_m, point):
+        self.route_checkpoint_index += 1
+        checkpoint = MissionCheckpoint(
+            index=self.route_checkpoint_index,
+            label=str(label),
+            distance_m=float(distance_m),
+            position=tuple(float(value) for value in point),
+        )
+        message = String()
+        message.data = encode_checkpoint(checkpoint)
+        self.mission_checkpoint_pub.publish(message)
+        self.get_logger().info(
+            f"Mission checkpoint {checkpoint.index}: {checkpoint.label}, "
+            f"distance={checkpoint.distance_m:.1f}m")
+
     def settle_waypoint(self, point, yaw, label, hold_s=None):
         hold_s = self.waypoint_hold_s if hold_s is None else max(0.0, hold_s)
         started = self._now_s()
@@ -702,6 +721,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         speed_mps=None,
         checkpoint_spacing_m=None,
         yaw_sweep_rad=0.0,
+        publish_relocalization_checkpoints=False,
     ):
         speed_mps = self.speed_mps if speed_mps is None else max(
             0.1, float(speed_mps)
@@ -755,6 +775,8 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 and not is_endpoint
                 and travelled + 1.0e-6 >= next_waypoint_distance
             ):
+                if publish_relocalization_checkpoints:
+                    self._publish_route_checkpoint(label, travelled, point)
                 self.settle_waypoint(
                     point, commanded_yaw,
                     f"{label} checkpoint {travelled:.1f}m")
@@ -886,7 +908,8 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 f"S pass {pass_index + 1}/{self.pass_count} start")
             self.fly_path(
                 path, locked_yaw,
-                f"S pass {pass_index + 1}/{self.pass_count}")
+                f"S pass {pass_index + 1}/{self.pass_count}",
+                publish_relocalization_checkpoints=True)
             current = path[-1]
             self.hold_setpoint(
                 *current, seconds=self.hold_time, yaw=locked_yaw,

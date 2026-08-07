@@ -40,10 +40,23 @@ VALIDATION_PRESERVE_LIO_ANCHOR=${VALIDATION_PRESERVE_LIO_ANCHOR:-false}
 VALIDATION_LOCALIZATION_SAFETY_ENABLED=${VALIDATION_LOCALIZATION_SAFETY_ENABLED:-true}
 VALIDATION_RELOCALIZATION_TRIGGER_SIM_S=${VALIDATION_RELOCALIZATION_TRIGGER_SIM_S:-}
 VALIDATION_RELOCALIZATION_TRIGGER_PHASE=${VALIDATION_RELOCALIZATION_TRIGGER_PHASE:-}
-if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_SIM_S" &&
-  -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ]]
+VALIDATION_RELOCALIZATION_CHECKPOINTS=${VALIDATION_RELOCALIZATION_CHECKPOINTS:-}
+relocalization_trigger_modes=0
+[[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_SIM_S" ]] &&
+  ((relocalization_trigger_modes += 1))
+[[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ]] &&
+  ((relocalization_trigger_modes += 1))
+[[ -n "$VALIDATION_RELOCALIZATION_CHECKPOINTS" ]] &&
+  ((relocalization_trigger_modes += 1))
+if (( relocalization_trigger_modes > 1 ))
 then
-  printf 'Choose only one relocalization trigger: simulation time or mission phase.\n' >&2
+  printf 'Choose one relocalization trigger: simulation time, mission phase, or checkpoints.\n' >&2
+  exit 2
+fi
+if [[ -n "$VALIDATION_RELOCALIZATION_CHECKPOINTS" &&
+  "$VALIDATION_ROUTE" != "s_curve" ]]
+then
+  printf 'Checkpoint relocalization requires VALIDATION_ROUTE=s_curve.\n' >&2
   exit 2
 fi
 if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ]]; then
@@ -246,22 +259,32 @@ pids+=("$metrics_pid")
 
 relocalization_trigger_pid=""
 if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_SIM_S" ||
-  -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ]]
+  -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ||
+  -n "$VALIDATION_RELOCALIZATION_CHECKPOINTS" ]]
 then
-  relocalization_trigger_args=()
-  if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ]]; then
-    relocalization_trigger_args+=(
-      --wait-for-phase "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE")
+  if [[ -n "$VALIDATION_RELOCALIZATION_CHECKPOINTS" ]]; then
+    python3 "$REPO_ROOT/tools/trigger_relocalization_checkpoints.py" \
+      --indices "$VALIDATION_RELOCALIZATION_CHECKPOINTS" \
+      --wall-timeout "$VALIDATION_RELOCALIZATION_WALL_TIMEOUT" \
+      --output "$LOG_DIR/relocalization_trigger.json" \
+      --ros-args -p use_sim_time:=true \
+      >"$LOG_DIR/relocalization_trigger.log" 2>&1 &
   else
-    relocalization_trigger_args+=(
-      --after "$VALIDATION_RELOCALIZATION_TRIGGER_SIM_S")
+    relocalization_trigger_args=()
+    if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ]]; then
+      relocalization_trigger_args+=(
+        --wait-for-phase "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE")
+    else
+      relocalization_trigger_args+=(
+        --after "$VALIDATION_RELOCALIZATION_TRIGGER_SIM_S")
+    fi
+    python3 "$REPO_ROOT/tools/trigger_relocalization_once.py" \
+      "${relocalization_trigger_args[@]}" \
+      --wall-timeout "$VALIDATION_RELOCALIZATION_WALL_TIMEOUT" \
+      --output "$LOG_DIR/relocalization_trigger.json" \
+      --ros-args -p use_sim_time:=true \
+      >"$LOG_DIR/relocalization_trigger.log" 2>&1 &
   fi
-  python3 "$REPO_ROOT/tools/trigger_relocalization_once.py" \
-    "${relocalization_trigger_args[@]}" \
-    --wall-timeout "$VALIDATION_RELOCALIZATION_WALL_TIMEOUT" \
-    --output "$LOG_DIR/relocalization_trigger.json" \
-    --ros-args -p use_sim_time:=true \
-    >"$LOG_DIR/relocalization_trigger.log" 2>&1 &
   relocalization_trigger_pid=$!
   pids+=("$relocalization_trigger_pid")
 fi
