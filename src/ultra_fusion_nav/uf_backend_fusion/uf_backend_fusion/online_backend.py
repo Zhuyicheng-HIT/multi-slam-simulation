@@ -232,6 +232,11 @@ def native_factor_epoch_status(
         factor_reset_counter, current_reset_counter,
         relocalization_applied_now, backend_trajectory_frontend_enabled):
     """Classify a native factor without crossing a relocalization epoch."""
+    if not backend_trajectory_frontend_enabled:
+        # The independent FAST-LIO front end keeps factors in its persistent
+        # local frame. map_from_lio applies the new global alignment below,
+        # so its packet counter does not participate in backend epoch gating.
+        return "current"
     if native_factor_epoch_barrier_required(
         relocalization_applied_now, backend_trajectory_frontend_enabled
     ):

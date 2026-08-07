@@ -121,6 +121,11 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(native_factor_epoch_status(2, 1, False, True), "future")
         self.assertEqual(native_factor_epoch_status(1, 1, False, True), "current")
 
+    def test_independent_frontend_factors_use_persistent_map_alignment(self):
+        self.assertEqual(native_factor_epoch_status(0, 1, True, False), "current")
+        self.assertEqual(native_factor_epoch_status(0, 1, False, False), "current")
+        self.assertEqual(native_factor_epoch_status(2, 1, False, False), "current")
+
     def test_process_lio_counts_barrier_before_stale_or_future_epoch(self):
         node = object.__new__(UnifiedBackendNode)
         node.frontend_scan_prediction_enabled = True
