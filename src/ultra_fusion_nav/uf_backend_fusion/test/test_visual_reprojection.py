@@ -6,6 +6,7 @@ from uf_backend_fusion.manifold import STATE_SIZE, state_plus
 from uf_backend_fusion.manifold_window import ManifoldSlidingWindowBackend
 from uf_backend_fusion.visual_reprojection import (
     VisualTrackBatch,
+    validate_visual_linearization,
     visual_reprojection_residual,
     visual_reprojection_residual_jacobians,
 )
@@ -89,6 +90,30 @@ class VisualReprojectionTest(unittest.TestCase):
             VisualTrackBatch([[0.0, 0.0]], [[0.0, 0.0]], [0.0], 1.0)
         with self.assertRaises(ValueError):
             VisualTrackBatch([[0.0, 0.0]], [[0.0, 0.0]], [1.0], -1.0)
+
+    def test_linearization_check_accepts_consistent_tracks(self):
+        check = validate_visual_linearization(
+            self.anchor, self.current, self.tracks, 500.0, 500.0,
+        )
+        self.assertTrue(check.valid, check.reason)
+        self.assertEqual(check.valid_track_count, len(self.tracks.inverse_depth))
+        self.assertGreaterEqual(check.jacobian_rank, 3)
+        self.assertLess(check.reprojection_rmse_px, 1.0e-8)
+
+    def test_linearization_check_rejects_cross_modal_innovation(self):
+        inconsistent = VisualTrackBatch(
+            self.tracks.anchor_normalized,
+            self.tracks.current_normalized + np.asarray([0.08, 0.0]),
+            self.tracks.inverse_depth,
+            self.tracks.variance,
+        )
+        check = validate_visual_linearization(
+            self.anchor, self.current, inconsistent, 500.0, 500.0,
+            maximum_reprojection_rmse_px=6.0,
+        )
+        self.assertFalse(check.valid)
+        self.assertEqual(check.reason, "state_innovation_reprojection_rmse")
+        self.assertGreater(check.reprojection_rmse_px, 6.0)
 
 
 if __name__ == "__main__":

@@ -55,6 +55,18 @@ class ReliabilityTimelineRecorder(Node):
             20,
         )
         self.create_subscription(
+            DiagnosticArray,
+            "/vision/frontend_diagnostics",
+            self._visual_frontend,
+            20,
+        )
+        self.create_subscription(
+            DiagnosticArray,
+            "/fusion/unified/visual_timing",
+            self._visual_timing,
+            100,
+        )
+        self.create_subscription(
             LioDiagnostics,
             "/lio/diagnostics",
             self._lio,
@@ -189,6 +201,79 @@ class ReliabilityTimelineRecorder(Node):
         })
         self.events.append(event)
 
+    @staticmethod
+    def _finite_float(values, name, default=-1.0):
+        try:
+            value = float(values.get(name, default))
+        except (TypeError, ValueError):
+            return float(default)
+        return value if math.isfinite(value) else float(default)
+
+    def _visual_frontend(self, msg):
+        for status in msg.status:
+            if status.name != "uf_rgbd_feature_frontend":
+                continue
+            values = {item.key: item.value for item in status.values}
+            event = self._relative_event("visual_frontend", msg)
+            if event is None:
+                return
+            integer_names = (
+                "raw_color_frames", "raw_depth_frames", "raw_frames",
+                "cadence_skipped", "keyframe_candidates",
+                "tracking_initializations", "tracked_frames",
+                "quality_valid_candidates", "quality_rejected_candidates",
+                "published_candidates",
+            )
+            event.update({
+                name: int(values.get(name, 0)) for name in integer_names
+            })
+            event.update({
+                "keyframe_profile": values.get("keyframe_profile", "unknown"),
+                "keyframe_period_s": self._finite_float(
+                    values, "keyframe_period_s"
+                ),
+                "last_frontend_latency_s": self._finite_float(
+                    values, "last_frontend_latency_s"
+                ),
+                "last_median_parallax_px": self._finite_float(
+                    values, "last_median_parallax_px"
+                ),
+                "last_spatial_distribution": self._finite_float(
+                    values, "last_spatial_distribution"
+                ),
+                "last_mean_reprojection_error_px": self._finite_float(
+                    values, "last_mean_reprojection_error_px"
+                ),
+            })
+            self.events.append(event)
+
+    def _visual_timing(self, msg):
+        for status in msg.status:
+            if status.name != "visual_time_association":
+                continue
+            values = {item.key: item.value for item in status.values}
+            event = self._relative_event("visual_timing", msg)
+            if event is None:
+                return
+            event.update({
+                "candidate_id": int(values.get("candidate_id", 0)),
+                "outcome": values.get("outcome", "unknown"),
+                "reason": values.get("reason", "unknown"),
+                "missing_side": values.get("missing_side", "none"),
+            })
+            for name in (
+                "visual_previous_stamp_s", "visual_timestamp_s",
+                "arrival_ros_s", "ros_sim_time_s",
+                "active_window_start_s", "active_window_end_s",
+                "nearest_previous_state_stamp_s", "nearest_state_timestamp_s",
+                "delta_previous_state_s", "delta_to_nearest_state_s",
+                "visual_frontend_latency_s", "backend_queue_latency_s",
+                "backend_queue_wall_latency_s", "keyframe_interval_s",
+                "lidar_state_interval_median_s", "camera_imu_time_offset_s",
+            ):
+                event[name] = self._finite_float(values, name)
+            self.events.append(event)
+
     def _backend(self, msg):
         for status in msg.status:
             if status.name != "unified_backend_fusion":
@@ -241,6 +326,33 @@ class ReliabilityTimelineRecorder(Node):
                 "optimization_rollbacks": int(
                     values.get("optimization_rollbacks", 0)
                 ),
+                "optimization_integrity_reason": str(
+                    values.get("optimization_integrity_reason", "not_checked")
+                ),
+                "optimization_integrity_counts": str(
+                    values.get("optimization_integrity_counts", "none")
+                ),
+                "optimization_integrity_translation_correction_m": float(
+                    values.get("optimization_translation_correction_m", -1.0)
+                ),
+                "optimization_integrity_rotation_correction_rad": float(
+                    values.get("optimization_rotation_correction_rad", -1.0)
+                ),
+                "optimization_integrity_velocity_correction_mps": float(
+                    values.get("optimization_velocity_correction_mps", -1.0)
+                ),
+                "optimization_integrity_information_rank": int(
+                    values.get("optimization_information_rank", -1)
+                ),
+                "optimization_integrity_initial_cost": float(
+                    values.get("optimization_initial_cost", -1.0)
+                ),
+                "optimization_integrity_final_cost": float(
+                    values.get("optimization_final_cost", -1.0)
+                ),
+                "optimization_integrity_information_condition": float(
+                    values.get("optimization_information_condition", -1.0)
+                ),
                 "optimized_states_committed": int(
                     values.get("optimized_states_committed", 0)
                 ),
@@ -254,6 +366,51 @@ class ReliabilityTimelineRecorder(Node):
                 ),
                 "visual_rejected_tracks": int(
                     values.get("visual_rejected_tracks", 0)
+                ),
+                "visual_window_associated_candidates": int(
+                    values.get("visual_window_associated_candidates", 0)
+                ),
+                "visual_solver_accepted": int(
+                    values.get("visual_solver_accepted", 0)
+                ),
+                "visual_solver_rejected": int(
+                    values.get("visual_solver_rejected", 0)
+                ),
+                "visual_pending_enqueued": int(
+                    values.get("visual_pending_enqueued", 0)
+                ),
+                "visual_pending_waits": int(
+                    values.get("visual_pending_waits", 0)
+                ),
+                "visual_pending_expired": int(
+                    values.get("visual_pending_expired", 0)
+                ),
+                "visual_pending_overflow": int(
+                    values.get("visual_pending_overflow", 0)
+                ),
+                "visual_duplicate_candidates": int(
+                    values.get("visual_duplicate_candidates", 0)
+                ),
+                "visual_quality_rejected_dv": int(
+                    values.get("visual_quality_rejected_dv", 0)
+                ),
+                "visual_state_consistency_rejected": int(
+                    values.get("visual_state_consistency_rejected", 0)
+                ),
+                "visual_linearization_invalid": int(
+                    values.get("visual_linearization_invalid", 0)
+                ),
+                "visual_prefit_rmse_normalized": float(
+                    values.get("visual_prefit_rmse_normalized", -1.0)
+                ),
+                "visual_prefit_rmse_px": float(
+                    values.get("visual_prefit_rmse_px", -1.0)
+                ),
+                "visual_prefit_valid_track_ratio": float(
+                    values.get("visual_prefit_valid_track_ratio", -1.0)
+                ),
+                "visual_prefit_jacobian_rank": int(
+                    values.get("visual_prefit_jacobian_rank", 0)
                 ),
                 "visual_reprojection_rmse_normalized": float(
                     values.get("visual_reprojection_rmse_normalized", -1.0)
@@ -403,6 +560,12 @@ def summarize(events):
     vision_scores = [
         event for event in events if event["kind"] == "vision_score"
     ]
+    visual_frontend = [
+        event for event in events if event["kind"] == "visual_frontend"
+    ]
+    visual_timing = [
+        event for event in events if event["kind"] == "visual_timing"
+    ]
 
     def finite_median(name):
         values = [event[name] for event in lio if math.isfinite(event[name])]
@@ -421,6 +584,16 @@ def summarize(events):
             if math.isfinite(event[name]) and event[name] >= 0.0
         ]
         return statistics.median(values) if values else None
+
+    def timing_nonnegative_median(name):
+        values = [
+            event[name] for event in visual_timing
+            if math.isfinite(event[name]) and event[name] >= 0.0
+        ]
+        return statistics.median(values) if values else None
+
+    def frontend_max(name):
+        return max((event[name] for event in visual_frontend), default=0)
     states = []
     for event in scheduler:
         state = event["health_state"]
@@ -456,6 +629,12 @@ def summarize(events):
         "backend_optimization_rollbacks_max": max(
             (event["optimization_rollbacks"] for event in backend), default=0
         ),
+        "backend_optimization_integrity_reasons": sorted({
+            event["optimization_integrity_reason"] for event in backend
+        }),
+        "backend_optimization_integrity_counts_last": (
+            backend[-1]["optimization_integrity_counts"] if backend else "none"
+        ),
         "backend_optimized_states_committed_max": max(
             (event["optimized_states_committed"] for event in backend), default=0
         ),
@@ -474,8 +653,111 @@ def summarize(events):
         "backend_visual_rejected_tracks_max": max(
             (event["visual_rejected_tracks"] for event in backend), default=0
         ),
+        "backend_visual_window_associated_candidates_max": max(
+            (event["visual_window_associated_candidates"] for event in backend),
+            default=0,
+        ),
+        "backend_visual_solver_accepted_max": max(
+            (event["visual_solver_accepted"] for event in backend), default=0
+        ),
+        "backend_visual_solver_rejected_max": max(
+            (event["visual_solver_rejected"] for event in backend), default=0
+        ),
+        "backend_visual_pending_enqueued_max": max(
+            (event["visual_pending_enqueued"] for event in backend), default=0
+        ),
+        "backend_visual_pending_waits_max": max(
+            (event["visual_pending_waits"] for event in backend), default=0
+        ),
+        "backend_visual_pending_expired_max": max(
+            (event["visual_pending_expired"] for event in backend), default=0
+        ),
+        "backend_visual_pending_overflow_max": max(
+            (event["visual_pending_overflow"] for event in backend), default=0
+        ),
+        "backend_visual_duplicate_candidates_max": max(
+            (event["visual_duplicate_candidates"] for event in backend),
+            default=0,
+        ),
+        "backend_visual_quality_rejected_dv_max": max(
+            (event["visual_quality_rejected_dv"] for event in backend), default=0
+        ),
+        "backend_visual_state_consistency_rejected_max": max(
+            (event["visual_state_consistency_rejected"] for event in backend),
+            default=0,
+        ),
+        "backend_visual_linearization_invalid_max": max(
+            (event["visual_linearization_invalid"] for event in backend),
+            default=0,
+        ),
+        "visual_frontend_samples": len(visual_frontend),
+        "visual_raw_frames_max": frontend_max("raw_frames"),
+        "visual_tracked_frames_max": frontend_max("tracked_frames"),
+        "visual_keyframe_candidates_max": frontend_max("keyframe_candidates"),
+        "visual_quality_valid_candidates_max": frontend_max(
+            "quality_valid_candidates"
+        ),
+        "visual_quality_rejected_candidates_max": frontend_max(
+            "quality_rejected_candidates"
+        ),
+        "visual_published_candidates_max": frontend_max("published_candidates"),
+        "visual_keyframe_profiles": sorted({
+            event["keyframe_profile"] for event in visual_frontend
+        }),
+        "visual_frontend_latency_s_median": (
+            statistics.median([
+                event["last_frontend_latency_s"] for event in visual_frontend
+                if event["last_frontend_latency_s"] >= 0.0
+            ]) if any(
+                event["last_frontend_latency_s"] >= 0.0
+                for event in visual_frontend
+            ) else None
+        ),
+        "visual_timing_samples": len(visual_timing),
+        "visual_timing_outcomes": {
+            outcome: sum(event["outcome"] == outcome for event in visual_timing)
+            for outcome in sorted({event["outcome"] for event in visual_timing})
+        },
+        "visual_timing_reasons": {
+            reason: sum(event["reason"] == reason for event in visual_timing)
+            for reason in sorted({event["reason"] for event in visual_timing})
+        },
+        "visual_timing_missing_sides": {
+            side: sum(event["missing_side"] == side for event in visual_timing)
+            for side in sorted({event["missing_side"] for event in visual_timing})
+        },
+        "visual_delta_to_nearest_state_s_median": timing_nonnegative_median(
+            "delta_to_nearest_state_s"
+        ),
+        "visual_previous_delta_s_median": timing_nonnegative_median(
+            "delta_previous_state_s"
+        ),
+        "visual_backend_queue_latency_s_median": timing_nonnegative_median(
+            "backend_queue_latency_s"
+        ),
+        "visual_backend_queue_wall_latency_s_median": timing_nonnegative_median(
+            "backend_queue_wall_latency_s"
+        ),
+        "visual_keyframe_interval_s_median": timing_nonnegative_median(
+            "keyframe_interval_s"
+        ),
+        "visual_lidar_state_interval_s_median": timing_nonnegative_median(
+            "lidar_state_interval_median_s"
+        ),
         "backend_visual_reprojection_rmse_normalized_median": (
             backend_nonnegative_median("visual_reprojection_rmse_normalized")
+        ),
+        "backend_visual_prefit_rmse_normalized_median": (
+            backend_nonnegative_median("visual_prefit_rmse_normalized")
+        ),
+        "backend_visual_prefit_rmse_px_median": backend_nonnegative_median(
+            "visual_prefit_rmse_px"
+        ),
+        "backend_visual_prefit_valid_track_ratio_median": (
+            backend_nonnegative_median("visual_prefit_valid_track_ratio")
+        ),
+        "backend_visual_prefit_jacobian_rank_median": (
+            backend_nonnegative_median("visual_prefit_jacobian_rank")
         ),
         "backend_solve_ms_median": backend_nonnegative_median(
             "backend_solve_ms"

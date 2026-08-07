@@ -119,7 +119,10 @@ START_LIVOX_POINTCLOUD_BRIDGE=${START_LIVOX_POINTCLOUD_BRIDGE:-auto}
 topic_publisher_count() {
   local topic=$1
   local info count
-  info=$(timeout 5s ros2 topic info --no-daemon --spin-time 1.0 "$topic" 2>/dev/null || true)
+  # Reuse the active graph daemon. A fresh --no-daemon process can complete
+  # its short discovery window before the Gazebo bridge endpoints appear,
+  # causing a false zero-publisher result and a 20 s bootstrap stall/failure.
+  info=$(timeout 5s ros2 topic info "$topic" 2>/dev/null || true)
   count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$info")
   printf '%s' "${count:-0}"
 }

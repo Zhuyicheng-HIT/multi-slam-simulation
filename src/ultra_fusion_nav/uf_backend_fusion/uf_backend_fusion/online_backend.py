@@ -49,7 +49,10 @@ from .imu_preintegration import (
     preintegrate_manifold,
 )
 from .manifold_window import ManifoldSlidingWindowBackend, propagate_state
-from .visual_reprojection import VisualTrackBatch
+from .visual_reprojection import (
+    VisualTrackBatch,
+    validate_visual_linearization,
+)
 from .live_propagation import (
     live_propagation_admission,
     make_optimization_anchor,
@@ -446,6 +449,141 @@ def validate_optimized_state(
 
 def stamp_seconds(stamp):
     return float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+
+
+@dataclass(frozen=True)
+class VisualStateAssociation:
+    status: str
+    reason: str
+    previous_index: int
+    current_index: int
+    corrected_previous_stamp_s: float
+    corrected_current_stamp_s: float
+    nearest_previous_stamp_s: float
+    nearest_current_stamp_s: float
+    previous_delta_s: float
+    current_delta_s: float
+    missing_side: str
+
+
+@dataclass(frozen=True)
+class PendingVisualCandidate:
+    candidate_id: int
+    key: tuple[int, int]
+    message: object
+    arrival_ros_s: float
+    arrival_wall_s: float
+
+
+def associate_visual_states(
+    previous_camera_stamp_s,
+    current_camera_stamp_s,
+    state_stamps,
+    *,
+    camera_to_imu_time_offset_s=0.0,
+    tolerance_s=0.065,
+):
+    """Causally bind the two camera observations to active window states.
+
+    ``camera_to_imu_time_offset_s`` follows ``t_imu = t_camera + td_C``.
+    It adjusts the measurement time used for association and never rewrites a
+    ROS message stamp. No interpolation is used: both observations must have a
+    real state inside the unchanged tolerance.
+    """
+    stamps = np.asarray(tuple(state_stamps), dtype=float)
+    previous = float(previous_camera_stamp_s) + float(
+        camera_to_imu_time_offset_s
+    )
+    current = float(current_camera_stamp_s) + float(
+        camera_to_imu_time_offset_s
+    )
+
+    def result(status, reason, *, previous_index=-1, current_index=-1,
+               previous_nearest=math.nan, current_nearest=math.nan,
+               previous_delta=math.inf, current_delta=math.inf,
+               missing_side="none"):
+        return VisualStateAssociation(
+            status, reason, int(previous_index), int(current_index),
+            previous, current, float(previous_nearest), float(current_nearest),
+            float(previous_delta), float(current_delta), str(missing_side),
+        )
+
+    if (
+        stamps.ndim != 1 or stamps.size < 2
+        or np.any(~np.isfinite(stamps))
+        or np.any(np.diff(stamps) <= 0.0)
+        or not math.isfinite(previous) or not math.isfinite(current)
+        or current <= previous or tolerance_s <= 0.0
+    ):
+        return result("reject", "invalid_timestamp_contract")
+    start = float(stamps[0])
+    end = float(stamps[-1])
+    if previous < start - tolerance_s:
+        return result("reject", "outside_active_window", missing_side="left")
+    if current > end + tolerance_s:
+        return result("wait", "waiting_for_right_state", missing_side="right")
+    previous_index = int(np.argmin(np.abs(stamps - previous)))
+    current_index = int(np.argmin(np.abs(stamps - current)))
+    previous_nearest = float(stamps[previous_index])
+    current_nearest = float(stamps[current_index])
+    previous_delta = abs(previous_nearest - previous)
+    current_delta = abs(current_nearest - current)
+    # When the newest observation is close to the right edge, a later state
+    # can still be the nearest causal association. Wait until that possibility
+    # is exhausted instead of rejecting on callback arrival order.
+    if current_delta > tolerance_s and end < current + tolerance_s:
+        return result(
+            "wait", "waiting_for_right_state",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="right",
+        )
+    if previous_delta > tolerance_s:
+        return result(
+            "reject", "state_tolerance_mismatch",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="left_gap",
+        )
+    if current_delta > tolerance_s:
+        return result(
+            "reject", "state_tolerance_mismatch",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="right_gap",
+        )
+    if previous_index >= current_index:
+        return result(
+            "reject", "observations_map_to_same_or_reversed_state",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="between",
+        )
+    return result(
+        "associated", "associated",
+        previous_index=previous_index,
+        current_index=current_index,
+        previous_nearest=previous_nearest,
+        current_nearest=current_nearest,
+        previous_delta=previous_delta,
+        current_delta=current_delta,
+    )
 
 
 def ros_time_from_seconds(stamp_s):
@@ -1389,9 +1527,23 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("visual_tracks_topic", "/vision/feature_tracks")
         self.declare_parameter("visual_time_offset_s", 0.0)
         self.declare_parameter("visual_state_tolerance_s", 0.065)
+        self.declare_parameter("visual_pending_enabled", True)
+        self.declare_parameter("visual_pending_max_wait_s", 0.60)
+        self.declare_parameter("visual_pending_max_wall_wait_s", 3.0)
+        self.declare_parameter("visual_pending_max_queue", 64)
+        self.declare_parameter(
+            "visual_timing_diagnostic_topic", "/fusion/unified/visual_timing"
+        )
         self.declare_parameter("visual_minimum_tracks", 20)
         self.declare_parameter("visual_pixel_sigma_normalized", 0.002)
         self.declare_parameter("visual_inverse_depth_variance_scale", 0.01)
+        self.declare_parameter("visual_state_consistency_enabled", True)
+        self.declare_parameter(
+            "visual_state_innovation_maximum_rmse_px", 6.0
+        )
+        self.declare_parameter(
+            "visual_minimum_projectable_track_ratio", 0.80
+        )
         self.declare_parameter(
             "visual_rotation_body_camera", [
                 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
@@ -1738,6 +1890,18 @@ class UnifiedBackendNode(Node):
         self.visual_state_tolerance_s = float(
             self.get_parameter("visual_state_tolerance_s").value
         )
+        self.visual_pending_enabled = bool(
+            self.get_parameter("visual_pending_enabled").value
+        )
+        self.visual_pending_max_wait_s = float(
+            self.get_parameter("visual_pending_max_wait_s").value
+        )
+        self.visual_pending_max_wall_wait_s = float(
+            self.get_parameter("visual_pending_max_wall_wait_s").value
+        )
+        self.visual_pending_max_queue = int(
+            self.get_parameter("visual_pending_max_queue").value
+        )
         self.visual_minimum_tracks = int(
             self.get_parameter("visual_minimum_tracks").value)
         self.visual_pixel_sigma_normalized = float(
@@ -1746,14 +1910,32 @@ class UnifiedBackendNode(Node):
         self.visual_inverse_depth_variance_scale = float(
             self.get_parameter("visual_inverse_depth_variance_scale").value
         )
+        self.visual_state_consistency_enabled = bool(
+            self.get_parameter("visual_state_consistency_enabled").value
+        )
+        self.visual_state_innovation_maximum_rmse_px = float(
+            self.get_parameter(
+                "visual_state_innovation_maximum_rmse_px"
+            ).value
+        )
+        self.visual_minimum_projectable_track_ratio = float(
+            self.get_parameter(
+                "visual_minimum_projectable_track_ratio"
+            ).value
+        )
         self.visual_rotation_body_camera = np.asarray(self.get_parameter(
             "visual_rotation_body_camera").value, dtype=float).reshape(3, 3)
         self.visual_translation_body_camera = np.asarray(
             self.get_parameter("visual_translation_body_camera_m").value, dtype=float)
         if (
             self.visual_state_tolerance_s <= 0.0 or self.visual_minimum_tracks < 4
+            or self.visual_pending_max_wait_s <= 0.0
+            or self.visual_pending_max_wall_wait_s <= 0.0
+            or self.visual_pending_max_queue < 2
             or self.visual_pixel_sigma_normalized <= 0.0
             or self.visual_inverse_depth_variance_scale < 0.0
+            or self.visual_state_innovation_maximum_rmse_px <= 0.0
+            or not 0.0 < self.visual_minimum_projectable_track_ratio <= 1.0
             or self.visual_translation_body_camera.shape != (3,)
             or not np.allclose(
                 self.visual_rotation_body_camera.T @ self.visual_rotation_body_camera,
@@ -1929,6 +2111,7 @@ class UnifiedBackendNode(Node):
             durability=QoSDurabilityPolicy.VOLATILE,
         )
         window_size = max(2, int(self.get_parameter("window_size").value))
+        self.window_size = window_size
         if self.backend_solver_mode == "manifold":
             self.backend = ManifoldSlidingWindowBackend(
                 max_states=window_size,
@@ -2003,9 +2186,18 @@ class UnifiedBackendNode(Node):
         self.scores = {}
         self.visual_lock = threading.Lock()
         self.visual_tracks = deque(maxlen=64)
+        self.pending_visual_candidates = deque()
+        self.pending_visual_keys = set()
+        self.visual_candidate_sequence = 0
+        self.visual_state_stamps = deque(maxlen=self.window_size)
+        self.visual_timing_reason_counts = Counter()
         self.last_visual_reason = "disabled"
         self.last_visual_reprojection_rmse_normalized = -1.0
         self.last_visual_reprojection_residual_dimension = 0
+        self.last_visual_prefit_rmse_normalized = -1.0
+        self.last_visual_prefit_rmse_px = -1.0
+        self.last_visual_prefit_valid_track_ratio = -1.0
+        self.last_visual_prefit_jacobian_rank = 0
         self.counts = {
             "lio": 0, "published": 0, "lidar_factors": 0,
             "lidar_disabled": 0, "gnss_factors": 0, "gnss_jump_rejected": 0,
@@ -2020,6 +2212,17 @@ class UnifiedBackendNode(Node):
             "visual_received": 0, "visual_factor_attempts": 0,
             "visual_factors": 0, "visual_rejected_time": 0,
             "visual_rejected_tracks": 0,
+            "visual_window_associated_candidates": 0,
+            "visual_solver_accepted": 0,
+            "visual_solver_rejected": 0,
+            "visual_pending_enqueued": 0,
+            "visual_pending_waits": 0,
+            "visual_pending_expired": 0,
+            "visual_pending_overflow": 0,
+            "visual_duplicate_candidates": 0,
+            "visual_quality_rejected_dv": 0,
+            "visual_state_consistency_rejected": 0,
+            "visual_linearization_invalid": 0,
             "flow_los_diagnostic_samples": 0,
             "flow_los_diagnostic_invalid": 0,
             "flow_lever_arm_compensated": 0,
@@ -2194,6 +2397,11 @@ class UnifiedBackendNode(Node):
         self.diagnostic_pub = self.create_publisher(
             DiagnosticArray, str(
                 self.get_parameter("diagnostic_topic").value), 10)
+        self.visual_timing_pub = self.create_publisher(
+            DiagnosticArray,
+            str(self.get_parameter("visual_timing_diagnostic_topic").value),
+            100,
+        )
         self.fusion_epoch_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
@@ -2324,49 +2532,122 @@ class UnifiedBackendNode(Node):
         ):
             self.last_visual_reason = "invalid_track_timestamps"
             return
+        key = (
+            int(round(previous * 1.0e9)),
+            int(round(current * 1.0e9)),
+        )
         with self.visual_lock:
-            self.visual_tracks.append(copy.deepcopy(msg))
+            self.visual_candidate_sequence += 1
+            candidate = PendingVisualCandidate(
+                self.visual_candidate_sequence,
+                key,
+                copy.deepcopy(msg),
+                self._now_s(),
+                time.monotonic(),
+            )
+            if self.visual_pending_enabled:
+                if key in self.pending_visual_keys:
+                    self.counts["visual_duplicate_candidates"] += 1
+                    self.last_visual_reason = "duplicate_candidate"
+                    return
+                if len(self.pending_visual_candidates) >= self.visual_pending_max_queue:
+                    dropped = self.pending_visual_candidates.popleft()
+                    self.pending_visual_keys.discard(dropped.key)
+                    self.counts["visual_pending_overflow"] += 1
+                    self.counts["visual_rejected_time"] += 1
+                    self.visual_timing_reason_counts["queue_overflow"] += 1
+                    self._publish_visual_timing(
+                        dropped, "rejected", "queue_overflow", ()
+                    )
+                self.pending_visual_candidates.append(candidate)
+                self.pending_visual_keys.add(key)
+                self.counts["visual_pending_enqueued"] += 1
+            else:
+                self.visual_tracks.append(candidate)
         self.counts["visual_received"] += 1
 
-    def _visual_factor(
-            self,
-            previous_stamp,
-            current_stamp,
-            previous_index,
-            current_index):
-        self.counts["visual_factor_attempts"] += 1
-        if self.visual_factor_mode == "disabled":
-            self.last_visual_reason = "disabled_by_parameter"
-            return False
-        if self.backend_solver_mode != "manifold":
-            self.last_visual_reason = "paper_factor_requires_manifold_backend"
-            return False
-        corrected_previous = float(previous_stamp) - self.visual_time_offset_s
-        corrected_current = float(current_stamp) - self.visual_time_offset_s
-        with self.visual_lock:
-            candidates = list(self.visual_tracks)
-            while self.visual_tracks and (
-                stamp_seconds(self.visual_tracks[0].header.stamp)
-                < corrected_previous - self.visual_state_tolerance_s
-            ):
-                self.visual_tracks.popleft()
-        if not candidates:
-            self.last_visual_reason = "no_feature_tracks"
-            self.counts["visual_rejected_time"] += 1
-            return False
+    def _publish_visual_timing(
+        self,
+        candidate,
+        outcome,
+        reason,
+        state_stamps,
+        association=None,
+    ):
+        message = candidate.message
+        now_ros_s = self._now_s()
+        now_wall_s = time.monotonic()
+        stamps = tuple(float(value) for value in state_stamps)
+        previous_stamp = stamp_seconds(message.previous_stamp)
+        current_stamp = stamp_seconds(message.header.stamp)
+        lidar_intervals = np.diff(stamps) if len(stamps) >= 2 else np.asarray([])
+        values = {
+            "candidate_id": candidate.candidate_id,
+            "outcome": outcome,
+            "reason": reason,
+            "visual_previous_stamp_s": previous_stamp,
+            "visual_timestamp_s": current_stamp,
+            "arrival_ros_s": candidate.arrival_ros_s,
+            "arrival_wall_s": candidate.arrival_wall_s,
+            "ros_sim_time_s": now_ros_s,
+            "active_window_start_s": stamps[0] if stamps else -1.0,
+            "active_window_end_s": stamps[-1] if stamps else -1.0,
+            "visual_frontend_latency_s": max(
+                0.0, candidate.arrival_ros_s - current_stamp
+            ),
+            "backend_queue_latency_s": max(
+                0.0, now_ros_s - candidate.arrival_ros_s
+            ),
+            "backend_queue_wall_latency_s": max(
+                0.0, now_wall_s - candidate.arrival_wall_s
+            ),
+            "keyframe_interval_s": current_stamp - previous_stamp,
+            "lidar_state_interval_median_s": (
+                float(np.median(lidar_intervals)) if lidar_intervals.size else -1.0
+            ),
+            "camera_imu_time_offset_s": self.visual_time_offset_s,
+            "pending_queue_size": len(self.pending_visual_candidates),
+        }
+        if association is not None:
+            values.update({
+                "corrected_previous_stamp_s": (
+                    association.corrected_previous_stamp_s
+                ),
+                "corrected_visual_timestamp_s": (
+                    association.corrected_current_stamp_s
+                ),
+                "nearest_previous_state_stamp_s": (
+                    association.nearest_previous_stamp_s
+                ),
+                "nearest_state_timestamp_s": (
+                    association.nearest_current_stamp_s
+                ),
+                "delta_previous_state_s": association.previous_delta_s,
+                "delta_to_nearest_state_s": association.current_delta_s,
+                "previous_state_index": association.previous_index,
+                "current_state_index": association.current_index,
+                "missing_side": association.missing_side,
+            })
+        status = DiagnosticStatus()
+        status.name = "visual_time_association"
+        status.hardware_id = "d435i_to_unified_window"
+        status.level = (
+            DiagnosticStatus.OK if outcome in {"associated", "accepted"}
+            else DiagnosticStatus.WARN
+        )
+        status.message = str(reason)
+        status.values = [
+            KeyValue(key=str(name), value=str(value))
+            for name, value in values.items()
+        ]
+        array = DiagnosticArray()
+        array.header.stamp = self.get_clock().now().to_msg()
+        array.status.append(status)
+        self.visual_timing_pub.publish(array)
 
-        def timing_error(message):
-            return max(
-                abs(stamp_seconds(message.previous_stamp) - corrected_previous),
-                abs(stamp_seconds(message.header.stamp) - corrected_current),
-            )
-        message = min(candidates, key=timing_error)
-        error_s = timing_error(message)
-        if error_s > self.visual_state_tolerance_s:
-            self.last_visual_reason = f"state_time_mismatch:{error_s:.6f}"
-            self.counts["visual_rejected_time"] += 1
-            return False
-        selected = [
+    @staticmethod
+    def _selected_visual_tracks(message):
+        return [
             track for track in message.tracks
             if track.depth_valid and track.klt_inlier and track.geometric_inlier
             and track.track_age >= 2 and track.inverse_depth > 0.0
@@ -2374,6 +2655,26 @@ class UnifiedBackendNode(Node):
             and math.isfinite(track.previous_x) and math.isfinite(track.previous_y)
             and math.isfinite(track.current_x) and math.isfinite(track.current_y)
         ]
+
+    def _add_visual_message_factor(
+        self, message, previous_index, current_index
+    ):
+        self.counts["visual_factor_attempts"] += 1
+        if self.visual_factor_mode == "disabled":
+            self.last_visual_reason = "disabled_by_parameter"
+            return False
+        if self.backend_solver_mode != "manifold":
+            self.last_visual_reason = "paper_factor_requires_manifold_backend"
+            return False
+        decision = self._decision("vision", default_enabled=True)
+        if (
+            not bool(decision.get("factor_enabled", False))
+            or float(decision.get("reliability_weight", 0.0)) <= 0.0
+        ):
+            self.last_visual_reason = "vision_frs_gate_disabled"
+            self.counts["visual_quality_rejected_dv"] += 1
+            return False
+        selected = self._selected_visual_tracks(message)
         if len(selected) < self.visual_minimum_tracks:
             self.last_visual_reason = f"insufficient_geometric_tracks:{len(selected)}"
             self.counts["visual_rejected_tracks"] += 1
@@ -2396,9 +2697,42 @@ class UnifiedBackendNode(Node):
                 self.visual_rotation_body_camera,
                 self.visual_translation_body_camera,
             )
+            camera_matrix = np.asarray(
+                message.camera_matrix, dtype=float
+            ).reshape(3, 3)
+            check = validate_visual_linearization(
+                self.backend.state(previous_index),
+                self.backend.state(current_index),
+                tracks,
+                camera_matrix[0, 0],
+                camera_matrix[1, 1],
+                maximum_reprojection_rmse_px=(
+                    self.visual_state_innovation_maximum_rmse_px
+                ),
+                minimum_valid_track_ratio=(
+                    self.visual_minimum_projectable_track_ratio
+                ),
+            )
+            self.last_visual_prefit_rmse_normalized = (
+                check.reprojection_rmse_normalized
+            )
+            self.last_visual_prefit_rmse_px = check.reprojection_rmse_px
+            self.last_visual_prefit_valid_track_ratio = check.valid_track_ratio
+            self.last_visual_prefit_jacobian_rank = check.jacobian_rank
+            if self.visual_state_consistency_enabled and not check.valid:
+                self.last_visual_reason = (
+                    f"visual_linearization:{check.reason}:"
+                    f"rmse_px={check.reprojection_rmse_px:.6f}:"
+                    f"valid_ratio={check.valid_track_ratio:.6f}:"
+                    f"rank={check.jacobian_rank}"
+                )
+                self.counts["visual_state_consistency_rejected"] += 1
+                self.counts["visual_linearization_invalid"] += int(
+                    check.reason != "state_innovation_reprojection_rmse"
+                )
+                return False
             self.backend.add_visual_reprojection(
-                previous_index, current_index, tracks,
-                decision=self._decision("vision", default_enabled=True),
+                previous_index, current_index, tracks, decision=decision,
             )
         except (ValueError, FloatingPointError) as error:
             self.last_visual_reason = f"invalid_track_batch:{error}"
@@ -2407,6 +2741,156 @@ class UnifiedBackendNode(Node):
         self.last_visual_reason = "accepted_paper_reprojection"
         self.counts["visual_factors"] += 1
         return True
+
+    def _legacy_visual_factor(
+            self,
+            previous_stamp,
+            current_stamp,
+            previous_index,
+            current_index):
+        self.counts["visual_factor_attempts"] += 1
+        if self.visual_factor_mode == "disabled":
+            self.last_visual_reason = "disabled_by_parameter"
+            return False
+        if self.backend_solver_mode != "manifold":
+            self.last_visual_reason = "paper_factor_requires_manifold_backend"
+            return False
+        corrected_previous = float(previous_stamp) - self.visual_time_offset_s
+        corrected_current = float(current_stamp) - self.visual_time_offset_s
+        with self.visual_lock:
+            candidates = list(self.visual_tracks)
+            while self.visual_tracks and (
+                stamp_seconds(self.visual_tracks[0].message.header.stamp)
+                < corrected_previous - self.visual_state_tolerance_s
+            ):
+                self.visual_tracks.popleft()
+        if not candidates:
+            self.last_visual_reason = "no_feature_tracks"
+            self.counts["visual_rejected_time"] += 1
+            return False
+
+        def timing_error(candidate):
+            message = candidate.message
+            return max(
+                abs(stamp_seconds(message.previous_stamp) - corrected_previous),
+                abs(stamp_seconds(message.header.stamp) - corrected_current),
+            )
+        candidate = min(candidates, key=timing_error)
+        message = candidate.message
+        error_s = timing_error(candidate)
+        if error_s > self.visual_state_tolerance_s:
+            self.last_visual_reason = f"state_time_mismatch:{error_s:.6f}"
+            self.counts["visual_rejected_time"] += 1
+            association = associate_visual_states(
+                stamp_seconds(message.previous_stamp),
+                stamp_seconds(message.header.stamp),
+                (previous_stamp, current_stamp),
+                camera_to_imu_time_offset_s=self.visual_time_offset_s,
+                tolerance_s=self.visual_state_tolerance_s,
+            )
+            self.visual_timing_reason_counts["legacy_state_time_mismatch"] += 1
+            self._publish_visual_timing(
+                candidate,
+                "rejected",
+                self.last_visual_reason,
+                (previous_stamp, current_stamp),
+                association,
+            )
+            return False
+        selected = self._selected_visual_tracks(message)
+        if len(selected) < self.visual_minimum_tracks:
+            self.last_visual_reason = f"insufficient_geometric_tracks:{len(selected)}"
+            self.counts["visual_rejected_tracks"] += 1
+            return False
+        # Avoid double-counting the legacy attempt inside the common helper.
+        self.counts["visual_factor_attempts"] -= 1
+        accepted = self._add_visual_message_factor(
+            message, previous_index, current_index
+        )
+        association = associate_visual_states(
+            stamp_seconds(message.previous_stamp),
+            stamp_seconds(message.header.stamp),
+            (previous_stamp, current_stamp),
+            camera_to_imu_time_offset_s=self.visual_time_offset_s,
+            tolerance_s=self.visual_state_tolerance_s,
+        )
+        self._publish_visual_timing(
+            candidate,
+            "accepted" if accepted else "rejected",
+            self.last_visual_reason,
+            (previous_stamp, current_stamp),
+            association,
+        )
+        return accepted
+
+    def _stage_pending_visual_factors(self, state_stamps):
+        """Add all causally associable observations; return staged candidates."""
+        staged = []
+        consumed = set()
+        latest_state = float(state_stamps[-1]) if state_stamps else -math.inf
+        now_ros = self._now_s()
+        now_wall = time.monotonic()
+        with self.visual_lock:
+            candidates = tuple(self.pending_visual_candidates)
+        for candidate in candidates:
+            message = candidate.message
+            corrected_current = (
+                stamp_seconds(message.header.stamp) + self.visual_time_offset_s
+            )
+            association = associate_visual_states(
+                stamp_seconds(message.previous_stamp),
+                stamp_seconds(message.header.stamp),
+                state_stamps,
+                camera_to_imu_time_offset_s=self.visual_time_offset_s,
+                tolerance_s=self.visual_state_tolerance_s,
+            )
+            sim_wait = max(0.0, latest_state - corrected_current)
+            wall_wait = max(0.0, now_wall - candidate.arrival_wall_s)
+            expired = (
+                sim_wait > self.visual_pending_max_wait_s
+                or wall_wait > self.visual_pending_max_wall_wait_s
+            )
+            if association.status == "wait" and not expired:
+                self.counts["visual_pending_waits"] += 1
+                self.last_visual_reason = association.reason
+                continue
+            if association.status != "associated" or expired:
+                reason = (
+                    "pending_wait_expired" if expired else association.reason
+                )
+                consumed.add(candidate.key)
+                self.counts["visual_pending_expired"] += int(expired)
+                self.counts["visual_rejected_time"] += 1
+                self.visual_timing_reason_counts[reason] += 1
+                self.last_visual_reason = reason
+                self._publish_visual_timing(
+                    candidate, "rejected", reason, state_stamps, association
+                )
+                continue
+            consumed.add(candidate.key)
+            self.counts["visual_window_associated_candidates"] += 1
+            accepted = self._add_visual_message_factor(
+                message,
+                association.previous_index,
+                association.current_index,
+            )
+            if accepted:
+                staged.append(candidate)
+            self._publish_visual_timing(
+                candidate,
+                "accepted" if accepted else "rejected",
+                self.last_visual_reason,
+                state_stamps,
+                association,
+            )
+        if consumed:
+            with self.visual_lock:
+                self.pending_visual_candidates = deque(
+                    candidate for candidate in self.pending_visual_candidates
+                    if candidate.key not in consumed
+                )
+                self.pending_visual_keys.difference_update(consumed)
+        return staged
 
     def _score(self, modality, msg):
         self.scores[modality] = {
@@ -2720,6 +3204,18 @@ class UnifiedBackendNode(Node):
                 retained_flow, maxlen=self.flow_buffer.maxlen
             )
             stats["flow_discarded"] = previous_count - len(retained_flow)
+
+        if hasattr(self, "visual_lock"):
+            with self.visual_lock:
+                stats["visual_discarded"] = (
+                    len(self.visual_tracks) + len(self.pending_visual_candidates)
+                )
+                self.visual_tracks.clear()
+                self.pending_visual_candidates.clear()
+                self.pending_visual_keys.clear()
+            self.visual_state_stamps = deque(
+                [result_stamp], maxlen=self.window_size
+            )
 
         stats["native_buffer_discarded"] = self.native_lidar_buffer.clear()
         stats["pending_lio_discarded"] = len(self.pending_lio)
@@ -4269,6 +4765,12 @@ class UnifiedBackendNode(Node):
         self.active_transaction_snapshot = transaction_snapshot
         add_state_started = time.perf_counter_ns()
         current_index = self.backend.add_state(initial_state)
+        transaction_visual_state_stamps = list(self.visual_state_stamps)
+        transaction_visual_state_stamps.append(float(stamp))
+        transaction_visual_state_stamps = transaction_visual_state_stamps[
+            -self.backend.state_count:
+        ]
+        staged_visual_candidates = []
         self._record_phase_timing("add_state", add_state_started)
         if self.last_lio_stamp is None:
             self.lio_origin = position.copy()
@@ -4446,9 +4948,15 @@ class UnifiedBackendNode(Node):
                 previous_index, current_index, reference["delta_position"],
                 previous_state=previous_state,
             )
-            self._visual_factor(
-                self.last_lio_stamp, stamp, previous_index, current_index
-            )
+            if self.visual_pending_enabled:
+                staged_visual_candidates = self._stage_pending_visual_factors(
+                    transaction_visual_state_stamps
+                )
+            else:
+                if self._legacy_visual_factor(
+                    self.last_lio_stamp, stamp, previous_index, current_index
+                ):
+                    staged_visual_candidates = [None]
             if self.backend_solver_mode == "manifold":
                 imu_diagnostic_covariance = self._add_manifold_imu_factor(
                     previous_index, current_index, manifold_measurement
@@ -4556,6 +5064,9 @@ class UnifiedBackendNode(Node):
                 if not self.last_optimization_integrity.valid:
                     self.backend.restore(transaction_snapshot)
                     self.active_transaction_snapshot = None
+                    self.counts["visual_solver_rejected"] += len(
+                        staged_visual_candidates
+                    )
                     self.counts["optimization_rejected"] += 1
                     self.counts["optimization_rollbacks"] += 1
                     self.last_reason = (
@@ -4571,12 +5082,21 @@ class UnifiedBackendNode(Node):
             self._record_phase_timing("publish", publish_started)
             self.active_transaction_snapshot = None
             self.counts["lio"] += 1
+            self.visual_state_stamps = deque(
+                transaction_visual_state_stamps, maxlen=self.window_size
+            )
+            self.counts["visual_solver_accepted"] += len(
+                staged_visual_candidates
+            )
             self.last_reason = "ok"
             state_committed = True
         except (np.linalg.LinAlgError, ValueError, IndexError) as error:
             if transaction_snapshot is not None:
                 self.backend.restore(transaction_snapshot)
                 self.active_transaction_snapshot = None
+                self.counts["visual_solver_rejected"] += len(
+                    staged_visual_candidates
+                )
                 self.counts["optimization_rollbacks"] += 1
             self.counts["optimization_errors"] += 1
             self.last_reason = f"optimization_error:{type(error).__name__}"
@@ -5196,7 +5716,16 @@ class UnifiedBackendNode(Node):
             f"visual_factors={self.counts['visual_factors']};"
             f"visual_rejected_time={self.counts['visual_rejected_time']};"
             f"visual_rejected_tracks={self.counts['visual_rejected_tracks']};"
+            "visual_state_consistency_rejected="
+            f"{self.counts['visual_state_consistency_rejected']};"
             f"visual_last_reason={self.last_visual_reason};"
+            "visual_prefit_rmse_normalized="
+            f"{self.last_visual_prefit_rmse_normalized:.9g};"
+            f"visual_prefit_rmse_px={self.last_visual_prefit_rmse_px:.9g};"
+            "visual_prefit_valid_track_ratio="
+            f"{self.last_visual_prefit_valid_track_ratio:.9g};"
+            "visual_prefit_jacobian_rank="
+            f"{self.last_visual_prefit_jacobian_rank};"
             "visual_reprojection_rmse_normalized="
             f"{self.last_visual_reprojection_rmse_normalized:.9g};"
             "visual_reprojection_residual_dimension="
@@ -5616,6 +6145,42 @@ class UnifiedBackendNode(Node):
             self._key(
                 "visual_reprojection_residual_dimension",
                 self.last_visual_reprojection_residual_dimension,
+            ),
+            self._key(
+                "visual_prefit_rmse_normalized",
+                f"{self.last_visual_prefit_rmse_normalized:.9g}",
+            ),
+            self._key(
+                "visual_prefit_rmse_px",
+                f"{self.last_visual_prefit_rmse_px:.9g}",
+            ),
+            self._key(
+                "visual_prefit_valid_track_ratio",
+                f"{self.last_visual_prefit_valid_track_ratio:.9g}",
+            ),
+            self._key(
+                "visual_prefit_jacobian_rank",
+                self.last_visual_prefit_jacobian_rank,
+            ),
+            self._key("visual_pending_enabled", self.visual_pending_enabled),
+            self._key(
+                "visual_pending_queue_size",
+                len(self.pending_visual_candidates),
+            ),
+            self._key(
+                "visual_state_window_start_s",
+                self.visual_state_stamps[0] if self.visual_state_stamps else -1.0,
+            ),
+            self._key(
+                "visual_state_window_end_s",
+                self.visual_state_stamps[-1] if self.visual_state_stamps else -1.0,
+            ),
+            self._key(
+                "visual_timing_reason_counts",
+                ",".join(
+                    f"{name}:{count}" for name, count
+                    in sorted(self.visual_timing_reason_counts.items())
+                ) or "none",
             ),
         ])
         array = DiagnosticArray()

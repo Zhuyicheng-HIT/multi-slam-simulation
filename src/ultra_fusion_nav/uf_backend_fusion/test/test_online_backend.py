@@ -18,6 +18,7 @@ from uf_backend_fusion.native_lidar import (
 from uf_backend_fusion.online_backend import (
     apply_flow_rotation_gate,
     apply_lidar_anchor_floor,
+    associate_visual_states,
     covariance_update_due,
     flow_los_observation,
     flow_observation_delta,
@@ -94,6 +95,37 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         }
         values.update(overrides)
         return SimpleNamespace(**values)
+
+    def test_visual_association_waits_for_a_real_right_state(self):
+        waiting = associate_visual_states(
+            1.10, 1.28, [1.0, 1.1, 1.2], tolerance_s=0.065
+        )
+        self.assertEqual(waiting.status, "wait")
+        self.assertEqual(waiting.missing_side, "right")
+        associated = associate_visual_states(
+            1.10, 1.28, [1.0, 1.1, 1.2, 1.3], tolerance_s=0.065
+        )
+        self.assertEqual(associated.status, "associated")
+        self.assertEqual((associated.previous_index, associated.current_index), (1, 3))
+
+    def test_visual_association_applies_td_c_without_retimestamping(self):
+        association = associate_visual_states(
+            0.98,
+            1.08,
+            [1.0, 1.1, 1.2],
+            camera_to_imu_time_offset_s=0.02,
+            tolerance_s=0.01,
+        )
+        self.assertEqual(association.status, "associated")
+        self.assertAlmostEqual(association.corrected_previous_stamp_s, 1.0)
+        self.assertAlmostEqual(association.corrected_current_stamp_s, 1.1)
+
+    def test_visual_association_rejects_a_missing_left_state(self):
+        association = associate_visual_states(
+            0.70, 0.82, [1.0, 1.1, 1.2], tolerance_s=0.065
+        )
+        self.assertEqual(association.status, "reject")
+        self.assertEqual(association.missing_side, "left")
 
     def test_backend_owned_native_factor_never_reapplies_map_alignment(self):
         alignment = np.eye(4)

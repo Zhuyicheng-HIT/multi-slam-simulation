@@ -30,6 +30,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "visual_factor_mode", default_value="paper_reprojection"
         ),
+        DeclareLaunchArgument("visual_keyframe_profile", default_value="balanced"),
+        DeclareLaunchArgument(
+            "visual_candidate_quality_enabled", default_value="true"
+        ),
+        DeclareLaunchArgument("visual_pending_enabled", default_value="true"),
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
         DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
         DeclareLaunchArgument(
@@ -73,6 +78,15 @@ def generate_launch_description():
             "enabled": "true",
             "start_fusion_stack": "true",
             "visual_factor_mode": LaunchConfiguration("visual_factor_mode"),
+            "visual_keyframe_profile": LaunchConfiguration(
+                "visual_keyframe_profile"
+            ),
+            "visual_candidate_quality_enabled": LaunchConfiguration(
+                "visual_candidate_quality_enabled"
+            ),
+            "visual_pending_enabled": LaunchConfiguration(
+                "visual_pending_enabled"
+            ),
             "camera_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
         }),
         include("uf_shared_mapping", "shared_mapping.launch.py", {

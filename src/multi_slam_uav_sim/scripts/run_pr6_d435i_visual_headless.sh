@@ -21,6 +21,7 @@ RUN_DIR=${RUN_DIR:-$WS_ROOT/logs/paper_visual/$RUN_ID}
 ACTIVE_FILE=${ACTIVE_FILE:-$WS_ROOT/logs/d435i_visual_slam/.active_headless}
 RUN_SMALL_RECTANGLE=${RUN_SMALL_RECTANGLE:-0}
 EXIT_AFTER_RECTANGLE=${EXIT_AFTER_RECTANGLE:-0}
+EXPECT_EXTERNAL_VISUAL_MOTION=${EXPECT_EXTERNAL_VISUAL_MOTION:-0}
 RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-6.0}
 RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-4.0}
 RECTANGLE_SPEED_MPS=${RECTANGLE_SPEED_MPS:-0.8}
@@ -35,6 +36,10 @@ case "$EXIT_AFTER_RECTANGLE" in
   0|1) ;;
   *) printf 'EXIT_AFTER_RECTANGLE must be 0 or 1.\n' >&2; exit 2 ;;
 esac
+case "$EXPECT_EXTERNAL_VISUAL_MOTION" in
+  0|1) ;;
+  *) printf 'EXPECT_EXTERNAL_VISUAL_MOTION must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 PR6_START_RTABMAP=${PR6_START_RTABMAP:-1}
 case "$PR6_START_RTABMAP" in
   0) PR6_START_RTABMAP_BOOL=false ;;
@@ -45,6 +50,23 @@ VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
 case "$VISUAL_FACTOR_MODE" in
   disabled|paper_reprojection) ;;
   *) printf 'VISUAL_FACTOR_MODE must be disabled or paper_reprojection.\n' >&2; exit 2 ;;
+esac
+VISUAL_KEYFRAME_PROFILE=${VISUAL_KEYFRAME_PROFILE:-balanced}
+case "$VISUAL_KEYFRAME_PROFILE" in
+  conservative|balanced|dense|custom) ;;
+  *) printf 'VISUAL_KEYFRAME_PROFILE must be conservative, balanced, dense, or custom.\n' >&2; exit 2 ;;
+esac
+VISUAL_CANDIDATE_QUALITY_ENABLED=${VISUAL_CANDIDATE_QUALITY_ENABLED:-1}
+VISUAL_PENDING_ENABLED=${VISUAL_PENDING_ENABLED:-1}
+case "$VISUAL_CANDIDATE_QUALITY_ENABLED" in
+  0) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=false ;;
+  1) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=true ;;
+  *) printf 'VISUAL_CANDIDATE_QUALITY_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$VISUAL_PENDING_ENABLED" in
+  0) VISUAL_PENDING_ENABLED_BOOL=false ;;
+  1) VISUAL_PENDING_ENABLED_BOOL=true ;;
+  *) printf 'VISUAL_PENDING_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 ONLINE_MAPPING_MODE=${ONLINE_MAPPING_MODE:-disabled}
 case "$ONLINE_MAPPING_MODE" in
@@ -146,6 +168,35 @@ wait_for_publisher() {
   return 1
 }
 
+wait_for_livox_ownership() {
+  local timeout_s=${1:-90} started=$SECONDS stable=0 lidar_info imu_info
+  local lidar_count=0 imu_count=0
+  while (( SECONDS - started < timeout_s )); do
+    # Use the already-running ROS graph daemon here.  A fresh --no-daemon
+    # process can finish discovery before the Gazebo bridge is visible and
+    # incorrectly report an otherwise healthy topic as unknown.
+    lidar_info=$(timeout 5s ros2 topic info /livox/lidar 2>/dev/null || true)
+    imu_info=$(timeout 5s ros2 topic info /livox/imu 2>/dev/null || true)
+    lidar_count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$lidar_info")
+    imu_count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$imu_info")
+    lidar_count=${lidar_count:-0}
+    imu_count=${imu_count:-0}
+    if (( lidar_count == 1 && imu_count == 1 )); then
+      stable=$((stable + 1))
+      if (( stable >= 2 )); then
+        printf 'ready stable ownership: /livox/lidar=1 /livox/imu=1\n'
+        return 0
+      fi
+    else
+      stable=0
+    fi
+    sleep 1
+  done
+  printf 'Timed out waiting for stable Livox ownership: lidar=%s imu=%s\n' \
+    "$lidar_count" "$imu_count" >&2
+  return 1
+}
+
 wait_for_valid_vision() {
   local timeout_s=${1:-60} started=$SECONDS sample=
   while (( SECONDS - started < timeout_s )); do
@@ -177,6 +228,25 @@ setsid env \
   >"$RUN_DIR/sensor_stack_supervisor.log" 2>&1 &
 record_pid stack_supervisor "$!"
 
+# Construct every backend subscription while Gazebo/SITL are still starting.
+# This removes CLI readiness polling from the estimator critical path while
+# preserving the volatile NativeLidarFactor bootstrap contract.
+setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
+  use_sim_time:=true \
+  start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
+  visual_factor_mode:="$VISUAL_FACTOR_MODE" \
+  visual_keyframe_profile:="$VISUAL_KEYFRAME_PROFILE" \
+  visual_candidate_quality_enabled:="$VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL" \
+  visual_pending_enabled:="$VISUAL_PENDING_ENABLED_BOOL" \
+  shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
+  shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
+  shared_mapping_output_directory:="$RUN_DIR/shared_map" \
+  database_path:="$RUN_DIR/rtabmap.db" \
+  >"$RUN_DIR/integration_overlay.log" 2>&1 &
+record_pid integration_overlay "$!"
+wait_for_publisher /fusion/unified/diagnostics 60
+trace_stage backend_subscriber_ready
+
 # The latest mainline sensor supervisor owns the single Gazebo-to-ROS clock
 # bridge and validates that it advances. Reuse it here to avoid a duplicate
 # publisher and subscribe with the offered best-effort clock QoS.
@@ -184,41 +254,10 @@ wait_for_topic /clock 90
 trace_stage clock_ready
 wait_for_topic /livox/lidar 120
 trace_stage lidar_ready
-wait_for_topic /mavros/imu/data_raw 120
-trace_stage imu_ready
-wait_for_topic /sim/optical_flow/rad 90
-trace_stage flow_ready
-wait_for_topic /mavros/global_position/raw/fix 120
-trace_stage gnss_ready
-
-# Construct the backend subscription before starting the backend-owned LiDAR
-# trajectory frontend. Otherwise a bootstrap NativeLidarFactor can be emitted
-# before the volatile subscriber exists, leaving FAST-LIO waiting forever for
-# a scan prediction that the backend cannot create.
-setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
-  use_sim_time:=true \
-  start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
-  visual_factor_mode:="$VISUAL_FACTOR_MODE" \
-  shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
-  shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
-  shared_mapping_output_directory:="$RUN_DIR/shared_map" \
-  database_path:="$RUN_DIR/rtabmap.db" \
-  >"$RUN_DIR/integration_overlay.log" 2>&1 &
-record_pid integration_overlay "$!"
-
-wait_for_topic /sensors/rgbd/color 90
-wait_for_topic /sensors/rgbd/depth 45
-wait_for_topic /front/d435i/color/camera_info 45
-wait_for_topic /reliability/vision_score 45
-wait_for_topic /vision/feature_tracks 90
-trace_stage visual_ready
-if [[ "$PR6_START_RTABMAP" == 1 ]]; then
-  # An idle camera may publish only a short odometry burst before the mission
-  # starts.  Publisher discovery proves that RTAB is wired; the valid-score
-  # check below validates actual odometry after motion begins.
-  wait_for_publisher /rtabmap/odom 120
-fi
-wait_for_publisher /reliability/scheduler_state 45
+wait_for_topic /livox/imu 120
+trace_stage lidar_imu_ready
+wait_for_livox_ownership 90
+trace_stage livox_ownership_stable
 
 setsid env \
   LOG_DIR="$RUN_DIR/fastlio" RVIZ=0 LIDAR_WS="$LIDAR_WS" \
@@ -263,6 +302,34 @@ setsid timeout 20s ros2 topic echo /external_nav/diagnostics \
   --no-daemon --spin-time 10.0 --once --full-length \
   >"$RUN_DIR/external_nav_first_diagnostics.yaml" 2>&1 &
 record_pid external_nav_diagnostics "$!"
+setsid ros2 run multi_slam_uav_sim simulation_performance_monitor --ros-args \
+  -p use_sim_time:=true \
+  -p output_path:="$RUN_DIR/simulation_performance.json" \
+  -p fusion_topic:=/fusion/unified/odom \
+  -p fusion_diagnostic_topic:=/fusion/unified/diagnostics \
+  >"$RUN_DIR/simulation_performance.log" 2>&1 &
+record_pid simulation_performance "$!"
+
+# These checks are mission-readiness gates, not prerequisites for creating the
+# first native LiDAR state. Keeping them after first odom removes serial ROS CLI
+# startup latency without weakening any estimator observability condition.
+wait_for_topic /mavros/imu/data_raw 120
+trace_stage imu_ready
+wait_for_topic /sim/optical_flow/rad 90
+trace_stage flow_ready
+wait_for_topic /mavros/global_position/raw/fix 120
+trace_stage gnss_ready
+wait_for_topic /sensors/rgbd/color 90
+wait_for_topic /sensors/rgbd/depth 45
+wait_for_topic /front/d435i/color/camera_info 45
+wait_for_publisher /reliability/vision_score 45
+wait_for_publisher /vision/frontend_diagnostics 45
+wait_for_publisher /fusion/unified/visual_timing 45
+trace_stage visual_frontend_ready
+if [[ "$PR6_START_RTABMAP" == 1 ]]; then
+  wait_for_publisher /rtabmap/odom 120
+fi
+wait_for_publisher /reliability/scheduler_state 45
 wait_for_topic /fusion/runtime_external_nav 45
 trace_stage external_nav_gate_open
 if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
@@ -282,11 +349,18 @@ if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
   RECTANGLE_PID=$!
   record_pid rectangle_motion "$RECTANGLE_PID"
 fi
-if [[ "$PR6_START_RTABMAP" == 1 && "$RUN_SMALL_RECTANGLE" == 1 ]]; then
-  # RTAB odometry can require initial camera motion before its first valid
-  # increment.  Start the optional mission first so validation does not
-  # deadlock waiting for motion that the wrapper has not yet launched.
+# A quality-gated visual candidate needs real parallax.  Waiting for feature
+# tracks before starting a configured motion mission deadlocks at the static
+# takeoff pose.  The raw RGB-D stream and frontend publishers are verified
+# above; only the first quality-valid candidate is allowed to wait for motion.
+if [[ "$RUN_SMALL_RECTANGLE" == 1 || "$EXPECT_EXTERNAL_VISUAL_MOTION" == 1 ]]; then
+  wait_for_topic /vision/feature_tracks 120
   wait_for_valid_vision 120
+  trace_stage visual_ready
+else
+  wait_for_topic /vision/feature_tracks 90
+  wait_for_valid_vision 120
+  trace_stage visual_ready
 fi
 
 printf 'Paper reprojection + D435i visual integration is ready.\n'

@@ -1,4 +1,6 @@
 import math
+from pathlib import Path
+import tempfile
 import unittest
 from types import SimpleNamespace
 
@@ -8,6 +10,7 @@ from multi_slam_uav_sim.external_nav_accuracy import ExternalNavAccuracy
 from multi_slam_uav_sim.simulation_performance_monitor import (
     TopicWindow,
     diagnostic_timing_values,
+    read_system_memory_usage,
     system_cpu_utilization_percent,
 )
 
@@ -22,6 +25,20 @@ class ExternalNavAccuracyTest(unittest.TestCase):
         self.assertIsNone(
             system_cpu_utilization_percent((1200, 450), (1100, 460))
         )
+
+    def test_system_memory_uses_memavailable_without_cache_guessing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "meminfo"
+            path.write_text(
+                "MemTotal:       8192000 kB\n"
+                "MemFree:        1000000 kB\n"
+                "MemAvailable:   6144000 kB\n",
+                encoding="ascii",
+            )
+            total, used, percent = read_system_memory_usage(path)
+        self.assertEqual(total, 8192000 * 1024)
+        self.assertEqual(used, 2048000 * 1024)
+        self.assertAlmostEqual(percent, 25.0)
 
     def test_performance_monitor_accepts_backend_timing_diagnostics(self):
         message = SimpleNamespace(status=[SimpleNamespace(

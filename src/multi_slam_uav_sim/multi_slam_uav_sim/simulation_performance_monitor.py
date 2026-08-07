@@ -60,6 +60,25 @@ def system_cpu_utilization_percent(previous, current):
     return 100.0 * (total_delta - idle_delta) / total_delta
 
 
+def read_system_memory_usage(path="/proc/meminfo"):
+    """Return total/used bytes and utilization from MemAvailable."""
+    try:
+        with open(path, "r", encoding="ascii") as stream:
+            fields = {
+                line.split(":", 1)[0]: int(line.split()[1]) * 1024
+                for line in stream
+                if ":" in line and len(line.split()) >= 2
+            }
+    except (OSError, ValueError):
+        return None
+    total = fields.get("MemTotal", 0)
+    available = fields.get("MemAvailable", 0)
+    if total <= 0 or available < 0 or available > total:
+        return None
+    used = total - available
+    return total, used, 100.0 * used / total
+
+
 class TopicWindow:
     def __init__(self, size=4000):
         self.samples = deque(maxlen=size)
@@ -188,6 +207,8 @@ class SimulationPerformanceMonitor(Node):
         self.sim_step_samples_ms = deque(maxlen=2000)
         self.flow_integration_ms = deque(maxlen=2000)
         self.system_cpu_percent = deque(maxlen=2000)
+        self.system_memory_used_bytes = deque(maxlen=2000)
+        self.system_memory_percent = deque(maxlen=2000)
         self.last_system_cpu_ticks = read_system_cpu_ticks()
         self.node_timings_ms = {}
         self.last_report = {}
@@ -329,10 +350,14 @@ class SimulationPerformanceMonitor(Node):
         cpu_percent = system_cpu_utilization_percent(
             self.last_system_cpu_ticks, current_cpu_ticks
         )
+        memory_usage = read_system_memory_usage()
         self.last_system_cpu_ticks = current_cpu_ticks
         with self.lock:
             if cpu_percent is not None:
                 self.system_cpu_percent.append(cpu_percent)
+            if memory_usage is not None:
+                self.system_memory_used_bytes.append(memory_usage[1])
+                self.system_memory_percent.append(memory_usage[2])
             topic_report = {
                 name: window.summary(now, self.window_s)
                 for name, window in self.topics.items()
@@ -356,6 +381,8 @@ class SimulationPerformanceMonitor(Node):
             flow_integration = list(self.flow_integration_ms)
             node_timings = dict(self.node_timings_ms)
             system_cpu = list(self.system_cpu_percent)
+            system_memory_bytes = list(self.system_memory_used_bytes)
+            system_memory_percent = list(self.system_memory_percent)
         wait_bottleneck = max(
             stage_report,
             key=lambda name: stage_report[name]["p95_ms"],
@@ -419,6 +446,24 @@ class SimulationPerformanceMonitor(Node):
                 ),
                 "system_cpu_scope": "whole_wsl_system_total_capacity",
                 "samples": len(system_cpu),
+                "system_memory_used_gib_median": percentile(
+                    system_memory_bytes, 0.50
+                ) / (1024.0 ** 3),
+                "system_memory_used_gib_p95": percentile(
+                    system_memory_bytes, 0.95
+                ) / (1024.0 ** 3),
+                "system_memory_used_gib_max": (
+                    max(system_memory_bytes) / (1024.0 ** 3)
+                    if system_memory_bytes else 0.0
+                ),
+                "system_memory_utilization_percent_median": percentile(
+                    system_memory_percent, 0.50
+                ),
+                "system_memory_utilization_percent_p95": percentile(
+                    system_memory_percent, 0.95
+                ),
+                "system_memory_scope": "whole_wsl_system_memavailable",
+                "system_memory_samples": len(system_memory_percent),
             },
             "simulation": {
                 "world": self.world_name,
