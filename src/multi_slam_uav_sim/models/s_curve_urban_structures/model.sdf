@@ -1,0 +1,150 @@
+<?xml version="1.0"?>
+<sdf version="1.10">
+  <model name="s_curve_urban_structures">
+    <static>true</static>
+    <link name="urban_geometry">
+      <!-- South arch: the route crosses y=-4.5 near x=3.18 and z=6.0 m. -->
+      <collision name="south_arch_left_pier">
+        <pose>-0.50 -4.50 3.80 0 0 0</pose>
+        <geometry><box><size>0.70 0.70 7.60</size></box></geometry>
+      </collision>
+      <visual name="south_arch_left_pier_visual">
+        <pose>-0.50 -4.50 3.80 0 0 0</pose>
+        <geometry><box><size>0.70 0.70 7.60</size></box></geometry>
+        <material><ambient>0.34 0.37 0.39 1</ambient><diffuse>0.48 0.51 0.53 1</diffuse></material>
+      </visual>
+      <collision name="south_arch_right_pier">
+        <pose>6.86 -4.50 3.80 0 0 0</pose>
+        <geometry><box><size>0.70 0.70 7.60</size></box></geometry>
+      </collision>
+      <visual name="south_arch_right_pier_visual">
+        <pose>6.86 -4.50 3.80 0 0 0</pose>
+        <geometry><box><size>0.70 0.70 7.60</size></box></geometry>
+        <material><ambient>0.34 0.37 0.39 1</ambient><diffuse>0.48 0.51 0.53 1</diffuse></material>
+      </visual>
+      <collision name="south_arch_header">
+        <pose>3.18 -4.50 7.55 0 0 0</pose>
+        <geometry><box><size>8.06 0.70 0.50</size></box></geometry>
+      </collision>
+      <visual name="south_arch_header_visual">
+        <pose>3.18 -4.50 7.55 0 0 0</pose>
+        <geometry><box><size>8.06 0.70 0.50</size></box></geometry>
+        <material><ambient>0.27 0.31 0.34 1</ambient><diffuse>0.43 0.48 0.51 1</diffuse></material>
+      </visual>
+
+      <!-- Short diagonal tunnel follows the center crossing of the S route. -->
+      <collision name="short_tunnel_left_wall">
+        <pose>-1.15 -2.71 3.63 0 0 2.74</pose>
+        <geometry><box><size>5.80 0.50 7.25</size></box></geometry>
+      </collision>
+      <visual name="short_tunnel_left_wall_visual">
+        <pose>-1.15 -2.71 3.63 0 0 2.74</pose>
+        <geometry><box><size>5.80 0.50 7.25</size></box></geometry>
+        <material><ambient>0.30 0.33 0.35 1</ambient><diffuse>0.40 0.44 0.47 1</diffuse></material>
+      </visual>
+      <collision name="short_tunnel_right_wall">
+        <pose>1.15 2.71 3.63 0 0 2.74</pose>
+        <geometry><box><size>5.80 0.50 7.25</size></box></geometry>
+      </collision>
+      <visual name="short_tunnel_right_wall_visual">
+        <pose>1.15 2.71 3.63 0 0 2.74</pose>
+        <geometry><box><size>5.80 0.50 7.25</size></box></geometry>
+        <material><ambient>0.30 0.33 0.35 1</ambient><diffuse>0.40 0.44 0.47 1</diffuse></material>
+      </visual>
+      <collision name="short_tunnel_roof">
+        <pose>0 0 7.50 0 0 2.74</pose>
+        <geometry><box><size>5.80 6.40 0.50</size></box></geometry>
+      </collision>
+      <visual name="short_tunnel_roof_visual">
+        <pose>0 0 7.50 0 0 2.74</pose>
+        <geometry><box><size>5.80 6.40 0.50</size></box></geometry>
+        <material><ambient>0.25 0.28 0.30 1</ambient><diffuse>0.36 0.40 0.43 1</diffuse></material>
+      </visual>
+      <collision name="short_tunnel_south_lintel">
+        <pose>2.53 -1.08 7.45 0 0 2.74</pose>
+        <geometry><box><size>0.45 6.40 0.40</size></box></geometry>
+      </collision>
+      <visual name="short_tunnel_south_lintel_visual">
+        <pose>2.53 -1.08 7.45 0 0 2.74</pose>
+        <geometry><box><size>0.45 6.40 0.40</size></box></geometry>
+        <material><ambient>0.22 0.25 0.27 1</ambient><diffuse>0.34 0.38 0.41 1</diffuse></material>
+      </visual>
+      <collision name="short_tunnel_north_lintel">
+        <pose>-2.53 1.08 7.45 0 0 2.74</pose>
+        <geometry><box><size>0.45 6.40 0.40</size></box></geometry>
+      </collision>
+      <visual name="short_tunnel_north_lintel_visual">
+        <pose>-2.53 1.08 7.45 0 0 2.74</pose>
+        <geometry><box><size>0.45 6.40 0.40</size></box></geometry>
+        <material><ambient>0.22 0.25 0.27 1</ambient><diffuse>0.34 0.38 0.41 1</diffuse></material>
+      </visual>
+
+      <!-- North canyon: asymmetric segmented walls create corners and an alley opening. -->
+      <collision name="urban_canyon_west_south">
+        <pose>-6.80 2.05 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.45 2.90 8.40</size></box></geometry>
+      </collision>
+      <visual name="urban_canyon_west_south_visual">
+        <pose>-6.80 2.05 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.45 2.90 8.40</size></box></geometry>
+        <material><ambient>0.48 0.25 0.16 1</ambient><diffuse>0.66 0.34 0.20 1</diffuse></material>
+      </visual>
+      <collision name="urban_canyon_west_north">
+        <pose>-6.58 4.55 3.80 0 0 -0.10</pose>
+        <geometry><box><size>0.45 2.70 7.60</size></box></geometry>
+      </collision>
+      <visual name="urban_canyon_west_north_visual">
+        <pose>-6.58 4.55 3.80 0 0 -0.10</pose>
+        <geometry><box><size>0.45 2.70 7.60</size></box></geometry>
+        <material><ambient>0.42 0.22 0.15 1</ambient><diffuse>0.60 0.30 0.18 1</diffuse></material>
+      </visual>
+      <collision name="urban_canyon_east_south">
+        <pose>-1.10 3.10 4.10 0 0 -0.05</pose>
+        <geometry><box><size>0.45 2.40 8.20</size></box></geometry>
+      </collision>
+      <visual name="urban_canyon_east_south_visual">
+        <pose>-1.10 3.10 4.10 0 0 -0.05</pose>
+        <geometry><box><size>0.45 2.40 8.20</size></box></geometry>
+        <material><ambient>0.22 0.30 0.38 1</ambient><diffuse>0.30 0.42 0.54 1</diffuse></material>
+      </visual>
+      <collision name="urban_canyon_east_north">
+        <pose>1.50 4.75 3.60 0 0 0.12</pose>
+        <geometry><box><size>0.45 2.00 7.20</size></box></geometry>
+      </collision>
+      <visual name="urban_canyon_east_north_visual">
+        <pose>1.50 4.75 3.60 0 0 0.12</pose>
+        <geometry><box><size>0.45 2.00 7.20</size></box></geometry>
+        <material><ambient>0.20 0.28 0.36 1</ambient><diffuse>0.28 0.40 0.52 1</diffuse></material>
+      </visual>
+
+      <!-- Additional facades provide long planes and non-repetitive urban corners. -->
+      <collision name="south_east_facade">
+        <pose>7.20 -2.10 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.50 5.50 8.40</size></box></geometry>
+      </collision>
+      <visual name="south_east_facade_visual">
+        <pose>7.20 -2.10 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.50 5.50 8.40</size></box></geometry>
+        <material><ambient>0.40 0.42 0.44 1</ambient><diffuse>0.56 0.58 0.60 1</diffuse></material>
+      </visual>
+      <collision name="north_east_facade">
+        <pose>5.60 3.40 3.75 0 0 -0.04</pose>
+        <geometry><box><size>0.50 6.00 7.50</size></box></geometry>
+      </collision>
+      <visual name="north_east_facade_visual">
+        <pose>5.60 3.40 3.75 0 0 -0.04</pose>
+        <geometry><box><size>0.50 6.00 7.50</size></box></geometry>
+        <material><ambient>0.48 0.44 0.36 1</ambient><diffuse>0.64 0.58 0.46 1</diffuse></material>
+      </visual>
+      <collision name="north_east_corner">
+        <pose>3.95 6.20 3.25 0 0 0</pose>
+        <geometry><box><size>3.80 0.50 6.50</size></box></geometry>
+      </collision>
+      <visual name="north_east_corner_visual">
+        <pose>3.95 6.20 3.25 0 0 0</pose>
+        <geometry><box><size>3.80 0.50 6.50</size></box></geometry>
+        <material><ambient>0.45 0.41 0.34 1</ambient><diffuse>0.62 0.55 0.43 1</diffuse></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

@@ -6,6 +6,7 @@ from multi_slam_uav_sim.guided_rectangle_waypoints import (
     GuidedRectangleWaypoints,
     ekf_flags_have_absolute_position,
 )
+from multi_slam_uav_sim.guided_s_curve_waypoints import GuidedSCurveWaypoints
 import multi_slam_uav_sim.guided_rectangle_waypoints as waypoint_module
 
 
@@ -154,3 +155,47 @@ def test_command_phase_retries_timed_out_mode_and_arm_services(monkeypatch):
     node.set_guided_arm_takeoff()
 
     assert calls == {"mode": 2, "arm": 2}
+
+
+def test_strict_route_loss_freezes_current_fcu_pose_not_a_future_target():
+    node = GuidedSCurveWaypoints.__new__(GuidedSCurveWaypoints)
+    node.route_control_active = True
+    node.route_hold_fcu_setpoint = None
+    node.last_route_fcu_setpoint = (9.0, 8.0, 7.0, 0.6)
+    node.pose = SimpleNamespace(
+        pose=SimpleNamespace(
+            position=SimpleNamespace(x=1.0, y=2.0, z=3.0),
+            orientation=SimpleNamespace(w=1.0, x=0.0, y=0.0, z=0.0),
+        )
+    )
+
+    class Logger:
+        def info(self, _message):
+            pass
+
+        def warning(self, _message):
+            pass
+
+    node.get_logger = lambda: Logger()
+
+    node._freeze_route_setpoint()
+
+    assert node.route_hold_fcu_setpoint == (1.0, 2.0, 3.0, 0.0)
+    node._release_route_setpoint()
+    assert node.route_hold_fcu_setpoint is None
+
+
+def test_strict_route_hold_does_not_require_fresh_backend_feedback(monkeypatch):
+    node = GuidedSCurveWaypoints.__new__(GuidedSCurveWaypoints)
+    node.route_control_active = True
+    node.route_hold_fcu_setpoint = (1.0, 2.0, 3.0, 0.4)
+    calls = []
+    monkeypatch.setattr(
+        GuidedRectangleWaypoints,
+        "publish_setpoint",
+        lambda _self, *args: calls.append(args),
+    )
+
+    node.publish_setpoint(99.0, 98.0, 97.0, 0.0)
+
+    assert calls == [(1.0, 2.0, 3.0, 0.4)]

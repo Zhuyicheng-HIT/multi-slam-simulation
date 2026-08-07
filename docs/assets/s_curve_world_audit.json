@@ -3,10 +3,14 @@
   "flow_grid_x_lines": 19,
   "flow_grid_y_lines": 19,
   "flow_markers": 32,
-  "lidar_landmarks": 32,
+  "lidar_landmarks": 22,
+  "route_altitude_max_m": 6.0,
+  "route_altitude_min_m": 4.0,
   "route_max_nearest_lidar_landmark_m": 4.12310562561766,
+  "route_vertical_cycles": 2,
   "texture_bounds_m": [
     -18.0,
     18.0
-  ]
+  ],
+  "urban_collision_boxes": 15
 }

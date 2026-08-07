@@ -2,6 +2,12 @@
 
 `multi_slam_worlds` 收集适用于 Gazebo Sim Harmonic 的多源 SLAM 与无人机导航测试场景。
 
+主 APM 多传感器仿真使用
+`multi_slam_uav_sim/worlds/simple_apm_rgbd_mid360.sdf`。该世界除纹理地面外，还加载
+`s_curve_urban_structures`：静态拱门、短隧道、分段高墙走廊和不对称建筑立面。
+这些结构采用简单 box collision/visual，优先保证 LiDAR 几何可观测性和实时因子，
+不引入大型网格资源。
+
 ## 1. 编译
 
 ```bash
@@ -80,3 +86,27 @@ gz sim -s -r --headless-rendering \
 ```
 
 仓库只保留本项目选定的场景入口；可公开下载的大型场景仓库和生成地形不重复打包。
+
+## 6. 主场景固定航线边界
+
+`tools/run_s_curve_state_machine.sh` 使用三维长 S 航线穿越主场景，默认速度
+`0.35 m/s`，每约 `2 m` 停留并等待融合定位收敛，飞行高度在统一后端起飞原点的
+`-1.0..+1.0 m` 范围内完成两次升降。航线从中心沿曲线进入端点，完成往返后再沿
+曲线回到中心；禁止恢复旧的直线进场/返场，因为它会穿过短隧道侧墙。
+
+控制真值边界如下：
+
+- 航线目标、位置误差、航点到达和任务完成只使用 `/fusion/unified/odom`；
+- `/mavros/local_position/pose` 仅作为 APM local setpoint 的坐标表达适配器；
+- Gazebo ground truth 只用于飞行后的 ATE/RPE 和碰撞评估；
+- 统一后端缺失、过期或 frame 不是 `camera_init -> body` 时，任务在解锁前失败，
+  不自动切换为 FCU/Gazebo 导航。
+
+静态碰撞审计覆盖标定八字、曲线进场、全部 S 往返和曲线返场。审计图及 JSON：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+python3 tools/plot_s_curve_world_audit.py \
+  --output docs/assets/s_curve_world_audit.png \
+  --json docs/assets/s_curve_world_audit.json
+```

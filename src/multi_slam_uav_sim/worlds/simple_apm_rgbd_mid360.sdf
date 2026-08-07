@@ -270,6 +270,11 @@
     </include>
 
     <include>
+      <uri>model://s_curve_urban_structures</uri>
+      <name>s_curve_urban_structures</name>
+    </include>
+
+    <include>
       <uri>model://iris_apm_rgbd</uri>
       <name>apm_iris</name>
       <pose>0 0 0.50 0 0 0</pose>

@@ -128,12 +128,46 @@ cd "$HOME/projects/multi-slam-simulation"
 bash tools/run_fastlio_mapping.sh
 ```
 
-要飞保守的长 S 航线，只替换第 2 个终端的命令，其他终端不变：
+长 S 航线是统一后端的严格闭环评测，不再允许只启动 FAST-LIO 后用
+MAVROS/FCU local position 代替融合定位。命令名保持不变，但启动顺序调整为：
+
+1. 第 1 个终端运行 `run_sim_with_flow.sh`；
+2. 第 2 个终端运行统一后端专用的 FAST-LIO 前端入口：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+RVIZ=0 bash tools/run_unified_fastlio_mapping.sh
+```
+
+普通 `run_fastlio_mapping.sh` 仍用于独立 FAST-LIO 建图展示，默认不发布原生点面
+因子，不能代替上面的统一前端入口。
+
+3. 第 3 个终端启动四源统一后端：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+EXTERNAL_NAV_OUTPUT_TOPIC=/fusion/validation/externalnav \
+  bash tools/run_unified_backend_stack.sh
+```
+
+4. 确认 `/fusion/unified/odom` 已输出后，第 4 个终端运行长 S 状态机：
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
 bash tools/run_s_curve_state_machine.sh
 ```
+
+航点误差、停留收敛和任务完成判断全部使用 `/fusion/unified/odom`
+(`camera_init -> body`)。MAVROS local pose 只用于把误差表达成 APM 所需的 local
+setpoint，不参与航线到达判断；Gazebo 真值只供事后评测。起飞前统一后端无输出、
+frame 不匹配或时间戳过期时，状态机会在解锁前退出。飞行中出现同类定位丢失时，
+状态机会冻结飞机当时的 FCU-local hold setpoint，至少保持 1 s 并等待恢复/重定位；
+该安全保持不能推进航点，也不会回退到 GPS、FCU local pose 或 Gazebo 坐标完成航线。
+
+稳定入口暂时保留 FAST-LIO 内部预测用于去畸变和前端匹配，但最终位姿、航线反馈和
+地图插入确认属于统一后端。实验性的后端轨迹反向去畸变可通过
+`FASTLIO_BACKEND_TRAJECTORY_FRONTEND=1` 单独 A/B；它在 2026-08-07 长航线测试中
+出现请求/原生因子循环等待，尚未列入稳定默认值。
 
 ### 5.2 四源统一后端长 S 自动验证
 
@@ -262,7 +296,10 @@ python3 tools/analyze_slam_drift.py \
 告警，不会被误报为坐标发散；应通过增加环境几何或降低航线范围处理，不能用 Gazebo
 真值修正轨迹。
 
-仓库内的场景覆盖审计图由 SDF、光流纹理和航线定义自动生成：
+主测试地图加入轻量静态拱门、短隧道、分段高墙走廊和非对称建筑立面，替换了
+沿线重复标识柱。长 S 航线沿安全通道进出这些结构，并在 `4.0–6.0 m` 间完成两次
+升降；进场和返场同样沿 S 曲线，不允许用直线捷径穿过墙体。仓库内的场景覆盖
+审计图由 SDF、光流纹理和三维航线定义自动生成：
 
 ![S 航线与 LiDAR/光流覆盖审计图](docs/assets/s_curve_world_audit.png)
 
@@ -279,6 +316,7 @@ python3 tools/plot_s_curve_world_audit.py \
 
 - [四源融合稳定候选版与视觉协作接口](docs/RELEASE_FOUR_SOURCE_V1.md)
 - [LiDAR 点云稳定候选版与视觉点云接口](docs/RELEASE_LIDAR_POINTCLOUD_V1.md)
+- [城市结构与统一后端严格航线验证](docs/urban_strict_route_validation_20260807.md)
 - [详细配置教程](README_详细配置教程.md)
 - [安装与依赖说明](docs/INSTALL.md)
 - [运行与排错](docs/RUNNING.md)
