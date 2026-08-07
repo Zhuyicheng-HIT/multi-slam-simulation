@@ -44,4 +44,3 @@ d435i_rtabmap:
     RGBD/LoopClosureReextractFeatures: true
     Rtabmap/LoopThr: 0.11
     Mem/IncrementalMemory: true
-

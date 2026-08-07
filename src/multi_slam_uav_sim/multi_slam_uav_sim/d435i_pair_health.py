@@ -102,4 +102,3 @@ class ExactStampPairHealth:
             if len(pending) > self.max_pending:
                 for key in sorted(pending)[:-self.max_pending]:
                     pending.pop(key, None)
-

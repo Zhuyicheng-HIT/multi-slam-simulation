@@ -118,4 +118,3 @@ The formal matrix uses the same script with all six default conditions and
 three valid attempts per condition. It can reuse an already validated mother
 by passing `REFERENCE_DB` and `REFERENCE_METADATA`; each Session 2 still gets a
 fresh child copy.
-

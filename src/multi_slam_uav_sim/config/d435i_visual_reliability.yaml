@@ -27,4 +27,3 @@ d435i_visual_reliability:
     weight_delay: 0.15
     weight_motion: 0.05
     weight_covariance: 0.10
-

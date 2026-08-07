@@ -86,4 +86,3 @@ if [[ -f "$ACTIVE_FILE" ]]; then
   fi
 fi
 printf 'D435i visual SLAM headless profile stopped. Logs: %s\n' "$run_dir"
-

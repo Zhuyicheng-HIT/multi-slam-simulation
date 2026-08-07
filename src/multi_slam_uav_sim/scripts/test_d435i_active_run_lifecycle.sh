@@ -101,4 +101,3 @@ wait "$wrong_pid" 2>/dev/null || true
 wrong_pid=""
 
 printf 'D435i active-run lifecycle short test: PASS\n'
-

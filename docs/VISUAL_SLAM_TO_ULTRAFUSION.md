@@ -102,4 +102,3 @@ If RTAB is retained, restrict it to low-frequency global information:
 The next engineering step is direct LVIO replay against the official binary,
 not a new KLT frontend. A separate feature frontend becomes justified only if a
 future upstream release publishes an external feature-track contract.
-

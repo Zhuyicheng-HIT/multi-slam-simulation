@@ -152,4 +152,3 @@ def generate_launch_description():
                 "Optional CameraInfo override; empty uses profile YAML.")),
         OpaqueFunction(function=_launch_setup),
     ])
-

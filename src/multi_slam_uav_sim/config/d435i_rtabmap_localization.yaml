@@ -49,4 +49,3 @@ d435i_rtabmap:
     Mem/InitWMWithAllNodes: true
     Mem/LocalizationDataSaved: false
     Mem/LocalizationReadOnly: false
-
