@@ -18,11 +18,14 @@ ENABLE_NATIVE_FACTOR_VALIDATOR=${ENABLE_NATIVE_FACTOR_VALIDATOR:-0}
 ENABLE_ROSBAG_RECORDING=${ENABLE_ROSBAG_RECORDING:-0}
 NUMPY_NUM_THREADS=${NUMPY_NUM_THREADS:-1}
 SIM_WORLD_NAME=${SIM_WORLD_NAME:-simple_apm_rgbd_mid360}
-FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-filtered_pointcloud}
+# The stable simulator owns the protocol-compatible /livox streams directly.
+# Keep filtered PointCloud2 as an explicit debug mode; making it the default
+# deadlocked startup while waiting for the retired /sim/.../points_raw topic.
+FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-livox}
 ENABLE_VISION_PIPELINE=${ENABLE_VISION_PIPELINE:-${ENABLE_D435_BRIDGE:-1}}
 case "$ENABLE_VISION_PIPELINE" in
-  1|true) ENABLE_VISION_PIPELINE=true ;;
-  0|false) ENABLE_VISION_PIPELINE=false ;;
+  1|true) ENABLE_VISION_PIPELINE=true; ENABLE_D435_BRIDGE_VALUE=1 ;;
+  0|false) ENABLE_VISION_PIPELINE=false; ENABLE_D435_BRIDGE_VALUE=0 ;;
   *)
     printf 'ENABLE_VISION_PIPELINE must be true/false or 1/0, got %s\n' \
       "$ENABLE_VISION_PIPELINE" >&2
@@ -86,6 +89,26 @@ if [[ "$ENABLE_UNIFIED_BACKEND" == "1" \
   # 0 explicitly only for the documented pose-fallback ablation.
   FASTLIO_NATIVE_FACTOR_EXPORT=1
   export FASTLIO_NATIVE_FACTOR_EXPORT
+fi
+if [[ "$ENABLE_UNIFIED_BACKEND" == "1" \
+      && ("${FASTLIO_NATIVE_FACTOR_EXPORT:-0}" == "1" \
+          || "${FASTLIO_NATIVE_FACTOR_EXPORT:-0}" == "true") ]]; then
+  # Native-factor Stage3 is a two-sided contract. After the bootstrap factor,
+  # the backend owns scan prediction and FAST-LIO inserts only states confirmed
+  # by that backend. Enabling only factor export yields exactly one state and
+  # then a permanent scan-prediction cache miss.
+  FASTLIO_DOWNSTREAM_BACKEND=${FASTLIO_DOWNSTREAM_BACKEND:-1}
+  FASTLIO_MAP_INSERTION_MODE=${FASTLIO_MAP_INSERTION_MODE:-backend_confirmed}
+  FASTLIO_BACKEND_TRAJECTORY_FRONTEND=${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-1}
+  export FASTLIO_DOWNSTREAM_BACKEND
+  export FASTLIO_MAP_INSERTION_MODE
+  export FASTLIO_BACKEND_TRAJECTORY_FRONTEND
+  # Diagnostic /Odometry is intentionally off when the unified backend owns
+  # the trajectory. A pose adapter would reintroduce the forbidden proxy path.
+  ENABLE_LIO_ADAPTER=0
+  NATIVE_UNIFIED_MODE=1
+else
+  NATIVE_UNIFIED_MODE=0
 fi
 
 if [[ "$FAULT_DELIVERY_MODE" != "runtime" && "$FAULT_DELIVERY_MODE" != "startup" ]]; then
@@ -173,10 +196,27 @@ wait_for_message() {
   done
 }
 
+wait_for_message_from() {
+  local topic=$1 timeout_s=$2 producer_pid=$3
+  local started=$SECONDS
+  until timeout 5s ros2 topic echo "$topic" --once >/dev/null 2>&1; do
+    if ! kill -0 "$producer_pid" 2>/dev/null; then
+      printf 'Producer pid %s exited while waiting for %s\n' \
+        "$producer_pid" "$topic" >&2
+      return 1
+    fi
+    if (( SECONDS - started >= timeout_s )); then
+      printf 'Timed out waiting for a message on %s\n' "$topic" >&2
+      return 1
+    fi
+  done
+}
+
 printf 'Stage 2 output: %s\n' "$OUTPUT_DIR"
 
 setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" \
   USE_SIM_TIME=true MTF_RESTAMP_OUTPUT=false \
+  ENABLE_D435_BRIDGE="$ENABLE_D435_BRIDGE_VALUE" \
   FLOW_USE_PHYSICS=false FLOW_RESTAMP_OUTPUT="$FLOW_RESTAMP_OUTPUT" \
   ENABLE_FCU_FLOW_ROUTER="$enable_fcu_flow_router" \
   LOG_DIR="$OUTPUT_DIR/sim" \
@@ -185,7 +225,23 @@ setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" \
 pids+=("$!")
 wait_for_message /mavros/state 90
 wait_for_message /mavros/imu/data_raw 90
-wait_for_message /sim/mid360/points_raw 90
+case "$FASTLIO_INPUT_MODE" in
+  livox)
+    wait_for_message /livox/lidar 90
+    ;;
+  pointcloud)
+    wait_for_message /sim/mid360/points_raw 90
+    ;;
+  filtered_pointcloud)
+    # The sensor pipeline below owns body filtering. Its source must exist
+    # before the filtered output can become ready.
+    wait_for_message /sim/mid360/points_raw 90
+    ;;
+  *)
+    printf 'Unsupported FASTLIO_INPUT_MODE=%s\n' "$FASTLIO_INPUT_MODE" >&2
+    exit 2
+    ;;
+esac
 if [[ "$FLOW_TRANSPORT" == "fcu_router" ]]; then
   wait_for_message /fcu/mavlink/optical_flow 45
   wait_for_message /fcu/mavlink/optical_flow_rad 45
@@ -235,11 +291,24 @@ if [[ "$FLOW_TRANSPORT" == "fcu_router" \
   pids+=("$flow_route_validation_pid")
 fi
 
+fastlio_bridge_mode=${START_LIVOX_POINTCLOUD_BRIDGE:-auto}
+if [[ "$FASTLIO_INPUT_MODE" == "livox" \
+      && -z "${START_LIVOX_POINTCLOUD_BRIDGE+x}" ]]; then
+  # The simulator already owns /livox/lidar and /livox/imu. Discovery-based
+  # auto mode races DDS startup and can create a duplicate bridge.
+  fastlio_bridge_mode=0
+fi
 setsid env RVIZ=0 USE_SIM_TIME=true LOG_DIR="$OUTPUT_DIR/lio" FASTLIO_INPUT_MODE="$FASTLIO_INPUT_MODE" \
+  START_LIVOX_POINTCLOUD_BRIDGE="$fastlio_bridge_mode" \
   bash "$REPO_ROOT/tools/run_fastlio_mapping.sh" \
   >"$OUTPUT_DIR/fastlio.stdout.log" 2>"$OUTPUT_DIR/fastlio.stderr.log" &
-pids+=("$!")
-wait_for_message /Odometry 90
+fastlio_pid=$!
+pids+=("$fastlio_pid")
+if [[ "$NATIVE_UNIFIED_MODE" == "1" ]]; then
+  wait_for_message_from /fast_lio/native_lidar_factor 90 "$fastlio_pid"
+else
+  wait_for_message_from /Odometry 90 "$fastlio_pid"
+fi
 wait_for_message /sensors/imu 30
 
 native_factor_validator_pid=""
