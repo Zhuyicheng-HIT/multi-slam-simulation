@@ -2004,6 +2004,8 @@ class UnifiedBackendNode(Node):
         self.visual_lock = threading.Lock()
         self.visual_tracks = deque(maxlen=64)
         self.last_visual_reason = "disabled"
+        self.last_visual_reprojection_rmse_normalized = -1.0
+        self.last_visual_reprojection_residual_dimension = 0
         self.counts = {
             "lio": 0, "published": 0, "lidar_factors": 0,
             "lidar_disabled": 0, "gnss_factors": 0, "gnss_jump_rejected": 0,
@@ -4529,6 +4531,15 @@ class UnifiedBackendNode(Node):
                     self.counts["imu_residual_errors"] += 1
             else:
                 self.last_imu_preintegration_residual_mahalanobis = -1.0
+            if self.backend_solver_mode == "manifold":
+                visual_residual = self.backend.latest_factor_rmse(
+                    "visual_reprojection"
+                )
+                if visual_residual is not None:
+                    (
+                        self.last_visual_reprojection_rmse_normalized,
+                        self.last_visual_reprojection_residual_dimension,
+                    ) = visual_residual
             estimate = self.backend.state(current_index)
             if self.transactional_update_enabled:
                 self.last_optimization_integrity = validate_optimized_state(
@@ -5186,6 +5197,10 @@ class UnifiedBackendNode(Node):
             f"visual_rejected_time={self.counts['visual_rejected_time']};"
             f"visual_rejected_tracks={self.counts['visual_rejected_tracks']};"
             f"visual_last_reason={self.last_visual_reason};"
+            "visual_reprojection_rmse_normalized="
+            f"{self.last_visual_reprojection_rmse_normalized:.9g};"
+            "visual_reprojection_residual_dimension="
+            f"{self.last_visual_reprojection_residual_dimension};"
             f"flow_last_reason={self.last_flow_reason};"
             f"flow_rotation_phase={self.last_flow_rotation_phase};"
             f"flow_los_samples={self.counts['flow_los_diagnostic_samples']};"
@@ -5593,6 +5608,16 @@ class UnifiedBackendNode(Node):
         diagnostic.values.extend(
             self._key(name, value) for name, value in self.counts.items()
         )
+        diagnostic.values.extend([
+            self._key(
+                "visual_reprojection_rmse_normalized",
+                f"{self.last_visual_reprojection_rmse_normalized:.9g}",
+            ),
+            self._key(
+                "visual_reprojection_residual_dimension",
+                self.last_visual_reprojection_residual_dimension,
+            ),
+        ])
         array = DiagnosticArray()
         array.header.stamp = self.get_clock().now().to_msg()
         array.status.append(diagnostic)

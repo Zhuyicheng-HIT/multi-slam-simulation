@@ -27,6 +27,14 @@ def generate_launch_description():
         DeclareLaunchArgument("start_rtabmap", default_value="true"),
         DeclareLaunchArgument("database_path", default_value="paper_visual.db"),
         DeclareLaunchArgument("camera_time_offset_s", default_value="0.0"),
+        DeclareLaunchArgument(
+            "visual_factor_mode", default_value="paper_reprojection"
+        ),
+        DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
+        DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
+        DeclareLaunchArgument(
+            "shared_mapping_output_directory", default_value="shared_map_output"
+        ),
         Node(
             package="d435i_rgbd_bridge_cpp",
             executable="d435i_rgbd_bridge",
@@ -61,8 +69,19 @@ def generate_launch_description():
             "use_sim_time": use_sim_time,
         }),
         include("uf_visual_frontend", "visual_tight_coupling.launch.py", {
+            "use_sim_time": use_sim_time,
             "enabled": "true",
             "start_fusion_stack": "true",
+            "visual_factor_mode": LaunchConfiguration("visual_factor_mode"),
             "camera_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
+        }),
+        include("uf_shared_mapping", "shared_mapping.launch.py", {
+            "enabled": LaunchConfiguration("shared_mapping_enabled"),
+            "use_sim_time": use_sim_time,
+            "lidar_enabled": "true",
+            "rgbd_enabled": LaunchConfiguration("shared_mapping_rgbd_enabled"),
+            "output_directory": LaunchConfiguration(
+                "shared_mapping_output_directory"
+            ),
         }),
     ])

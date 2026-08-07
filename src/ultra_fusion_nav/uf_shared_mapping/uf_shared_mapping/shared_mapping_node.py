@@ -33,11 +33,31 @@ def quaternion_rotation(q):
     ])
 
 
+def structured_xyz_array(points):
+    """Return contiguous XYZ rows from Humble structured or tuple points."""
+    if isinstance(points, np.ndarray) and points.dtype.names:
+        names = set(points.dtype.names)
+        if not {"x", "y", "z"}.issubset(names):
+            raise ValueError("PointCloud2 array is missing x/y/z fields")
+        return np.column_stack(
+            (points["x"], points["y"], points["z"])
+        ).astype(float, copy=False)
+    rows = list(points)
+    if not rows:
+        return np.empty((0, 3), dtype=float)
+    array = np.asarray(rows)
+    if array.dtype.names:
+        return structured_xyz_array(array)
+    return np.asarray(array[:, :3], dtype=float)
+
+
 class SharedMappingNode(Node):
     def __init__(self):
         super().__init__("uf_shared_mapping")
         defaults = {
             "enabled": False,
+            "lidar_enabled": True,
+            "rgbd_enabled": True,
             "lidar_topic": "/cloud_registered",
             "color_topic": "/sensors/rgbd/color",
             "depth_topic": "/sensors/rgbd/depth",
@@ -56,12 +76,18 @@ class SharedMappingNode(Node):
             "maximum_depth_m": 12.0,
             "rgbd_pixel_stride": 4,
             "publish_period_s": 2.0,
-            "rotation_body_camera": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            "translation_body_camera_m": [0.0, 0.0, 0.0],
+            "rotation_body_camera": [
+                0.0, 0.0, 1.0,
+                -1.0, 0.0, 0.0,
+                0.0, -1.0, 0.0,
+            ],
+            "translation_body_camera_m": [0.30, 0.0, 0.02],
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
         self.enabled = bool(self.get_parameter("enabled").value)
+        self.lidar_enabled = bool(self.get_parameter("lidar_enabled").value)
+        self.rgbd_enabled = bool(self.get_parameter("rgbd_enabled").value)
         self.mapping = SourceAwareVoxelMap(
             self.get_parameter("voxel_size_m").value,
             self.get_parameter("conflict_distance_m").value,
@@ -126,10 +152,14 @@ class SharedMappingNode(Node):
         self.pose_buffer.append((stamp_seconds(msg.header.stamp), transform))
 
     def _score(self, msg):
+        if not self.rgbd_enabled:
+            return
         self.visual_reliability = float(
             msg.reliability_weight) if msg.valid else 0.0
 
     def _info(self, msg):
+        if not self.rgbd_enabled:
+            return
         if msg.k[0] > 0.0 and msg.k[4] > 0.0:
             self.camera_info = msg
 
@@ -141,11 +171,11 @@ class SharedMappingNode(Node):
         self._rgbd(key)
 
     def _color(self, msg):
-        if self.enabled:
+        if self.enabled and self.rgbd_enabled:
             self._insert(self.colors, msg)
 
     def _depth(self, msg):
-        if self.enabled:
+        if self.enabled and self.rgbd_enabled:
             self._insert(self.depths, msg)
 
     def _nearest_pose(self, stamp_s):
@@ -162,11 +192,11 @@ class SharedMappingNode(Node):
         return pose
 
     def _lidar(self, msg):
-        if not self.enabled:
+        if not self.enabled or not self.lidar_enabled:
             return
-        points = np.asarray(list(point_cloud2.read_points(
+        points = structured_xyz_array(point_cloud2.read_points(
             msg, field_names=("x", "y", "z"), skip_nans=True
-        )), dtype=float)
+        ))
         if points.size:
             self.mapping.integrate_lidar(
                 points[:, :3], stamp_seconds(msg.header.stamp))

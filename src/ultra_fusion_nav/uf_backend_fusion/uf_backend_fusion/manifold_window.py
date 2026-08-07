@@ -1134,6 +1134,19 @@ class ManifoldSlidingWindowBackend:
             )
         return None
 
+    def latest_factor_rmse(self, name):
+        """Return unweighted residual RMSE for runtime diagnostics only."""
+        for factor in reversed(self._factors):
+            if factor["name"] != name or not factor["enabled"]:
+                continue
+            residual = np.asarray(
+                self._residual(factor, self._states), dtype=float
+            )
+            if residual.size == 0 or np.any(~np.isfinite(residual)):
+                return None
+            return float(np.sqrt(np.mean(residual ** 2))), int(residual.size)
+        return None
+
     def factor_summary(self):
         return [
             FactorRecord(

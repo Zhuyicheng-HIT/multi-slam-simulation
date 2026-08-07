@@ -12,9 +12,15 @@ def generate_launch_description():
                           "config", "shared_mapping.yaml")
     return LaunchDescription([
         DeclareLaunchArgument("enabled", default_value="false"),
+        DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("lidar_enabled", default_value="true"),
+        DeclareLaunchArgument("rgbd_enabled", default_value="true"),
         DeclareLaunchArgument("output_directory", default_value="shared_map_output"),
         Node(package="uf_shared_mapping", executable="shared_mapping",
              parameters=[config, {"enabled": True,
+                                  "use_sim_time": LaunchConfiguration("use_sim_time"),
+                                  "lidar_enabled": LaunchConfiguration("lidar_enabled"),
+                                  "rgbd_enabled": LaunchConfiguration("rgbd_enabled"),
                                   "output_directory": LaunchConfiguration("output_directory")}],
              condition=IfCondition(LaunchConfiguration("enabled")), output="screen"),
     ])

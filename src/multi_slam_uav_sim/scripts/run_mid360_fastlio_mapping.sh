@@ -239,15 +239,25 @@ fi
 # and repeatedly clear its measurement buffers.
 livox_lidar_publishers=0
 livox_imu_publishers=0
-for _attempt in 1 2 3 4 5; do
+ownership_stable_samples=0
+for _attempt in {1..20}; do
   livox_lidar_publishers=$(topic_publisher_count /livox/lidar)
   livox_imu_publishers=$(topic_publisher_count /livox/imu)
-  if (( livox_lidar_publishers > 0 && livox_imu_publishers > 0 )); then
+  if (( livox_lidar_publishers > 1 || livox_imu_publishers > 1 )); then
     break
   fi
-  sleep 0.5
+  if (( livox_lidar_publishers == 1 && livox_imu_publishers == 1 )); then
+    ownership_stable_samples=$((ownership_stable_samples + 1))
+    if (( ownership_stable_samples >= 2 )); then
+      break
+    fi
+  else
+    ownership_stable_samples=0
+  fi
+  sleep 1
 done
-if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 )); then
+if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 || \
+      ownership_stable_samples < 2 )); then
   printf 'FAST-LIO input ownership error: /livox/lidar publishers=%s, /livox/imu publishers=%s; expected exactly one each.\n' \
     "$livox_lidar_publishers" "$livox_imu_publishers" >&2
   printf 'Stop duplicate Livox adapters, or set START_LIVOX_POINTCLOUD_BRIDGE=0 when the simulator/driver already provides /livox/*.\n' >&2

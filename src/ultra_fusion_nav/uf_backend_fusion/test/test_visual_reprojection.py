@@ -80,6 +80,9 @@ class VisualReprojectionTest(unittest.TestCase):
                 backend.state(second),
                 self.tracks))
         self.assertLess(after, before * 0.1)
+        rmse, dimension = backend.latest_factor_rmse("visual_reprojection")
+        self.assertEqual(dimension, 8)
+        self.assertLess(rmse, before / np.sqrt(8.0) * 0.1)
 
     def test_invalid_depth_and_covariance_are_rejected(self):
         with self.assertRaises(ValueError):

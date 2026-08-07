@@ -1,6 +1,8 @@
 uf_shared_mapping:
   ros__parameters:
     enabled: false
+    lidar_enabled: true
+    rgbd_enabled: true
     lidar_topic: /cloud_registered
     color_topic: /sensors/rgbd/color
     depth_topic: /sensors/rgbd/depth
@@ -19,5 +21,5 @@ uf_shared_mapping:
     maximum_depth_m: 12.0
     rgbd_pixel_stride: 4
     publish_period_s: 2.0
-    rotation_body_camera: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    translation_body_camera_m: [0.0, 0.0, 0.0]
+    rotation_body_camera: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
+    translation_body_camera_m: [0.30, 0.0, 0.02]

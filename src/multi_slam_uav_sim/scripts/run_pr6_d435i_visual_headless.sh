@@ -21,6 +21,16 @@ RUN_DIR=${RUN_DIR:-$WS_ROOT/logs/paper_visual/$RUN_ID}
 ACTIVE_FILE=${ACTIVE_FILE:-$WS_ROOT/logs/d435i_visual_slam/.active_headless}
 RUN_SMALL_RECTANGLE=${RUN_SMALL_RECTANGLE:-0}
 EXIT_AFTER_RECTANGLE=${EXIT_AFTER_RECTANGLE:-0}
+RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-6.0}
+RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-4.0}
+RECTANGLE_SPEED_MPS=${RECTANGLE_SPEED_MPS:-0.8}
+RECTANGLE_YAW_RATE_DEG_S=${RECTANGLE_YAW_RATE_DEG_S:-12.0}
+RECTANGLE_FACE_EDGES=${RECTANGLE_FACE_EDGES:-1}
+case "$RECTANGLE_FACE_EDGES" in
+  0) RECTANGLE_FACE_EDGES_BOOL=false ;;
+  1) RECTANGLE_FACE_EDGES_BOOL=true ;;
+  *) printf 'RECTANGLE_FACE_EDGES must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 case "$EXIT_AFTER_RECTANGLE" in
   0|1) ;;
   *) printf 'EXIT_AFTER_RECTANGLE must be 0 or 1.\n' >&2; exit 2 ;;
@@ -31,7 +41,26 @@ case "$PR6_START_RTABMAP" in
   1) PR6_START_RTABMAP_BOOL=true ;;
   *) printf 'PR6_START_RTABMAP must be 0 or 1.\n' >&2; exit 2 ;;
 esac
+VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
+case "$VISUAL_FACTOR_MODE" in
+  disabled|paper_reprojection) ;;
+  *) printf 'VISUAL_FACTOR_MODE must be disabled or paper_reprojection.\n' >&2; exit 2 ;;
+esac
+ONLINE_MAPPING_MODE=${ONLINE_MAPPING_MODE:-disabled}
+case "$ONLINE_MAPPING_MODE" in
+  disabled) SHARED_MAPPING_ENABLED=false; SHARED_MAPPING_RGBD_ENABLED=false ;;
+  lidar_only) SHARED_MAPPING_ENABLED=true; SHARED_MAPPING_RGBD_ENABLED=false ;;
+  joint) SHARED_MAPPING_ENABLED=true; SHARED_MAPPING_RGBD_ENABLED=true ;;
+  *) printf 'ONLINE_MAPPING_MODE must be disabled, lidar_only, or joint.\n' >&2; exit 2 ;;
+esac
 mkdir -p "$RUN_DIR" "$(dirname "$ACTIVE_FILE")"
+STARTUP_TRACE="$RUN_DIR/startup_chain.tsv"
+printf 'stage\twall_utc\telapsed_wall_s\n' >"$STARTUP_TRACE"
+
+trace_stage() {
+  printf '%s\t%s\t%s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SECONDS" \
+    >>"$STARTUP_TRACE"
+}
 
 if [[ -f "$ACTIVE_FILE" ]] && d435i_active_read "$ACTIVE_FILE" && \
    kill -0 "$D435I_ACTIVE_PID" 2>/dev/null; then
@@ -77,12 +106,12 @@ cleanup() {
   [[ "$cleanup_started" == 0 ]] || return
   cleanup_started=1
   trap - EXIT INT TERM
-  d435i_cleanup_run_manifests "$RUN_DIR" "$WS_ROOT" \
-    "$RUN_DIR/process_cleanup.log"
   # The paper-mode overlay is a new launch entry point. Stop only process
   # groups recorded by this run, guarded by /proc start ticks so PID reuse or
   # unrelated simulation jobs cannot be targeted.
   stop_recorded_groups
+  d435i_cleanup_run_manifests "$RUN_DIR" "$WS_ROOT" \
+    "$RUN_DIR/process_cleanup.log"
   d435i_active_remove_owned "$ACTIVE_FILE" "$$" "$RUN_TOKEN" || true
   printf 'Paper visual stack stopped (status=%s). Logs: %s\n' "$status" "$RUN_DIR"
   exit "$status"
@@ -152,32 +181,27 @@ record_pid stack_supervisor "$!"
 # bridge and validates that it advances. Reuse it here to avoid a duplicate
 # publisher and subscribe with the offered best-effort clock QoS.
 wait_for_topic /clock 90
+trace_stage clock_ready
 wait_for_topic /livox/lidar 120
+trace_stage lidar_ready
 wait_for_topic /mavros/imu/data_raw 120
+trace_stage imu_ready
 wait_for_topic /sim/optical_flow/rad 90
+trace_stage flow_ready
 wait_for_topic /mavros/global_position/raw/fix 120
+trace_stage gnss_ready
 
-setsid env \
-  LOG_DIR="$RUN_DIR/fastlio" RVIZ=0 LIDAR_WS="$LIDAR_WS" \
-  FASTLIO_INPUT_MODE=livox START_LIVOX_POINTCLOUD_BRIDGE=0 \
-  FASTLIO_NATIVE_FACTOR_EXPORT=1 \
-  bash "$PKG_SHARE/scripts/run_mid360_fastlio_mapping.sh" \
-  >"$RUN_DIR/fastlio_supervisor.log" 2>&1 &
-record_pid fastlio_supervisor "$!"
-wait_for_topic /Odometry 120
-
-if ! timeout 15s ros2 topic echo /fast_lio/native_lidar_factor \
-    --no-daemon --spin-time 2.0 --once --qos-reliability best_effort \
-    >/dev/null 2>&1; then
-  printf 'NativeLidarFactor is required for the paper-mode regression.\n' >&2
-  exit 3
-fi
-printf 'input_trigger=native_factor\nnative_factor=true\nlio_pose_fallback=false\n' \
-  >"$RUN_DIR/backend_runtime_mode.env"
-
+# Construct the backend subscription before starting the backend-owned LiDAR
+# trajectory frontend. Otherwise a bootstrap NativeLidarFactor can be emitted
+# before the volatile subscriber exists, leaving FAST-LIO waiting forever for
+# a scan prediction that the backend cannot create.
 setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   use_sim_time:=true \
   start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
+  visual_factor_mode:="$VISUAL_FACTOR_MODE" \
+  shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
+  shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
+  shared_mapping_output_directory:="$RUN_DIR/shared_map" \
   database_path:="$RUN_DIR/rtabmap.db" \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"
@@ -187,6 +211,7 @@ wait_for_topic /sensors/rgbd/depth 45
 wait_for_topic /front/d435i/color/camera_info 45
 wait_for_topic /reliability/vision_score 45
 wait_for_topic /vision/feature_tracks 90
+trace_stage visual_ready
 if [[ "$PR6_START_RTABMAP" == 1 ]]; then
   # An idle camera may publish only a short odometry burst before the mission
   # starts.  Publisher discovery proves that RTAB is wired; the valid-score
@@ -194,12 +219,65 @@ if [[ "$PR6_START_RTABMAP" == 1 ]]; then
   wait_for_publisher /rtabmap/odom 120
 fi
 wait_for_publisher /reliability/scheduler_state 45
-wait_for_topic /fusion/unified/odom 120
+
+setsid env \
+  LOG_DIR="$RUN_DIR/fastlio" RVIZ=0 LIDAR_WS="$LIDAR_WS" \
+  FASTLIO_INPUT_MODE=livox START_LIVOX_POINTCLOUD_BRIDGE=0 \
+  FASTLIO_NATIVE_FACTOR_EXPORT=1 \
+  FASTLIO_DOWNSTREAM_BACKEND=1 \
+  FASTLIO_MAP_INSERTION_MODE=backend_confirmed \
+  FASTLIO_BACKEND_TRAJECTORY_FRONTEND=1 \
+  bash "$PKG_SHARE/scripts/run_mid360_fastlio_mapping.sh" \
+  >"$RUN_DIR/fastlio_supervisor.log" 2>&1 &
+record_pid fastlio_supervisor "$!"
+if ! wait_for_topic /fast_lio/native_lidar_factor 120; then
+  printf 'NativeLidarFactor is required for the paper-mode regression.\n' >&2
+  exit 3
+fi
+trace_stage native_lidar_factor_ready
+printf 'input_trigger=native_factor\nnative_factor=true\nlio_pose_fallback=false\n' \
+  >"$RUN_DIR/backend_runtime_mode.env"
+if ! wait_for_topic /fusion/unified/odom 120; then
+  timeout 10s ros2 topic echo /fusion/unified/diagnostics \
+    --no-daemon --spin-time 7.0 --once --full-length \
+    >"$RUN_DIR/startup_failure_backend_diagnostics.yaml" 2>&1 || true
+  printf 'Unified backend did not publish after NativeLidarFactor bootstrap.\n' >&2
+  exit 4
+fi
+trace_stage first_unified_odom
+setsid python3 "$WS_ROOT/src/ultra_fusion_nav/scripts/record_reliability_timeline.py" \
+  --duration "${EVIDENCE_ROS_DURATION_S:-60}" \
+  --wall-timeout "${EVIDENCE_WALL_TIMEOUT_S:-180}" \
+  --output "$RUN_DIR/runtime_evidence.json" \
+  >"$RUN_DIR/runtime_evidence.log" 2>&1 &
+record_pid runtime_evidence "$!"
+setsid python3 "$WS_ROOT/src/ultra_fusion_nav/scripts/record_lio_trajectory.py" \
+  --duration "${TRAJECTORY_ROS_DURATION_S:-45}" \
+  --wall-timeout "${TRAJECTORY_WALL_TIMEOUT_S:-600}" \
+  --estimate-topic /fusion/unified/odom \
+  --truth-topic /sim/mid360/ground_truth_odom \
+  --output-dir "$RUN_DIR/trajectory" \
+  >"$RUN_DIR/trajectory_recorder.log" 2>&1 &
+record_pid trajectory_recorder "$!"
+setsid timeout 20s ros2 topic echo /external_nav/diagnostics \
+  --no-daemon --spin-time 10.0 --once --full-length \
+  >"$RUN_DIR/external_nav_first_diagnostics.yaml" 2>&1 &
+record_pid external_nav_diagnostics "$!"
+wait_for_topic /fusion/runtime_external_nav 45
+trace_stage external_nav_gate_open
+if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
+  wait_for_topic /mapping/shared/points 45
+  trace_stage shared_mapping_ready
+fi
 
 if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
   setsid ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
-    -p takeoff_alt:=3.0 -p length_x:=6.0 -p length_y:=4.0 \
-    -p speed_mps:=0.8 -p land_at_end:=true \
+    -p takeoff_alt:=3.0 -p length_x:="$RECTANGLE_LENGTH_X" \
+    -p length_y:="$RECTANGLE_LENGTH_Y" \
+    -p speed_mps:="$RECTANGLE_SPEED_MPS" \
+    -p yaw_rate_deg_s:="$RECTANGLE_YAW_RATE_DEG_S" \
+    -p face_rectangle_edges:="$RECTANGLE_FACE_EDGES_BOOL" \
+    -p land_at_end:=true \
     >"$RUN_DIR/small_rectangle.log" 2>&1 &
   RECTANGLE_PID=$!
   record_pid rectangle_motion "$RECTANGLE_PID"
@@ -225,6 +303,22 @@ if [[ "$RUN_SMALL_RECTANGLE" == 1 && "$EXIT_AFTER_RECTANGLE" == 1 ]]; then
   wait "$RECTANGLE_PID"
   rectangle_status=$?
   set -e
+  if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
+    timeout 20s ros2 service call /mapping/shared/export std_srvs/srv/Trigger '{}' \
+      >"$RUN_DIR/shared_map_export.log" 2>&1 || true
+  fi
+  for _ in {1..20}; do
+    [[ -s "$RUN_DIR/trajectory/estimate.tum" ]] && break
+    sleep 0.5
+  done
+  if [[ -s "$RUN_DIR/trajectory/estimate.tum" && \
+        -s "$RUN_DIR/trajectory/ground_truth.tum" ]]; then
+    python3 "$WS_ROOT/src/ultra_fusion_nav/scripts/evaluate_lio_trajectory.py" \
+      --estimate "$RUN_DIR/trajectory/estimate.tum" \
+      --truth "$RUN_DIR/trajectory/ground_truth.tum" \
+      --output "$RUN_DIR/trajectory_metrics.json" \
+      >"$RUN_DIR/trajectory_evaluation.log" 2>&1 || true
+  fi
   printf 'small_rectangle_exit=%s\n' "$rectangle_status" \
     >"$RUN_DIR/rectangle_result.env"
   exit "$rectangle_status"

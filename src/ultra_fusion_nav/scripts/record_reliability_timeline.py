@@ -9,6 +9,7 @@ import statistics
 import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
@@ -63,6 +64,12 @@ class ReliabilityTimelineRecorder(Node):
             ReliabilityScore,
             "/reliability/optical_flow_score",
             self._flow_score,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            ReliabilityScore,
+            "/reliability/vision_score",
+            self._vision_score,
             qos_profile_sensor_data,
         )
 
@@ -164,6 +171,24 @@ class ReliabilityTimelineRecorder(Node):
         })
         self.events.append(event)
 
+    def _vision_score(self, msg):
+        event = self._relative_event("vision_score", msg)
+        if event is None:
+            return
+        event.update({
+            "degradation_score": float(msg.degradation_score),
+            "reliability_weight": float(msg.reliability_weight),
+            "valid": bool(msg.valid),
+            "reasons": list(msg.reasons),
+            "evidence": {
+                name: float(value)
+                for name, value in zip(
+                    msg.evidence_names, msg.evidence_values
+                )
+            },
+        })
+        self.events.append(event)
+
     def _backend(self, msg):
         for status in msg.status:
             if status.name != "unified_backend_fusion":
@@ -210,6 +235,29 @@ class ReliabilityTimelineRecorder(Node):
                 ),
                 "published": int(values.get("published", 0)),
                 "optimization_errors": int(values.get("optimization_errors", 0)),
+                "optimization_rejected": int(
+                    values.get("optimization_rejected", 0)
+                ),
+                "optimization_rollbacks": int(
+                    values.get("optimization_rollbacks", 0)
+                ),
+                "optimized_states_committed": int(
+                    values.get("optimized_states_committed", 0)
+                ),
+                "visual_received": int(values.get("visual_received", 0)),
+                "visual_factor_attempts": int(
+                    values.get("visual_factor_attempts", 0)
+                ),
+                "visual_factors": int(values.get("visual_factors", 0)),
+                "visual_rejected_time": int(
+                    values.get("visual_rejected_time", 0)
+                ),
+                "visual_rejected_tracks": int(
+                    values.get("visual_rejected_tracks", 0)
+                ),
+                "visual_reprojection_rmse_normalized": float(
+                    values.get("visual_reprojection_rmse_normalized", -1.0)
+                ),
                 "backend_solve_ms": float(values.get("backend_solve_ms", 0.0)),
                 "backend_solve_mean_ms": float(
                     values.get("backend_solve_mean_ms", 0.0)
@@ -352,6 +400,9 @@ def summarize(events):
     backend = [event for event in events if event["kind"] == "backend"]
     lio = [event for event in events if event["kind"] == "lio"]
     flow_scores = [event for event in events if event["kind"] == "flow_score"]
+    vision_scores = [
+        event for event in events if event["kind"] == "vision_score"
+    ]
 
     def finite_median(name):
         values = [event[name] for event in lio if math.isfinite(event[name])]
@@ -398,6 +449,33 @@ def summarize(events):
         ),
         "backend_optimization_errors_max": max(
             (event["optimization_errors"] for event in backend), default=0
+        ),
+        "backend_optimization_rejected_max": max(
+            (event["optimization_rejected"] for event in backend), default=0
+        ),
+        "backend_optimization_rollbacks_max": max(
+            (event["optimization_rollbacks"] for event in backend), default=0
+        ),
+        "backend_optimized_states_committed_max": max(
+            (event["optimized_states_committed"] for event in backend), default=0
+        ),
+        "backend_visual_received_max": max(
+            (event["visual_received"] for event in backend), default=0
+        ),
+        "backend_visual_factor_attempts_max": max(
+            (event["visual_factor_attempts"] for event in backend), default=0
+        ),
+        "backend_visual_factors_max": max(
+            (event["visual_factors"] for event in backend), default=0
+        ),
+        "backend_visual_rejected_time_max": max(
+            (event["visual_rejected_time"] for event in backend), default=0
+        ),
+        "backend_visual_rejected_tracks_max": max(
+            (event["visual_rejected_tracks"] for event in backend), default=0
+        ),
+        "backend_visual_reprojection_rmse_normalized_median": (
+            backend_nonnegative_median("visual_reprojection_rmse_normalized")
         ),
         "backend_solve_ms_median": backend_nonnegative_median(
             "backend_solve_ms"
@@ -516,6 +594,22 @@ def summarize(events):
             backend[-1]["imu_startup_gyro_bias"] if backend else None
         ),
         "flow_score_samples": len(flow_scores),
+        "vision_score_samples": len(vision_scores),
+        "vision_score_valid_samples": sum(
+            event["valid"] for event in vision_scores
+        ),
+        "vision_reliability_weight_median": (
+            statistics.median([
+                event["reliability_weight"] for event in vision_scores
+                if event["valid"]
+            ])
+            if any(event["valid"] for event in vision_scores) else None
+        ),
+        "vision_degradation_score_median": (
+            statistics.median([
+                event["degradation_score"] for event in vision_scores
+            ]) if vision_scores else None
+        ),
         "flow_score_degradation_median": flow_nonnegative_median(
             "degradation_score"
         ),
@@ -565,9 +659,18 @@ def main():
         args.wall_timeout if args.wall_timeout > 0.0
         else max(args.duration * 10.0, args.duration + 60.0)
     )
-    duration_ros_s, duration_wall_s = record_for_ros_duration(
-        node, args.duration, wall_timeout_s
-    )
+    record_started_wall = time.monotonic()
+    interrupted = False
+    try:
+        duration_ros_s, duration_wall_s = record_for_ros_duration(
+            node, args.duration, wall_timeout_s
+        )
+    except (KeyboardInterrupt, ExternalShutdownException):
+        interrupted = True
+        duration_wall_s = time.monotonic() - record_started_wall
+        duration_ros_s = max(
+            (event["elapsed_ros_s"] for event in node.events), default=0.0
+        )
     events = sorted(
         node.events,
         key=lambda event: (
@@ -579,6 +682,7 @@ def main():
         "duration_ros_s": duration_ros_s,
         "duration_wall_s": duration_wall_s,
         "requested_duration_ros_s": args.duration,
+        "interrupted": interrupted,
         "wall_timeout_s": wall_timeout_s,
         "wall_stall_timeout_s": wall_timeout_s,
         "event_time_basis": "valid_source_header_stamp_only",
@@ -599,8 +703,9 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(payload["summary"], sort_keys=True))
-    node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        node.destroy_node()
+        rclpy.shutdown()
     scheduler_ok = payload["summary"]["scheduler_samples"] > 0
     expected_fault_ok = (
         not args.expect_fault_modality

@@ -1,6 +1,7 @@
 import numpy as np
 import unittest
 
+from uf_shared_mapping.shared_mapping_node import structured_xyz_array
 from uf_shared_mapping.voxel_map import SourceAwareVoxelMap
 
 
@@ -28,6 +29,24 @@ def test_low_reliability_does_not_mutate_map():
     assert mapping.summary()["voxel_count"] == 0
 
 
+def test_humble_structured_pointcloud_xyz_is_extracted():
+    points = np.zeros(
+        2,
+        dtype={
+            "names": ["x", "y", "z"],
+            "formats": ["<f4", "<f4", "<f4"],
+            "offsets": [0, 4, 8],
+            "itemsize": 48,
+        },
+    )
+    points["x"] = [1.0, 4.0]
+    points["y"] = [2.0, 5.0]
+    points["z"] = [3.0, 6.0]
+    np.testing.assert_allclose(
+        structured_xyz_array(points), [[1, 2, 3], [4, 5, 6]]
+    )
+
+
 class VoxelMapUnittest(unittest.TestCase):
     def test_lidar_geometry(self):
         test_lidar_geometry_is_not_overwritten_by_rgbd()
@@ -37,3 +56,6 @@ class VoxelMapUnittest(unittest.TestCase):
 
     def test_low_reliability(self):
         test_low_reliability_does_not_mutate_map()
+
+    def test_structured_pointcloud(self):
+        test_humble_structured_pointcloud_xyz_is_extracted()
