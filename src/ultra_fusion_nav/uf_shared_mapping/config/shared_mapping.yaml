@@ -1,0 +1,23 @@
+uf_shared_mapping:
+  ros__parameters:
+    enabled: false
+    lidar_topic: /cloud_registered
+    color_topic: /sensors/rgbd/color
+    depth_topic: /sensors/rgbd/depth
+    camera_info_topic: /front/d435i/color/camera_info
+    pose_topic: /fusion/unified/odom
+    output_topic: /mapping/shared/points
+    map_frame: camera_init
+    output_directory: shared_map_output
+    voxel_size_m: 0.10
+    conflict_distance_m: 0.18
+    maximum_voxels: 500000
+    minimum_visual_reliability: 0.35
+    pose_tolerance_s: 0.08
+    depth_scale: 0.001
+    minimum_depth_m: 0.20
+    maximum_depth_m: 12.0
+    rgbd_pixel_stride: 4
+    publish_period_s: 2.0
+    rotation_body_camera: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    translation_body_camera_m: [0.0, 0.0, 0.0]
