@@ -1,0 +1,11 @@
+# Experiment-only parameters. No production launch file loads this file.
+active_relocalization_experiment:
+  ros__parameters:
+    enabled: false
+    passive_attempt_limit: 3
+    yaw_scan_offsets_deg: [0.0, 90.0, 180.0, 270.0]
+    ego_motion_enabled: false
+    require_attitude_health: true
+    require_altitude_health: true
+    require_local_odometry_for_ego: true
+    require_fresh_obstacle_map_for_ego: true

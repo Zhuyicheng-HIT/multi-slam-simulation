@@ -18,6 +18,13 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(uf_interfaces REQUIRED)
 
+add_library(active_relocalization_policy src/active_relocalization_policy.cpp)
+target_compile_features(active_relocalization_policy PUBLIC cxx_std_17)
+target_include_directories(active_relocalization_policy PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(registration_core src/registration_core.cpp)
 target_compile_features(registration_core PUBLIC cxx_std_17)
 target_include_directories(registration_core PUBLIC
@@ -94,8 +101,8 @@ ament_target_dependencies(lidar_calibration_motion_node
 )
 target_compile_definitions(lidar_calibration_motion_node PRIVATE ${PCL_DEFINITIONS})
 
-install(TARGETS registration_core keyframe_database descriptor_core multi_frame_consistency_gate
-  keyframe_synchronization
+install(TARGETS active_relocalization_policy registration_core keyframe_database descriptor_core
+  multi_frame_consistency_gate keyframe_synchronization
   EXPORT export_registration_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -109,6 +116,10 @@ install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(
+    test_active_relocalization_policy test/test_active_relocalization_policy.cpp)
+  target_link_libraries(
+    test_active_relocalization_policy active_relocalization_policy)
   ament_add_gtest(test_registration_core test/test_registration_core.cpp)
   target_link_libraries(test_registration_core registration_core)
   ament_add_gtest(
