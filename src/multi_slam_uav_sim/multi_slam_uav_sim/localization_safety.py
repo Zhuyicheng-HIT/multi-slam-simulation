@@ -23,6 +23,17 @@ def diagnostic_level_value(value) -> int:
     return int(value)
 
 
+def mission_hold_required(
+    safety_hold: bool,
+    localization_lost: bool,
+    relocalization_request_active: bool,
+) -> bool:
+    """Hold for either pose-loss recovery or an explicit relocalization."""
+    return bool(
+        safety_hold or localization_lost or relocalization_request_active
+    )
+
+
 def scheduler_localization_loss(
     health_state: str,
     estimator_support: float,

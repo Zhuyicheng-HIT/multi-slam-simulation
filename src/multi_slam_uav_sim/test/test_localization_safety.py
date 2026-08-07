@@ -8,6 +8,7 @@ from multi_slam_uav_sim.localization_safety import (
     TRACKING,
     LocalizationSafetyStateMachine,
     diagnostic_level_value,
+    mission_hold_required,
     scheduler_localization_loss,
 )
 
@@ -155,6 +156,12 @@ class LocalizationSafetyStateMachineTest(unittest.TestCase):
             diagnostic_level_value(b"")
         with self.assertRaises(ValueError):
             diagnostic_level_value(b"\x00\x01")
+
+    def test_explicit_relocalization_request_holds_an_otherwise_healthy_mission(self):
+        self.assertFalse(mission_hold_required(False, False, False))
+        self.assertTrue(mission_hold_required(False, False, True))
+        self.assertTrue(mission_hold_required(True, False, False))
+        self.assertTrue(mission_hold_required(False, True, False))
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from .localization_safety import (
     RELOCALIZING_HOLD,
     TRACKING,
     diagnostic_level_value,
+    mission_hold_required,
     scheduler_localization_loss,
 )
 from .relocalization_checkpoints import MissionCheckpoint, encode_checkpoint
@@ -579,7 +580,8 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         # A stale backend cannot be used to transform the next route target.
         # Freeze immediately during the confirmation dwell, then keep the same
         # FCU-local setpoint through HOLDING/RELOCALIZING/RECOVERY_PENDING.
-        effective_hold = decision.hold or lost
+        effective_hold = mission_hold_required(
+            decision.hold, lost, self.relocalization_request_active)
         if not effective_hold:
             return
 
@@ -592,7 +594,9 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         period = 1.0 / self.rate_hz
         next_publish_ros_s = self._now_s()
         last_observed_ros_s = next_publish_ros_s
-        while rclpy.ok() and (decision.hold or lost):
+        while rclpy.ok() and mission_hold_required(
+            decision.hold, lost, self.relocalization_request_active
+        ):
             self.ensure_guided(f"localization safety hold during {label}")
             self.publish_setpoint(*hold_target)
             rclpy.spin_once(self, timeout_sec=0.0)

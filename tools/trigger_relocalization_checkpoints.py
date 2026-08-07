@@ -61,9 +61,9 @@ class CheckpointRelocalizationTrigger(Node):
     def _phase(self, message):
         self.phase = str(message.data)
 
-    def publish_request(self):
+    def publish_request(self, active=True):
         message = Bool()
-        message.data = True
+        message.data = bool(active)
         self.publisher.publish(message)
 
 
@@ -130,6 +130,7 @@ def main():
                         "reset_counter": int(epoch.reset_counter),
                         "recovery_wall_s": now_wall_s - pending["trigger_wall_s"],
                     })
+                    node.publish_request(False)
                     target_offset += 1
                     pending = None
                     if target_offset == len(indices):
@@ -152,6 +153,8 @@ def main():
             if now_wall_s - started_wall_s >= args.wall_timeout:
                 break
     finally:
+        node.publish_request(False)
+        rclpy.spin_once(node, timeout_sec=0.1)
         success = target_offset == len(indices)
         report = {
             "success": success,
