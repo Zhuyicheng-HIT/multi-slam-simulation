@@ -17,6 +17,7 @@ FRONTEND_STATE_SEED_ENABLED=${FRONTEND_STATE_SEED_ENABLED:-false}
 # mode until it can sustain long runs without a request/factor deadlock.
 FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-false}
 EXTERNAL_NAV_OUTPUT_TOPIC=${EXTERNAL_NAV_OUTPUT_TOPIC:-/mavros/odometry/out}
+RELOCALIZATION_SEARCH_TIMEOUT_S=${RELOCALIZATION_SEARCH_TIMEOUT_S:-6.0}
 
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
@@ -90,6 +91,7 @@ setsid env \
   frontend_state_seed_enabled:="$FRONTEND_STATE_SEED_ENABLED_ARG" \
   frontend_scan_prediction_enabled:="$FRONTEND_SCAN_PREDICTION_ENABLED_ARG" \
   external_nav_output_topic:="$EXTERNAL_NAV_OUTPUT_TOPIC" \
+  relocalization_search_timeout_s:="$RELOCALIZATION_SEARCH_TIMEOUT_S" \
   >"$LOG_DIR/online_backend.log" 2>&1 &
 pids+=("$!")
 

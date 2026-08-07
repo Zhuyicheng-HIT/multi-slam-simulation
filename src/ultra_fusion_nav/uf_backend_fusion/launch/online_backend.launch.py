@@ -51,6 +51,11 @@ def generate_launch_description():
             default_value="false",
             description="Legacy weak LiDAR anchor; disabled for backend-owned trajectory mode",
         ),
+        DeclareLaunchArgument(
+            "relocalization_search_timeout_s",
+            default_value="6.0",
+            description="Maximum ROS-time search budget for one relocalization request",
+        ),
         Node(
             package="uf_reliability",
             executable="reliability_monitor",
@@ -147,7 +152,16 @@ def generate_launch_description():
             package="uf_relocalization",
             executable="relocalization_node",
             name="relocalization_node",
-            parameters=[relocalization_config, {"use_sim_time": use_sim_time}],
+            parameters=[
+                relocalization_config,
+                {
+                    "use_sim_time": use_sim_time,
+                    "search_timeout_s": ParameterValue(
+                        LaunchConfiguration("relocalization_search_timeout_s"),
+                        value_type=float,
+                    ),
+                },
+            ],
             prefix=relocalization_prefix,
             output="screen",
         ),
