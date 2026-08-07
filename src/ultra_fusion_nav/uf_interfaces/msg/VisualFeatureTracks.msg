@@ -1,0 +1,13 @@
+std_msgs/Header header
+builtin_interfaces/Time previous_stamp
+string previous_frame_id
+uint32 image_width
+uint32 image_height
+float64[9] camera_matrix
+VisualFeatureTrack[] tracks
+uint32 feature_count
+uint32 valid_depth_count
+float32 klt_inlier_ratio
+float32 spatial_distribution
+float32 mean_reprojection_error_px
+bool pnp_valid

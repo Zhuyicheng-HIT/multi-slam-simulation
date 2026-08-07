@@ -12,7 +12,9 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu, NavSatFix
-from uf_interfaces.msg import GnssIntegrity, LioDiagnostics, ReliabilityScore
+from uf_interfaces.msg import (
+    GnssIntegrity, LioDiagnostics, ReliabilityScore, VisualFeatureTracks,
+)
 
 from .flow_rotation_gate import (
     FlowRotationGateConfig,
@@ -40,12 +42,19 @@ def stamp_ns(header):
 
 
 def vector_norm(vector):
-    return math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z)
+    return math.sqrt(
+        vector.x *
+        vector.x +
+        vector.y *
+        vector.y +
+        vector.z *
+        vector.z)
 
 
 def distance_m(a, b):
     lat_scale = 111_320.0
-    lon_scale = lat_scale * math.cos(math.radians(0.5 * (a.latitude + b.latitude)))
+    lon_scale = lat_scale * \
+        math.cos(math.radians(0.5 * (a.latitude + b.latitude)))
     dx = (a.longitude - b.longitude) * lon_scale
     dy = (a.latitude - b.latitude) * lat_scale
     dz = a.altitude - b.altitude
@@ -78,7 +87,8 @@ def flow_observation_valid(gyro_available, yaw_rate, rotation_gate):
 
 def yaw_from_quaternion(quaternion):
     siny = 2.0 * (quaternion.w * quaternion.z + quaternion.x * quaternion.y)
-    cosy = 1.0 - 2.0 * (quaternion.y * quaternion.y + quaternion.z * quaternion.z)
+    cosy = 1.0 - 2.0 * (quaternion.y * quaternion.y +
+                        quaternion.z * quaternion.z)
     return math.atan2(siny, cosy)
 
 
@@ -134,7 +144,17 @@ def image_feature_support(msg):
     laplacian += gray[:-2, 1:-1] + gray[2:, 1:-1]
     laplacian += gray[1:-1, :-2] + gray[1:-1, 2:]
     blur_energy = float(np.sqrt(np.mean(laplacian * laplacian)))
-    gradient = np.hypot(np.diff(gray, axis=1)[:-1, :], np.diff(gray, axis=0)[:, :-1])
+    gradient = np.hypot(
+        np.diff(
+            gray,
+            axis=1)[
+            :-1,
+            :],
+        np.diff(
+            gray,
+            axis=0)[
+            :,
+            :-1])
     rows = np.array_split(gradient, 8, axis=0)
     cell_counts = []
     for row in rows:
@@ -212,16 +232,24 @@ class ReliabilityMonitor(Node):
             "vision.tau_reprojection_px": 3.0,
             "vision.weights": [0.30, 0.25, 0.25, 0.20],
             "vision.minimum_features": 20,
+            "vision.track_evidence_enabled": True,
+            "vision.klt_weight": 0.15,
         }
         for name, value in parameters.items():
             self.declare_parameter(name, value)
         self.score_publishers = {
-            name: self.create_publisher(ReliabilityScore, f"/reliability/{name}_score", 20)
-            for name in (
-                "lidar", "lidar_map", "gnss", "imu", "optical_flow", "vision"
-            )
-        }
-        self.gnss_integrity_pub = self.create_publisher(GnssIntegrity, "/reliability/gnss_integrity", 20)
+            name: self.create_publisher(
+                ReliabilityScore,
+                f"/reliability/{name}_score",
+                20) for name in (
+                "lidar",
+                "lidar_map",
+                "gnss",
+                "imu",
+                "optical_flow",
+                "vision")}
+        self.gnss_integrity_pub = self.create_publisher(
+            GnssIntegrity, "/reliability/gnss_integrity", 20)
         self.last_imu = None
         self.last_imu_ns = None
         self.last_imu_publish_ns = None
@@ -284,23 +312,52 @@ class ReliabilityMonitor(Node):
         self.latest_feature_count = 0
         self.latest_spatial_uniformity = 0.0
         self.last_vision_publish_ns = None
+        self.last_visual_tracks_ns = None
 
-        self.create_subscription(LioDiagnostics, "/lio/diagnostics", self._lidar, 20)
-        self.create_subscription(NavSatFix, "/sensors/gnss/fix", self._gnss, qos_profile_sensor_data)
+        self.create_subscription(
+            LioDiagnostics,
+            "/lio/diagnostics",
+            self._lidar,
+            20)
+        self.create_subscription(
+            NavSatFix,
+            "/sensors/gnss/fix",
+            self._gnss,
+            qos_profile_sensor_data)
         self.create_subscription(
             GPSRAW, str(self.get_parameter("gnss.raw_topic").value),
             self._gps_raw, qos_profile_sensor_data,
         )
-        self.create_subscription(Imu, "/sensors/imu", self._imu, qos_profile_sensor_data)
+        self.create_subscription(
+            Imu,
+            "/sensors/imu",
+            self._imu,
+            qos_profile_sensor_data)
         self.create_subscription(
             DiagnosticArray,
             str(self.get_parameter("imu.backend_diagnostic_topic").value),
             self._backend_diagnostics,
             10,
         )
-        self.create_subscription(OpticalFlowRad, "/sensors/optical_flow/rad", self._flow, qos_profile_sensor_data)
-        self.create_subscription(Image, "/sensors/rgbd/depth", self._depth, qos_profile_sensor_data)
-        self.create_subscription(Image, "/sensors/rgbd/color", self._color, qos_profile_sensor_data)
+        self.create_subscription(
+            OpticalFlowRad,
+            "/sensors/optical_flow/rad",
+            self._flow,
+            qos_profile_sensor_data)
+        self.create_subscription(
+            Image,
+            "/sensors/rgbd/depth",
+            self._depth,
+            qos_profile_sensor_data)
+        self.create_subscription(
+            Image,
+            "/sensors/rgbd/color",
+            self._color,
+            qos_profile_sensor_data)
+        self.create_subscription(
+            VisualFeatureTracks, "/vision/feature_tracks",
+            self._visual_tracks, qos_profile_sensor_data,
+        )
         self.create_subscription(Odometry, "/lio/odom", self._odom, 20)
         self.create_timer(0.5, self._outage_timer)
 
@@ -456,7 +513,10 @@ class ReliabilityMonitor(Node):
 
     def _gnss(self, msg):
         current_ns = stamp_ns(msg.header)
-        covariance = float(msg.position_covariance[0] + msg.position_covariance[4] + msg.position_covariance[8])
+        covariance = float(
+            msg.position_covariance[0] +
+            msg.position_covariance[4] +
+            msg.position_covariance[8])
         innovation = -1.0
         innovation_mahalanobis = -1.0
         jump = False
@@ -465,9 +525,13 @@ class ReliabilityMonitor(Node):
             gnss_delta = distance_m(msg, self.last_gnss)
             jump = gnss_delta / dt > 15.0 or gnss_delta > 20.0
             if self.lio_position is not None and self.last_gnss_lio_position is not None:
-                lio_delta = float(np.linalg.norm(self.lio_position - self.last_gnss_lio_position))
+                lio_delta = float(
+                    np.linalg.norm(
+                        self.lio_position -
+                        self.last_gnss_lio_position))
                 innovation = abs(gnss_delta - lio_delta)
-                innovation_mahalanobis = innovation * innovation / max(0.01, covariance)
+                innovation_mahalanobis = innovation * \
+                    innovation / max(0.01, covariance)
         if jump and innovation_mahalanobis < 0.0:
             innovation_mahalanobis = 10.0
         raw = None
@@ -513,7 +577,8 @@ class ReliabilityMonitor(Node):
         integrity.header = copy.deepcopy(msg.header)
         integrity.fix_status = int(msg.status.status)
         integrity.service = int(msg.status.service)
-        integrity.satellite_count = 0 if raw is None else int(raw.satellites_visible)
+        integrity.satellite_count = 0 if raw is None else int(
+            raw.satellites_visible)
         integrity.hdop = -1.0 if hdop is None else hdop
         integrity.vdop = -1.0 if vdop is None else vdop
         integrity.covariance_trace_m2 = covariance
@@ -529,9 +594,10 @@ class ReliabilityMonitor(Node):
 
     def _imu(self, msg):
         current_ns = stamp_ns(msg.header)
-        accel = np.asarray([
-            msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z
-        ], dtype=float)
+        accel = np.asarray([msg.linear_acceleration.x,
+                            msg.linear_acceleration.y,
+                            msg.linear_acceleration.z],
+                           dtype=float)
         jerk = 0.0
         if self.last_imu is not None and self.last_imu_ns is not None:
             dt = (current_ns - self.last_imu_ns) * 1.0e-9
@@ -539,12 +605,14 @@ class ReliabilityMonitor(Node):
                 jerk = float(np.linalg.norm(accel - self.last_imu) / dt)
         self.last_imu = accel
         self.last_imu_ns = current_ns
-        gyro = np.asarray([
-            msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z
-        ], dtype=float)
+        gyro = np.asarray([msg.angular_velocity.x,
+                           msg.angular_velocity.y,
+                           msg.angular_velocity.z],
+                          dtype=float)
         timestamp_s = current_ns * 1.0e-9
         self.flow_imu_yaw_samples.append((timestamp_s, float(gyro[2])))
-        self.flow_imu_samples.append((timestamp_s, tuple(float(value) for value in gyro)))
+        self.flow_imu_samples.append(
+            (timestamp_s, tuple(float(value) for value in gyro)))
         cutoff_s = timestamp_s - 5.0
         while (
             self.flow_imu_yaw_samples
@@ -557,17 +625,27 @@ class ReliabilityMonitor(Node):
         ):
             self.flow_imu_samples.popleft()
         self.imu_window.append((accel, gyro))
-        if self.last_imu_publish_ns is not None and current_ns - self.last_imu_publish_ns < 100_000_000:
+        if self.last_imu_publish_ns is not None and current_ns - \
+                self.last_imu_publish_ns < 100_000_000:
             return
         self.last_imu_publish_ns = current_ns
         accel_values = np.asarray([sample[0] for sample in self.imu_window])
         gyro_values = np.asarray([sample[1] for sample in self.imu_window])
-        accel_excitation = float(np.mean(np.std(accel_values, axis=0))) if len(accel_values) > 2 else 0.0
-        gyro_excitation = float(np.mean(np.std(gyro_values, axis=0))) if len(gyro_values) > 2 else 0.0
-        excitation = min(1.0, 0.5 * (
-            accel_excitation / self.get_parameter("imu.accel_excitation_scale").value
-            + gyro_excitation / self.get_parameter("imu.gyro_excitation_scale").value
-        ))
+        accel_excitation = float(
+            np.mean(
+                np.std(
+                    accel_values,
+                    axis=0))) if len(accel_values) > 2 else 0.0
+        gyro_excitation = float(
+            np.mean(
+                np.std(
+                    gyro_values,
+                    axis=0))) if len(gyro_values) > 2 else 0.0
+        excitation = min(1.0, 0.5 *
+                         (accel_excitation /
+                          self.get_parameter("imu.accel_excitation_scale").value +
+                             gyro_excitation /
+                             self.get_parameter("imu.gyro_excitation_scale").value))
         accel_norm = float(np.linalg.norm(accel))
         gyro_norm = float(np.linalg.norm(gyro))
         saturation = (
@@ -580,9 +658,8 @@ class ReliabilityMonitor(Node):
             residual_age_s = self._age_s(
                 self._now_s(), self.imu_preintegration_residual_arrival
             )
-            if residual_age_s <= float(
-                self.get_parameter("imu.preintegration_residual_timeout_s").value
-            ):
+            if residual_age_s <= float(self.get_parameter(
+                    "imu.preintegration_residual_timeout_s").value):
                 residual = float(self.imu_preintegration_residual)
         result = imu_score(
             excitation, residual, saturation,
@@ -646,15 +723,21 @@ class ReliabilityMonitor(Node):
         if integration_s <= 1.0e-5:
             return None
         end_s = stamp_ns(msg.header) * 1.0e-9
-        maximum_gap = float(self.get_parameter("optical_flow.lio_max_gap_s").value)
+        maximum_gap = float(self.get_parameter(
+            "optical_flow.lio_max_gap_s").value)
         current = interpolate_lio(self.lio_samples, end_s, maximum_gap)
-        previous = interpolate_lio(self.lio_samples, end_s - integration_s, maximum_gap)
+        previous = interpolate_lio(
+            self.lio_samples,
+            end_s - integration_s,
+            maximum_gap)
         if current is None or previous is None:
             return None
         world_delta = current[:2] - previous[:2]
         yaw = current[2]
-        body_flu_x = math.cos(yaw) * world_delta[0] + math.sin(yaw) * world_delta[1]
-        body_flu_y = -math.sin(yaw) * world_delta[0] + math.cos(yaw) * world_delta[1]
+        body_flu_x = math.cos(
+            yaw) * world_delta[0] + math.sin(yaw) * world_delta[1]
+        body_flu_y = -math.sin(yaw) * \
+            world_delta[0] + math.cos(yaw) * world_delta[1]
         return float(body_flu_x), float(-body_flu_y)
 
     def _flush_flows(self):
@@ -681,13 +764,20 @@ class ReliabilityMonitor(Node):
         lever_correction = None
         lever_reason = "not_attempted"
         if raw_flow_displacement is not None:
-            lever_correction, lever_reason = self._flow_lever_arm_displacement(msg)
+            lever_correction, lever_reason = self._flow_lever_arm_displacement(
+                msg)
             if lever_correction is not None:
                 # Convert the FLU correction to FRD before removing it from the
                 # APM-compatible sensor displacement.
                 flow_displacement = (
-                    float(raw_flow_displacement[0]) - float(lever_correction[0]),
-                    float(raw_flow_displacement[1]) + float(lever_correction[1]),
+                    float(
+                        raw_flow_displacement[0]) -
+                    float(
+                        lever_correction[0]),
+                    float(
+                        raw_flow_displacement[1]) +
+                    float(
+                        lever_correction[1]),
                 )
         prediction_fallback_allowed = (
             prediction is None
@@ -714,9 +804,10 @@ class ReliabilityMonitor(Node):
                 "optical_flow.rotation_gate.imu_max_gap_s").value),
         )
         translation_norm = (
-            None if flow_displacement is None
-            else math.hypot(float(flow_displacement[0]), float(flow_displacement[1]))
-        )
+            None if flow_displacement is None else math.hypot(
+                float(
+                    flow_displacement[0]), float(
+                    flow_displacement[1])))
         # The gyro-compensated displacement is an observation in its own
         # right.  A missing LIO prediction must not turn a valid flow sample
         # into a rotation-gate failure; its quality and distance still enter
@@ -757,7 +848,10 @@ class ReliabilityMonitor(Node):
             reasons.append(rotation_gate.reason)
         if rotation_gate.hard_disabled:
             reasons.append("flow_rotation_gate_marks_observation_unavailable")
-        if lever_reason not in {"per_exposure_imu", "disabled", "not_attempted"}:
+        if lever_reason not in {
+            "per_exposure_imu",
+            "disabled",
+                "not_attempted"}:
             reasons.append(f"flow_lever_arm_{lever_reason}")
         evidence.update({
             "flow_lever_arm_compensation_enabled": (
@@ -814,8 +908,11 @@ class ReliabilityMonitor(Node):
         self._publish_vision(msg.header)
 
     def _publish_vision(self, header):
+        if bool(self.get_parameter("vision.track_evidence_enabled").value):
+            return
         current_ns = stamp_ns(header)
-        if self.last_vision_publish_ns is not None and current_ns - self.last_vision_publish_ns < 200_000_000:
+        if self.last_vision_publish_ns is not None and current_ns - \
+                self.last_vision_publish_ns < 200_000_000:
             return
         self.last_vision_publish_ns = current_ns
         result = vision_score(
@@ -835,20 +932,64 @@ class ReliabilityMonitor(Node):
             self.get_parameter("vision.minimum_features").value,
         )
 
+    def _visual_tracks(self, msg):
+        current_ns = stamp_ns(msg.header)
+        if self.last_visual_tracks_ns is not None and current_ns <= self.last_visual_tracks_ns:
+            return
+        self.last_visual_tracks_ns = current_ns
+        feature_count = int(msg.feature_count)
+        depth_ratio = float(msg.valid_depth_count) / max(1, feature_count)
+        result = vision_score(
+            feature_count,
+            self.get_parameter("vision.feature_reference").value,
+            float(msg.spatial_distribution),
+            float(msg.mean_reprojection_error_px),
+            depth_ratio,
+            self.get_parameter("vision.tau_reprojection_px").value,
+            tuple(self.get_parameter("vision.weights").value),
+        )
+        score, evidence, reasons = result
+        klt_ratio = max(0.0, min(1.0, float(msg.klt_inlier_ratio)))
+        klt_weight = max(
+            0.0, min(
+                0.5, float(
+                    self.get_parameter("vision.klt_weight").value)))
+        score = (1.0 - klt_weight) * score + klt_weight * (1.0 - klt_ratio)
+        evidence["klt_forward_backward_inlier_ratio"] = klt_ratio
+        evidence["klt_extension_weight"] = klt_weight
+        evidence["pnp_geometric_verification"] = 1.0 if msg.pnp_valid else 0.0
+        evidence["valid_depth_track_ratio"] = depth_ratio
+        if klt_ratio < 0.5:
+            reasons.append("weak_klt_forward_backward_consistency")
+        if not msg.pnp_valid:
+            reasons.append("pnp_geometric_verification_failed")
+        self._publish(
+            "vision",
+            msg.header,
+            (score,
+             evidence,
+             reasons),
+            bool(
+                msg.pnp_valid and feature_count >= self.get_parameter("vision.minimum_features").value),
+            feature_count,
+            self.get_parameter("vision.minimum_features").value,
+        )
+
     def _outage_timer(self):
         self._flush_flows()
         if self.last_gnss_arrival_ns is None or self.last_gnss is None:
             return
-        outage_s = (self.get_clock().now().nanoseconds - self.last_gnss_arrival_ns) * 1.0e-9
+        outage_s = (self.get_clock().now().nanoseconds -
+                    self.last_gnss_arrival_ns) * 1.0e-9
         if outage_s < 0.0:
             self.last_gnss_arrival_ns = None
             return
         if outage_s <= 0.75:
             return
         covariance = float(
-            self.last_gnss.position_covariance[0] + self.last_gnss.position_covariance[4]
-            + self.last_gnss.position_covariance[8]
-        )
+            self.last_gnss.position_covariance[0] +
+            self.last_gnss.position_covariance[4] +
+            self.last_gnss.position_covariance[8])
         result = gnss_score(
             0.0, covariance, -1.0,
             self.get_parameter("gnss.tau_covariance").value,

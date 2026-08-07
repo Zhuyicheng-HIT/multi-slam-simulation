@@ -4,6 +4,7 @@ unified_backend_fusion:
     native_lidar_factor_topic: /fast_lio/native_lidar_factor
     gnss_topic: /sensors/gnss/fix
     flow_topic: /sensors/optical_flow/rad
+    visual_tracks_topic: /vision/feature_tracks
     imu_topic: /sensors/imu
     scheduler_topic: /reliability/scheduler_state
     relocalization_result_topic: /relocalization/result
@@ -29,6 +30,19 @@ unified_backend_fusion:
     # preintegration and must not consume FCU-fused local position.
     # Set to linear only for controlled rollback comparisons.
     backend_solver_mode: manifold
+    # Stable four-source behavior is unchanged unless the dedicated visual
+    # launch overrides this with paper_reprojection.
+    visual_factor_mode: disabled
+    visual_time_offset_s: 0.0
+    visual_state_tolerance_s: 0.065
+    visual_minimum_tracks: 20
+    visual_pixel_sigma_normalized: 0.002
+    visual_inverse_depth_variance_scale: 0.01
+    # T_body_camera for the simulated front D435i optical frame. Camera axes
+    # are x-right/y-down/z-forward; body axes are x-forward/y-left/z-up.
+    # Hardware deployments must replace these values with measured calibration.
+    visual_rotation_body_camera: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
+    visual_translation_body_camera_m: [0.30, 0.0, 0.02]
     nonlinear_max_iterations: 4
     nonlinear_damping: 1.0e-6
     nonlinear_convergence_threshold: 1.0e-5
