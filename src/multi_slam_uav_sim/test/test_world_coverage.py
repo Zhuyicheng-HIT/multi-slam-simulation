@@ -73,10 +73,14 @@ def test_flow_texture_covers_the_expanded_floor():
     assert max(pose_xy(item)[0] for item in x_lines) >= 18.0
     assert min(pose_xy(item)[1] for item in y_lines) <= -18.0
     assert max(pose_xy(item)[1] for item in y_lines) >= 18.0
+    outer_lines = [
+        item for item in x_lines + y_lines
+        if max(abs(value) for value in pose_xy(item)) > 8.0
+    ]
     assert all(
         max(float(value) for value in item.findtext("geometry/box/size").split())
         >= 38.0
-        for item in x_lines + y_lines
+        for item in outer_lines
     )
 
     flow_markers = named_children(root, "visual", "marker_")
@@ -84,9 +88,31 @@ def test_flow_texture_covers_the_expanded_floor():
     assert max(max(abs(value) for value in pose_xy(item)) for item in flow_markers) >= 15.0
 
 
+def test_central_visual_grid_keeps_the_persisted_rtab_contract():
+    root = ET.parse(WORLD).getroot()
+    visuals = {
+        element.get("name"): element
+        for element in root.findall(".//visual")
+    }
+    for axis in ("x", "y"):
+        for coordinate in range(-8, 9, 2):
+            element = visuals[f"{axis}_grid_{coordinate}"]
+            size = [
+                float(value)
+                for value in element.findtext("geometry/box/size").split()
+            ]
+            expected_length = 16.0 if axis == "x" else 18.0
+            assert math.isclose(max(size), expected_length, abs_tol=1.0e-9)
+            assert element.find("material/ambient") is not None
+
+
 def test_lidar_landmarks_cover_the_s_curve_and_outer_area():
     root = ET.parse(LANDMARKS).getroot()
     landmarks = root.findall(".//collision")
+    assert not root.findall(".//visual"), (
+        "LiDAR observability landmarks must not occlude the persisted RTAB "
+        "camera scene"
+    )
     positions = [pose_xy(item) for item in landmarks]
     assert len(positions) >= 18
     assert max(max(abs(value) for value in point) for point in positions) >= 15.0

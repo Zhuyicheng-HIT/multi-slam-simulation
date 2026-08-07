@@ -11,6 +11,30 @@ source "$WS_INSTALL/setup.bash"
 source "$PKG_SHARE/scripts/d435i_active_run_lifecycle.sh"
 set -u
 
+wait_for_publisher() {
+  local topic=$1 timeout_s=${2:-60} started=$SECONDS info=
+  while (( SECONDS - started < timeout_s )); do
+    info=$(timeout 5s ros2 topic info "$topic" --no-daemon 2>/dev/null || true)
+    if grep -Eq 'Publisher count: [1-9][0-9]*' <<<"$info"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_sample() {
+  local topic=$1 timeout_s=${2:-60} started=$SECONDS
+  while (( SECONDS - started < timeout_s )); do
+    if timeout 7s ros2 topic echo "$topic" --no-daemon --spin-time 5.0 \
+        --once >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 ACTIVE_FILE=${ACTIVE_FILE:-/tmp/multi_slam_d435i_cross_session.active}
 d435i_require_active_stack "$ACTIVE_FILE" "$WS_ROOT"
 CONDITION=${CONDITION:-start_same}
@@ -125,6 +149,7 @@ trap cleanup EXIT INT TERM
 
 setsid ros2 run multi_slam_uav_sim d435i_cross_session_monitor --ros-args \
   -p use_sim_time:=true -p mode:=session -p condition:="$CONDITION" \
+  -p ground_truth_topic:=/sim/mid360/ground_truth_odom \
   -p output_dir:="$OUTPUT_DIR/monitor" \
   >"$OUTPUT_DIR/monitor.log" 2>&1 &
 monitor_pid=$!
@@ -162,21 +187,14 @@ setsid ros2 launch multi_slam_uav_sim d435i_rtabmap.launch.py \
   config_file:="$LOCALIZATION_CONFIG" database_path:="$session_db" \
   >"$OUTPUT_DIR/rtabmap.log" 2>&1 &
 rtab_pid=$!
-rtab_ready=0
-# Keep the RTAB readiness budget below the motion node's control timeout. Each
-# iteration can spend up to 7 seconds (two bounded topic reads plus sleep), so
-# 30 attempts remain bounded by 210 seconds. The motion node will then still be
-# holding the evaluated pose when the observe command is published.
-for _ in {1..30}; do
-  if timeout 3s ros2 topic echo /rtabmap/info --once >/dev/null 2>&1 && \
-      timeout 3s ros2 topic echo /rtabmap/odom --once >/dev/null 2>&1; then
-    rtab_ready=1
-    break
-  fi
-  if ! kill -0 "$rtab_pid" 2>/dev/null; then break; fi
-  sleep 1
-done
-if [[ "$rtab_ready" != "1" ]]; then
+# Publisher discovery and sample reception are separate contracts. Requiring
+# two sparse topics to be caught by consecutive short-lived CLI subscribers in
+# the same polling iteration produced false startup failures under stage3 load.
+# The combined 180 s budget remains below the motion node's 240 s hold timeout.
+if ! wait_for_publisher /rtabmap/info 30 || \
+   ! wait_for_publisher /rtabmap/odom 30 || \
+   ! wait_for_sample /rtabmap/info 60 || \
+   ! wait_for_sample /rtabmap/odom 60; then
   printf 'Localization RTAB-Map did not publish Info and odometry.\n' >&2
   exit 1
 fi
@@ -255,4 +273,3 @@ printf 'analysis_exit_code=%s\n' "$analysis_exit" >>"$OUTPUT_DIR/run_context.env
 trap - EXIT INT TERM
 cleanup
 exit "$analysis_exit"
-

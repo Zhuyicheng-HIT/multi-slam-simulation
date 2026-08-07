@@ -1,0 +1,13 @@
+scope,mode,seed,translation_rmse_m,rotation_rmse_rad,final_translation_error_m,solve_time_s,solver_rejected_steps,color_coverage_ratio,volume_growth_ratio,voxel_count
+deterministic_factor_level,four_source,0,0.020285886,0.021960231,0.025972791,0.045074481,0,,,
+deterministic_factor_level,legacy_rtab_relative,0,0.009071538,0.006499842,0.012964375,0.170427261,0,,,
+deterministic_factor_level,paper_reprojection,0,0.002203779,0.000462476,0.003637810,0.140562488,0,,,
+deterministic_factor_level,four_source,1,0.025509808,0.018934990,0.022489258,0.040802718,0,,,
+deterministic_factor_level,legacy_rtab_relative,1,0.013648664,0.006673576,0.019611185,0.168738431,0,,,
+deterministic_factor_level,paper_reprojection,1,0.001655016,0.000517231,0.002827307,0.141071001,0,,,
+deterministic_factor_level,four_source,2,0.027790107,0.016427687,0.053085826,0.044327419,0,,,
+deterministic_factor_level,legacy_rtab_relative,2,0.009628931,0.003834311,0.018880961,0.210390896,0,,,
+deterministic_factor_level,paper_reprojection,2,0.002323308,0.000702179,0.002367690,0.142389501,0,,,
+deterministic_shared_map,paper_reprojection_plus_shared_map,0,,,,,,,0.671201814,1.006802721,885
+deterministic_shared_map,paper_reprojection_plus_shared_map,1,,,,,,,0.659863946,1.011337868,887
+deterministic_shared_map,paper_reprojection_plus_shared_map,2,,,,,,,0.668934240,1.006802721,885
