@@ -12,7 +12,10 @@ USE_SIM_TIME=${USE_SIM_TIME:-true}
 FRONTEND_STATE_SEED_ENABLED=${FRONTEND_STATE_SEED_ENABLED:-false}
 # The unified backend owns the trajectory by default.  Keep the legacy
 # FAST-LIO-local trajectory available only as an explicit compatibility mode.
-FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-true}
+# Keep the proven FAST-LIO-local deskew/matching predictor as the stable
+# default. The backend-owned trajectory handshake remains an explicit A/B
+# mode until it can sustain long runs without a request/factor deadlock.
+FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-false}
 EXTERNAL_NAV_OUTPUT_TOPIC=${EXTERNAL_NAV_OUTPUT_TOPIC:-/mavros/odometry/out}
 
 source /opt/ros/humble/setup.bash

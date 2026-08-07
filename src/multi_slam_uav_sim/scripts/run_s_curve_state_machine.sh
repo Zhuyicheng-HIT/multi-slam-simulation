@@ -23,7 +23,7 @@ if [[ "$mavros_ready" != true ]]; then
 fi
 clock_ready=false
 for _attempt in 1 2 3; do
-  if timeout 8s ros2 topic echo /clock --once --field clock \
+  if timeout 8s ros2 topic echo /clock --once \
       --qos-reliability best_effort >/dev/null 2>&1; then
     clock_ready=true
     break
@@ -34,6 +34,17 @@ if [[ "$clock_ready" != true ]]; then
   exit 2
 fi
 
+if ! timeout 20s ros2 topic echo /fusion/unified/odom --once \
+    --qos-reliability best_effort >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+The strict S-curve mission did not receive /fusion/unified/odom.
+Start the FAST-LIO frontend and unified backend stack before this command.
+The mission is aborting before arming; FCU local position and Gazebo truth are
+not accepted as navigation fallbacks.
+EOF
+  exit 2
+fi
+
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/s_curve_state_machine_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
 
@@ -41,13 +52,15 @@ TAKEOFF_ALT=${TAKEOFF_ALT:-5.0}
 S_CURVE_SPAN=${S_CURVE_SPAN:-12.0}
 S_CURVE_AMPLITUDE=${S_CURVE_AMPLITUDE:-4.5}
 S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-1.0}
-S_CURVE_VERTICAL_CYCLES=${S_CURVE_VERTICAL_CYCLES:-1}
+S_CURVE_VERTICAL_CYCLES=${S_CURVE_VERTICAL_CYCLES:-2}
 S_CURVE_PASSES=${S_CURVE_PASSES:-3}
-S_CURVE_SPEED=${S_CURVE_SPEED:-0.45}
+S_CURVE_SPEED=${S_CURVE_SPEED:-0.35}
 S_CURVE_HOLD_TIME=${S_CURVE_HOLD_TIME:-3.0}
-S_CURVE_WAYPOINT_SPACING=${S_CURVE_WAYPOINT_SPACING:-3.0}
+S_CURVE_WAYPOINT_SPACING=${S_CURVE_WAYPOINT_SPACING:-2.0}
 S_CURVE_WAYPOINT_HOLD=${S_CURVE_WAYPOINT_HOLD:-1.0}
-S_CURVE_WAYPOINT_TOLERANCE=${S_CURVE_WAYPOINT_TOLERANCE:-0.60}
+S_CURVE_WAYPOINT_TOLERANCE=${S_CURVE_WAYPOINT_TOLERANCE:-0.45}
+MAX_ROUTE_COMMAND_OFFSET=${MAX_ROUTE_COMMAND_OFFSET:-1.50}
+MAX_ROUTE_VERTICAL_OFFSET=${MAX_ROUTE_VERTICAL_OFFSET:-0.75}
 POST_TAKEOFF_HOLD_TIME=${POST_TAKEOFF_HOLD_TIME:-3.0}
 FINAL_HOLD_TIME=${FINAL_HOLD_TIME:-0.0}
 LOCALIZATION_SAFETY_ENABLED=${LOCALIZATION_SAFETY_ENABLED:-auto}
@@ -78,6 +91,8 @@ S_CURVE_HOLD_TIME_ARG=$(as_double "$S_CURVE_HOLD_TIME")
 S_CURVE_WAYPOINT_SPACING_ARG=$(as_double "$S_CURVE_WAYPOINT_SPACING")
 S_CURVE_WAYPOINT_HOLD_ARG=$(as_double "$S_CURVE_WAYPOINT_HOLD")
 S_CURVE_WAYPOINT_TOLERANCE_ARG=$(as_double "$S_CURVE_WAYPOINT_TOLERANCE")
+MAX_ROUTE_COMMAND_OFFSET_ARG=$(as_double "$MAX_ROUTE_COMMAND_OFFSET")
+MAX_ROUTE_VERTICAL_OFFSET_ARG=$(as_double "$MAX_ROUTE_VERTICAL_OFFSET")
 POST_TAKEOFF_HOLD_TIME_ARG=$(as_double "$POST_TAKEOFF_HOLD_TIME")
 FINAL_HOLD_TIME_ARG=$(as_double "$FINAL_HOLD_TIME")
 LOCALIZATION_HOLD_S_ARG=$(as_double "$LOCALIZATION_HOLD_S")
@@ -108,7 +123,7 @@ case "${LOCALIZATION_SAFETY_ENABLED,,}" in
       printf 'Localization safety auto mode: scheduler publisher detected; strict supervision enabled.\n'
     else
       LOCALIZATION_SAFETY_ENABLED_ARG=false
-      printf 'Localization safety auto mode: no scheduler publisher; basic GPS/FCU demonstration will run without scheduler supervision.\n' >&2
+      printf 'Localization safety auto mode: no scheduler publisher; strict unified-backend route control remains active, but scheduler-triggered hold is unavailable.\n' >&2
     fi
     ;;
   *) printf 'LOCALIZATION_SAFETY_ENABLED must be auto, true/false, or 1/0, got %s.\n' "$LOCALIZATION_SAFETY_ENABLED" >&2; exit 2 ;;
@@ -125,6 +140,8 @@ Stops: every $S_CURVE_WAYPOINT_SPACING m for at least $S_CURVE_WAYPOINT_HOLD s,
        endpoint hold=$S_CURVE_HOLD_TIME s, tolerance=$S_CURVE_WAYPOINT_TOLERANCE m
 Safety: requested=$LOCALIZATION_SAFETY_ENABLED, enabled=$LOCALIZATION_SAFETY_ENABLED_ARG,
         minimum localization-loss hold=$LOCALIZATION_HOLD_S s
+Feedback: strict /fusion/unified/odom; no FCU/Gazebo navigation fallback,
+          command offset limits=$MAX_ROUTE_COMMAND_OFFSET m horizontal / $MAX_ROUTE_VERTICAL_OFFSET m vertical
 Yaw: calibration_sweep=$CALIBRATION_YAW_SWEEP_DEG deg, then locked at home+$LOCKED_YAW_OFFSET_DEG deg
 Altitude: takeoff=$TAKEOFF_ALT m, minimum_clearance=$MINIMUM_CLEARANCE_ALT m
 EOF
@@ -143,6 +160,9 @@ ros2 run multi_slam_uav_sim guided_s_curve_waypoints --ros-args \
   -p waypoint_spacing_m:="$S_CURVE_WAYPOINT_SPACING_ARG" \
   -p waypoint_hold_s:="$S_CURVE_WAYPOINT_HOLD_ARG" \
   -p waypoint_position_tolerance_m:="$S_CURVE_WAYPOINT_TOLERANCE_ARG" \
+  -p route_feedback_source:=unified_backend \
+  -p max_route_command_offset_m:="$MAX_ROUTE_COMMAND_OFFSET_ARG" \
+  -p max_route_vertical_offset_m:="$MAX_ROUTE_VERTICAL_OFFSET_ARG" \
   -p post_takeoff_hold_time_s:="$POST_TAKEOFF_HOLD_TIME_ARG" \
   -p final_hold_time_s:="$FINAL_HOLD_TIME_ARG" \
   -p localization_safety_enabled:="$LOCALIZATION_SAFETY_ENABLED_ARG" \

@@ -59,9 +59,11 @@ if [[ "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" == "final_loop_hold" ]]; then
 else
   VALIDATION_FINAL_HOLD_TIME=${VALIDATION_FINAL_HOLD_TIME:-0.0}
 fi
-# The unified validation path must use the backend-owned trajectory.  Set this
-# to 0 only for an explicit legacy FAST-LIO-local A/B comparison.
-FASTLIO_BACKEND_TRAJECTORY_FRONTEND=${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-1}
+# The stable path keeps FAST-LIO's internal prediction for deskew/matching but
+# exports native factors and gives the unified backend final state/map
+# ownership. Set this to 1 only for the experimental backend-trajectory A/B;
+# the 2026-08-07 urban run exposed a request/factor deadlock in that mode.
+FASTLIO_BACKEND_TRAJECTORY_FRONTEND=${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0}
 case "$FASTLIO_BACKEND_TRAJECTORY_FRONTEND" in
   1|true|TRUE|yes|YES) frontend_scan_prediction_enabled=true ;;
   0|false|FALSE|no|NO) frontend_scan_prediction_enabled=false ;;
@@ -197,7 +199,7 @@ setsid env ENABLE_VISION=false USE_SIM_TIME=true \
   >"$LOG_DIR/unified_launcher.log" 2>&1 &
 pids+=("$!")
 
-case "${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-1}" in
+case "${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0}" in
   1|true|TRUE|yes|YES)
     printf 'Backend-owned trajectory mode: FAST-LIO diagnostic topics are not backend startup dependencies.\n'
     ;;

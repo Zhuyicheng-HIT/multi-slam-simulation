@@ -2,8 +2,10 @@ import math
 import unittest
 
 from multi_slam_uav_sim.s_curve_path import (
+    backend_error_to_fcu_setpoint,
     generate_calibration_figure_eight,
     generate_s_curve,
+    normalize_angle,
     polyline_length,
     resample_polyline,
 )
@@ -50,6 +52,35 @@ class SCurvePathTest(unittest.TestCase):
         reverse = list(reversed(points))
         self.assertEqual(points[-1], reverse[0])
         self.assertEqual(reverse[-1], points[0])
+
+    def test_two_vertical_cycles_produce_repeated_climbs_and_descents(self):
+        points = generate_s_curve(12.0, 4.5, 5.0, 1.0, samples=9,
+                                  vertical_cycles=2)
+        self.assertAlmostEqual(points[1][2], 6.0, places=6)
+        self.assertAlmostEqual(points[3][2], 4.0, places=6)
+        self.assertAlmostEqual(points[5][2], 6.0, places=6)
+        self.assertAlmostEqual(points[7][2], 4.0, places=6)
+        self.assertAlmostEqual(points[0][2], points[-1][2], places=9)
+
+    def test_backend_error_drives_fcu_adapter_without_using_fcu_feedback(self):
+        command = backend_error_to_fcu_setpoint(
+            backend_position=(1.0, 2.0, 3.0),
+            backend_target=(3.0, 2.0, 4.0),
+            fcu_position=(10.0, 20.0, 30.0),
+            backend_to_fcu_yaw=math.pi / 2.0,
+            max_horizontal_offset=1.0,
+            max_vertical_offset=0.5,
+        )
+        self.assertAlmostEqual(command[0], 10.0, places=6)
+        self.assertAlmostEqual(command[1], 21.0, places=6)
+        self.assertAlmostEqual(command[2], 30.5, places=6)
+        self.assertAlmostEqual(normalize_angle(3.0 * math.pi), -math.pi)
+
+    def test_backend_setpoint_rejects_invalid_limits(self):
+        with self.assertRaises(ValueError):
+            backend_error_to_fcu_setpoint(
+                (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                0.0, 0.0, 1.0)
 
     def test_arc_length_resampling_preserves_endpoints_and_spacing(self):
         source = generate_s_curve(12.0, 4.5, 5.0, 1.0, 481)
