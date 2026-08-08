@@ -35,6 +35,9 @@ def generate_launch_description():
             "visual_candidate_quality_enabled", default_value="true"
         ),
         DeclareLaunchArgument("visual_pending_enabled", default_value="true"),
+        DeclareLaunchArgument(
+            "performance_profiling_enabled", default_value="false"
+        ),
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
         DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
         DeclareLaunchArgument(
@@ -87,6 +90,9 @@ def generate_launch_description():
             "visual_pending_enabled": LaunchConfiguration(
                 "visual_pending_enabled"
             ),
+            "performance_profiling_enabled": LaunchConfiguration(
+                "performance_profiling_enabled"
+            ),
             "camera_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
         }),
         include("uf_shared_mapping", "shared_mapping.launch.py", {
@@ -94,6 +100,9 @@ def generate_launch_description():
             "use_sim_time": use_sim_time,
             "lidar_enabled": "true",
             "rgbd_enabled": LaunchConfiguration("shared_mapping_rgbd_enabled"),
+            "performance_profiling_enabled": LaunchConfiguration(
+                "performance_profiling_enabled"
+            ),
             "output_directory": LaunchConfiguration(
                 "shared_mapping_output_directory"
             ),

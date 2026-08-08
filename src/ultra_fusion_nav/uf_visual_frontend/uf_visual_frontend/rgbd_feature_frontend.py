@@ -19,7 +19,9 @@ from .feature_tracker import RgbdFeatureTracker, grid_uniformity
 
 CADENCE_PERIOD_S = {
     "conservative": 0.30,
+    "balanced_light": 0.24,
     "balanced": 0.20,
+    "balanced_plus": 0.16,
     "dense": 0.10,
 }
 
@@ -158,7 +160,8 @@ class ExactRgbdFeatureFrontend(Node):
             self.keyframe_period_s = CADENCE_PERIOD_S[self.keyframe_profile]
         else:
             raise ValueError(
-                "keyframe_profile must be conservative, balanced, dense, or custom"
+                "keyframe_profile must be conservative, balanced_light, "
+                "balanced, balanced_plus, dense, or custom"
             )
         if self.keyframe_period_s <= 0.0:
             raise ValueError("keyframe_period_s must be positive")

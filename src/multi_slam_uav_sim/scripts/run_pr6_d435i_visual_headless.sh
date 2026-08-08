@@ -53,11 +53,12 @@ case "$VISUAL_FACTOR_MODE" in
 esac
 VISUAL_KEYFRAME_PROFILE=${VISUAL_KEYFRAME_PROFILE:-balanced}
 case "$VISUAL_KEYFRAME_PROFILE" in
-  conservative|balanced|dense|custom) ;;
-  *) printf 'VISUAL_KEYFRAME_PROFILE must be conservative, balanced, dense, or custom.\n' >&2; exit 2 ;;
+  conservative|balanced_light|balanced|balanced_plus|dense|custom) ;;
+  *) printf 'VISUAL_KEYFRAME_PROFILE is not a supported cadence.\n' >&2; exit 2 ;;
 esac
 VISUAL_CANDIDATE_QUALITY_ENABLED=${VISUAL_CANDIDATE_QUALITY_ENABLED:-1}
 VISUAL_PENDING_ENABLED=${VISUAL_PENDING_ENABLED:-1}
+PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-0}
 case "$VISUAL_CANDIDATE_QUALITY_ENABLED" in
   0) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=false ;;
   1) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=true ;;
@@ -67,6 +68,11 @@ case "$VISUAL_PENDING_ENABLED" in
   0) VISUAL_PENDING_ENABLED_BOOL=false ;;
   1) VISUAL_PENDING_ENABLED_BOOL=true ;;
   *) printf 'VISUAL_PENDING_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$PERFORMANCE_PROFILING_ENABLED" in
+  0) PERFORMANCE_PROFILING_ENABLED_BOOL=false ;;
+  1) PERFORMANCE_PROFILING_ENABLED_BOOL=true ;;
+  *) printf 'PERFORMANCE_PROFILING_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 ONLINE_MAPPING_MODE=${ONLINE_MAPPING_MODE:-disabled}
 case "$ONLINE_MAPPING_MODE" in
@@ -238,6 +244,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   visual_keyframe_profile:="$VISUAL_KEYFRAME_PROFILE" \
   visual_candidate_quality_enabled:="$VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL" \
   visual_pending_enabled:="$VISUAL_PENDING_ENABLED_BOOL" \
+  performance_profiling_enabled:="$PERFORMANCE_PROFILING_ENABLED_BOOL" \
   shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
   shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
   shared_mapping_output_directory:="$RUN_DIR/shared_map" \

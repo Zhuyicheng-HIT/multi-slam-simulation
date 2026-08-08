@@ -3,7 +3,10 @@ import numpy as np
 import unittest
 
 from uf_visual_frontend.feature_tracker import RgbdFeatureTracker, grid_uniformity
-from uf_visual_frontend.rgbd_feature_frontend import visual_candidate_quality
+from uf_visual_frontend.rgbd_feature_frontend import (
+    CADENCE_PERIOD_S,
+    visual_candidate_quality,
+)
 
 
 def synthetic_image(shift_x=0):
@@ -59,6 +62,14 @@ def test_candidate_quality_requires_information_not_only_a_tracked_frame():
     assert quality.reason == "insufficient_parallax"
 
 
+def test_balanced_cadence_scan_is_strictly_ordered():
+    periods = [
+        CADENCE_PERIOD_S[name]
+        for name in ("conservative", "balanced_light", "balanced", "balanced_plus", "dense")
+    ]
+    assert periods == sorted(periods, reverse=True)
+
+
 class FeatureTrackerUnittest(unittest.TestCase):
     def test_exact_pair(self):
         test_exact_pair_tracking_depth_and_pnp_evidence()
@@ -68,3 +79,6 @@ class FeatureTrackerUnittest(unittest.TestCase):
 
     def test_candidate_quality(self):
         test_candidate_quality_requires_information_not_only_a_tracked_frame()
+
+    def test_balanced_cadence_scan(self):
+        test_balanced_cadence_scan_is_strictly_ordered()

@@ -491,6 +491,14 @@ class ReliabilityTimelineRecorder(Node):
                 ),
                 "last_exception": str(values.get("last_exception", "unavailable")),
             })
+            event["performance_profiles"] = {}
+            for name, value in values.items():
+                if not name.startswith("profile_"):
+                    continue
+                try:
+                    event["performance_profiles"][name] = float(value)
+                except ValueError:
+                    continue
             self.events.append(event)
 
     def _lio(self, msg):
@@ -770,6 +778,9 @@ def summarize(events):
         ),
         "backend_callback_ms_median": backend_nonnegative_median(
             "callback_ms"
+        ),
+        "backend_performance_profiles_last": (
+            backend[-1]["performance_profiles"] if backend else {}
         ),
         "backend_pending_native_worker_frames_max": max(
             (event["pending_native_worker_frames"] for event in backend),

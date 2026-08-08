@@ -2,6 +2,7 @@
 
 from collections import deque, OrderedDict
 from pathlib import Path
+import time
 
 from cv_bridge import CvBridge
 import numpy as np
@@ -51,6 +52,27 @@ def structured_xyz_array(points):
     return np.asarray(array[:, :3], dtype=float)
 
 
+def structured_xyzrgb_array(points, colors, fields):
+    """Pack XYZ and RGB directly into the PointCloud2 structured dtype."""
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    colors = np.asarray(colors, dtype=np.uint8).reshape(-1, 3)
+    if points.shape[0] != colors.shape[0]:
+        raise ValueError("point and color counts must match")
+    rows = np.empty(
+        points.shape[0], dtype=point_cloud2.dtype_from_fields(fields)
+    )
+    rows["x"] = points[:, 0]
+    rows["y"] = points[:, 1]
+    rows["z"] = points[:, 2]
+    colors_u32 = colors.astype(np.uint32, copy=False)
+    rows["rgb"] = (
+        (colors_u32[:, 0] << 16)
+        | (colors_u32[:, 1] << 8)
+        | colors_u32[:, 2]
+    )
+    return rows
+
+
 class SharedMappingNode(Node):
     def __init__(self):
         super().__init__("uf_shared_mapping")
@@ -76,6 +98,8 @@ class SharedMappingNode(Node):
             "maximum_depth_m": 12.0,
             "rgbd_pixel_stride": 4,
             "publish_period_s": 2.0,
+            "performance_profiling_enabled": False,
+            "performance_profiling_capacity": 2048,
             "rotation_body_camera": [
                 0.0, 0.0, 1.0,
                 -1.0, 0.0, 0.0,
@@ -106,6 +130,20 @@ class SharedMappingNode(Node):
         self.depths = OrderedDict()
         self.camera_info = None
         self.visual_reliability = 0.0
+        self.performance_profiling_enabled = bool(
+            self.get_parameter("performance_profiling_enabled").value
+        )
+        profile_capacity = max(
+            64,
+            int(self.get_parameter("performance_profiling_capacity").value),
+        )
+        self.profile_samples = {
+            name: deque(maxlen=profile_capacity)
+            for name in (
+                "lidar_decode", "lidar_integrate", "rgbd_prepare",
+                "rgbd_integrate", "publish_build", "publish_total",
+            )
+        }
         self.publisher = self.create_publisher(
             PointCloud2, self.get_parameter("output_topic").value, 2
         )
@@ -191,15 +229,45 @@ class SharedMappingNode(Node):
             return None
         return pose
 
+    def _profile_start(self):
+        return time.perf_counter_ns() if self.performance_profiling_enabled else None
+
+    def _profile_stop(self, name, started_ns):
+        if started_ns is not None:
+            self.profile_samples[name].append(
+                (time.perf_counter_ns() - started_ns) * 1.0e-6
+            )
+
+    def _profile_summary(self):
+        summary = {}
+        if not self.performance_profiling_enabled:
+            return summary
+        for name, samples in self.profile_samples.items():
+            if not samples:
+                continue
+            values = np.fromiter(samples, dtype=float)
+            summary[name] = {
+                "count": int(values.size),
+                "p50_ms": float(np.percentile(values, 50)),
+                "p90_ms": float(np.percentile(values, 90)),
+                "p95_ms": float(np.percentile(values, 95)),
+                "max_ms": float(np.max(values)),
+            }
+        return summary
+
     def _lidar(self, msg):
         if not self.enabled or not self.lidar_enabled:
             return
+        decode_started = self._profile_start()
         points = structured_xyz_array(point_cloud2.read_points(
             msg, field_names=("x", "y", "z"), skip_nans=True
         ))
+        self._profile_stop("lidar_decode", decode_started)
         if points.size:
+            integrate_started = self._profile_start()
             self.mapping.integrate_lidar(
                 points[:, :3], stamp_seconds(msg.header.stamp))
+            self._profile_stop("lidar_integrate", integrate_started)
 
     def _rgbd(self, key):
         if key not in self.colors or key not in self.depths or self.camera_info is None:
@@ -208,6 +276,7 @@ class SharedMappingNode(Node):
         pose = self._nearest_pose(stamp_seconds(color_msg.header.stamp))
         if pose is None:
             return
+        prepare_started = self._profile_start()
         color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
         depth_raw = self.bridge.imgmsg_to_cv2(
             depth_msg, desired_encoding="passthrough")
@@ -233,14 +302,19 @@ class SharedMappingNode(Node):
         body = (self.rotation_body_camera @ camera.T).T + \
             self.translation_body_camera
         world = (pose[:3, :3] @ body.T).T + pose[:3, 3]
+        self._profile_stop("rgbd_prepare", prepare_started)
+        integrate_started = self._profile_start()
         self.mapping.integrate_rgbd(
             world, color[rows, columns], self.visual_reliability,
             stamp_seconds(color_msg.header.stamp),
         )
+        self._profile_stop("rgbd_integrate", integrate_started)
 
     def _publish(self):
         if not self.enabled:
             return
+        publish_started = self._profile_start()
+        build_started = self._profile_start()
         points, colors = self.mapping.arrays("joint")
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
@@ -251,9 +325,10 @@ class SharedMappingNode(Node):
             PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
             PointField(name="rgb", offset=12, datatype=PointField.UINT32, count=1),
         ]
-        rows = [(*point, (int(color[0]) << 16) | (int(color[1]) << 8)
-                 | int(color[2])) for point, color in zip(points, colors)]
+        rows = structured_xyzrgb_array(points, colors, fields)
+        self._profile_stop("publish_build", build_started)
         self.publisher.publish(point_cloud2.create_cloud(header, fields, rows))
+        self._profile_stop("publish_total", publish_started)
 
     def _export(self, request, response):
         del request
@@ -264,7 +339,9 @@ class SharedMappingNode(Node):
             write_ascii_pcd(
                 root / f"{source}_map.pcd",
                 *self.mapping.arrays(source))
-        write_summary(root / "metrics.json", self.mapping.summary())
+        summary = self.mapping.summary()
+        summary["performance_profile"] = self._profile_summary()
+        write_summary(root / "metrics.json", summary)
         response.success = True
         response.message = str(root)
         return response

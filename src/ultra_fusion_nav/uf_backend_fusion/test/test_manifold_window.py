@@ -15,7 +15,12 @@ from uf_backend_fusion.manifold_window import (
     imu_residual_jacobians,
     propagate_state,
 )
-from uf_backend_fusion.manifold import STATE_SIZE, numerical_state_jacobian
+from uf_backend_fusion.manifold import (
+    STATE_SIZE,
+    numerical_state_jacobian,
+    so3_right_jacobian_inverse,
+    state_local,
+)
 from uf_backend_fusion.native_lidar import NativeLidarPoseNormal
 
 
@@ -340,6 +345,26 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertEqual(backend.last_initial_cost, expected_initial_cost)
         self.assertEqual(backend.last_cost, expected_cost)
 
+    def test_transaction_snapshot_isolated_from_marginalization_index_updates(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        first = backend.add_state(np.zeros(15))
+        backend.add_prior(first, np.zeros(15), covariance=np.ones(15))
+        second = backend.add_state(np.zeros(15))
+        backend.add_optical_flow(first, second, [0.0, 0.0, 0.0])
+        snapshot = backend.snapshot()
+        expected_indices = [factor["indices"] for factor in snapshot.factors]
+
+        backend.add_state(np.zeros(15))
+        self.assertEqual(
+            [factor["indices"] for factor in snapshot.factors],
+            expected_indices,
+        )
+        backend.restore(snapshot)
+        self.assertEqual(
+            [factor["indices"] for factor in backend._factors],
+            expected_indices,
+        )
+
     def test_latest_state_information_is_finite_symmetric_and_undamped(self):
         backend = ManifoldSlidingWindowBackend(max_states=2, damping=100.0)
         index = backend.add_state(np.zeros(15))
@@ -353,6 +378,65 @@ class ManifoldWindowTest(unittest.TestCase):
         np.testing.assert_allclose(
             np.diag(information), 1.0 / variances, rtol=1.0e-10
         )
+
+    def test_opt_in_profiler_is_bounded_and_reports_solver_stages(self):
+        disabled = ManifoldSlidingWindowBackend(max_states=2)
+        index = disabled.add_state(np.zeros(15))
+        disabled.add_prior(index, np.zeros(15), covariance=np.ones(15))
+        disabled.optimize()
+        self.assertEqual(disabled.profile_summary(), {})
+
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, profiling_enabled=True, profiling_capacity=64
+        )
+        index = backend.add_state(np.zeros(15))
+        backend.add_prior(index, np.ones(15), covariance=np.ones(15))
+        backend.optimize()
+        profile = backend.profile_summary()
+        self.assertIn("factor_graph_linearization", profile)
+        self.assertIn("factor_prior", profile)
+        self.assertIn("linear_solve", profile)
+        self.assertIn("state_update", profile)
+        self.assertIn("optimize_total", profile)
+        for values in profile.values():
+            self.assertGreater(values["count"], 0)
+            self.assertLessEqual(values["p50_ms"], values["p95_ms"])
+            self.assertLessEqual(values["p95_ms"], values["max_ms"])
+
+    def test_marginal_prior_block_transform_matches_dense_jacobian(self):
+        rng = np.random.default_rng(17)
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        references = [rng.normal(scale=0.05, size=15) for _ in range(2)]
+        states = [reference + rng.normal(scale=0.02, size=15)
+                  for reference in references]
+        matrix = rng.normal(size=(2 * STATE_SIZE, 2 * STATE_SIZE))
+        local_hessian = matrix.T @ matrix + np.eye(2 * STATE_SIZE)
+        local_gradient = rng.normal(size=2 * STATE_SIZE)
+        factor = {
+            "name": "marginal_prior",
+            "indices": (0, 1),
+            "enabled": True,
+            "normal_hessian": local_hessian,
+            "normal_gradient": local_gradient,
+            "references": references,
+        }
+        hessian, gradient, _ = backend._factor_normal(factor, states)
+        local = np.concatenate([
+            state_local(reference, state)
+            for reference, state in zip(references, states)
+        ])
+        dense_jacobian = np.eye(2 * STATE_SIZE)
+        for block in range(2):
+            rotation = slice(block * STATE_SIZE + 3, block * STATE_SIZE + 6)
+            dense_jacobian[rotation, rotation] = so3_right_jacobian_inverse(
+                local[rotation]
+            )
+        expected_gradient = dense_jacobian.T @ (
+            local_hessian @ local + local_gradient
+        )
+        expected_hessian = dense_jacobian.T @ local_hessian @ dense_jacobian
+        np.testing.assert_allclose(hessian, expected_hessian, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-12, atol=1e-12)
 
 
 if __name__ == "__main__":

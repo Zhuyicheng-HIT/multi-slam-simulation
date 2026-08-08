@@ -1491,6 +1491,8 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("imu_reintegration_gyro_bias_threshold", 0.005)
         self.declare_parameter("marginal_rank_tolerance", 1.0e-9)
         self.declare_parameter("marginal_covariance_update_period_s", 1.0)
+        self.declare_parameter("performance_profiling_enabled", False)
+        self.declare_parameter("performance_profiling_capacity", 4096)
         self.declare_parameter("online_calibration_enabled", True)
         self.declare_parameter(
             "calibration_motion_topic", "/calibration/lidar_relative_motion"
@@ -1596,6 +1598,14 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("scan_prediction_timestamp_tolerance_s", 0.002)
         self.declare_parameter("scan_prediction_state_tolerance", 1.0e-8)
         self.declare_parameter("scan_prediction_cache_size", 8)
+
+        self.performance_profiling_enabled = bool(
+            self.get_parameter("performance_profiling_enabled").value
+        )
+        self.performance_profiling_capacity = max(
+            64,
+            int(self.get_parameter("performance_profiling_capacity").value),
+        )
 
         self.map_frame = str(self.get_parameter("map_frame").value)
         self.body_frame = str(self.get_parameter("body_frame").value)
@@ -2133,6 +2143,8 @@ class UnifiedBackendNode(Node):
                     self.get_parameter("lm_damping_down").value
                 ),
                 marginal_rank_tolerance=self.marginal_rank_tolerance,
+                profiling_enabled=self.performance_profiling_enabled,
+                profiling_capacity=self.performance_profiling_capacity,
             )
         else:
             self.backend = SlidingWindowBackend(max_states=window_size)
@@ -2307,7 +2319,16 @@ class UnifiedBackendNode(Node):
         self.last_path_publish_stamp_s = None
         self.last_callback_ms = 0.0
         self.phase_timing = {
-            name: {"count": 0, "total_ms": 0.0, "max_ms": 0.0, "last_ms": 0.0}
+            name: {
+                "count": 0,
+                "total_ms": 0.0,
+                "max_ms": 0.0,
+                "last_ms": 0.0,
+                "samples": (
+                    deque(maxlen=self.performance_profiling_capacity)
+                    if self.performance_profiling_enabled else None
+                ),
+            }
             for name in (
                 "prepare", "pre_state", "snapshot", "add_state", "lidar_factor",
                 "aux_factors", "optimize", "reintegrate", "post_optimize", "publish",
@@ -3801,11 +3822,30 @@ class UnifiedBackendNode(Node):
         timing["total_ms"] += elapsed_ms
         timing["max_ms"] = max(timing["max_ms"], elapsed_ms)
         timing["last_ms"] = elapsed_ms
+        if timing["samples"] is not None:
+            timing["samples"].append(elapsed_ms)
         return elapsed_ms
 
     def _phase_mean_ms(self, name):
         timing = self.phase_timing[name]
         return timing["total_ms"] / max(1, timing["count"])
+
+    def _phase_profile_summary(self):
+        if not self.performance_profiling_enabled:
+            return {}
+        summary = {}
+        for name, timing in self.phase_timing.items():
+            if not timing["samples"]:
+                continue
+            values = np.fromiter(timing["samples"], dtype=float)
+            summary[name] = {
+                "count": int(values.size),
+                "p50_ms": float(np.percentile(values, 50)),
+                "p90_ms": float(np.percentile(values, 90)),
+                "p95_ms": float(np.percentile(values, 95)),
+                "max_ms": float(np.max(values)),
+            }
+        return summary
 
     def _manifold_imu_bias_changed(self, previous_index, measurement):
         """Check whether the optimized start bias invalidates this delta."""
@@ -6183,6 +6223,30 @@ class UnifiedBackendNode(Node):
                 ) or "none",
             ),
         ])
+        diagnostic.values.append(self._key(
+            "performance_profiling_enabled",
+            self.performance_profiling_enabled,
+        ))
+        if self.performance_profiling_enabled:
+            profiles = {
+                f"callback_{name}": values
+                for name, values in self._phase_profile_summary().items()
+            }
+            profiles.update({
+                f"solver_{name}": values
+                for name, values in getattr(
+                    self.backend, "profile_summary", lambda: {})()
+                .items()
+            })
+            for name, values in sorted(profiles.items()):
+                diagnostic.values.append(self._key(
+                    f"profile_{name}_count", values["count"]
+                ))
+                for percentile_name in ("p50_ms", "p90_ms", "p95_ms", "max_ms"):
+                    diagnostic.values.append(self._key(
+                        f"profile_{name}_{percentile_name}",
+                        f"{values[percentile_name]:.6f}",
+                    ))
         array = DiagnosticArray()
         array.header.stamp = self.get_clock().now().to_msg()
         array.status.append(diagnostic)

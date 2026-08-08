@@ -1,6 +1,6 @@
 """Nonlinear SO(3) fixed-lag backend for the Ultra-Fusion reproduction."""
 
-import copy
+from collections import defaultdict, deque
 from dataclasses import dataclass
 import math
 import time
@@ -343,6 +343,8 @@ class ManifoldSlidingWindowBackend:
         lm_min_damping=1.0e-12,
         lm_max_damping=1.0e12,
         marginal_rank_tolerance=1.0e-9,
+        profiling_enabled=False,
+        profiling_capacity=4096,
     ):
         if max_states < 2:
             raise ValueError("manifold window requires at least two states")
@@ -392,6 +394,39 @@ class ManifoldSlidingWindowBackend:
         self._last_rejected_steps = 0
         self._last_hessian = None
         self._last_marginalization_ms = 0.0
+        self.profiling_enabled = bool(profiling_enabled)
+        self.profiling_capacity = max(64, int(profiling_capacity))
+        self._profile_samples = defaultdict(
+            lambda: deque(maxlen=self.profiling_capacity)
+        )
+
+    def _profile_start(self):
+        return time.perf_counter_ns() if self.profiling_enabled else None
+
+    def _profile_stop(self, name, started_ns):
+        if started_ns is None:
+            return 0.0
+        elapsed_ms = (time.perf_counter_ns() - started_ns) * 1.0e-6
+        self._profile_samples[str(name)].append(elapsed_ms)
+        return elapsed_ms
+
+    def profile_summary(self):
+        """Return bounded wall-time percentiles for opt-in runtime profiling."""
+        if not self.profiling_enabled:
+            return {}
+        summary = {}
+        for name, samples in self._profile_samples.items():
+            if not samples:
+                continue
+            values = np.fromiter(samples, dtype=float)
+            summary[name] = {
+                "count": int(values.size),
+                "p50_ms": float(np.percentile(values, 50)),
+                "p90_ms": float(np.percentile(values, 90)),
+                "p95_ms": float(np.percentile(values, 95)),
+                "max_ms": float(np.max(values)),
+            }
+        return summary
 
     @property
     def state_count(self):
@@ -411,7 +446,12 @@ class ManifoldSlidingWindowBackend:
         """Capture all mutable window state before a transactional update."""
         return ManifoldBackendSnapshot(
             states=[state.copy() for state in self._states],
-            factors=copy.deepcopy(self._factors),
+            # Factor payload arrays and measurement objects are immutable once
+            # admitted.  A transaction only replaces dictionary fields such
+            # as indices/measurement; it never edits those payloads in place.
+            # Copy dictionaries to isolate those replacements without cloning
+            # every LiDAR correspondence and dense marginal prior each frame.
+            factors=[dict(factor) for factor in self._factors],
             last_initial_cost=float(self._last_initial_cost),
             last_cost=float(self._last_cost),
             last_iterations=int(self._last_iterations),
@@ -429,7 +469,7 @@ class ManifoldSlidingWindowBackend:
         if not isinstance(snapshot, ManifoldBackendSnapshot):
             raise TypeError("snapshot has the wrong backend type")
         self._states = [state.copy() for state in snapshot.states]
-        self._factors = copy.deepcopy(snapshot.factors)
+        self._factors = [dict(factor) for factor in snapshot.factors]
         self._last_initial_cost = float(snapshot.last_initial_cost)
         self._last_cost = float(snapshot.last_cost)
         self._last_iterations = int(snapshot.last_iterations)
@@ -802,30 +842,43 @@ class ManifoldSlidingWindowBackend:
             # applying it at the current state; treating this Jacobian as an
             # identity causes yaw/roll information to become inconsistent as
             # the fixed-lag window moves.
-            local_jacobians = []
-            for reference, index in zip(
-                    factor["references"], factor["indices"]):
-                local_jacobian = np.eye(STATE_SIZE)
-                local_rotation = local[3:6]
-                # `local` is concatenated in state order, so use the state's
-                # own three-vector rather than the first state's rotation.
+            # The prior Jacobian is block diagonal and differs from identity
+            # only in each state's 3x3 rotation block.  Forming a full dense
+            # (15*N)^2 Jacobian and multiplying J.T@H@J dominated the fixed-lag
+            # runtime.  Apply the same left/right block transforms directly;
+            # this is algebraically identical and retains every cross block.
+            transformed_hessian = local_hessian.copy()
+            transformed_gradient = local_gradient.copy()
+            rotation_jacobians = []
+            for block, (reference, index) in enumerate(zip(
+                    factor["references"], factor["indices"])):
                 state_local_rotation = state_local(
                     reference, states[index])[3:6]
-                local_jacobian[3:6, 3:6] = so3_right_jacobian_inverse(
+                rotation_jacobian = so3_right_jacobian_inverse(
                     state_local_rotation
                 )
-                local_jacobians.append(local_jacobian)
-            prior_jacobian = np.zeros_like(local_hessian)
-            for block, local_jacobian in enumerate(local_jacobians):
-                start = block * STATE_SIZE
-                prior_jacobian[
-                    start:start + STATE_SIZE,
-                    start:start + STATE_SIZE,
-                ] = local_jacobian
-            hessian[np.ix_(indices, indices)] += (
-                prior_jacobian.T @ local_hessian @ prior_jacobian
-            )
-            gradient[indices] += prior_jacobian.T @ local_gradient
+                rotation_jacobians.append(rotation_jacobian)
+                rotation = slice(
+                    block * STATE_SIZE + 3,
+                    block * STATE_SIZE + 6,
+                )
+                transformed_hessian[rotation, :] = (
+                    rotation_jacobian.T
+                    @ transformed_hessian[rotation, :]
+                )
+                transformed_gradient[rotation] = (
+                    rotation_jacobian.T @ transformed_gradient[rotation]
+                )
+            for block, rotation_jacobian in enumerate(rotation_jacobians):
+                rotation = slice(
+                    block * STATE_SIZE + 3,
+                    block * STATE_SIZE + 6,
+                )
+                transformed_hessian[:, rotation] = (
+                    transformed_hessian[:, rotation] @ rotation_jacobian
+                )
+            hessian[np.ix_(indices, indices)] += transformed_hessian
+            gradient[indices] += transformed_gradient
             cost = float(
                 0.5 * local @ local_hessian @ local
                 + factor["normal_gradient"] @ local
@@ -986,6 +1039,7 @@ class ManifoldSlidingWindowBackend:
         return hessian, gradient, cost
 
     def _normal(self, factors=None, states=None):
+        normal_started = self._profile_start()
         states = self._states if states is None else states
         factors = self._factors if factors is None else factors
         dimension = len(states) * STATE_SIZE
@@ -993,18 +1047,24 @@ class ManifoldSlidingWindowBackend:
         gradient = np.zeros(dimension)
         cost = 0.0
         for factor in factors:
+            factor_started = self._profile_start()
             factor_hessian, factor_gradient, factor_cost = self._factor_normal(
                 factor, states
+            )
+            self._profile_stop(
+                f"factor_{factor['name']}", factor_started
             )
             hessian += factor_hessian
             gradient += factor_gradient
             cost += factor_cost
+        self._profile_stop("factor_graph_linearization", normal_started)
         return hessian, gradient, cost
 
     def optimize(self):
         if not self._states:
             return []
         started = time.perf_counter()
+        profile_started = self._profile_start()
         accepted_iterations = 0
         rejected_steps = 0
         states = self.states()
@@ -1019,23 +1079,27 @@ class ManifoldSlidingWindowBackend:
             converged = False
             for _ in range(self.lm_max_trials):
                 system = hessian + damping * np.diag(diagonal_scale)
+                solve_started = self._profile_start()
                 try:
                     increment = np.linalg.solve(system, -gradient)
                 except np.linalg.LinAlgError:
                     increment = np.linalg.lstsq(
                         system, -gradient, rcond=None)[0]
+                self._profile_stop("linear_solve", solve_started)
                 if np.any(~np.isfinite(increment)):
                     damping = min(
                         self.lm_max_damping,
                         damping * self.lm_damping_up)
                     rejected_steps += 1
                     continue
+                update_started = self._profile_start()
                 candidate = []
                 for index, state in enumerate(states):
                     local = increment[
                         index * STATE_SIZE:(index + 1) * STATE_SIZE
                     ]
                     candidate.append(state_plus(state, local))
+                self._profile_stop("state_update", update_started)
                 candidate_hessian, candidate_gradient, candidate_cost = self._normal(
                     states=candidate)
                 predicted = float(
@@ -1080,6 +1144,7 @@ class ManifoldSlidingWindowBackend:
         self._lm_damping = damping
         self._last_hessian = hessian.copy()
         self._last_solve_ms = (time.perf_counter() - started) * 1000.0
+        self._profile_stop("optimize_total", profile_started)
         return self.states()
 
     def latest_factor_residual(self, name, covariance=None):
@@ -1163,6 +1228,7 @@ class ManifoldSlidingWindowBackend:
 
     def _marginalize_if_needed(self):
         started = time.perf_counter()
+        profile_started = self._profile_start()
         marginalized = False
         while len(self._states) > self.max_states:
             marginalized = True
@@ -1244,3 +1310,5 @@ class ManifoldSlidingWindowBackend:
         self._last_marginalization_ms = (
             (time.perf_counter() - started) * 1000.0 if marginalized else 0.0
         )
+        if marginalized:
+            self._profile_stop("marginalization", profile_started)

@@ -48,10 +48,11 @@ class SourceAwareVoxelMap:
             self.metrics["evictions"] += 1
 
     def integrate_lidar(self, points, stamp_s=0.0):
-        for point in np.asarray(points, dtype=float).reshape(-1, 3):
-            if not np.all(np.isfinite(point)):
-                continue
-            key = self._key(point)
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        points = points[np.all(np.isfinite(points), axis=1)]
+        keys = np.floor(points / self.voxel_size_m).astype(np.int64)
+        for point, key_values in zip(points, keys):
+            key = tuple(int(value) for value in key_values)
             voxel = self.voxels.get(key)
             if voxel is None:
                 voxel = Voxel(
@@ -71,16 +72,18 @@ class SourceAwareVoxelMap:
         reliability = float(reliability)
         if reliability < self.minimum_visual_reliability:
             return 0
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        colors = np.asarray(colors, dtype=float).reshape(-1, 3)
+        valid = np.all(np.isfinite(points), axis=1) & np.all(
+            np.isfinite(colors), axis=1
+        )
+        points = points[valid]
+        colors = np.clip(colors[valid], 0, 255)
+        keys = np.floor(points / self.voxel_size_m).astype(np.int64)
+        self.metrics["rgbd_points"] += int(points.shape[0])
         accepted = 0
-        for point, color in zip(
-                np.asarray(points, dtype=float).reshape(-1, 3),
-                np.asarray(colors, dtype=float).reshape(-1, 3)):
-            if not np.all(
-                    np.isfinite(point)) or not np.all(
-                    np.isfinite(color)):
-                continue
-            self.metrics["rgbd_points"] += 1
-            key = self._key(point)
+        for point, color, key_values in zip(points, colors, keys):
+            key = tuple(int(value) for value in key_values)
             voxel = self.voxels.get(key)
             if voxel is not None and voxel.lidar_count > 0:
                 if np.linalg.norm(
@@ -103,7 +106,7 @@ class SourceAwareVoxelMap:
             color_weight = max(0.05, reliability)
             previous_weight = float(voxel.color_count)
             voxel.color = (
-                voxel.color * previous_weight + np.clip(color, 0, 255) * color_weight
+                voxel.color * previous_weight + color * color_weight
             ) / (previous_weight + color_weight)
             voxel.color_count += 1
             voxel.last_stamp_s = float(stamp_s)

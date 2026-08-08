@@ -30,6 +30,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("visual_pending_enabled", default_value="true"),
         DeclareLaunchArgument(
+            "performance_profiling_enabled", default_value="false"
+        ),
+        DeclareLaunchArgument(
             "external_nav_output_topic",
             default_value="/fusion/runtime_external_nav",
         ),
@@ -74,6 +77,9 @@ def generate_launch_description():
                 "visual_factor_mode": LaunchConfiguration("visual_factor_mode"),
                 "visual_pending_enabled": LaunchConfiguration(
                     "visual_pending_enabled"
+                ),
+                "performance_profiling_enabled": LaunchConfiguration(
+                    "performance_profiling_enabled"
                 ),
                 "visual_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
                 # Paper mode requires the Stage3 native-factor contract. Keep

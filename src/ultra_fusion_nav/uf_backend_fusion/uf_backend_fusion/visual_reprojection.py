@@ -11,7 +11,7 @@ import math
 
 import numpy as np
 
-from .manifold import STATE_SIZE, skew
+from .manifold import STATE_SIZE
 from .native_lidar import rpy_to_rotation_matrix
 
 
@@ -117,50 +117,92 @@ def visual_reprojection_residual_jacobians(
     rotation_current = rpy_to_rotation_matrix(current_state[3:6])
     rotation_body_camera = tracks.rotation_body_camera
     translation_body_camera = tracks.translation_body_camera
-    residuals = []
-    jacobian_anchor = []
-    jacobian_current = []
-    valid_indices = []
-    for index in range(tracks.track_count):
-        bearing = np.r_[tracks.anchor_normalized[index], 1.0]
-        point_camera_anchor = bearing / tracks.inverse_depth[index]
-        point_body_anchor = (
-            rotation_body_camera @ point_camera_anchor +
-            translation_body_camera)
-        point_world = rotation_anchor @ point_body_anchor + anchor_state[:3]
-        point_body_current = rotation_current.T @ (
-            point_world - current_state[:3]
-        )
-        point_camera_current = rotation_body_camera.T @ (
-            point_body_current - translation_body_camera
-        )
-        prediction, projection_jacobian = _project_with_jacobian(
-            point_camera_current, minimum_depth
-        )
-        if prediction is None:
-            continue
-        body_to_camera = rotation_body_camera.T
-        current_to_camera = body_to_camera @ rotation_current.T
-        anchor_pose = np.zeros((3, STATE_SIZE))
-        current_pose = np.zeros((3, STATE_SIZE))
-        anchor_pose[:, :3] = current_to_camera
-        anchor_pose[:, 3:6] = (
-            current_to_camera @ (-rotation_anchor @ skew(point_body_anchor))
-        )
-        current_pose[:, :3] = -current_to_camera
-        current_pose[:, 3:6] = body_to_camera @ skew(point_body_current)
-        residuals.append(prediction - tracks.current_normalized[index])
-        jacobian_anchor.append(projection_jacobian @ anchor_pose)
-        jacobian_current.append(projection_jacobian @ current_pose)
-        valid_indices.append(index)
-    if not residuals:
+    bearings = np.column_stack((
+        tracks.anchor_normalized,
+        np.ones(tracks.track_count, dtype=float),
+    ))
+    point_camera_anchor = bearings / tracks.inverse_depth[:, None]
+    point_body_anchor = (
+        point_camera_anchor @ rotation_body_camera.T
+        + translation_body_camera
+    )
+    point_world = point_body_anchor @ rotation_anchor.T + anchor_state[:3]
+    point_body_current = (
+        point_world - current_state[:3]
+    ) @ rotation_current
+    body_to_camera = rotation_body_camera.T
+    point_camera_current = (
+        point_body_current - translation_body_camera
+    ) @ rotation_body_camera
+    depth = point_camera_current[:, 2]
+    valid = np.isfinite(depth) & (depth > minimum_depth)
+    valid_indices = np.flatnonzero(valid)
+    if valid_indices.size == 0:
         return (
             np.empty(0), np.empty((0, STATE_SIZE)),
             np.empty((0, STATE_SIZE)), np.empty(0, dtype=int),
         )
+    point_camera_current = point_camera_current[valid]
+    point_body_anchor = point_body_anchor[valid]
+    point_body_current = point_body_current[valid]
+    depth = point_camera_current[:, 2]
+    inverse_z = 1.0 / depth
+    prediction = point_camera_current[:, :2] * inverse_z[:, None]
+    projection_jacobian = np.zeros((valid_indices.size, 2, 3), dtype=float)
+    projection_jacobian[:, 0, 0] = inverse_z
+    projection_jacobian[:, 1, 1] = inverse_z
+    projection_jacobian[:, 0, 2] = (
+        -point_camera_current[:, 0] * inverse_z * inverse_z
+    )
+    projection_jacobian[:, 1, 2] = (
+        -point_camera_current[:, 1] * inverse_z * inverse_z
+    )
+
+    def skew_batch(points):
+        matrices = np.zeros((points.shape[0], 3, 3), dtype=float)
+        matrices[:, 0, 1] = -points[:, 2]
+        matrices[:, 0, 2] = points[:, 1]
+        matrices[:, 1, 0] = points[:, 2]
+        matrices[:, 1, 2] = -points[:, 0]
+        matrices[:, 2, 0] = -points[:, 1]
+        matrices[:, 2, 1] = points[:, 0]
+        return matrices
+
+    current_to_camera = body_to_camera @ rotation_current.T
+    anchor_rotation = np.einsum(
+        "ij,njk->nik",
+        -current_to_camera @ rotation_anchor,
+        skew_batch(point_body_anchor),
+        optimize=True,
+    )
+    current_rotation = np.einsum(
+        "ij,njk->nik",
+        body_to_camera,
+        skew_batch(point_body_current),
+        optimize=True,
+    )
+    jacobian_anchor = np.zeros(
+        (valid_indices.size, 2, STATE_SIZE), dtype=float
+    )
+    jacobian_current = np.zeros_like(jacobian_anchor)
+    jacobian_anchor[:, :, :3] = np.einsum(
+        "nij,jk->nik", projection_jacobian, current_to_camera,
+        optimize=True,
+    )
+    jacobian_anchor[:, :, 3:6] = np.einsum(
+        "nij,njk->nik", projection_jacobian, anchor_rotation,
+        optimize=True,
+    )
+    jacobian_current[:, :, :3] = -jacobian_anchor[:, :, :3]
+    jacobian_current[:, :, 3:6] = np.einsum(
+        "nij,njk->nik", projection_jacobian, current_rotation,
+        optimize=True,
+    )
     return (
-        np.concatenate(residuals), np.vstack(jacobian_anchor),
-        np.vstack(jacobian_current), np.asarray(valid_indices, dtype=int),
+        (prediction - tracks.current_normalized[valid]).reshape(-1),
+        jacobian_anchor.reshape(-1, STATE_SIZE),
+        jacobian_current.reshape(-1, STATE_SIZE),
+        valid_indices,
     )
 
 
