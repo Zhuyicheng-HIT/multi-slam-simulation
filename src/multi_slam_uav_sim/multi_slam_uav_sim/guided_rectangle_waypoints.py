@@ -174,7 +174,10 @@ class GuidedRectangleWaypoints(Node):
         self.last_statustext = msg.text
         if "using GPS" in msg.text:
             self.ekf_using_gps = True
-        self.get_logger().info(f"FCU: {msg.text}")
+        self.get_logger().info(
+            f"FCU: {msg.text}; wall_epoch_s={time.time():.6f}; "
+            f"wall_monotonic_s={time.monotonic():.6f}"
+        )
 
     def _mavlink_cb(self, msg):
         try:

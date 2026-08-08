@@ -174,6 +174,19 @@ wait_for_publisher() {
   return 1
 }
 
+get_parameter_with_discovery_retry() {
+  local node=$1 parameter=$2 timeout_s=${3:-45} started=$SECONDS value=
+  while (( SECONDS - started < timeout_s )); do
+    value=$(timeout 8s ros2 param get "$node" "$parameter" 2>/dev/null || true)
+    if [[ -n "$value" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 wait_for_livox_ownership() {
   local timeout_s=${1:-90} started=$SECONDS stable=0 lidar_info imu_info
   local lidar_count=0 imu_count=0
@@ -335,8 +348,8 @@ wait_for_publisher /reliability/vision_score 45
 wait_for_publisher /vision/frontend_diagnostics 45
 wait_for_publisher /fusion/unified/visual_timing 45
 trace_stage visual_frontend_ready
-backend_visual_mode=$(timeout 10s ros2 param get \
-  /unified_backend_fusion visual_factor_mode 2>/dev/null || true)
+backend_visual_mode=$(get_parameter_with_discovery_retry \
+  /unified_backend_fusion visual_factor_mode 45 || true)
 if [[ "$backend_visual_mode" != *"$VISUAL_FACTOR_MODE"* ]]; then
   printf 'Visual runtime contract mismatch: requested=%s actual=%s\n' \
     "$VISUAL_FACTOR_MODE" "$backend_visual_mode" >&2

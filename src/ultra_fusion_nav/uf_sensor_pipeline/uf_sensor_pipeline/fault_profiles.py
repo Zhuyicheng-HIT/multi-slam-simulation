@@ -34,6 +34,7 @@ class FaultSpec:
     secondary_magnitude: float = 0.0
     score_floor: float = 0.0
     seed_offset: int = 0
+    temporal_scope: str = "factor_only"
 
     @property
     def modality(self) -> str:
@@ -121,7 +122,16 @@ def load_fault_profile(path: str, name: str) -> FaultProfile:
                 ),
                 score_floor=score_floor,
                 seed_offset=int(raw.get("seed_offset", index)),
+                temporal_scope=str(raw.get("temporal_scope", "factor_only")),
             ))
+            if faults[-1].fault_type == "time_offset" and faults[-1].channel == "native_lidar":
+                if faults[-1].temporal_scope not in {
+                    "factor_only", "coherent_frontend_contract"
+                }:
+                    raise ValueError(
+                        "native_lidar time_offset temporal_scope must be "
+                        "factor_only or coherent_frontend_contract"
+                    )
     return FaultProfile(
         name=name,
         description=description,

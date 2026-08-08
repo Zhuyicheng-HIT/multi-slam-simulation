@@ -127,6 +127,7 @@ play_started=$(date +%s.%N)
 set +e
 timeout 1800s ros2 bag play "$BAG_DIR" --rate "$REPLAY_RATE" \
   --remap \
+  /fast_lio/frontend_scan_request:=/robustness/raw/frontend_scan_request \
   /fast_lio/native_lidar_factor:=/robustness/raw/native_lidar_factor \
   /sensors/imu:=/robustness/raw/imu \
   /sensors/gnss/fix:=/robustness/raw/gnss \

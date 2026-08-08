@@ -341,6 +341,12 @@ class ReliabilityTimelineRecorder(Node):
                 "optimization_integrity_velocity_correction_mps": float(
                     values.get("optimization_velocity_correction_mps", -1.0)
                 ),
+                "optimization_integrity_accel_bias_correction_mps2": float(
+                    values.get("optimization_accel_bias_correction_mps2", -1.0)
+                ),
+                "optimization_integrity_gyro_bias_correction_radps": float(
+                    values.get("optimization_gyro_bias_correction_radps", -1.0)
+                ),
                 "optimization_integrity_information_rank": int(
                     values.get("optimization_information_rank", -1)
                 ),

@@ -4089,6 +4089,33 @@ class UnifiedBackendNode(Node):
                 )
             ),
             "rollbacks": int(self.counts["optimization_rollbacks"]),
+            "integrity": {
+                "reason": self.last_optimization_integrity.reason,
+                "translation_correction_m": float(
+                    self.last_optimization_integrity.translation_correction_m
+                ),
+                "rotation_correction_rad": float(
+                    self.last_optimization_integrity.rotation_correction_rad
+                ),
+                "velocity_correction_mps": float(
+                    self.last_optimization_integrity.velocity_correction_mps
+                ),
+                "accel_bias_correction_mps2": float(
+                    self.last_optimization_integrity.accel_bias_correction_mps2
+                ),
+                "gyro_bias_correction_radps": float(
+                    self.last_optimization_integrity.gyro_bias_correction_radps
+                ),
+            },
+            "scan_prediction": {
+                "cache_hits": int(self.counts["scan_prediction_cache_hits"]),
+                "cache_misses": int(self.counts["scan_prediction_cache_misses"]),
+                "reuse_rejected": int(
+                    self.counts["scan_prediction_reuse_rejected"]
+                ),
+                "last_reason": self.last_scan_prediction_reason,
+                "last_imu_reason": self.last_imu_reason,
+            },
         }
         self.performance_cycle_trace.append(trace)
         self.current_cycle_phase = None
@@ -6204,6 +6231,14 @@ class UnifiedBackendNode(Node):
             self._key(
                 "optimization_velocity_correction_mps",
                 f"{self.last_optimization_integrity.velocity_correction_mps:.9g}",
+            ),
+            self._key(
+                "optimization_accel_bias_correction_mps2",
+                f"{self.last_optimization_integrity.accel_bias_correction_mps2:.9g}",
+            ),
+            self._key(
+                "optimization_gyro_bias_correction_radps",
+                f"{self.last_optimization_integrity.gyro_bias_correction_radps:.9g}",
             ),
             self._key(
                 "optimization_information_rank",

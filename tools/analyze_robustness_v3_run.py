@@ -240,6 +240,15 @@ def main():
         if estimate_rows[index + 1][0] > estimate_rows[index][0]
     ]
     maximum_odom_gap_s = max(estimate_intervals) if estimate_intervals else None
+    first_large_gap = next((
+        {
+            "start_stamp_s": estimate_rows[index][0],
+            "end_stamp_s": estimate_rows[index + 1][0],
+            "duration_s": estimate_rows[index + 1][0] - estimate_rows[index][0],
+        }
+        for index in range(len(estimate_rows) - 1)
+        if estimate_rows[index + 1][0] - estimate_rows[index][0] > 1.0
+    ), None)
     visual_attempts = int(float(last.get("visual_factor_attempts", 0)))
     visual_accepted = int(float(last.get("visual_factors", 0)))
     factors = factor_counts(last)
@@ -264,6 +273,7 @@ def main():
         ),
         "trajectory_reference_span_s": reference_span,
         "trajectory_maximum_odom_gap_s": maximum_odom_gap_s,
+        "trajectory_first_gap_over_1s": first_large_gap,
         "trajectory_odom_interval_p95_s": (
             float(np.percentile(estimate_intervals, 95))
             if estimate_intervals else None
@@ -302,6 +312,35 @@ def main():
         "errors": errors,
         "integrity_counts": str(last.get("optimization_integrity_counts", "none")),
         "native_lidar_path": str(last.get("lidar_factor_source", "unknown")),
+        "native_lidar_temporal_contract": {
+            "stamp_error_ms": float(last.get("native_lidar_stamp_error_ms", -1.0)),
+            "scan_requests": int(float(last.get("scan_prediction_requests", 0))),
+            "scan_predictions": int(float(last.get("scan_prediction_published", 0))),
+            "scan_rejected": int(float(last.get("scan_prediction_rejected", 0))),
+            "scan_last_reason": str(last.get(
+                "scan_prediction_last_reason", last.get("scan_last_reason", "unavailable")
+            )),
+            "scan_deferred": int(float(last.get("scan_prediction_deferred", 0))),
+            "scan_deferred_released": int(float(
+                last.get("scan_prediction_deferred_released", 0)
+            )),
+            "scan_duplicate_requests": int(float(
+                last.get("scan_prediction_duplicate_requests", 0)
+            )),
+            "scan_stale_requests": int(float(last.get(
+                "scan_prediction_stale_requests", 0
+            ))),
+            "scan_cache_hits": int(float(last.get(
+                "scan_prediction_cache_hits", 0
+            ))),
+            "scan_cache_misses": int(float(last.get(
+                "scan_prediction_cache_misses", 0
+            ))),
+            "scan_reuse_rejected": int(float(last.get(
+                "scan_prediction_reuse_rejected", 0
+            ))),
+            "last_imu_reason": str(last.get("last_imu_reason", "unavailable")),
+        },
         "odometry_fallbacks": int(float(last.get("native_lidar_pose_fallbacks", 0))),
         "pass_invariants": (
             int(metrics.get("odom_count", 0)) > 0

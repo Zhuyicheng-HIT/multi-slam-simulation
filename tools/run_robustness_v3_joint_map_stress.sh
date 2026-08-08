@@ -15,6 +15,11 @@ mkdir -p "$RUN_DIR"
 RUN_DIR=$(realpath "$RUN_DIR")
 ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-211}
 export ROS_DOMAIN_ID
+MAP_MODE=${MAP_MODE:-joint}
+case "$MAP_MODE" in
+  disabled|lidar_only|joint) ;;
+  *) printf 'MAP_MODE must be disabled, lidar_only, or joint\n' >&2; exit 2 ;;
+esac
 
 set +e
 RUN_ID=$(basename "$RUN_DIR") RUN_DIR="$RUN_DIR" \
@@ -22,7 +27,7 @@ RUN_ID=$(basename "$RUN_DIR") RUN_DIR="$RUN_DIR" \
   RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-20.0} \
   RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-12.0} \
   RECTANGLE_SPEED_MPS=${RECTANGLE_SPEED_MPS:-0.7} \
-  ONLINE_MAPPING_MODE=joint VISUAL_FACTOR_MODE=paper_reprojection \
+  ONLINE_MAPPING_MODE="$MAP_MODE" VISUAL_FACTOR_MODE=paper_reprojection \
   VISUAL_KEYFRAME_PROFILE=balanced \
   EVIDENCE_ROS_DURATION_S=${EVIDENCE_ROS_DURATION_S:-180} \
   EVIDENCE_WALL_TIMEOUT_S=${EVIDENCE_WALL_TIMEOUT_S:-1200} \
@@ -39,6 +44,7 @@ python3 "$SCRIPT_DIR/summarize_robustness_v3_joint_map.py" \
   --route-x-m "${RECTANGLE_LENGTH_X:-20.0}" \
   --route-y-m "${RECTANGLE_LENGTH_Y:-12.0}" \
   --route-speed-mps "${RECTANGLE_SPEED_MPS:-0.7}" \
+  --map-mode "$MAP_MODE" \
   --output "$RUN_DIR/robustness_joint_map_report.json"
 cat "$RUN_DIR/robustness_joint_map_report.json"
 exit "$status"

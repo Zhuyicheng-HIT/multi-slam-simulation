@@ -11,11 +11,16 @@ from typing import Dict, Iterable, List
 
 import numpy as np
 import rclpy
-from fast_lio.msg import NativeLidarFactor
+from fast_lio.msg import FrontendScanRequest, NativeLidarFactor
 from mavros_msgs.msg import OpticalFlowRad
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import Imu, NavSatFix
 from uf_interfaces.msg import (
     FaultState,
@@ -84,6 +89,14 @@ class RobustnessFaultInjector(Node):
         super().__init__("robustness_v3_fault_injector")
         self.declare_parameter("profile_path", "")
         self.declare_parameter("profile", "nominal")
+        self.declare_parameter(
+            "frontend_scan_request_input_topic",
+            "/robustness/raw/frontend_scan_request",
+        )
+        self.declare_parameter(
+            "frontend_scan_request_output_topic",
+            "/fast_lio/frontend_scan_request",
+        )
         for channel in CHANNEL_TYPES:
             self.declare_parameter(
                 f"{channel}_input_topic", DEFAULT_INPUTS[channel]
@@ -127,6 +140,21 @@ class RobustnessFaultInjector(Node):
                 lambda msg, name=channel: self._sensor(name, msg),
                 qos_profile_sensor_data,
             )
+        self._scan_request_publisher = self.create_publisher(
+            FrontendScanRequest,
+            str(self.get_parameter("frontend_scan_request_output_topic").value),
+            QoSProfile(
+                depth=4,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
+        self.create_subscription(
+            FrontendScanRequest,
+            str(self.get_parameter("frontend_scan_request_input_topic").value),
+            self._frontend_scan_request,
+            qos_profile_sensor_data,
+        )
         self._score_publishers = {}
         for modality in ("lidar", "imu", "gnss", "optical_flow", "vision"):
             output = f"/reliability/{modality}_score"
@@ -258,6 +286,36 @@ class RobustnessFaultInjector(Node):
         shift_stamp(output.scan_begin_stamp, offset_s)
         shift_stamp(output.scan_end_stamp, offset_s)
         return output
+
+    @staticmethod
+    def _shift_scan_request_stamp(msg, offset_s):
+        output = copy.deepcopy(msg)
+        shift_stamp(output.header.stamp, offset_s)
+        shift_stamp(output.scan_begin_stamp, offset_s)
+        shift_stamp(output.scan_end_stamp, offset_s)
+        return output
+
+    def _frontend_scan_request(self, msg):
+        """Shift both halves of the frozen FAST-LIO/backend time contract.
+
+        The replay has no packets or per-point time fields. A coherent contract
+        shift therefore moves FrontendScanRequest and NativeLidarFactor scan
+        intervals together. A factor_only profile deliberately leaves this
+        request unchanged to reproduce an interface mismatch.
+        """
+        source_ns = stamp_ns(msg.header.stamp)
+        if source_ns <= 0:
+            return
+        elapsed_s = self._elapsed("native_lidar", source_ns)
+        output = copy.deepcopy(msg)
+        for spec in self.specs["native_lidar"]:
+            if (
+                spec.fault_type == "time_offset"
+                and spec.temporal_scope == "coherent_frontend_contract"
+                and self._active(spec, elapsed_s)
+            ):
+                output = self._shift_scan_request_stamp(output, spec.magnitude)
+        self._scan_request_publisher.publish(output)
 
     @staticmethod
     def _perturb_lidar_extrinsic(msg, rotation_deg, translation_m):

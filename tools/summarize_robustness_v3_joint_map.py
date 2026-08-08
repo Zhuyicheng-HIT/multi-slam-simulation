@@ -18,6 +18,10 @@ def main():
     parser.add_argument("--route-x-m", type=float, default=20.0)
     parser.add_argument("--route-y-m", type=float, default=12.0)
     parser.add_argument("--route-speed-mps", type=float, default=0.7)
+    parser.add_argument(
+        "--map-mode", choices=("disabled", "lidar_only", "joint"),
+        default="joint",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     root = Path(args.run_dir)
@@ -40,6 +44,7 @@ def main():
     report = {
         "schema_version": 1,
         "headless_status": args.headless_status,
+        "map_mode": args.map_mode,
         "route": {
             "type": "small_rectangle",
             "length_x_m": args.route_x_m,

@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import yaml
 
 from uf_sensor_pipeline.fault_profiles import (
     load_fault_profile,
@@ -97,3 +98,42 @@ def test_native_relinearization_updates_pose_normal_from_raw_rows():
     assert np.allclose(output.residuals, [0.1] * 4)
     assert np.linalg.matrix_rank(hessian[:6, :6]) >= 3
     assert np.all(np.isfinite(hessian))
+
+
+def test_native_lidar_temporal_scope_is_explicit_and_validated(tmp_path):
+    profile = load_fault_profile(str(PROFILE_PATH), "lidar_time_light")
+    assert profile.faults[0].temporal_scope == "factor_only"
+    document = yaml.safe_load(PROFILE_PATH.read_text(encoding="utf-8"))
+    document["profiles"]["bad_scope"] = {
+        "faults": [{
+            "channel": "native_lidar",
+            "type": "time_offset",
+            "magnitude": 0.002,
+            "temporal_scope": "packet_magic",
+        }]
+    }
+    invalid = tmp_path / "invalid_scope.yaml"
+    invalid.write_text(yaml.safe_dump(document), encoding="utf-8")
+    try:
+        load_fault_profile(str(invalid), "bad_scope")
+    except ValueError as exc:
+        assert "temporal_scope" in str(exc)
+    else:
+        raise AssertionError("invalid temporal_scope was accepted")
+
+
+def test_scan_request_shift_preserves_interval_and_sequence():
+    stamp = lambda seconds, nanoseconds: SimpleNamespace(
+        sec=seconds, nanosec=nanoseconds
+    )
+    request = SimpleNamespace(
+        header=SimpleNamespace(stamp=stamp(10, 100_000_000)),
+        scan_begin_stamp=stamp(10, 0),
+        scan_end_stamp=stamp(10, 100_000_000),
+        scan_sequence=42,
+    )
+    shifted = RobustnessFaultInjector._shift_scan_request_stamp(request, 0.002)
+    assert shifted.scan_sequence == 42
+    assert shifted.header.stamp.nanosec == 102_000_000
+    assert shifted.scan_begin_stamp.nanosec == 2_000_000
+    assert shifted.scan_end_stamp.nanosec == 102_000_000

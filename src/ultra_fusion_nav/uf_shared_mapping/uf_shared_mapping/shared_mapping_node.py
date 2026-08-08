@@ -144,6 +144,7 @@ class SharedMappingNode(Node):
                 "rgbd_integrate", "publish_build", "publish_total",
             )
         }
+        self.profile_trace = deque(maxlen=profile_capacity)
         self.publisher = self.create_publisher(
             PointCloud2, self.get_parameter("output_topic").value, 2
         )
@@ -232,11 +233,23 @@ class SharedMappingNode(Node):
     def _profile_start(self):
         return time.perf_counter_ns() if self.performance_profiling_enabled else None
 
-    def _profile_stop(self, name, started_ns):
+    def _profile_stop(self, name, started_ns, source_stamp_s=None):
         if started_ns is not None:
-            self.profile_samples[name].append(
-                (time.perf_counter_ns() - started_ns) * 1.0e-6
-            )
+            duration_ms = (time.perf_counter_ns() - started_ns) * 1.0e-6
+            self.profile_samples[name].append(duration_ms)
+            now_s = self.get_clock().now().nanoseconds * 1.0e-9
+            self.profile_trace.append({
+                "kind": name,
+                "ros_stamp_s": now_s,
+                "source_stamp_s": source_stamp_s,
+                "source_age_ms": (
+                    max(0.0, (now_s - source_stamp_s) * 1000.0)
+                    if source_stamp_s is not None else None
+                ),
+                "wall_monotonic_s": time.monotonic(),
+                "duration_ms": duration_ms,
+                "voxel_count": len(self.mapping.voxels),
+            })
 
     def _profile_summary(self):
         summary = {}
@@ -262,12 +275,13 @@ class SharedMappingNode(Node):
         points = structured_xyz_array(point_cloud2.read_points(
             msg, field_names=("x", "y", "z"), skip_nans=True
         ))
-        self._profile_stop("lidar_decode", decode_started)
+        source_stamp_s = stamp_seconds(msg.header.stamp)
+        self._profile_stop("lidar_decode", decode_started, source_stamp_s)
         if points.size:
             integrate_started = self._profile_start()
             self.mapping.integrate_lidar(
                 points[:, :3], stamp_seconds(msg.header.stamp))
-            self._profile_stop("lidar_integrate", integrate_started)
+            self._profile_stop("lidar_integrate", integrate_started, source_stamp_s)
 
     def _rgbd(self, key):
         if key not in self.colors or key not in self.depths or self.camera_info is None:
@@ -302,13 +316,14 @@ class SharedMappingNode(Node):
         body = (self.rotation_body_camera @ camera.T).T + \
             self.translation_body_camera
         world = (pose[:3, :3] @ body.T).T + pose[:3, 3]
-        self._profile_stop("rgbd_prepare", prepare_started)
+        source_stamp_s = stamp_seconds(color_msg.header.stamp)
+        self._profile_stop("rgbd_prepare", prepare_started, source_stamp_s)
         integrate_started = self._profile_start()
         self.mapping.integrate_rgbd(
             world, color[rows, columns], self.visual_reliability,
             stamp_seconds(color_msg.header.stamp),
         )
-        self._profile_stop("rgbd_integrate", integrate_started)
+        self._profile_stop("rgbd_integrate", integrate_started, source_stamp_s)
 
     def _publish(self):
         if not self.enabled:
@@ -341,6 +356,7 @@ class SharedMappingNode(Node):
                 *self.mapping.arrays(source))
         summary = self.mapping.summary()
         summary["performance_profile"] = self._profile_summary()
+        summary["performance_trace"] = list(self.profile_trace)
         write_summary(root / "metrics.json", summary)
         response.success = True
         response.message = str(root)

@@ -16,6 +16,8 @@ def generate_launch_description():
         DeclareLaunchArgument("profile", default_value="nominal"),
     ]
     defaults = {
+        "frontend_scan_request_input_topic": "/robustness/raw/frontend_scan_request",
+        "frontend_scan_request_output_topic": "/fast_lio/frontend_scan_request",
         "native_lidar_input_topic": "/robustness/raw/native_lidar_factor",
         "native_lidar_output_topic": "/fast_lio/native_lidar_factor",
         "imu_input_topic": "/robustness/raw/imu",
