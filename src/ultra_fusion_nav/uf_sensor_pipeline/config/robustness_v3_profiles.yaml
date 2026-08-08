@@ -1,0 +1,193 @@
+schema_version: 1
+
+# These are engineering validation levels, not thresholds claimed by the
+# Ultra-Fusion paper.  They bracket nominal simulation noise, an FRS switching
+# region, and a deliberately unusable sensor.  Estimator integrity thresholds
+# remain unchanged.
+defaults:
+  seed: 73
+  start_s: 30.0
+  duration_s: 25.0
+
+profiles:
+  nominal:
+    description: Frozen Performance V2 input without an injected fault.
+
+  visual_light:
+    description: 20 percent deterministic visual-track loss.
+    faults:
+      - {channel: vision, type: track_dropout, start_s: 2.0, duration_s: 6.0, magnitude: 0.20, score_floor: 0.25}
+  visual_medium:
+    description: 55 percent visual-track loss plus bounded reprojection bias.
+    faults:
+      - {channel: vision, type: track_dropout, start_s: 2.0, duration_s: 6.0, magnitude: 0.55, score_floor: 0.65}
+      - {channel: vision, type: reprojection_bias, start_s: 2.0, duration_s: 6.0, magnitude: 1.5, score_floor: 0.65, seed_offset: 101}
+  visual_heavy:
+    description: Visual observations unavailable for the active interval.
+    faults:
+      - {channel: vision, type: outage, start_s: 2.0, duration_s: 6.0, score_floor: 0.98}
+
+  lidar_light:
+    description: Remove 25 percent of native point-plane correspondences.
+    faults:
+      - {channel: native_lidar, type: correspondence_dropout, magnitude: 0.25, score_floor: 0.25}
+  lidar_medium:
+    description: Remove 60 percent of native point-plane correspondences.
+    faults:
+      - {channel: native_lidar, type: correspondence_dropout, magnitude: 0.60, score_floor: 0.68}
+  lidar_heavy:
+    description: Native LiDAR factors unavailable for the active interval.
+    faults:
+      - {channel: native_lidar, type: outage, score_floor: 0.98}
+
+  gnss_denial_light:
+    description: Short 4 second GNSS denial.
+    faults:
+      - {channel: gnss, type: outage, duration_s: 4.0, score_floor: 0.45}
+  gnss_denial_medium:
+    description: 12 second GNSS denial.
+    faults:
+      - {channel: gnss, type: outage, duration_s: 12.0, score_floor: 0.75}
+  gnss_denial_heavy:
+    description: 30 second GNSS denial.
+    faults:
+      - {channel: gnss, type: outage, duration_s: 30.0, score_floor: 0.98}
+  gnss_jump_light:
+    description: Five metre horizontal GNSS step.
+    faults:
+      - {channel: gnss, type: jump, magnitude: 5.0, secondary_magnitude: 0.0, score_floor: 0.45}
+  gnss_jump_medium:
+    description: Fifteen metre horizontal GNSS step.
+    faults:
+      - {channel: gnss, type: jump, magnitude: 15.0, secondary_magnitude: 0.0, score_floor: 0.75}
+  gnss_jump_heavy:
+    description: Thirty-five metre horizontal GNSS step.
+    faults:
+      - {channel: gnss, type: jump, magnitude: 35.0, secondary_magnitude: 0.0, score_floor: 0.98}
+
+  flow_light:
+    description: Optical-flow quality reduced but still usable.
+    faults:
+      - {channel: optical_flow, type: low_quality, magnitude: 120.0, score_floor: 0.25}
+  flow_medium:
+    description: Low-confidence optical flow.
+    faults:
+      - {channel: optical_flow, type: low_quality, magnitude: 35.0, score_floor: 0.68}
+  flow_heavy:
+    description: Optical flow unavailable for the active interval.
+    faults:
+      - {channel: optical_flow, type: outage, score_floor: 0.98}
+
+  imu_light:
+    description: Small gyro-z and accel-x bias after bootstrap.
+    faults:
+      - {channel: imu, type: bias, magnitude: 0.01, secondary_magnitude: 0.05, score_floor: 0.25}
+  imu_medium:
+    description: Moderate gyro-z and accel-x bias after bootstrap.
+    faults:
+      - {channel: imu, type: bias, magnitude: 0.05, secondary_magnitude: 0.30, score_floor: 0.68}
+  imu_heavy:
+    description: IMU unavailable after bootstrap; FRS retains the configured soft floor.
+    faults:
+      - {channel: imu, type: outage, score_floor: 0.98}
+
+  camera_time_light:
+    description: Camera timestamp offset below the 65 ms association tolerance.
+    faults:
+      - {channel: vision, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: 0.020}
+  camera_time_medium:
+    description: Camera timestamp offset near the association limit.
+    faults:
+      - {channel: vision, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: 0.050}
+  camera_time_heavy:
+    description: Camera timestamp offset beyond the association limit.
+    faults:
+      - {channel: vision, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: 0.100}
+  camera_time_negative_medium:
+    description: Negative 50 ms camera timestamp offset.
+    faults:
+      - {channel: vision, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: -0.050}
+
+  lidar_time_light:
+    description: Two millisecond LiDAR-IMU factor offset.
+    faults:
+      - {channel: native_lidar, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: 0.002}
+  lidar_time_medium:
+    description: Five millisecond LiDAR-IMU factor offset at the configured tolerance.
+    faults:
+      - {channel: native_lidar, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: 0.005}
+  lidar_time_heavy:
+    description: Twenty millisecond LiDAR-IMU factor offset.
+    faults:
+      - {channel: native_lidar, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: 0.020}
+  lidar_time_negative_medium:
+    description: Negative five millisecond LiDAR-IMU factor offset.
+    faults:
+      - {channel: native_lidar, type: time_offset, start_s: 0.0, duration_s: 0.0, magnitude: -0.005}
+
+  d435_extrinsic_rot_light:
+    description: One degree D435i body-camera yaw calibration error.
+    calibration:
+      visual_rotation_body_camera: [0.017452, 0.0, 0.999848, -0.999848, 0.0, 0.017452, 0.0, -1.0, 0.0]
+  d435_extrinsic_rot_medium:
+    description: Three degree D435i body-camera yaw calibration error.
+    calibration:
+      visual_rotation_body_camera: [0.052336, 0.0, 0.998630, -0.998630, 0.0, 0.052336, 0.0, -1.0, 0.0]
+  d435_extrinsic_rot_heavy:
+    description: Eight degree D435i body-camera yaw calibration error.
+    calibration:
+      visual_rotation_body_camera: [0.139173, 0.0, 0.990268, -0.990268, 0.0, 0.139173, 0.0, -1.0, 0.0]
+  d435_extrinsic_trans_light:
+    description: One centimetre D435i translation error.
+    calibration: {visual_translation_body_camera_m: [0.31, 0.0, 0.02]}
+  d435_extrinsic_trans_medium:
+    description: Five centimetre D435i translation error.
+    calibration: {visual_translation_body_camera_m: [0.35, 0.0, 0.02]}
+  d435_extrinsic_trans_heavy:
+    description: Fifteen centimetre D435i translation error.
+    calibration: {visual_translation_body_camera_m: [0.45, 0.0, 0.02]}
+
+  mid360_extrinsic_rot_light:
+    description: One degree MID360 lidar-to-body yaw error.
+    faults:
+      - {channel: native_lidar, type: extrinsic_error, start_s: 0.0, duration_s: 0.0, magnitude: 1.0}
+  mid360_extrinsic_rot_medium:
+    description: Three degree MID360 lidar-to-body yaw error.
+    faults:
+      - {channel: native_lidar, type: extrinsic_error, start_s: 0.0, duration_s: 0.0, magnitude: 3.0}
+  mid360_extrinsic_rot_heavy:
+    description: Eight degree MID360 lidar-to-body yaw error.
+    faults:
+      - {channel: native_lidar, type: extrinsic_error, start_s: 0.0, duration_s: 0.0, magnitude: 8.0}
+  mid360_extrinsic_trans_light:
+    description: One centimetre MID360 x-translation error.
+    faults:
+      - {channel: native_lidar, type: extrinsic_error, start_s: 0.0, duration_s: 0.0, secondary_magnitude: 0.01}
+  mid360_extrinsic_trans_medium:
+    description: Five centimetre MID360 x-translation error.
+    faults:
+      - {channel: native_lidar, type: extrinsic_error, start_s: 0.0, duration_s: 0.0, secondary_magnitude: 0.05}
+  mid360_extrinsic_trans_heavy:
+    description: Fifteen centimetre MID360 x-translation error.
+    faults:
+      - {channel: native_lidar, type: extrinsic_error, start_s: 0.0, duration_s: 0.0, secondary_magnitude: 0.15}
+
+  dual_visual_gnss_medium:
+    description: Simultaneous medium visual and GNSS-denial degradation.
+    include: [visual_medium, gnss_denial_medium]
+  dual_lidar_gnss_medium:
+    description: Simultaneous medium LiDAR and GNSS-denial degradation.
+    include: [lidar_medium, gnss_denial_medium]
+  dual_imu_flow_medium:
+    description: Simultaneous medium IMU and optical-flow degradation.
+    include: [imu_medium, flow_medium]
+  dual_visual_lidar_heavy:
+    description: Simultaneous loss of both geometric exteroceptive sources.
+    include: [visual_heavy, lidar_heavy]
+
+  long_visual_gnss_cycles:
+    description: Three separated visual/GNSS events for recovery and endurance testing.
+    faults:
+      - {channel: vision, type: track_dropout, start_s: 1.0, duration_s: 2.0, magnitude: 0.55, score_floor: 0.65}
+      - {channel: gnss, type: outage, start_s: 45.0, duration_s: 12.0, score_floor: 0.75}
+      - {channel: vision, type: track_dropout, start_s: 5.0, duration_s: 2.0, magnitude: 0.55, score_floor: 0.65, seed_offset: 22}

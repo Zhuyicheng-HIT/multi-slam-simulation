@@ -25,6 +25,7 @@ setup(
             "external_nav_gate = uf_sensor_pipeline.external_nav_gate:main",
             "fcu_observation_bridge = uf_sensor_pipeline.fcu_observation_bridge:main",
             "fault_injector = uf_sensor_pipeline.fault_injector:main",
+            "robustness_fault_injector = uf_sensor_pipeline.robustness_fault_injector:main",
             "gps_flow_fusion = uf_sensor_pipeline.gps_flow_fusion_node:main",
             "gnss_metadata_relay = uf_sensor_pipeline.gnss_metadata_relay:main",
             "nmea_gnss = uf_sensor_pipeline.nmea_gnss_node:main",

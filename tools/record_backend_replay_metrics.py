@@ -51,6 +51,7 @@ class Recorder(Node):
         super().__init__("backend_replay_metrics_recorder")
         self.samples = []
         self.odom_count = 0
+        self.trajectory = []
         self.create_subscription(
             DiagnosticArray,
             "/fusion/unified/diagnostics",
@@ -77,13 +78,28 @@ class Recorder(Node):
                 "values": values,
             })
 
-    def _odom(self, _message):
+    def _odom(self, message):
         self.odom_count += 1
+        stamp = (
+            float(message.header.stamp.sec)
+            + float(message.header.stamp.nanosec) * 1.0e-9
+        )
+        if stamp <= 0.0:
+            return
+        position = message.pose.pose.position
+        orientation = message.pose.pose.orientation
+        self.trajectory.append((
+            stamp,
+            float(position.x), float(position.y), float(position.z),
+            float(orientation.x), float(orientation.y),
+            float(orientation.z), float(orientation.w),
+        ))
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
+    parser.add_argument("--trajectory-output", default="")
     parser.add_argument("--wall-timeout", type=float, default=900.0)
     args = parser.parse_args()
     rclpy.init()
@@ -129,6 +145,12 @@ def main():
             ) + "\n",
             encoding="utf-8",
         )
+        if args.trajectory_output:
+            trajectory_output = Path(args.trajectory_output)
+            trajectory_output.parent.mkdir(parents=True, exist_ok=True)
+            with trajectory_output.open("w", encoding="ascii") as handle:
+                for row in sorted(node.trajectory, key=lambda value: value[0]):
+                    handle.write(" ".join(f"{value:.9f}" for value in row) + "\n")
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -628,6 +628,9 @@ def summarize(events):
         "backend_gnss_jump_rejected_max": max(
             (event["gnss_jump_rejected"] for event in backend), default=0
         ),
+        "backend_gnss_factors_max": max(
+            (event["gnss_factors"] for event in backend), default=0
+        ),
         "backend_optimization_errors_max": max(
             (event["optimization_errors"] for event in backend), default=0
         ),
