@@ -399,6 +399,32 @@ class ManifoldSlidingWindowBackend:
         self._profile_samples = defaultdict(
             lambda: deque(maxlen=self.profiling_capacity)
         )
+        self._profile_cycle = None
+        self._profile_cycle_counts = None
+        self._last_profile_cycle = {}
+
+    def begin_profile_cycle(self):
+        """Start one transaction-scoped profile without changing solver work."""
+        if not self.profiling_enabled:
+            return
+        self._profile_cycle = defaultdict(float)
+        self._profile_cycle_counts = defaultdict(int)
+        self._profile_cycle["marginalization_happened"] = False
+
+    def finish_profile_cycle(self):
+        """Return and retain the current transaction profile."""
+        if not self.profiling_enabled or self._profile_cycle is None:
+            return {}
+        result = dict(self._profile_cycle)
+        result["stage_call_counts"] = dict(self._profile_cycle_counts)
+        self._last_profile_cycle = result
+        self._profile_cycle = None
+        self._profile_cycle_counts = None
+        return dict(result)
+
+    @property
+    def last_profile_cycle(self):
+        return dict(self._last_profile_cycle)
 
     def _profile_start(self):
         return time.perf_counter_ns() if self.profiling_enabled else None
@@ -408,6 +434,9 @@ class ManifoldSlidingWindowBackend:
             return 0.0
         elapsed_ms = (time.perf_counter_ns() - started_ns) * 1.0e-6
         self._profile_samples[str(name)].append(elapsed_ms)
+        if self._profile_cycle is not None:
+            self._profile_cycle[str(name)] += elapsed_ms
+            self._profile_cycle_counts[str(name)] += 1
         return elapsed_ms
 
     def profile_summary(self):
@@ -1054,15 +1083,22 @@ class ManifoldSlidingWindowBackend:
             self._profile_stop(
                 f"factor_{factor['name']}", factor_started
             )
+            assembly_started = self._profile_start()
             hessian += factor_hessian
             gradient += factor_gradient
             cost += factor_cost
+            self._profile_stop("graph_assembly", assembly_started)
         self._profile_stop("factor_graph_linearization", normal_started)
         return hessian, gradient, cost
 
     def optimize(self):
         if not self._states:
             return []
+        automatic_profile_cycle = (
+            self.profiling_enabled and self._profile_cycle is None
+        )
+        if automatic_profile_cycle:
+            self.begin_profile_cycle()
         started = time.perf_counter()
         profile_started = self._profile_start()
         accepted_iterations = 0
@@ -1145,6 +1181,8 @@ class ManifoldSlidingWindowBackend:
         self._last_hessian = hessian.copy()
         self._last_solve_ms = (time.perf_counter() - started) * 1000.0
         self._profile_stop("optimize_total", profile_started)
+        if automatic_profile_cycle:
+            self.finish_profile_cycle()
         return self.states()
 
     def latest_factor_residual(self, name, covariance=None):
@@ -1311,4 +1349,6 @@ class ManifoldSlidingWindowBackend:
             (time.perf_counter() - started) * 1000.0 if marginalized else 0.0
         )
         if marginalized:
+            if self._profile_cycle is not None:
+                self._profile_cycle["marginalization_happened"] = True
             self._profile_stop("marginalization", profile_started)

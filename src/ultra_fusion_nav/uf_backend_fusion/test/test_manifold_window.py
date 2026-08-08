@@ -398,10 +398,34 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertIn("linear_solve", profile)
         self.assertIn("state_update", profile)
         self.assertIn("optimize_total", profile)
+        self.assertIn("graph_assembly", profile)
         for values in profile.values():
             self.assertGreater(values["count"], 0)
             self.assertLessEqual(values["p50_ms"], values["p95_ms"])
             self.assertLessEqual(values["p95_ms"], values["max_ms"])
+        cycle = backend.last_profile_cycle
+        self.assertGreater(cycle["optimize_total"], 0.0)
+        self.assertGreater(cycle["factor_graph_linearization"], 0.0)
+        self.assertGreater(cycle["graph_assembly"], 0.0)
+        self.assertFalse(cycle["marginalization_happened"])
+
+    def test_transaction_profile_marks_marginalization(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, profiling_enabled=True, profiling_capacity=64
+        )
+        first = backend.add_state(np.zeros(15))
+        backend.add_prior(first, np.zeros(15), covariance=np.ones(15))
+        second = backend.add_state(np.zeros(15))
+        backend.add_prior(second, np.zeros(15), covariance=np.ones(15))
+        backend.optimize()
+        backend.begin_profile_cycle()
+        third = backend.add_state(np.zeros(15))
+        backend.add_prior(third, np.zeros(15), covariance=np.ones(15))
+        backend.optimize()
+        cycle = backend.finish_profile_cycle()
+        self.assertTrue(cycle["marginalization_happened"])
+        self.assertGreater(cycle["marginalization"], 0.0)
+        self.assertGreater(cycle["optimize_total"], 0.0)
 
     def test_marginal_prior_block_transform_matches_dense_jacobian(self):
         rng = np.random.default_rng(17)

@@ -1,5 +1,9 @@
 # Performance V2 freeze validation
 
+> Historical candidate-gate report.  The controlled full-online replay and
+> per-cycle profiler in `PERFORMANCE_V2_STABILITY_CONVERGENCE.md` supersede the
+> performance decision below and freeze V2 as `SIM_ENV_CONTENDED`.
+
 ## Decision
 
 Performance V2 remains a candidate and is **not frozen** by this validation.

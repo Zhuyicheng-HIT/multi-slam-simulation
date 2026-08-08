@@ -38,6 +38,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "performance_profiling_enabled", default_value="false"
         ),
+        DeclareLaunchArgument("performance_trace_path", default_value=""),
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
         DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
         DeclareLaunchArgument(
@@ -92,6 +93,9 @@ def generate_launch_description():
             ),
             "performance_profiling_enabled": LaunchConfiguration(
                 "performance_profiling_enabled"
+            ),
+            "performance_trace_path": LaunchConfiguration(
+                "performance_trace_path"
             ),
             "camera_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
         }),

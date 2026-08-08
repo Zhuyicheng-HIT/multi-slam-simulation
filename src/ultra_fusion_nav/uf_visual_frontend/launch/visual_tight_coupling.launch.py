@@ -32,6 +32,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "performance_profiling_enabled", default_value="false"
         ),
+        DeclareLaunchArgument("performance_trace_path", default_value=""),
         DeclareLaunchArgument(
             "external_nav_output_topic",
             default_value="/fusion/runtime_external_nav",
@@ -80,6 +81,9 @@ def generate_launch_description():
                 ),
                 "performance_profiling_enabled": LaunchConfiguration(
                     "performance_profiling_enabled"
+                ),
+                "performance_trace_path": LaunchConfiguration(
+                    "performance_trace_path"
                 ),
                 "visual_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
                 # Paper mode requires the Stage3 native-factor contract. Keep

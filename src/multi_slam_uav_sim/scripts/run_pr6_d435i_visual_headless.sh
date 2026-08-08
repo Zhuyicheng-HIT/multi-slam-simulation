@@ -245,6 +245,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   visual_candidate_quality_enabled:="$VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL" \
   visual_pending_enabled:="$VISUAL_PENDING_ENABLED_BOOL" \
   performance_profiling_enabled:="$PERFORMANCE_PROFILING_ENABLED_BOOL" \
+  performance_trace_path:="$RUN_DIR/backend_cycle_trace.jsonl" \
   shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
   shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
   shared_mapping_output_directory:="$RUN_DIR/shared_map" \
@@ -314,6 +315,7 @@ setsid ros2 run multi_slam_uav_sim simulation_performance_monitor --ros-args \
   -p output_path:="$RUN_DIR/simulation_performance.json" \
   -p fusion_topic:=/fusion/unified/odom \
   -p fusion_diagnostic_topic:=/fusion/unified/diagnostics \
+  -p include_compute_time_series:="$PERFORMANCE_PROFILING_ENABLED_BOOL" \
   >"$RUN_DIR/simulation_performance.log" 2>&1 &
 record_pid simulation_performance "$!"
 

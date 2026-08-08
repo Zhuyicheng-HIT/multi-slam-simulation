@@ -1,3 +1,4 @@
+import gc
 import math
 import queue
 import threading
@@ -16,6 +17,7 @@ from uf_backend_fusion.native_lidar import (
     rpy_to_rotation_matrix,
 )
 from uf_backend_fusion.online_backend import (
+    GarbageCollectionProfiler,
     apply_flow_rotation_gate,
     apply_lidar_anchor_floor,
     associate_visual_states,
@@ -71,6 +73,17 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             "maximum_information_condition": 1.0e12,
             "information_rank_tolerance": 1.0e-9,
         }
+
+    def test_gc_profiler_reports_generation_without_disabling_gc(self):
+        enabled_before = gc.isenabled()
+        profiler = GarbageCollectionProfiler()
+        before = profiler.snapshot()
+        gc.collect(0)
+        after = profiler.snapshot()
+        profiler.close()
+        self.assertGreaterEqual(after["collections"][0], before["collections"][0] + 1)
+        self.assertGreaterEqual(after["duration_ms"][0], before["duration_ms"][0])
+        self.assertEqual(gc.isenabled(), enabled_before)
 
     @staticmethod
     def _calibration_motion(**overrides):

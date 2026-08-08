@@ -11,8 +11,13 @@ from bisect import bisect_left, bisect_right
 from collections import Counter, deque
 import copy
 from dataclasses import dataclass, replace
+import gc
+import json
 import math
+import os
+from pathlib import Path as FilePath
 import queue
+import resource
 import threading
 import time
 
@@ -473,6 +478,81 @@ class PendingVisualCandidate:
     message: object
     arrival_ros_s: float
     arrival_wall_s: float
+
+
+class GarbageCollectionProfiler:
+    """Bounded, opt-in GC timing counters for runtime correlation only."""
+
+    def __init__(self):
+        self.started_ns = {}
+        self.collections = [0, 0, 0]
+        self.duration_ms = [0.0, 0.0, 0.0]
+        self.callback = self._callback
+        gc.callbacks.append(self.callback)
+
+    def _callback(self, phase, info):
+        generation = int(info.get("generation", -1))
+        if generation < 0 or generation >= len(self.collections):
+            return
+        if phase == "start":
+            self.started_ns[generation] = time.perf_counter_ns()
+        elif phase == "stop":
+            started_ns = self.started_ns.pop(generation, None)
+            self.collections[generation] += 1
+            if started_ns is not None:
+                self.duration_ms[generation] += (
+                    time.perf_counter_ns() - started_ns
+                ) * 1.0e-6
+
+    def snapshot(self):
+        return {
+            "collections": tuple(self.collections),
+            "duration_ms": tuple(self.duration_ms),
+            "counts": tuple(gc.get_count()),
+        }
+
+    def close(self):
+        try:
+            gc.callbacks.remove(self.callback)
+        except ValueError:
+            pass
+
+
+def process_resource_snapshot():
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return {
+        "minor_faults": int(usage.ru_minflt),
+        "major_faults": int(usage.ru_majflt),
+        "voluntary_context_switches": int(usage.ru_nvcsw),
+        "involuntary_context_switches": int(usage.ru_nivcsw),
+        "user_cpu_s": float(usage.ru_utime),
+        "system_cpu_s": float(usage.ru_stime),
+    }
+
+
+def process_resource_delta(before, after):
+    return {
+        name: float(after[name]) - float(before[name])
+        for name in before
+    }
+
+
+def current_processor_and_frequency_khz():
+    """Read the current Linux CPU and its frequency outside the timed solve."""
+    processor = -1
+    frequency_khz = None
+    try:
+        fields = FilePath("/proc/self/stat").read_text(
+            encoding="ascii"
+        ).split(") ", 1)[1].split()
+        processor = int(fields[36])
+        frequency_path = FilePath(
+            f"/sys/devices/system/cpu/cpu{processor}/cpufreq/scaling_cur_freq"
+        )
+        frequency_khz = int(frequency_path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError, IndexError):
+        pass
+    return processor, frequency_khz
 
 
 def associate_visual_states(
@@ -1493,6 +1573,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("marginal_covariance_update_period_s", 1.0)
         self.declare_parameter("performance_profiling_enabled", False)
         self.declare_parameter("performance_profiling_capacity", 4096)
+        self.declare_parameter("performance_trace_path", "")
         self.declare_parameter("online_calibration_enabled", True)
         self.declare_parameter(
             "calibration_motion_topic", "/calibration/lidar_relative_motion"
@@ -1605,6 +1686,9 @@ class UnifiedBackendNode(Node):
         self.performance_profiling_capacity = max(
             64,
             int(self.get_parameter("performance_profiling_capacity").value),
+        )
+        self.performance_trace_path = str(
+            self.get_parameter("performance_trace_path").value
         )
 
         self.map_frame = str(self.get_parameter("map_frame").value)
@@ -2331,9 +2415,20 @@ class UnifiedBackendNode(Node):
             }
             for name in (
                 "prepare", "pre_state", "snapshot", "add_state", "lidar_factor",
-                "aux_factors", "optimize", "reintegrate", "post_optimize", "publish",
+                "gnss_factor", "flow_factor", "visual_association",
+                "visual_factor_construction", "imu_factor", "aux_factors",
+                "optimize", "reintegrate", "integrity_check", "commit",
+                "post_optimize", "publish",
             )
         }
+        self.current_cycle_phase = None
+        self.performance_cycle_trace = deque(
+            maxlen=self.performance_profiling_capacity
+        )
+        self.gc_profiler = (
+            GarbageCollectionProfiler()
+            if self.performance_profiling_enabled else None
+        )
         self.last_imu_reason = "unavailable"
         self.last_imu_startup_reason = "not_attempted"
         self.last_imu_startup_sample_count = 0
@@ -2858,12 +2953,16 @@ class UnifiedBackendNode(Node):
             corrected_current = (
                 stamp_seconds(message.header.stamp) + self.visual_time_offset_s
             )
+            association_started = time.perf_counter_ns()
             association = associate_visual_states(
                 stamp_seconds(message.previous_stamp),
                 stamp_seconds(message.header.stamp),
                 state_stamps,
                 camera_to_imu_time_offset_s=self.visual_time_offset_s,
                 tolerance_s=self.visual_state_tolerance_s,
+            )
+            self._record_phase_timing(
+                "visual_association", association_started
             )
             sim_wait = max(0.0, latest_state - corrected_current)
             wall_wait = max(0.0, now_wall - candidate.arrival_wall_s)
@@ -2890,10 +2989,14 @@ class UnifiedBackendNode(Node):
                 continue
             consumed.add(candidate.key)
             self.counts["visual_window_associated_candidates"] += 1
+            construction_started = time.perf_counter_ns()
             accepted = self._add_visual_message_factor(
                 message,
                 association.previous_index,
                 association.current_index,
+            )
+            self._record_phase_timing(
+                "visual_factor_construction", construction_started
             )
             if accepted:
                 staged.append(candidate)
@@ -3824,6 +3927,10 @@ class UnifiedBackendNode(Node):
         timing["last_ms"] = elapsed_ms
         if timing["samples"] is not None:
             timing["samples"].append(elapsed_ms)
+        if self.current_cycle_phase is not None:
+            self.current_cycle_phase[name] = (
+                self.current_cycle_phase.get(name, 0.0) + elapsed_ms
+            )
         return elapsed_ms
 
     def _phase_mean_ms(self, name):
@@ -3846,6 +3953,157 @@ class UnifiedBackendNode(Node):
                 "max_ms": float(np.max(values)),
             }
         return summary
+
+    def _begin_performance_cycle(self, callback_started_ns, stamp_s):
+        if not self.performance_profiling_enabled:
+            return None
+        begin_profile = getattr(self.backend, "begin_profile_cycle", None)
+        if begin_profile is not None:
+            begin_profile()
+        self.current_cycle_phase = {
+            "pre_state": float(self.phase_timing["pre_state"]["last_ms"])
+        }
+        return {
+            "stamp_s": float(stamp_s),
+            "callback_started_ns": int(callback_started_ns),
+            "wall_started_s": time.monotonic(),
+            "resource": process_resource_snapshot(),
+            "gc": self.gc_profiler.snapshot(),
+            "factor_counts": {
+                "lidar": int(self.counts["native_lidar_factors"]),
+                "imu": int(self.counts["imu_factors"]),
+                "gnss": int(self.counts["gnss_factors"]),
+                "flow": int(self.counts["flow_factors"]),
+                "visual": int(self.counts["visual_factors"]),
+            },
+        }
+
+    @staticmethod
+    def _factor_name_counts(records):
+        counts = Counter(record.name for record in records if record.enabled)
+        return {
+            "lidar": int(
+                counts["lidar_point_plane"]
+                + counts["lidar_point_plane_condensed"]
+            ),
+            "imu": int(counts["imu_preintegrated"]),
+            "gnss": int(counts["gnss"]),
+            "flow": int(
+                counts["optical_flow"] + counts["optical_flow_body"]
+            ),
+            "visual": int(counts["visual_reprojection"]),
+            "prior": int(counts["prior"] + counts["marginal_prior"]),
+            "total": int(sum(counts.values())),
+        }
+
+    def _finish_performance_cycle(
+        self, context, staged_visual_candidates, state_committed
+    ):
+        if context is None:
+            return
+        callback_total_ms = (
+            time.perf_counter_ns() - context["callback_started_ns"]
+        ) * 1.0e-6
+        finish_profile = getattr(self.backend, "finish_profile_cycle", None)
+        backend_profile = finish_profile() if finish_profile is not None else {}
+        resource_after = process_resource_snapshot()
+        gc_after = self.gc_profiler.snapshot()
+        processor, frequency_khz = current_processor_and_frequency_khz()
+        try:
+            rss_bytes = int(
+                FilePath("/proc/self/statm").read_text(
+                    encoding="ascii"
+                ).split()[1]
+            ) * int(os.sysconf("SC_PAGE_SIZE"))
+        except (OSError, ValueError, IndexError):
+            rss_bytes = -1
+        active_factor_counts = self._factor_name_counts(
+            self.backend.factor_summary()
+        )
+        factor_counters = {
+            "lidar": int(self.counts["native_lidar_factors"]),
+            "imu": int(self.counts["imu_factors"]),
+            "gnss": int(self.counts["gnss_factors"]),
+            "flow": int(self.counts["flow_factors"]),
+            "visual": int(self.counts["visual_factors"]),
+        }
+        factor_counts = {
+            name: value - context["factor_counts"][name]
+            for name, value in factor_counters.items()
+        }
+        factor_counts["total"] = int(sum(factor_counts.values()))
+        phases = dict(self.current_cycle_phase or {})
+        phases["callback_total"] = float(callback_total_ms)
+        trace = {
+            "schema_version": 2,
+            "stamp_s": context["stamp_s"],
+            "wall_started_s": context["wall_started_s"],
+            "wall_finished_s": time.monotonic(),
+            "phases_ms": phases,
+            "solver_profile_ms": backend_profile,
+            "solver_duration_ms": float(
+                backend_profile.get(
+                    "optimize_total", getattr(self.backend, "last_solve_ms", 0.0)
+                )
+            ),
+            "window_state_count": int(self.backend.state_count),
+            "factor_counts": active_factor_counts,
+            "factor_counts_added": factor_counts,
+            "active_factor_counts": active_factor_counts,
+            "lidar_correspondence_count": int(self.last_native_matches),
+            "visual_candidates_staged": int(len(staged_visual_candidates)),
+            "marginalization_happened": bool(
+                backend_profile.get("marginalization_happened", False)
+            ),
+            "state_committed": bool(state_committed),
+            "last_reason": str(self.last_reason),
+            "resource_delta": process_resource_delta(
+                context["resource"], resource_after
+            ),
+            "rss_bytes": int(rss_bytes),
+            "gc": {
+                "collections": [
+                    int(after) - int(before)
+                    for before, after in zip(
+                        context["gc"]["collections"], gc_after["collections"]
+                    )
+                ],
+                "duration_ms": [
+                    float(after) - float(before)
+                    for before, after in zip(
+                        context["gc"]["duration_ms"], gc_after["duration_ms"]
+                    )
+                ],
+                "allocation_counts_after": list(gc_after["counts"]),
+            },
+            "processor": int(processor),
+            "cpu_frequency_khz": frequency_khz,
+            "load_average": list(os.getloadavg()),
+            "optimization_errors": int(self.counts["optimization_errors"]),
+            "integrity_rejects": int(
+                sum(
+                    count
+                    for reason, count in
+                    self.optimization_integrity_reason_counts.items()
+                    if reason != "ok"
+                )
+            ),
+            "rollbacks": int(self.counts["optimization_rollbacks"]),
+        }
+        self.performance_cycle_trace.append(trace)
+        self.current_cycle_phase = None
+
+    def _write_performance_trace(self):
+        if not self.performance_trace_path or not self.performance_cycle_trace:
+            return
+        output = FilePath(self.performance_trace_path).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(output.name + ".tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            for record in self.performance_cycle_trace:
+                stream.write(json.dumps(record, sort_keys=True, allow_nan=False))
+                stream.write("\n")
+        os.replace(temporary, output)
 
     def _manifold_imu_bias_changed(self, previous_index, measurement):
         """Check whether the optimized start bias invalidates this delta."""
@@ -4798,6 +5056,7 @@ class UnifiedBackendNode(Node):
                     self.last_reason = f"native_lidar_prediction_gate:{gate_reason}"
                     return
         self._record_phase_timing("pre_state", started)
+        performance_context = self._begin_performance_cycle(started, stamp)
         snapshot_started = time.perf_counter_ns()
         transaction_snapshot = (self.backend.snapshot(
         ) if self.transactional_update_enabled else None)
@@ -4982,12 +5241,16 @@ class UnifiedBackendNode(Node):
         aux_factors_started = time.perf_counter_ns()
         if self.last_lio_stamp is not None:
             previous_index = current_index - 1
+            gnss_started = time.perf_counter_ns()
             self._gnss_factor(stamp, reference["position"], current_index)
+            self._record_phase_timing("gnss_factor", gnss_started)
+            flow_started = time.perf_counter_ns()
             self._flow_factor(
                 self.last_lio_stamp, stamp, reference["yaw"],
                 previous_index, current_index, reference["delta_position"],
                 previous_state=previous_state,
             )
+            self._record_phase_timing("flow_factor", flow_started)
             if self.visual_pending_enabled:
                 staged_visual_candidates = self._stage_pending_visual_factors(
                     transaction_visual_state_stamps
@@ -4997,6 +5260,7 @@ class UnifiedBackendNode(Node):
                     self.last_lio_stamp, stamp, previous_index, current_index
                 ):
                     staged_visual_candidates = [None]
+            imu_factor_started = time.perf_counter_ns()
             if self.backend_solver_mode == "manifold":
                 imu_diagnostic_covariance = self._add_manifold_imu_factor(
                     previous_index, current_index, manifold_measurement
@@ -5006,10 +5270,12 @@ class UnifiedBackendNode(Node):
                     self.last_lio_stamp, stamp, reference["orientation"],
                     previous_index, current_index,
                 )
+            self._record_phase_timing("imu_factor", imu_factor_started)
         self._record_phase_timing("aux_factors", aux_factors_started)
         self._record_phase_timing("prepare", started)
         post_optimize_started = time.perf_counter_ns()
         state_committed = False
+        commit_started = None
         try:
             optimize_started = time.perf_counter_ns()
             self.backend.optimize()
@@ -5090,6 +5356,7 @@ class UnifiedBackendNode(Node):
                     ) = visual_residual
             estimate = self.backend.state(current_index)
             if self.transactional_update_enabled:
+                integrity_started = time.perf_counter_ns()
                 self.last_optimization_integrity = validate_optimized_state(
                     initial_state,
                     estimate,
@@ -5097,6 +5364,9 @@ class UnifiedBackendNode(Node):
                     self.backend.last_initial_cost,
                     self.backend.last_cost,
                     **self.optimization_integrity_limits,
+                )
+                self._record_phase_timing(
+                    "integrity_check", integrity_started
                 )
                 self.optimization_integrity_reason_counts[
                     self.last_optimization_integrity.reason
@@ -5116,7 +5386,13 @@ class UnifiedBackendNode(Node):
                     self.last_callback_ms = (
                         time.perf_counter_ns() - started
                     ) * 1.0e-6
+                    self._finish_performance_cycle(
+                        performance_context,
+                        staged_visual_candidates,
+                        state_committed,
+                    )
                     return
+            commit_started = time.perf_counter_ns()
             publish_started = time.perf_counter_ns()
             self._publish(msg.header, estimate, manifold_measurement)
             self._record_phase_timing("publish", publish_started)
@@ -5147,7 +5423,12 @@ class UnifiedBackendNode(Node):
             self.last_lio_position = np.asarray(
                 estimate[:3], dtype=float).copy()
             self.last_lio_yaw = float(estimate[5])
+        if commit_started is not None:
+            self._record_phase_timing("commit", commit_started)
         self.last_callback_ms = (time.perf_counter_ns() - started) * 1.0e-6
+        self._finish_performance_cycle(
+            performance_context, staged_visual_candidates, state_committed
+        )
 
     def _publish_frontend_state_seed(self, header, state, covariance):
         if self.frontend_state_seed_pub is None:
@@ -5586,6 +5867,13 @@ class UnifiedBackendNode(Node):
         )
 
     def log_final_summary(self):
+        try:
+            self._write_performance_trace()
+        except OSError as error:
+            print(f"Performance trace write failed: {type(error).__name__}:{error}")
+        finally:
+            if self.gc_profiler is not None:
+                self.gc_profiler.close()
         average_solve_ms = (
             self.backend_solve_ms_total / self.backend_solve_count
             if self.backend_solve_count > 0 else 0.0

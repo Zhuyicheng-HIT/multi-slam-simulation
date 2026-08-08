@@ -10,12 +10,24 @@ from multi_slam_uav_sim.external_nav_accuracy import ExternalNavAccuracy
 from multi_slam_uav_sim.simulation_performance_monitor import (
     TopicWindow,
     diagnostic_timing_values,
+    read_cpu_frequency_khz,
     read_system_memory_usage,
     system_cpu_utilization_percent,
 )
 
 
 class ExternalNavAccuracyTest(unittest.TestCase):
+    def test_cpu_frequency_reader_uses_available_cpu_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, value in enumerate((1800000, 2400000, 3000000)):
+                path = root / f"cpu{index}" / "cpufreq"
+                path.mkdir(parents=True)
+                (path / "scaling_cur_freq").write_text(
+                    str(value), encoding="ascii"
+                )
+            self.assertEqual(read_cpu_frequency_khz(root), 2400000)
+
     def test_system_cpu_utilization_uses_total_capacity(self):
         self.assertAlmostEqual(
             system_cpu_utilization_percent((1000, 400), (1200, 450)),
