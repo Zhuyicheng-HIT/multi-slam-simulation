@@ -1,0 +1,8 @@
+phase,scenario,run,build_type,profiling,mapping_mode,solver_median_ms,rtf_median,system_cpu_median_pct,system_ram_median_gib,raw_frames,tracked_frames,quality_candidates,window_candidates,solver_accepted,time_window_rejected,candidate_acceptance_pct,time_rejection_pct,ate_rmse_m,rpe_translation_rmse_m,rpe_rotation_rmse_deg,first_unified_odom_s,native_lidar_factors,imu_factors,flow_attempts,flow_enabled,optimization_errors,integrity_rejected,rollbacks
+V2,small_rectangle,r61,RelWithDebInfo,off,disabled,34.233,0.489887,34.332,3.259,743,298,97,94,77,3,79.381,3.093,0.120147,0.028649,0.118729,62,706,705,705,188,0,0,0
+V2,small_rectangle,r62,RelWithDebInfo,off,disabled,29.456,0.449190,34.806,3.263,808,295,88,81,63,7,71.591,7.955,0.486518,0.045788,0.130360,62,707,706,706,177,0,0,0
+V2,small_rectangle,r63,RelWithDebInfo,off,disabled,33.789,0.458284,34.807,3.254,1307,348,114,101,84,13,73.684,11.404,0.648396,0.041674,0.127917,52,749,748,748,169,0,0,0
+V2,S_curve,r71,RelWithDebInfo,off,disabled,52.059,0.403839,38.423,3.206,1995,554,297,269,203,28,68.350,9.428,0.477413,0.050037,0.111743,55,1278,1277,1277,460,0,0,0
+V2,S_curve,r72,RelWithDebInfo,off,disabled,50.568,0.493253,38.788,3.221,1084,447,236,210,160,26,67.797,11.017,1.446413,0.057901,0.132635,57,1256,1255,1255,452,0,0,0
+V2,S_curve,r73,RelWithDebInfo,off,disabled,56.768,0.481911,38.828,3.220,1547,501,280,250,202,30,72.143,10.714,0.642130,0.044247,0.121701,52,1249,1248,1248,461,0,0,0
+V2,small_rectangle,r65,RelWithDebInfo,on,joint,39.691,0.493125,40.494,3.314,823,309,96,95,76,1,79.167,1.042,0.893390,0.027791,0.123874,59,734,733,733,197,0,0,0

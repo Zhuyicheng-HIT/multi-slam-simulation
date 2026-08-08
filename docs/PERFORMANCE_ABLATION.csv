@@ -1,0 +1,13 @@
+category,change,before_run,after_run,decision,primary_before,primary_after,solver_before_ms,solver_after_ms,rtf_before,rtf_after,ate_before_m,ate_after_m,rpe_translation_before_m,rpe_translation_after_m,notes
+solver,in_place_full_hessian_accumulation,r31,r32,reverted,normal_p50=7.764,normal_p50=8.406,52.741,59.869,0.436210,0.413300,NA,NA,NA,NA,Slower and no structural proof of benefit
+solver,blockwise_marginal_prior_transform,r32,r33,kept,normal_p50=8.406,normal_p50=5.851,59.869,42.165,0.413300,0.442700,NA,0.856000,NA,NA,Exact algebra test matches dense transform
+transaction,shallow_factor_dictionary_snapshot,r33,r34,kept,snapshot_p50=3.943,snapshot_p50=0.303,42.165,48.821,NA,NA,NA,NA,NA,NA,Solver total varied but isolated snapshot stage fell 92.3 percent; rollback isolation test added
+visual,vectorized_analytic_reprojection,r34,r35,kept,visual_factor_p50=1.822,visual_factor_p50=0.475,48.821,37.550,NA,0.445317,NA,0.532119,NA,0.032264,Finite-difference Jacobian test remains enabled in tests only
+mapping,batch_finite_filter_and_voxel_keys,r36,r37,kept,lidar_integrate_p50=12.511,lidar_integrate_p50=6.678,NA,NA,NA,NA,NA,NA,NA,NA,RGBD integrate p50 70.757 to 26.023 ms; map semantics tests passed
+mapping,structured_numpy_pointcloud_pack,r37,r38,kept,publish_total_p50=15.011,publish_total_p50=7.894,NA,NA,NA,NA,NA,NA,NA,NA,Avoided Python tuple-list construction; source metrics preserved
+cadence,balanced_light_0.24s,NA,r42,not_selected,accepted=61,acceptance=77.22pct,NA,34.716,NA,0.465243,NA,0.825187,NA,0.025592,Lower compute but less visual information and worse ATE than balanced sample
+cadence,balanced_0.20s,NA,r35,selected,accepted=78,acceptance=76.47pct,NA,37.550,NA,0.445317,NA,0.532119,NA,0.032264,Best accuracy and information tradeoff around V1 operating point
+cadence,balanced_plus_0.16s,NA,r41,not_selected,accepted=85,acceptance=73.28pct,NA,38.962,NA,0.483069,NA,1.137254,NA,0.032057,More factors but materially worse ATE in the controlled sample
+build,Debug,NA,r49,not_selected,build=Debug,solver=33.194,NA,33.194,NA,0.468909,NA,0.665886,NA,0.035191,No decisive live RTF advantage
+build,RelWithDebInfo,NA,r50,selected,build=RelWithDebInfo,solver=35.860,NA,35.860,NA,0.466254,NA,0.678903,NA,0.032892,Optimized native code while retaining symbols
+build,Release,NA,r51,not_selected,build=Release,solver=32.365,NA,32.365,NA,0.473020,NA,0.935690,NA,0.038224,RTF delta was within simulation variance and accuracy sample was worse
