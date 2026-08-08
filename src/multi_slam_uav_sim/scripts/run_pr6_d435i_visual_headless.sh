@@ -335,6 +335,15 @@ wait_for_publisher /reliability/vision_score 45
 wait_for_publisher /vision/frontend_diagnostics 45
 wait_for_publisher /fusion/unified/visual_timing 45
 trace_stage visual_frontend_ready
+backend_visual_mode=$(timeout 10s ros2 param get \
+  /unified_backend_fusion visual_factor_mode 2>/dev/null || true)
+if [[ "$backend_visual_mode" != *"$VISUAL_FACTOR_MODE"* ]]; then
+  printf 'Visual runtime contract mismatch: requested=%s actual=%s\n' \
+    "$VISUAL_FACTOR_MODE" "$backend_visual_mode" >&2
+  exit 5
+fi
+printf 'visual_factor_mode=%s\n' "$VISUAL_FACTOR_MODE" \
+  >>"$RUN_DIR/backend_runtime_mode.env"
 if [[ "$PR6_START_RTABMAP" == 1 ]]; then
   wait_for_publisher /rtabmap/odom 120
 fi
@@ -342,7 +351,19 @@ wait_for_publisher /reliability/scheduler_state 45
 wait_for_topic /fusion/runtime_external_nav 45
 trace_stage external_nav_gate_open
 if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
-  wait_for_topic /mapping/shared/points 45
+  # At startup the shared map is intentionally empty. Under software-rendered
+  # simulation load, waiting for a serialized empty PointCloud2 can race the
+  # first LiDAR callback even though the mapping node is healthy. Publisher
+  # ownership is the correct readiness contract; exported non-empty map and
+  # source/conflict metrics remain mandatory post-mission validation.
+  wait_for_publisher /mapping/shared/points 45
+  mapping_output=$(timeout 10s ros2 param get \
+    /uf_shared_mapping output_directory 2>/dev/null || true)
+  if [[ "$mapping_output" != *"$RUN_DIR/shared_map"* ]]; then
+    printf 'Shared-map output contract mismatch: expected=%s actual=%s\n' \
+      "$RUN_DIR/shared_map" "$mapping_output" >&2
+    exit 6
+  fi
   trace_stage shared_mapping_ready
 fi
 

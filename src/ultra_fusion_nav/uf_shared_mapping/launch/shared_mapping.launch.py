@@ -14,6 +14,7 @@ def generate_launch_description():
         DeclareLaunchArgument("enabled", default_value="false"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("lidar_enabled", default_value="true"),
+        DeclareLaunchArgument("lidar_topic", default_value="/cloud_registered"),
         DeclareLaunchArgument("rgbd_enabled", default_value="true"),
         DeclareLaunchArgument("output_directory", default_value="shared_map_output"),
         DeclareLaunchArgument(
@@ -23,6 +24,7 @@ def generate_launch_description():
              parameters=[config, {"enabled": True,
                                   "use_sim_time": LaunchConfiguration("use_sim_time"),
                                   "lidar_enabled": LaunchConfiguration("lidar_enabled"),
+                                  "lidar_topic": LaunchConfiguration("lidar_topic"),
                                   "rgbd_enabled": LaunchConfiguration("rgbd_enabled"),
                                   "performance_profiling_enabled": LaunchConfiguration(
                                       "performance_profiling_enabled"),

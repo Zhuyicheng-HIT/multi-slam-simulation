@@ -2,7 +2,11 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -42,6 +46,10 @@ def generate_launch_description():
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
         DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
         DeclareLaunchArgument(
+            "shared_mapping_lidar_topic",
+            default_value="/cloud_registered_filtered",
+        ),
+        DeclareLaunchArgument(
             "shared_mapping_output_directory", default_value="shared_map_output"
         ),
         Node(
@@ -67,13 +75,20 @@ def generate_launch_description():
             "d435_parent_frame": "base_link",
             "d435_child_frame": "d435i_link",
         }),
-        include("multi_slam_uav_sim", "d435i_rtabmap.launch.py", {
-            "config_file": str(sim_share / "config" / "d435i_rtabmap_feature_aligned.yaml"),
-            "database_path": LaunchConfiguration("database_path"),
-            "rgb_topic": "/sensors/rgbd/color",
-            "depth_topic": "/sensors/rgbd/depth",
-            "camera_info_topic": "/front/d435i/color/camera_info",
-        }, condition=IfCondition(start_rtabmap)),
+        # The upstream RTAB launch declares a broad set of generic launch
+        # configurations. Keep them scoped so they cannot reset arguments of
+        # the visual backend or shared-map includes that follow.
+        GroupAction(scoped=True, actions=[
+            include("multi_slam_uav_sim", "d435i_rtabmap.launch.py", {
+                "config_file": str(
+                    sim_share / "config" / "d435i_rtabmap_feature_aligned.yaml"
+                ),
+                "database_path": LaunchConfiguration("database_path"),
+                "rgb_topic": "/sensors/rgbd/color",
+                "depth_topic": "/sensors/rgbd/depth",
+                "camera_info_topic": "/front/d435i/color/camera_info",
+            }, condition=IfCondition(start_rtabmap)),
+        ]),
         include("uf_lio_adapter", "lio_adapter.launch.py", {
             "use_sim_time": use_sim_time,
         }),
@@ -103,6 +118,7 @@ def generate_launch_description():
             "enabled": LaunchConfiguration("shared_mapping_enabled"),
             "use_sim_time": use_sim_time,
             "lidar_enabled": "true",
+            "lidar_topic": LaunchConfiguration("shared_mapping_lidar_topic"),
             "rgbd_enabled": LaunchConfiguration("shared_mapping_rgbd_enabled"),
             "performance_profiling_enabled": LaunchConfiguration(
                 "performance_profiling_enabled"
