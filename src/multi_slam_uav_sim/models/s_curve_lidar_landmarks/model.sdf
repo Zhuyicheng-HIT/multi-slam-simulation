@@ -57,28 +57,19 @@
         Close-in route markers keep the long S observable with the measured
         MID360 mount and its fixed 10 degree nose-down pitch.  They sit 0.7 m
         outside the +/-4.5 m flight envelope, are static, and are not used as
-        truth or estimator inputs.
+        truth or estimator inputs. They deliberately have collision geometry
+        only so the frozen RTAB camera scene remains unchanged.
       -->
       <collision name="route_marker_w_0"><pose>-5.2 -5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_w_0_visual"><pose>-5.2 -5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.82 0.20 0.12 1</diffuse></material></visual>
       <collision name="route_marker_w_1"><pose>-5.2 -2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_w_1_visual"><pose>-5.2 -2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.82 0.54 0.08 1</diffuse></material></visual>
       <collision name="route_marker_w_2"><pose>-5.2 0.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_w_2_visual"><pose>-5.2 0.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.16 0.40 0.78 1</diffuse></material></visual>
       <collision name="route_marker_w_3"><pose>-5.2 2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_w_3_visual"><pose>-5.2 2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.15 0.62 0.30 1</diffuse></material></visual>
       <collision name="route_marker_w_4"><pose>-5.2 5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_w_4_visual"><pose>-5.2 5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.82 0.20 0.12 1</diffuse></material></visual>
       <collision name="route_marker_e_0"><pose>5.2 -5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_e_0_visual"><pose>5.2 -5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.82 0.20 0.12 1</diffuse></material></visual>
       <collision name="route_marker_e_1"><pose>5.2 -2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_e_1_visual"><pose>5.2 -2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.82 0.54 0.08 1</diffuse></material></visual>
       <collision name="route_marker_e_2"><pose>5.2 0.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_e_2_visual"><pose>5.2 0.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.16 0.40 0.78 1</diffuse></material></visual>
       <collision name="route_marker_e_3"><pose>5.2 2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_e_3_visual"><pose>5.2 2.5 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.15 0.62 0.30 1</diffuse></material></visual>
       <collision name="route_marker_e_4"><pose>5.2 5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry></collision>
-      <visual name="route_marker_e_4_visual"><pose>5.2 5.0 2.25 0 0 0</pose><geometry><cylinder><radius>0.22</radius><length>4.50</length></cylinder></geometry><material><diffuse>0.82 0.20 0.12 1</diffuse></material></visual>
 
       <!-- Sparse asymmetric geometry extends LiDAR observability into the outer 38 m test area. -->
       <collision name="outer_southwest_tower"><pose>-15 -14 1.9 0 0 0.22</pose><geometry><box><size>0.75 1.20 3.80</size></box></geometry></collision>

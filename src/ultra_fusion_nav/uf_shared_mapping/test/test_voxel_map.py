@@ -86,6 +86,60 @@ def test_structured_xyzrgb_packs_expected_pointcloud_values():
     assert int(rows["rgb"][0]) == 0x123456
 
 
+def test_lidar_depth_occlusion_rejects_ghost_but_preserves_high_layer():
+    mapping = SourceAwareVoxelMap(
+        voxel_size_m=0.1,
+        conflict_distance_m=0.18,
+        occlusion_azimuth_bin_deg=1.0,
+        occlusion_elevation_bin_deg=1.0,
+        occlusion_neighbor_bins=1,
+        occlusion_margin_m=0.25,
+    )
+    low_lidar = np.asarray([[2.0, 0.0, 0.5]])
+    mapping.integrate_lidar(low_lidar)
+    accepted = mapping.integrate_rgbd(
+        [[3.0, 0.0, 0.75], [3.0, 0.0, 3.0]],
+        [[255, 0, 0], [0, 255, 0]],
+        1.0,
+        sensor_origin=[0.0, 0.0, 0.0],
+        occlusion_points=low_lidar,
+    )
+    summary = mapping.summary()
+    assert accepted == 1
+    assert summary["rgbd_occluded"] == 1
+    assert summary["rgbd_conflicts"] == 1
+    assert summary["high_height_voxels"] == 1
+    assert summary["low_height_voxels"] == 1
+
+
+def test_batched_voxel_updates_preserve_geometry_and_weighted_color():
+    mapping = SourceAwareVoxelMap(voxel_size_m=1.0)
+    mapping.integrate_lidar([[0.1, 0.1, 0.1], [0.3, 0.1, 0.1]])
+    np.testing.assert_allclose(mapping.arrays("lidar")[0], [[0.2, 0.1, 0.1]])
+    mapping.integrate_rgbd(
+        [[0.2, 0.1, 0.1], [0.25, 0.1, 0.1]],
+        [[100, 20, 0], [200, 40, 0]],
+        0.8,
+    )
+    _, colors = mapping.arrays("rgbd")
+    np.testing.assert_array_equal(colors, [[150, 30, 0]])
+    voxel = next(iter(mapping.voxels.values()))
+    assert voxel.lidar_count == 2
+    assert voxel.rgbd_count == 2
+    assert voxel.color_count == 2
+    assert abs(voxel.color_weight - 1.6) < 1.0e-12
+
+
+def test_bulk_eviction_removes_oldest_without_exceeding_bound():
+    mapping = SourceAwareVoxelMap(voxel_size_m=1.0, maximum_voxels=2)
+    mapping.integrate_lidar([[0.1, 0.0, 0.0]], stamp_s=1.0)
+    mapping.integrate_lidar([[1.1, 0.0, 0.0]], stamp_s=2.0)
+    mapping.integrate_lidar([[2.1, 0.0, 0.0]], stamp_s=3.0)
+    assert len(mapping.voxels) == 2
+    assert (0, 0, 0) not in mapping.voxels
+    assert mapping.summary()["evictions"] == 1
+
+
 class VoxelMapUnittest(unittest.TestCase):
     def test_lidar_geometry(self):
         test_lidar_geometry_is_not_overwritten_by_rgbd()
@@ -104,3 +158,12 @@ class VoxelMapUnittest(unittest.TestCase):
 
     def test_structured_xyzrgb(self):
         test_structured_xyzrgb_packs_expected_pointcloud_values()
+
+    def test_height_aware_occlusion(self):
+        test_lidar_depth_occlusion_rejects_ghost_but_preserves_high_layer()
+
+    def test_batched_geometry_and_color(self):
+        test_batched_voxel_updates_preserve_geometry_and_weighted_color()
+
+    def test_bulk_eviction(self):
+        test_bulk_eviction_removes_oldest_without_exceeding_bound()

@@ -98,6 +98,15 @@ class SharedMappingNode(Node):
             "maximum_depth_m": 12.0,
             "rgbd_pixel_stride": 4,
             "publish_period_s": 2.0,
+            "publish_when_unsubscribed": False,
+            "occlusion_filter_enabled": True,
+            "occlusion_lidar_tolerance_s": 0.12,
+            "occlusion_azimuth_bin_deg": 0.5,
+            "occlusion_elevation_bin_deg": 0.5,
+            "occlusion_neighbor_bins": 0,
+            "occlusion_margin_m": 0.40,
+            "low_height_max_m": 1.5,
+            "high_height_min_m": 2.5,
             "performance_profiling_enabled": False,
             "performance_profiling_capacity": 2048,
             "rotation_body_camera": [
@@ -105,7 +114,7 @@ class SharedMappingNode(Node):
                 -1.0, 0.0, 0.0,
                 0.0, -1.0, 0.0,
             ],
-            "translation_body_camera_m": [0.30, 0.0, 0.02],
+            "translation_body_camera_m": [0.20, 0.0, 0.02],
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -117,6 +126,12 @@ class SharedMappingNode(Node):
             self.get_parameter("conflict_distance_m").value,
             self.get_parameter("maximum_voxels").value,
             self.get_parameter("minimum_visual_reliability").value,
+            self.get_parameter("occlusion_azimuth_bin_deg").value,
+            self.get_parameter("occlusion_elevation_bin_deg").value,
+            self.get_parameter("occlusion_neighbor_bins").value,
+            self.get_parameter("occlusion_margin_m").value,
+            self.get_parameter("low_height_max_m").value,
+            self.get_parameter("high_height_min_m").value,
         )
         self.bridge = CvBridge()
         self.rotation_body_camera = np.asarray(
@@ -130,6 +145,12 @@ class SharedMappingNode(Node):
         self.depths = OrderedDict()
         self.camera_info = None
         self.visual_reliability = 0.0
+        self.latest_lidar_points = np.empty((0, 3), dtype=float)
+        self.latest_lidar_stamp_s = None
+        self.latest_lidar_frame = ""
+        self.publish_skipped_unsubscribed = 0
+        self.occlusion_frames = 0
+        self.occlusion_frames_stale = 0
         self.performance_profiling_enabled = bool(
             self.get_parameter("performance_profiling_enabled").value
         )
@@ -278,6 +299,9 @@ class SharedMappingNode(Node):
         source_stamp_s = stamp_seconds(msg.header.stamp)
         self._profile_stop("lidar_decode", decode_started, source_stamp_s)
         if points.size:
+            self.latest_lidar_points = points[:, :3].copy()
+            self.latest_lidar_stamp_s = source_stamp_s
+            self.latest_lidar_frame = str(msg.header.frame_id)
             integrate_started = self._profile_start()
             self.mapping.integrate_lidar(
                 points[:, :3], stamp_seconds(msg.header.stamp))
@@ -319,14 +343,39 @@ class SharedMappingNode(Node):
         source_stamp_s = stamp_seconds(color_msg.header.stamp)
         self._profile_stop("rgbd_prepare", prepare_started, source_stamp_s)
         integrate_started = self._profile_start()
+        sensor_origin = None
+        occlusion_points = None
+        if bool(self.get_parameter("occlusion_filter_enabled").value):
+            lidar_tolerance = float(
+                self.get_parameter("occlusion_lidar_tolerance_s").value)
+            lidar_fresh = (
+                self.latest_lidar_stamp_s is not None and
+                abs(self.latest_lidar_stamp_s - source_stamp_s) <= lidar_tolerance
+            )
+            frame_matches = self.latest_lidar_frame.lstrip("/") == str(
+                self.get_parameter("map_frame").value).lstrip("/")
+            if lidar_fresh and frame_matches and len(self.latest_lidar_points):
+                sensor_origin = (
+                    pose[:3, :3] @ self.translation_body_camera + pose[:3, 3]
+                )
+                occlusion_points = self.latest_lidar_points
+                self.occlusion_frames += 1
+            else:
+                self.occlusion_frames_stale += 1
         self.mapping.integrate_rgbd(
             world, color[rows, columns], self.visual_reliability,
             stamp_seconds(color_msg.header.stamp),
+            sensor_origin=sensor_origin,
+            occlusion_points=occlusion_points,
         )
         self._profile_stop("rgbd_integrate", integrate_started, source_stamp_s)
 
     def _publish(self):
         if not self.enabled:
+            return
+        if (not bool(self.get_parameter("publish_when_unsubscribed").value)
+                and self.publisher.get_subscription_count() == 0):
+            self.publish_skipped_unsubscribed += 1
             return
         publish_started = self._profile_start()
         build_started = self._profile_start()
@@ -355,6 +404,11 @@ class SharedMappingNode(Node):
                 root / f"{source}_map.pcd",
                 *self.mapping.arrays(source))
         summary = self.mapping.summary()
+        summary["runtime"] = {
+            "publish_skipped_unsubscribed": self.publish_skipped_unsubscribed,
+            "occlusion_frames": self.occlusion_frames,
+            "occlusion_frames_stale_or_frame_mismatch": self.occlusion_frames_stale,
+        }
         summary["performance_profile"] = self._profile_summary()
         summary["performance_trace"] = list(self.profile_trace)
         write_summary(root / "metrics.json", summary)

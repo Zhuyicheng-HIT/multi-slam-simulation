@@ -21,5 +21,16 @@ uf_shared_mapping:
     maximum_depth_m: 12.0
     rgbd_pixel_stride: 4
     publish_period_s: 2.0
+    # Skip full-cloud serialization without subscribers; integration/export continue.
+    publish_when_unsubscribed: false
+    # Time-local angular depth filtering separates high and low occlusion rays.
+    occlusion_filter_enabled: true
+    occlusion_lidar_tolerance_s: 0.12
+    occlusion_azimuth_bin_deg: 0.5
+    occlusion_elevation_bin_deg: 0.5
+    occlusion_neighbor_bins: 0
+    occlusion_margin_m: 0.40
+    low_height_max_m: 1.50
+    high_height_min_m: 2.50
     rotation_body_camera: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
-    translation_body_camera_m: [0.30, 0.0, 0.02]
+    translation_body_camera_m: [0.20, 0.0, 0.02]

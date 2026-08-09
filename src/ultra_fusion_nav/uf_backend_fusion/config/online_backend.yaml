@@ -56,7 +56,7 @@ unified_backend_fusion:
     # are x-right/y-down/z-forward; body axes are x-forward/y-left/z-up.
     # Hardware deployments must replace these values with measured calibration.
     visual_rotation_body_camera: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
-    visual_translation_body_camera_m: [0.30, 0.0, 0.02]
+    visual_translation_body_camera_m: [0.20, 0.0, 0.02]
     nonlinear_max_iterations: 4
     nonlinear_damping: 1.0e-6
     nonlinear_convergence_threshold: 1.0e-5

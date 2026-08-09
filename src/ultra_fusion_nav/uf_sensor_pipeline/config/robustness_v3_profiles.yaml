@@ -139,13 +139,13 @@ profiles:
       visual_rotation_body_camera: [0.139173, 0.0, 0.990268, -0.990268, 0.0, 0.139173, 0.0, -1.0, 0.0]
   d435_extrinsic_trans_light:
     description: One centimetre D435i translation error.
-    calibration: {visual_translation_body_camera_m: [0.31, 0.0, 0.02]}
+    calibration: {visual_translation_body_camera_m: [0.21, 0.0, 0.02]}
   d435_extrinsic_trans_medium:
     description: Five centimetre D435i translation error.
-    calibration: {visual_translation_body_camera_m: [0.35, 0.0, 0.02]}
+    calibration: {visual_translation_body_camera_m: [0.25, 0.0, 0.02]}
   d435_extrinsic_trans_heavy:
     description: Fifteen centimetre D435i translation error.
-    calibration: {visual_translation_body_camera_m: [0.45, 0.0, 0.02]}
+    calibration: {visual_translation_body_camera_m: [0.35, 0.0, 0.02]}
 
   mid360_extrinsic_rot_light:
     description: One degree MID360 lidar-to-body yaw error.

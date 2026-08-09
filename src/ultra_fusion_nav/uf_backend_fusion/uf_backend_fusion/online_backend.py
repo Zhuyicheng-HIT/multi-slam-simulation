@@ -1632,7 +1632,7 @@ class UnifiedBackendNode(Node):
                 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
         self.declare_parameter(
             "visual_translation_body_camera_m", [
-                0.0, 0.0, 0.0])
+                0.20, 0.0, 0.02])
         self.declare_parameter("publish_path_length", 2000)
         self.declare_parameter("path_publish_period_s", 0.5)
         self.declare_parameter("path_minimum_translation_m", 0.05)
