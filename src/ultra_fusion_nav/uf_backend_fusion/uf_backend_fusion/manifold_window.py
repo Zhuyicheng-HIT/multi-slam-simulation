@@ -4,7 +4,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 import math
 import time
-from typing import Mapping, Sequence
+from typing import Sequence
 
 import numpy as np
 
@@ -23,6 +23,7 @@ from .manifold import (
 )
 from .native_lidar import (
     NativeLidarPoseNormal,
+    point_plane_residual,
     point_plane_residual_jacobian,
     rpy_to_rotation_matrix,
 )
@@ -848,10 +849,14 @@ class ManifoldSlidingWindowBackend:
             return np.r_[translation, rotation] - factor["measurement"]
         raise ValueError(f"factor {name} has no residual form")
 
-    def _factor_normal(self, factor, states):
+    def _factor_normal(self, factor, states, hessian=None, gradient=None):
         dimension = len(states) * STATE_SIZE
-        hessian = np.zeros((dimension, dimension), dtype=float)
-        gradient = np.zeros(dimension, dtype=float)
+        if hessian is None:
+            hessian = np.zeros((dimension, dimension), dtype=float)
+        if gradient is None:
+            gradient = np.zeros(dimension, dtype=float)
+        if hessian.shape != (dimension, dimension) or gradient.shape != (dimension,):
+            raise ValueError("normal-equation accumulator has the wrong dimension")
         if not factor["enabled"]:
             return hessian, gradient, 0.0
         name = factor["name"]
@@ -918,8 +923,6 @@ class ManifoldSlidingWindowBackend:
             residual, pose_jacobian = point_plane_residual_jacobian(
                 factor["measurement"], states[index][:6]
             )
-            jacobian = np.zeros((residual.size, STATE_SIZE))
-            jacobian[:, :6] = pose_jacobian
             standardized = residual / np.sqrt(factor["variance"])
             loss, robust_weight = huber_loss_and_weight(
                 standardized, self.lidar_huber_delta
@@ -930,11 +933,11 @@ class ManifoldSlidingWindowBackend:
                 / factor["variance"]
             )
             start = index * STATE_SIZE
-            block = jacobian.T @ (information[:, None] * jacobian)
-            vector = jacobian.T @ (information * residual)
-            hessian[start:start + STATE_SIZE,
-                    start:start + STATE_SIZE] += block
-            gradient[start:start + STATE_SIZE] += vector
+            pose = slice(start, start + 6)
+            hessian[pose, pose] += (
+                pose_jacobian.T @ (information[:, None] * pose_jacobian)
+            )
+            gradient[pose] += pose_jacobian.T @ (information * residual)
             return (
                 hessian,
                 gradient,
@@ -957,6 +960,71 @@ class ManifoldSlidingWindowBackend:
                 + delta @ local_hessian @ delta
             )
             return hessian, gradient, 0.5 * float(cost)
+
+        if name == "gnss":
+            index = factor["indices"][0]
+            residual = self._residual(factor, states)
+            information = factor["effective_weight"] / factor["variance"]
+            start = index * STATE_SIZE
+            position = slice(start, start + 3)
+            hessian[position, position] += np.diag(information)
+            gradient[position] += information * residual
+            cost = 0.5 * float(np.sum(information * residual ** 2))
+            return hessian, gradient, cost
+
+        if name == "optical_flow":
+            previous, current = factor["indices"]
+            residual = self._residual(factor, states)
+            information = factor["effective_weight"] / factor["variance"]
+            information_matrix = np.diag(information)
+            previous_position = slice(
+                previous * STATE_SIZE, previous * STATE_SIZE + 3
+            )
+            current_position = slice(
+                current * STATE_SIZE, current * STATE_SIZE + 3
+            )
+            weighted_residual = information * residual
+            gradient[previous_position] -= weighted_residual
+            gradient[current_position] += weighted_residual
+            hessian[previous_position, previous_position] += information_matrix
+            hessian[current_position, current_position] += information_matrix
+            hessian[previous_position, current_position] -= information_matrix
+            hessian[current_position, previous_position] -= information_matrix
+            cost = 0.5 * float(np.sum(information * residual ** 2))
+            return hessian, gradient, cost
+
+        if name == "optical_flow_body":
+            previous, current = factor["indices"]
+            residual = self._residual(factor, states)
+            information = factor["effective_weight"] / factor["variance"]
+            information_matrix = np.diag(information)
+            rotation_jacobian = (
+                rpy_to_rotation_matrix(states[previous][ROTATION])
+                @ skew(factor["measurement"])
+            )
+            previous_start = previous * STATE_SIZE
+            current_start = current * STATE_SIZE
+            previous_position = slice(previous_start, previous_start + 3)
+            previous_rotation = slice(previous_start + 3, previous_start + 6)
+            current_position = slice(current_start, current_start + 3)
+            weighted_residual = information * residual
+            weighted_rotation = information[:, None] * rotation_jacobian
+            gradient[previous_position] -= weighted_residual
+            gradient[previous_rotation] += rotation_jacobian.T @ weighted_residual
+            gradient[current_position] += weighted_residual
+            hessian[previous_position, previous_position] += information_matrix
+            hessian[previous_position, previous_rotation] -= weighted_rotation
+            hessian[previous_rotation, previous_position] -= weighted_rotation.T
+            hessian[previous_rotation, previous_rotation] += (
+                rotation_jacobian.T @ weighted_rotation
+            )
+            hessian[previous_position, current_position] -= information_matrix
+            hessian[current_position, previous_position] -= information_matrix
+            hessian[previous_rotation, current_position] += weighted_rotation.T
+            hessian[current_position, previous_rotation] += weighted_rotation
+            hessian[current_position, current_position] += information_matrix
+            cost = 0.5 * float(np.sum(information * residual ** 2))
+            return hessian, gradient, cost
 
         jacobians = {}
         if name == "visual_reprojection":
@@ -999,36 +1067,12 @@ class ManifoldSlidingWindowBackend:
             jacobians[current] = current_jacobian
         else:
             residual = self._residual(factor, states)
-            if name == "gnss":
-                jacobians[factor["indices"][0]] = np.pad(
-                    np.eye(3), ((0, 0), (0, STATE_SIZE - 3))
+            for index in factor["indices"]:
+                jacobians[index] = numerical_state_jacobian(
+                    lambda values: self._residual(factor, values),
+                    states,
+                    index,
                 )
-            elif name == "optical_flow":
-                minus = np.zeros((3, STATE_SIZE))
-                plus = np.zeros((3, STATE_SIZE))
-                minus[:, POSITION] = -np.eye(3)
-                plus[:, POSITION] = np.eye(3)
-                jacobians[factor["indices"][0]] = minus
-                jacobians[factor["indices"][1]] = plus
-            elif name == "optical_flow_body":
-                previous, current = factor["indices"]
-                previous_jacobian = np.zeros((3, STATE_SIZE))
-                current_jacobian = np.zeros((3, STATE_SIZE))
-                rotation = rpy_to_rotation_matrix(states[previous][ROTATION])
-                previous_jacobian[:, POSITION] = -np.eye(3)
-                previous_jacobian[:, ROTATION] = rotation @ skew(
-                    factor["measurement"]
-                )
-                current_jacobian[:, POSITION] = np.eye(3)
-                jacobians[previous] = previous_jacobian
-                jacobians[current] = current_jacobian
-            else:
-                for index in factor["indices"]:
-                    jacobians[index] = numerical_state_jacobian(
-                        lambda values: self._residual(factor, values),
-                        states,
-                        index,
-                    )
         if "information_matrix" in factor:
             information = (
                 factor["effective_weight"] * factor["information_matrix"]
@@ -1067,6 +1111,69 @@ class ManifoldSlidingWindowBackend:
             cost = 0.5 * float(np.sum(information * residual ** 2))
         return hessian, gradient, cost
 
+    def _factor_cost(self, factor, states):
+        if not factor["enabled"]:
+            return 0.0
+        name = factor["name"]
+        if name == "marginal_prior":
+            local = np.concatenate([
+                state_local(reference, states[index])
+                for reference, index in zip(
+                    factor["references"], factor["indices"]
+                )
+            ])
+            return float(
+                0.5 * local @ factor["normal_hessian"] @ local
+                + factor["normal_gradient"] @ local
+            )
+        if name == "lidar_point_plane":
+            index = factor["indices"][0]
+            residual = point_plane_residual(
+                factor["measurement"], states[index][:6]
+            )
+            standardized = residual / np.sqrt(factor["variance"])
+            loss, _ = huber_loss_and_weight(
+                standardized, self.lidar_huber_delta
+            )
+            return factor["effective_weight"] * float(np.sum(loss))
+        if name == "lidar_point_plane_condensed":
+            index = factor["indices"][0]
+            reference = np.zeros(STATE_SIZE)
+            reference[:6] = factor["linearization"]
+            delta = state_local(reference, states[index])[:6]
+            scale = factor["effective_weight"] / factor["measurement_variance"]
+            cost = scale * (
+                factor["residual_squared"]
+                + 2.0 * factor["normal_gradient"] @ delta
+                + delta @ factor["normal_hessian"] @ delta
+            )
+            return 0.5 * float(cost)
+        if name == "visual_reprojection":
+            previous, current = factor["indices"]
+            residual, _, _, valid = visual_reprojection_residual_jacobians(
+                states[previous], states[current], factor["measurement"]
+            )
+            if residual.size == 0:
+                return 0.0
+            variance = factor["variance"].reshape(-1, 2)[valid].reshape(-1)
+            standardized = residual / np.sqrt(variance)
+            loss, _ = huber_loss_and_weight(standardized, 2.5)
+            return factor["effective_weight"] * float(np.sum(loss))
+
+        residual = self._residual(factor, states)
+        if "information_matrix" in factor:
+            information = (
+                factor["effective_weight"] * factor["information_matrix"]
+            )
+            return 0.5 * float(residual @ information @ residual)
+        information = factor["effective_weight"] / factor["variance"]
+        return 0.5 * float(np.sum(information * residual ** 2))
+
+    def _cost(self, factors=None, states=None):
+        states = self._states if states is None else states
+        factors = self._factors if factors is None else factors
+        return sum(self._factor_cost(factor, states) for factor in factors)
+
     def _normal(self, factors=None, states=None):
         normal_started = self._profile_start()
         states = self._states if states is None else states
@@ -1077,15 +1184,13 @@ class ManifoldSlidingWindowBackend:
         cost = 0.0
         for factor in factors:
             factor_started = self._profile_start()
-            factor_hessian, factor_gradient, factor_cost = self._factor_normal(
-                factor, states
+            _, _, factor_cost = self._factor_normal(
+                factor, states, hessian, gradient
             )
             self._profile_stop(
                 f"factor_{factor['name']}", factor_started
             )
             assembly_started = self._profile_start()
-            hessian += factor_hessian
-            gradient += factor_gradient
             cost += factor_cost
             self._profile_stop("graph_assembly", assembly_started)
         self._profile_stop("factor_graph_linearization", normal_started)
@@ -1113,7 +1218,7 @@ class ManifoldSlidingWindowBackend:
             diagonal_scale = np.maximum(np.abs(np.diag(hessian)), 1.0)
             accepted = False
             converged = False
-            for _ in range(self.lm_max_trials):
+            for trial_index in range(self.lm_max_trials):
                 system = hessian + damping * np.diag(diagonal_scale)
                 solve_started = self._profile_start()
                 try:
@@ -1136,8 +1241,20 @@ class ManifoldSlidingWindowBackend:
                     ]
                     candidate.append(state_plus(state, local))
                 self._profile_stop("state_update", update_started)
-                candidate_hessian, candidate_gradient, candidate_cost = self._normal(
-                    states=candidate)
+                candidate_hessian = None
+                candidate_gradient = None
+                if trial_index == 0:
+                    # The first trial normally succeeds, so retain its full
+                    # linearization and avoid a second residual traversal.
+                    (
+                        candidate_hessian,
+                        candidate_gradient,
+                        candidate_cost,
+                    ) = self._normal(states=candidate)
+                else:
+                    # Damping-only retries need the actual objective value but
+                    # no Hessian or Jacobians until the step is accepted.
+                    candidate_cost = self._cost(states=candidate)
                 predicted = float(
                     -gradient @ increment
                     - 0.5 * increment @ hessian @ increment
@@ -1156,6 +1273,10 @@ class ManifoldSlidingWindowBackend:
                         )
                     )
                 ):
+                    if candidate_hessian is None:
+                        candidate_hessian, candidate_gradient, _ = self._normal(
+                            states=candidate
+                        )
                     states = candidate
                     hessian = candidate_hessian
                     gradient = candidate_gradient

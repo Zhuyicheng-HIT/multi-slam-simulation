@@ -33,6 +33,26 @@ def test_low_reliability_does_not_mutate_map():
     assert mapping.summary()["voxel_count"] == 0
 
 
+def test_default_conflict_threshold_protects_lidar_geometry():
+    mapping = SourceAwareVoxelMap()
+    mapping.integrate_lidar([[0.005, 0.005, 0.005]])
+    accepted = mapping.integrate_rgbd(
+        [[0.095, 0.095, 0.095]], [[255, 255, 255]], 1.0
+    )
+    assert accepted == 0
+    assert mapping.summary()["rgbd_conflicts"] == 1
+
+
+def test_voxel_eviction_is_bounded_after_a_large_batch():
+    mapping = SourceAwareVoxelMap(voxel_size_m=0.1, maximum_voxels=3)
+    mapping.integrate_lidar(
+        [[0.05 + index * 0.2, 0.0, 0.0] for index in range(10)],
+        stamp_s=1.0,
+    )
+    assert mapping.summary()["voxel_count"] == 3
+    assert mapping.summary()["evictions"] == 7
+
+
 def test_humble_structured_pointcloud_xyz_is_extracted():
     points = np.zeros(
         2,
@@ -95,6 +115,12 @@ class VoxelMapUnittest(unittest.TestCase):
 
     def test_low_reliability(self):
         test_low_reliability_does_not_mutate_map()
+
+    def test_default_conflict_threshold(self):
+        test_default_conflict_threshold_protects_lidar_geometry()
+
+    def test_bounded_eviction(self):
+        test_voxel_eviction_is_bounded_after_a_large_batch()
 
     def test_structured_pointcloud(self):
         test_humble_structured_pointcloud_xyz_is_extracted()

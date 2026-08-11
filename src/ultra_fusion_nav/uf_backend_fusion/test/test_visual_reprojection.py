@@ -85,6 +85,21 @@ class VisualReprojectionTest(unittest.TestCase):
         self.assertEqual(dimension, 8)
         self.assertLess(rmse, before / np.sqrt(8.0) * 0.1)
 
+    def test_cost_only_path_matches_visual_robust_linearization(self):
+        backend = ManifoldSlidingWindowBackend(max_states=4)
+        first = backend.add_state(self.anchor)
+        wrong = self.current.copy()
+        wrong[1] += 0.08
+        second = backend.add_state(wrong)
+        backend.add_visual_reprojection(first, second, self.tracks)
+        factor = backend._factors[-1]
+
+        _, _, normal_cost = backend._factor_normal(factor, backend._states)
+
+        self.assertAlmostEqual(
+            backend._factor_cost(factor, backend._states), normal_cost, places=12
+        )
+
     def test_invalid_depth_and_covariance_are_rejected(self):
         with self.assertRaises(ValueError):
             VisualTrackBatch([[0.0, 0.0]], [[0.0, 0.0]], [0.0], 1.0)

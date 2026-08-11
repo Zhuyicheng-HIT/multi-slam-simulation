@@ -12,7 +12,7 @@ uf_shared_mapping:
     map_frame: camera_init
     output_directory: shared_map_output
     voxel_size_m: 0.10
-    conflict_distance_m: 0.18
+    conflict_distance_m: 0.08
     maximum_voxels: 500000
     minimum_visual_reliability: 0.35
     pose_tolerance_s: 0.08

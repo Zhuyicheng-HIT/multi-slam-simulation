@@ -1,6 +1,7 @@
 """Bounded source-aware voxel map for LiDAR geometry and RGB-D colour."""
 
 from dataclasses import dataclass
+import heapq
 import json
 from pathlib import Path
 
@@ -18,7 +19,7 @@ class Voxel:
 
 
 class SourceAwareVoxelMap:
-    def __init__(self, voxel_size_m=0.10, conflict_distance_m=0.18,
+    def __init__(self, voxel_size_m=0.10, conflict_distance_m=0.08,
                  maximum_voxels=500000, minimum_visual_reliability=0.35):
         self.voxel_size_m = float(voxel_size_m)
         self.conflict_distance_m = float(conflict_distance_m)
@@ -40,10 +41,15 @@ class SourceAwareVoxelMap:
                 np.int64))
 
     def _evict_if_needed(self):
-        while len(self.voxels) > self.maximum_voxels:
-            key = min(
-                self.voxels,
-                key=lambda item: self.voxels[item].last_stamp_s)
+        overflow = len(self.voxels) - self.maximum_voxels
+        if overflow <= 0:
+            return
+        oldest = heapq.nsmallest(
+            overflow,
+            self.voxels,
+            key=lambda item: self.voxels[item].last_stamp_s,
+        )
+        for key in oldest:
             del self.voxels[key]
             self.metrics["evictions"] += 1
 

@@ -21,7 +21,10 @@ from uf_backend_fusion.manifold import (
     so3_right_jacobian_inverse,
     state_local,
 )
-from uf_backend_fusion.native_lidar import NativeLidarPoseNormal
+from uf_backend_fusion.native_lidar import (
+    NativeLidarPoseNormal,
+    point_plane_residual_jacobian,
+)
 
 
 def stationary_measurement(duration=1.0):
@@ -100,6 +103,7 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertEqual(backend.factor_count, 1)
         np.testing.assert_allclose(backend.state(0), recovered)
         self.assertEqual(backend.factor_summary()[0].name, "prior")
+
     def test_huber_loss_is_symmetric_and_continuous_at_threshold(self):
         residual = np.asarray([0.0, 2.5, -2.5, 10.0, -10.0])
         loss, weight = huber_loss_and_weight(residual, 2.5)
@@ -155,6 +159,163 @@ class ManifoldWindowTest(unittest.TestCase):
         np.testing.assert_array_equal(backend.state(0), np.zeros(15))
         self.assertEqual(backend.last_rejected_steps, 6)
 
+    def test_rejected_lm_trials_evaluate_cost_without_relinearizing(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, max_iterations=1, lm_max_trials=4
+        )
+        index = backend.add_state(np.zeros(15))
+        backend.add_gnss(index, [1.0, 0.0, 0.0], covariance=0.2)
+        normal_calls = 0
+        cost_calls = 0
+
+        def tracked_normal(instance, factors=None, states=None):
+            nonlocal normal_calls
+            normal_calls += 1
+            values = instance._states if states is None else states
+            hessian = np.eye(STATE_SIZE)
+            gradient = np.zeros(STATE_SIZE)
+            gradient[0] = -1.0
+            return hessian, gradient, float(values[0][0] ** 2)
+
+        def rejected_cost(instance, factors=None, states=None):
+            nonlocal cost_calls
+            cost_calls += 1
+            return float("inf")
+
+        backend._normal = MethodType(tracked_normal, backend)
+        backend._cost = MethodType(rejected_cost, backend)
+        backend.optimize()
+
+        self.assertEqual(normal_calls, 2)
+        self.assertEqual(cost_calls, 3)
+        self.assertEqual(backend.last_rejected_steps, 4)
+
+    def test_cost_only_and_shared_normal_accumulation_are_equivalent(self):
+        measurement = stationary_measurement(duration=0.1)
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        first_state = np.zeros(15)
+        second_state = np.zeros(15)
+        second_state[:3] = [0.1, -0.05, 0.02]
+        first = backend.add_state(first_state)
+        second = backend.add_state(second_state)
+        backend.add_prior(first, first_state, covariance=np.ones(15) * 0.1)
+        backend.add_imu_preintegrated(first, second, measurement)
+        backend.add_gnss(second, [0.0, 0.0, 0.0], covariance=0.5)
+        backend.add_optical_flow_body(
+            first, second, [0.0, 0.0, 0.0], covariance=0.2
+        )
+        backend.add_native_lidar_correspondences(
+            second,
+            plane_factor([0, 0, 0], [1, 0, 0], [0, 0, 0]),
+        )
+
+        expected_hessian, expected_gradient, expected_cost = backend._normal()
+        dimension = backend.state_count * STATE_SIZE
+        shared_hessian = np.zeros((dimension, dimension))
+        shared_gradient = np.zeros(dimension)
+        accumulated_cost = 0.0
+        for factor in backend._factors:
+            returned_hessian, returned_gradient, factor_cost = (
+                backend._factor_normal(
+                    factor,
+                    backend._states,
+                    shared_hessian,
+                    shared_gradient,
+                )
+            )
+            self.assertIs(returned_hessian, shared_hessian)
+            self.assertIs(returned_gradient, shared_gradient)
+            accumulated_cost += factor_cost
+
+        np.testing.assert_allclose(shared_hessian, expected_hessian, atol=1.0e-12)
+        np.testing.assert_allclose(shared_gradient, expected_gradient, atol=1.0e-12)
+        self.assertAlmostEqual(accumulated_cost, expected_cost, places=12)
+        self.assertAlmostEqual(backend._cost(), expected_cost, places=12)
+
+    def test_sparse_factor_blocks_match_dense_jacobian_assembly(self):
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        first_state = np.zeros(15)
+        first_state[3:6] = [0.08, -0.05, 0.12]
+        second_state = np.zeros(15)
+        second_state[:6] = [0.2, -0.1, 0.05, 0.1, -0.04, 0.14]
+        first = backend.add_state(first_state)
+        second = backend.add_state(second_state)
+        backend.add_gnss(second, [0.1, -0.2, 0.0], covariance=0.5)
+        backend.add_optical_flow(
+            first, second, [0.05, -0.02, 0.01], covariance=0.2
+        )
+        backend.add_optical_flow_body(
+            first, second, [0.04, -0.03, 0.02], covariance=0.3
+        )
+        backend.add_native_lidar_correspondences(
+            second,
+            plane_factor([0.4, -0.2, 0.1], [1, 0, 0], [0, 0, 0]),
+        )
+        dimension = backend.state_count * STATE_SIZE
+
+        for factor in backend._factors:
+            actual_hessian, actual_gradient, actual_cost = (
+                backend._factor_normal(factor, backend._states)
+            )
+            reference_hessian = np.zeros((dimension, dimension))
+            reference_gradient = np.zeros(dimension)
+            if factor["name"] == "lidar_point_plane":
+                index = factor["indices"][0]
+                residual, pose_jacobian = point_plane_residual_jacobian(
+                    factor["measurement"], backend._states[index][:6]
+                )
+                jacobian = np.zeros((residual.size, STATE_SIZE))
+                jacobian[:, :6] = pose_jacobian
+                _, robust_weight = huber_loss_and_weight(
+                    residual / np.sqrt(factor["variance"]),
+                    backend.lidar_huber_delta,
+                )
+                information = (
+                    factor["effective_weight"]
+                    * robust_weight
+                    / factor["variance"]
+                )
+                jacobians = {index: jacobian}
+            else:
+                residual = backend._residual(factor, backend._states)
+                information = factor["effective_weight"] / factor["variance"]
+                jacobians = {
+                    index: numerical_state_jacobian(
+                        lambda values: backend._residual(factor, values),
+                        backend._states,
+                        index,
+                    )
+                    for index in factor["indices"]
+                }
+            weighted_residual = information * residual
+            for first_index, first_jacobian in jacobians.items():
+                first_block = slice(
+                    first_index * STATE_SIZE,
+                    (first_index + 1) * STATE_SIZE,
+                )
+                reference_gradient[first_block] += (
+                    first_jacobian.T @ weighted_residual
+                )
+                for second_index, second_jacobian in jacobians.items():
+                    second_block = slice(
+                        second_index * STATE_SIZE,
+                        (second_index + 1) * STATE_SIZE,
+                    )
+                    reference_hessian[first_block, second_block] += (
+                        first_jacobian.T
+                        @ (information[:, None] * second_jacobian)
+                    )
+            np.testing.assert_allclose(
+                actual_hessian, reference_hessian, atol=2.0e-7, rtol=2.0e-7
+            )
+            np.testing.assert_allclose(
+                actual_gradient, reference_gradient, atol=2.0e-7, rtol=2.0e-7
+            )
+            self.assertAlmostEqual(
+                actual_cost, backend._factor_cost(factor, backend._states),
+                places=12,
+            )
+
     def test_analytic_imu_jacobians_match_right_local_finite_difference(self):
         samples = [
             ImuSample(
@@ -190,9 +351,11 @@ class ManifoldWindowTest(unittest.TestCase):
         residual, analytic_i, analytic_j = imu_residual_jacobians(
             states, 0, 1, measurement, np.asarray([0.0, 0.0, -9.81])
         )
-        residual_function = lambda values: imu_residual(
-            values, 0, 1, measurement, np.asarray([0.0, 0.0, -9.81])
-        )
+
+        def residual_function(values):
+            return imu_residual(
+                values, 0, 1, measurement, np.asarray([0.0, 0.0, -9.81])
+            )
         numerical_i = numerical_state_jacobian(residual_function, states, 0)
         numerical_j = numerical_state_jacobian(residual_function, states, 1)
 

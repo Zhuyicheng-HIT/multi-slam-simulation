@@ -212,14 +212,9 @@ def quaternion_xyzw_to_rotation_matrix(values: Sequence[float]) -> np.ndarray:
     return rpy_to_rotation_matrix(quaternion_xyzw_to_rpy(values))
 
 
-def point_plane_residual_jacobian(
+def _point_plane_geometry(
     factor: NativeLidarPoseNormal, pose: Sequence[float],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Relinearize FAST-LIO correspondences at a backend pose.
-
-    The rotation perturbation is right-multiplicative, matching FAST-LIO's
-    point-to-plane Jacobian and the manifold backend's local SO(3) update.
-    """
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     pose = _finite_vector(pose, 6, "LiDAR factor pose")
     if any(
         value is None
@@ -253,10 +248,34 @@ def point_plane_residual_jacobian(
     )
     world_points = body_points @ rotation.T + pose[:3]
     residual = np.sum(normals * (world_points - plane_points), axis=1)
+    if np.any(~np.isfinite(residual)):
+        raise ValueError("point-to-plane residual is non-finite")
+    return residual, normals, body_points, rotation
+
+
+def point_plane_residual(
+    factor: NativeLidarPoseNormal, pose: Sequence[float],
+) -> np.ndarray:
+    """Evaluate FAST-LIO point-to-plane residuals without Jacobians."""
+    residual, _, _, _ = _point_plane_geometry(factor, pose)
+    return residual
+
+
+def point_plane_residual_jacobian(
+    factor: NativeLidarPoseNormal, pose: Sequence[float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Relinearize FAST-LIO correspondences at a backend pose.
+
+    The rotation perturbation is right-multiplicative, matching FAST-LIO's
+    point-to-plane Jacobian and the manifold backend's local SO(3) update.
+    """
+    residual, normals, body_points, rotation = _point_plane_geometry(
+        factor, pose
+    )
     normals_body = normals @ rotation
     rotation_jacobian = np.cross(body_points, normals_body)
     jacobian = np.concatenate((normals, rotation_jacobian), axis=1)
-    if np.any(~np.isfinite(residual)) or np.any(~np.isfinite(jacobian)):
+    if np.any(~np.isfinite(jacobian)):
         raise ValueError("point-to-plane residual linearization is non-finite")
     return residual, jacobian
 
