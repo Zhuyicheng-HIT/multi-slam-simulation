@@ -38,6 +38,12 @@ def generate_launch_description():
             default_value="/fusion/runtime_external_nav",
         ),
         DeclareLaunchArgument("camera_time_offset_s", default_value="0.0"),
+        DeclareLaunchArgument(
+            "camera_time_calibration_enabled", default_value="true"
+        ),
+        DeclareLaunchArgument(
+            "visual_initialization_require_time_lock", default_value="true"
+        ),
         Node(
             package="uf_visual_frontend", executable="rgbd_feature_frontend",
             parameters=[frontend_config, {
@@ -86,6 +92,12 @@ def generate_launch_description():
                     "performance_trace_path"
                 ),
                 "visual_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
+                "visual_time_calibration_enabled": LaunchConfiguration(
+                    "camera_time_calibration_enabled"
+                ),
+                "visual_initialization_require_time_lock": LaunchConfiguration(
+                    "visual_initialization_require_time_lock"
+                ),
                 # Paper mode requires the Stage3 native-factor contract. Keep
                 # this explicit so a stale FAST-LIO overlay cannot silently
                 # fall back to paired /Odometry poses.

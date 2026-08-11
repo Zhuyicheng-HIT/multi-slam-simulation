@@ -298,8 +298,10 @@ class ExactRgbdFeatureFrontend(Node):
         message.image_height = int(color.height)
         message.camera_matrix = [float(value)
                                  for value in camera_matrix.ravel()]
-        fx, fy, cx, cy = camera_matrix[0, 0], camera_matrix[1,
-                                                            1], camera_matrix[0, 2], camera_matrix[1, 2]
+        fx = camera_matrix[0, 0]
+        fy = camera_matrix[1, 1]
+        cx = camera_matrix[0, 2]
+        cy = camera_matrix[1, 2]
         mean_reprojection = []
         occupied_cells = set()
         for index in range(len(result.current_pixels)):
@@ -349,6 +351,16 @@ class ExactRgbdFeatureFrontend(Node):
             float(np.mean(mean_reprojection)) if mean_reprojection else -1.0
         )
         message.pnp_valid = result.rotation is not None
+        if message.pnp_valid:
+            message.pnp_rotation_previous_to_current = [
+                float(value) for value in np.asarray(result.rotation).ravel()
+            ]
+            message.pnp_translation_previous_to_current_m = [
+                float(value) for value in np.asarray(result.translation).ravel()
+            ]
+            message.pnp_inlier_count = int(
+                np.count_nonzero(result.geometric_inlier)
+            )
         self.publisher.publish(message)
         self.counts["published_candidates"] += 1
         now_s = self.get_clock().now().nanoseconds * 1.0e-9

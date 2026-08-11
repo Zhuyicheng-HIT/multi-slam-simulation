@@ -32,6 +32,12 @@ def generate_launch_description():
         DeclareLaunchArgument("database_path", default_value="paper_visual.db"),
         DeclareLaunchArgument("camera_time_offset_s", default_value="0.0"),
         DeclareLaunchArgument(
+            "camera_time_calibration_enabled", default_value="true"
+        ),
+        DeclareLaunchArgument(
+            "visual_initialization_require_time_lock", default_value="true"
+        ),
+        DeclareLaunchArgument(
             "visual_factor_mode", default_value="paper_reprojection"
         ),
         DeclareLaunchArgument("visual_keyframe_profile", default_value="balanced"),
@@ -113,6 +119,12 @@ def generate_launch_description():
                 "performance_trace_path"
             ),
             "camera_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
+            "camera_time_calibration_enabled": LaunchConfiguration(
+                "camera_time_calibration_enabled"
+            ),
+            "visual_initialization_require_time_lock": LaunchConfiguration(
+                "visual_initialization_require_time_lock"
+            ),
         }),
         include("uf_shared_mapping", "shared_mapping.launch.py", {
             "enabled": LaunchConfiguration("shared_mapping_enabled"),

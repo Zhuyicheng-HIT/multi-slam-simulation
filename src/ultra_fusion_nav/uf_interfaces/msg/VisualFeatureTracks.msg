@@ -11,3 +11,6 @@ float32 klt_inlier_ratio
 float32 spatial_distribution
 float32 mean_reprojection_error_px
 bool pnp_valid
+float64[9] pnp_rotation_previous_to_current
+float64[3] pnp_translation_previous_to_current_m
+uint32 pnp_inlier_count

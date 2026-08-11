@@ -34,6 +34,25 @@ unified_backend_fusion:
     # launch overrides this with paper_reprojection.
     visual_factor_mode: disabled
     visual_time_offset_s: 0.0
+    # Camera-to-IMU offset is estimated from RGB-D PnP angular speed and the
+    # FCU gyro. The configured value remains active until a stable estimate is
+    # locked, so four-source operation is unchanged during visual warm-up.
+    visual_time_calibration_enabled: true
+    visual_time_calibration_apply_locked: true
+    visual_time_calibration_window_s: 12.0
+    visual_time_calibration_minimum_pairs: 8
+    visual_time_calibration_range_s: 0.060
+    visual_time_calibration_step_s: 0.002
+    visual_time_calibration_minimum_correlation: 0.65
+    visual_time_calibration_minimum_margin: 0.02
+    visual_time_calibration_lock_count: 3
+    visual_time_calibration_stability_s: 0.006
+    # A visual factor is not admitted until the time offset is locked and
+    # several consecutive cross-modal reprojection checks agree with the
+    # already observable four-source state.
+    visual_initialization_enabled: true
+    visual_initialization_minimum_batches: 3
+    visual_initialization_require_time_lock: true
     visual_state_tolerance_s: 0.065
     # Hold already-arrived camera observations until both real LiDAR/IMU
     # states are present. The original tolerance is unchanged; no future

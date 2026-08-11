@@ -58,6 +58,10 @@ from .visual_reprojection import (
     VisualTrackBatch,
     validate_visual_linearization,
 )
+from .visual_initialization import (
+    OnlineVisualTimeCalibrator,
+    VisualInitializationGate,
+)
 from .live_propagation import (
     live_propagation_admission,
     make_optimization_anchor,
@@ -65,7 +69,6 @@ from .live_propagation import (
     state_covariance_to_odometry_covariances,
 )
 from .scan_prediction import (
-    ScanPrediction,
     build_scan_prediction,
     consume_cached_prediction,
     prediction_reusable,
@@ -1614,6 +1617,27 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("visual_factor_mode", "disabled")
         self.declare_parameter("visual_tracks_topic", "/vision/feature_tracks")
         self.declare_parameter("visual_time_offset_s", 0.0)
+        self.declare_parameter("visual_time_calibration_enabled", True)
+        self.declare_parameter("visual_time_calibration_apply_locked", True)
+        self.declare_parameter("visual_time_calibration_window_s", 12.0)
+        self.declare_parameter("visual_time_calibration_minimum_pairs", 8)
+        self.declare_parameter("visual_time_calibration_range_s", 0.060)
+        self.declare_parameter("visual_time_calibration_step_s", 0.002)
+        self.declare_parameter(
+            "visual_time_calibration_minimum_correlation", 0.65
+        )
+        self.declare_parameter(
+            "visual_time_calibration_minimum_margin", 0.02
+        )
+        self.declare_parameter("visual_time_calibration_lock_count", 3)
+        self.declare_parameter(
+            "visual_time_calibration_stability_s", 0.006
+        )
+        self.declare_parameter("visual_initialization_enabled", True)
+        self.declare_parameter("visual_initialization_minimum_batches", 3)
+        self.declare_parameter(
+            "visual_initialization_require_time_lock", True
+        )
         self.declare_parameter("visual_state_tolerance_s", 0.065)
         self.declare_parameter("visual_pending_enabled", True)
         self.declare_parameter("visual_pending_max_wait_s", 0.60)
@@ -1986,6 +2010,44 @@ class UnifiedBackendNode(Node):
                 "visual_factor_mode must be disabled or paper_reprojection")
         self.visual_time_offset_s = float(
             self.get_parameter("visual_time_offset_s").value)
+        self.visual_time_calibration_enabled = bool(
+            self.get_parameter("visual_time_calibration_enabled").value
+        )
+        self.visual_time_calibration_apply_locked = bool(
+            self.get_parameter("visual_time_calibration_apply_locked").value
+        )
+        self.visual_time_calibrator = OnlineVisualTimeCalibrator(
+            initial_offset_s=self.visual_time_offset_s,
+            window_s=float(self.get_parameter(
+                "visual_time_calibration_window_s").value),
+            minimum_pairs=int(self.get_parameter(
+                "visual_time_calibration_minimum_pairs").value),
+            offset_range_s=float(self.get_parameter(
+                "visual_time_calibration_range_s").value),
+            offset_step_s=float(self.get_parameter(
+                "visual_time_calibration_step_s").value),
+            minimum_correlation=float(self.get_parameter(
+                "visual_time_calibration_minimum_correlation").value),
+            minimum_correlation_margin=float(self.get_parameter(
+                "visual_time_calibration_minimum_margin").value),
+            lock_count=int(self.get_parameter(
+                "visual_time_calibration_lock_count").value),
+            stability_tolerance_s=float(self.get_parameter(
+                "visual_time_calibration_stability_s").value),
+        )
+        self.last_visual_time_calibration = (
+            self.visual_time_calibrator.last_update
+        )
+        self.visual_time_calibration_lock = threading.Lock()
+        self.visual_initialization_enabled = bool(
+            self.get_parameter("visual_initialization_enabled").value
+        )
+        self.visual_initializer = VisualInitializationGate(
+            minimum_batches=int(self.get_parameter(
+                "visual_initialization_minimum_batches").value),
+            require_time_lock=bool(self.get_parameter(
+                "visual_initialization_require_time_lock").value),
+        )
         self.visual_state_tolerance_s = float(
             self.get_parameter("visual_state_tolerance_s").value
         )
@@ -2324,6 +2386,11 @@ class UnifiedBackendNode(Node):
             "visual_quality_rejected_dv": 0,
             "visual_state_consistency_rejected": 0,
             "visual_linearization_invalid": 0,
+            "visual_initialization_waits": 0,
+            "visual_initializations": 0,
+            "visual_time_calibration_updates": 0,
+            "visual_time_calibration_accepted": 0,
+            "visual_time_calibration_rejected": 0,
             "flow_los_diagnostic_samples": 0,
             "flow_los_diagnostic_invalid": 0,
             "flow_lever_arm_compensated": 0,
@@ -2644,6 +2711,39 @@ class UnifiedBackendNode(Node):
             return math.inf
         return now_s - received_s
 
+    def _effective_visual_time_offset_s(self):
+        update = self.last_visual_time_calibration
+        if (
+            self.visual_time_calibration_enabled
+            and self.visual_time_calibration_apply_locked
+            and update.locked
+        ):
+            return float(update.time_offset_s)
+        return float(self.visual_time_offset_s)
+
+    def _update_visual_time_calibration(self, msg, previous, current):
+        if not self.visual_time_calibration_enabled or not bool(msg.pnp_valid):
+            return
+        try:
+            rotation = np.asarray(
+                msg.pnp_rotation_previous_to_current, dtype=float
+            ).reshape(3, 3)
+            with self.visual_time_calibration_lock:
+                update = self.visual_time_calibrator.update(
+                    previous,
+                    current,
+                    rotation,
+                    self._imu_snapshot(),
+                )
+                self.last_visual_time_calibration = update
+            self.counts["visual_time_calibration_updates"] += 1
+            if update.accepted:
+                self.counts["visual_time_calibration_accepted"] += 1
+            else:
+                self.counts["visual_time_calibration_rejected"] += 1
+        except (AttributeError, ValueError, np.linalg.LinAlgError):
+            self.counts["visual_time_calibration_rejected"] += 1
+
     def _visual_tracks(self, msg):
         current = stamp_seconds(msg.header.stamp)
         previous = stamp_seconds(msg.previous_stamp)
@@ -2653,6 +2753,7 @@ class UnifiedBackendNode(Node):
         ):
             self.last_visual_reason = "invalid_track_timestamps"
             return
+        self._update_visual_time_calibration(msg, previous, current)
         key = (
             int(round(previous * 1.0e9)),
             int(round(current * 1.0e9)),
@@ -2726,7 +2827,10 @@ class UnifiedBackendNode(Node):
             "lidar_state_interval_median_s": (
                 float(np.median(lidar_intervals)) if lidar_intervals.size else -1.0
             ),
-            "camera_imu_time_offset_s": self.visual_time_offset_s,
+            "camera_imu_time_offset_s": self._effective_visual_time_offset_s(),
+            "camera_imu_time_offset_locked": (
+                self.last_visual_time_calibration.locked
+            ),
             "pending_queue_size": len(self.pending_visual_candidates),
         }
         if association is not None:
@@ -2852,6 +2956,21 @@ class UnifiedBackendNode(Node):
                     check.reason != "state_innovation_reprojection_rmse"
                 )
                 return False
+            if self.visual_initialization_enabled:
+                was_ready = self.visual_initializer.ready
+                initialization = self.visual_initializer.observe(
+                    geometrically_valid=(check.valid and bool(message.pnp_valid)),
+                    time_locked=(
+                        not self.visual_time_calibration_enabled
+                        or self.last_visual_time_calibration.locked
+                    ),
+                )
+                if initialization.ready and not was_ready:
+                    self.counts["visual_initializations"] += 1
+                if not initialization.ready:
+                    self.last_visual_reason = initialization.reason
+                    self.counts["visual_initialization_waits"] += 1
+                    return False
             self.backend.add_visual_reprojection(
                 previous_index, current_index, tracks, decision=decision,
             )
@@ -2876,8 +2995,12 @@ class UnifiedBackendNode(Node):
         if self.backend_solver_mode != "manifold":
             self.last_visual_reason = "paper_factor_requires_manifold_backend"
             return False
-        corrected_previous = float(previous_stamp) - self.visual_time_offset_s
-        corrected_current = float(current_stamp) - self.visual_time_offset_s
+        visual_time_offset_s = self._effective_visual_time_offset_s()
+        # Convert backend state stamps back to the camera clock before looking
+        # up a legacy queued message.  The forward association below uses the
+        # inverse relation: t_imu = t_camera + td_C.
+        corrected_previous = float(previous_stamp) - visual_time_offset_s
+        corrected_current = float(current_stamp) - visual_time_offset_s
         with self.visual_lock:
             candidates = list(self.visual_tracks)
             while self.visual_tracks and (
@@ -2906,7 +3029,7 @@ class UnifiedBackendNode(Node):
                 stamp_seconds(message.previous_stamp),
                 stamp_seconds(message.header.stamp),
                 (previous_stamp, current_stamp),
-                camera_to_imu_time_offset_s=self.visual_time_offset_s,
+                camera_to_imu_time_offset_s=visual_time_offset_s,
                 tolerance_s=self.visual_state_tolerance_s,
             )
             self.visual_timing_reason_counts["legacy_state_time_mismatch"] += 1
@@ -2932,7 +3055,7 @@ class UnifiedBackendNode(Node):
             stamp_seconds(message.previous_stamp),
             stamp_seconds(message.header.stamp),
             (previous_stamp, current_stamp),
-            camera_to_imu_time_offset_s=self.visual_time_offset_s,
+            camera_to_imu_time_offset_s=visual_time_offset_s,
             tolerance_s=self.visual_state_tolerance_s,
         )
         self._publish_visual_timing(
@@ -2949,21 +3072,21 @@ class UnifiedBackendNode(Node):
         staged = []
         consumed = set()
         latest_state = float(state_stamps[-1]) if state_stamps else -math.inf
-        now_ros = self._now_s()
         now_wall = time.monotonic()
         with self.visual_lock:
             candidates = tuple(self.pending_visual_candidates)
         for candidate in candidates:
             message = candidate.message
+            visual_time_offset_s = self._effective_visual_time_offset_s()
             corrected_current = (
-                stamp_seconds(message.header.stamp) + self.visual_time_offset_s
+                stamp_seconds(message.header.stamp) + visual_time_offset_s
             )
             association_started = time.perf_counter_ns()
             association = associate_visual_states(
                 stamp_seconds(message.previous_stamp),
                 stamp_seconds(message.header.stamp),
                 state_stamps,
-                camera_to_imu_time_offset_s=self.visual_time_offset_s,
+                camera_to_imu_time_offset_s=visual_time_offset_s,
                 tolerance_s=self.visual_state_tolerance_s,
             )
             self._record_phase_timing(
@@ -3345,6 +3468,8 @@ class UnifiedBackendNode(Node):
             self.visual_state_stamps = deque(
                 [result_stamp], maxlen=self.window_size
             )
+            if self.visual_initialization_enabled:
+                self.visual_initializer.reset("relocalization_reset")
 
         stats["native_buffer_discarded"] = self.native_lidar_buffer.clear()
         stats["pending_lio_discarded"] = len(self.pending_lio)
@@ -3410,7 +3535,6 @@ class UnifiedBackendNode(Node):
         now = self._now_s()
         # LIO is the local estimator anchor. A missing/stale diagnostic must
         # not silently remove its pose factor and leave rotation unobservable.
-        score_item = self.scores.get(modality)
         score_fresh = self._score_is_fresh(modality, now)
         if modality == "lidar" and not score_fresh:
             return scheduler_decision(1.0, default_enabled, 1.0)
@@ -4545,7 +4669,9 @@ class UnifiedBackendNode(Node):
             })
         quality_or_distance_invalid = (
             observation["quality"] < self.minimum_flow_quality
-            or not self.minimum_flow_distance_m <= observation["distance_m"] <= self.maximum_flow_distance_m
+            or not self.minimum_flow_distance_m
+            <= observation["distance_m"]
+            <= self.maximum_flow_distance_m
         )
         imu_yaw_samples = sorted([
             (sample.stamp_s, float(sample.angular_velocity[2]))
@@ -6078,6 +6204,16 @@ class UnifiedBackendNode(Node):
             f"visual_rejected_tracks={self.counts['visual_rejected_tracks']};"
             "visual_state_consistency_rejected="
             f"{self.counts['visual_state_consistency_rejected']};"
+            "visual_initialized="
+            f"{int(self.visual_initializer.ready)};"
+            "visual_initialization_batches="
+            f"{self.visual_initializer.consecutive_batches};"
+            "visual_time_offset_s="
+            f"{self._effective_visual_time_offset_s():.9g};"
+            "visual_time_offset_locked="
+            f"{int(self.last_visual_time_calibration.locked)};"
+            "visual_time_calibration_reason="
+            f"{self.last_visual_time_calibration.reason};"
             f"visual_last_reason={self.last_visual_reason};"
             "visual_prefit_rmse_normalized="
             f"{self.last_visual_prefit_rmse_normalized:.9g};"
@@ -6529,6 +6665,31 @@ class UnifiedBackendNode(Node):
             self._key(
                 "visual_prefit_jacobian_rank",
                 self.last_visual_prefit_jacobian_rank,
+            ),
+            self._key("visual_initialized", self.visual_initializer.ready),
+            self._key(
+                "visual_initialization_batches",
+                self.visual_initializer.consecutive_batches,
+            ),
+            self._key(
+                "visual_time_offset_s",
+                f"{self._effective_visual_time_offset_s():.9g}",
+            ),
+            self._key(
+                "visual_time_offset_locked",
+                self.last_visual_time_calibration.locked,
+            ),
+            self._key(
+                "visual_time_calibration_correlation",
+                f"{self.last_visual_time_calibration.correlation:.9g}",
+            ),
+            self._key(
+                "visual_time_calibration_margin",
+                f"{self.last_visual_time_calibration.margin:.9g}",
+            ),
+            self._key(
+                "visual_time_calibration_reason",
+                self.last_visual_time_calibration.reason,
             ),
             self._key("visual_pending_enabled", self.visual_pending_enabled),
             self._key(
