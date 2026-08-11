@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
@@ -58,6 +59,106 @@ def system_cpu_utilization_percent(previous, current):
     if total_delta <= 0 or idle_delta < 0 or idle_delta > total_delta:
         return None
     return 100.0 * (total_delta - idle_delta) / total_delta
+
+
+def read_system_memory_usage(path="/proc/meminfo"):
+    """Return total/used bytes and utilization from MemAvailable."""
+    try:
+        with open(path, "r", encoding="ascii") as stream:
+            fields = {
+                line.split(":", 1)[0]: int(line.split()[1]) * 1024
+                for line in stream
+                if ":" in line and len(line.split()) >= 2
+            }
+    except (OSError, ValueError):
+        return None
+    total = fields.get("MemTotal", 0)
+    available = fields.get("MemAvailable", 0)
+    if total <= 0 or available < 0 or available > total:
+        return None
+    used = total - available
+    return total, used, 100.0 * used / total
+
+
+def read_cpu_frequency_khz(cpu_root="/sys/devices/system/cpu"):
+    values = []
+    for path in Path(cpu_root).glob("cpu[0-9]*/cpufreq/scaling_cur_freq"):
+        try:
+            value = int(path.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    return percentile(values, 0.50) if values else None
+
+
+PROCESS_GROUP_PATTERNS = {
+    "estimator": ("unified_backend_fusion", "uf_backend_fusion"),
+    "visual_frontend": ("uf_visual_frontend", "visual_frontend"),
+    "shared_mapping": ("uf_shared_mapping", "shared_mapping"),
+    "fast_lio": ("fastlio_mapping", "fast_lio"),
+    "gazebo": ("gz sim", "gz-sim-server", "ruby /usr/bin/gz"),
+    "sitl": ("arducopter",),
+    "ros_bridges": ("gz_livox_bridge", "gz_rgbd_latest_bridge"),
+    "rgbd_bridge": ("gz_rgbd_latest_bridge", "d435i_rgbd_bridge"),
+    "lidar_bridge": ("gz_livox_bridge", "mid360_sim_bridge"),
+}
+
+
+def read_process_groups(proc_root="/proc"):
+    """Aggregate CPU ticks, RSS and context switches by stable command role."""
+    groups = {
+        name: {
+            "cpu_ticks": 0,
+            "rss_bytes": 0,
+            "minor_faults": 0,
+            "major_faults": 0,
+            "voluntary_context_switches": 0,
+            "involuntary_context_switches": 0,
+            "pids": 0,
+        }
+        for name in PROCESS_GROUP_PATTERNS
+    }
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    root = Path(proc_root)
+    for entry in root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", errors="replace"
+            ).lower()
+            stat = (entry / "stat").read_text(encoding="ascii").split(") ", 1)[1].split()
+            statm = (entry / "statm").read_text(encoding="ascii").split()
+            status = (entry / "status").read_text(encoding="ascii")
+            cpu_ticks = int(stat[11]) + int(stat[12])
+            minor_faults = int(stat[7])
+            major_faults = int(stat[9])
+            rss_bytes = int(statm[1]) * page_size
+            status_fields = {
+                line.split(":", 1)[0]: int(line.split(":", 1)[1].strip())
+                for line in status.splitlines()
+                if line.startswith((
+                    "voluntary_ctxt_switches:",
+                    "nonvoluntary_ctxt_switches:",
+                ))
+            }
+        except (OSError, ValueError, IndexError):
+            continue
+        for name, patterns in PROCESS_GROUP_PATTERNS.items():
+            if any(pattern in command for pattern in patterns):
+                groups[name]["cpu_ticks"] += cpu_ticks
+                groups[name]["rss_bytes"] += rss_bytes
+                groups[name]["minor_faults"] += minor_faults
+                groups[name]["major_faults"] += major_faults
+                groups[name]["voluntary_context_switches"] += status_fields.get(
+                    "voluntary_ctxt_switches", 0
+                )
+                groups[name]["involuntary_context_switches"] += status_fields.get(
+                    "nonvoluntary_ctxt_switches", 0
+                )
+                groups[name]["pids"] += 1
+    return groups
 
 
 class TopicWindow:
@@ -149,6 +250,7 @@ class SimulationPerformanceMonitor(Node):
         self.declare_parameter(
             "fusion_diagnostic_topic", "/fusion/gps_flow/diagnostics"
         )
+        self.declare_parameter("include_compute_time_series", False)
         self.world_name = str(self.get_parameter("world_name").value)
         self.rtf_topic = str(self.get_parameter("rtf_topic").value)
         self.window_s = float(self.get_parameter("window_s").value)
@@ -164,6 +266,9 @@ class SimulationPerformanceMonitor(Node):
         self.fusion_topic = str(self.get_parameter("fusion_topic").value)
         self.fusion_diagnostic_topic = str(
             self.get_parameter("fusion_diagnostic_topic").value
+        )
+        self.include_compute_time_series = bool(
+            self.get_parameter("include_compute_time_series").value
         )
         self.started_s = time.monotonic()
         self.lock = threading.Lock()
@@ -188,7 +293,24 @@ class SimulationPerformanceMonitor(Node):
         self.sim_step_samples_ms = deque(maxlen=2000)
         self.flow_integration_ms = deque(maxlen=2000)
         self.system_cpu_percent = deque(maxlen=2000)
+        self.system_memory_used_bytes = deque(maxlen=2000)
+        self.system_memory_percent = deque(maxlen=2000)
         self.last_system_cpu_ticks = read_system_cpu_ticks()
+        self.process_samples = {
+            name: {
+                metric: deque(maxlen=2000)
+                for metric in (
+                    "cpu_percent", "rss_bytes", "context_switches_per_s",
+                    "minor_faults_per_s",
+                    "major_faults_per_s", "voluntary_context_switches_per_s",
+                    "involuntary_context_switches_per_s", "pids",
+                )
+            }
+            for name in PROCESS_GROUP_PATTERNS
+        }
+        self.compute_time_series = deque(maxlen=2000)
+        self.last_process_groups = read_process_groups()
+        self.last_process_sample_s = time.monotonic()
         self.node_timings_ms = {}
         self.last_report = {}
 
@@ -329,10 +451,70 @@ class SimulationPerformanceMonitor(Node):
         cpu_percent = system_cpu_utilization_percent(
             self.last_system_cpu_ticks, current_cpu_ticks
         )
+        memory_usage = read_system_memory_usage()
+        process_groups = read_process_groups()
+        process_elapsed_s = max(1.0e-6, now - self.last_process_sample_s)
+        process_deltas = {}
+        clock_ticks = float(os.sysconf("SC_CLK_TCK"))
+        cpu_capacity = max(1, os.cpu_count() or 1)
+        for name, current in process_groups.items():
+            previous = self.last_process_groups.get(name, {})
+            cpu_delta = max(0, current["cpu_ticks"] - int(previous.get("cpu_ticks", 0)))
+            minor_fault_delta = max(
+                0, current["minor_faults"] - int(previous.get("minor_faults", 0))
+            )
+            major_fault_delta = max(
+                0, current["major_faults"] - int(previous.get("major_faults", 0))
+            )
+            voluntary_delta = max(
+                0,
+                current["voluntary_context_switches"]
+                - int(previous.get("voluntary_context_switches", 0)),
+            )
+            involuntary_delta = max(
+                0,
+                current["involuntary_context_switches"]
+                - int(previous.get("involuntary_context_switches", 0)),
+            )
+            process_deltas[name] = {
+                "cpu_percent": 100.0 * cpu_delta / clock_ticks / process_elapsed_s / cpu_capacity,
+                "rss_bytes": current["rss_bytes"],
+                "minor_faults_per_s": minor_fault_delta / process_elapsed_s,
+                "major_faults_per_s": major_fault_delta / process_elapsed_s,
+                "context_switches_per_s": (
+                    voluntary_delta + involuntary_delta
+                ) / process_elapsed_s,
+                "voluntary_context_switches_per_s": (
+                    voluntary_delta / process_elapsed_s
+                ),
+                "involuntary_context_switches_per_s": (
+                    involuntary_delta / process_elapsed_s
+                ),
+                "pids": current["pids"],
+            }
         self.last_system_cpu_ticks = current_cpu_ticks
+        self.last_process_groups = process_groups
+        self.last_process_sample_s = now
         with self.lock:
             if cpu_percent is not None:
                 self.system_cpu_percent.append(cpu_percent)
+            if memory_usage is not None:
+                self.system_memory_used_bytes.append(memory_usage[1])
+                self.system_memory_percent.append(memory_usage[2])
+            for name, values in process_deltas.items():
+                for metric, value in values.items():
+                    self.process_samples[name][metric].append(value)
+            if self.include_compute_time_series:
+                self.compute_time_series.append({
+                    "wall_monotonic_s": now,
+                    "system_cpu_percent": cpu_percent,
+                    "system_memory_used_bytes": (
+                        memory_usage[1] if memory_usage is not None else None
+                    ),
+                    "load_average": list(os.getloadavg()),
+                    "cpu_frequency_khz": read_cpu_frequency_khz(),
+                    "process_groups": process_deltas,
+                })
             topic_report = {
                 name: window.summary(now, self.window_s)
                 for name, window in self.topics.items()
@@ -356,6 +538,53 @@ class SimulationPerformanceMonitor(Node):
             flow_integration = list(self.flow_integration_ms)
             node_timings = dict(self.node_timings_ms)
             system_cpu = list(self.system_cpu_percent)
+            system_memory_bytes = list(self.system_memory_used_bytes)
+            system_memory_percent = list(self.system_memory_percent)
+            process_samples = {
+                name: {metric: list(values) for metric, values in metrics.items()}
+                for name, metrics in self.process_samples.items()
+            }
+            compute_time_series = list(self.compute_time_series)
+        process_report = {}
+        for name, metrics in process_samples.items():
+            process_report[name] = {
+                "cpu_percent_median": percentile(metrics["cpu_percent"], 0.50),
+                "cpu_percent_p95": percentile(metrics["cpu_percent"], 0.95),
+                "rss_gib_median": percentile(metrics["rss_bytes"], 0.50) / (1024.0 ** 3),
+                "rss_gib_p95": percentile(metrics["rss_bytes"], 0.95) / (1024.0 ** 3),
+                "minor_faults_per_s_median": percentile(
+                    metrics["minor_faults_per_s"], 0.50
+                ),
+                "minor_faults_per_s_p95": percentile(
+                    metrics["minor_faults_per_s"], 0.95
+                ),
+                "major_faults_per_s_median": percentile(
+                    metrics["major_faults_per_s"], 0.50
+                ),
+                "major_faults_per_s_p95": percentile(
+                    metrics["major_faults_per_s"], 0.95
+                ),
+                "context_switches_per_s_median": percentile(
+                    metrics["context_switches_per_s"], 0.50
+                ),
+                "context_switches_per_s_p95": percentile(
+                    metrics["context_switches_per_s"], 0.95
+                ),
+                "voluntary_context_switches_per_s_median": percentile(
+                    metrics["voluntary_context_switches_per_s"], 0.50
+                ),
+                "voluntary_context_switches_per_s_p95": percentile(
+                    metrics["voluntary_context_switches_per_s"], 0.95
+                ),
+                "involuntary_context_switches_per_s_median": percentile(
+                    metrics["involuntary_context_switches_per_s"], 0.50
+                ),
+                "involuntary_context_switches_per_s_p95": percentile(
+                    metrics["involuntary_context_switches_per_s"], 0.95
+                ),
+                "pids_max": max(metrics["pids"]) if metrics["pids"] else 0,
+                "samples": len(metrics["cpu_percent"]),
+            }
         wait_bottleneck = max(
             stage_report,
             key=lambda name: stage_report[name]["p95_ms"],
@@ -419,6 +648,27 @@ class SimulationPerformanceMonitor(Node):
                 ),
                 "system_cpu_scope": "whole_wsl_system_total_capacity",
                 "samples": len(system_cpu),
+                "system_memory_used_gib_median": percentile(
+                    system_memory_bytes, 0.50
+                ) / (1024.0 ** 3),
+                "system_memory_used_gib_p95": percentile(
+                    system_memory_bytes, 0.95
+                ) / (1024.0 ** 3),
+                "system_memory_used_gib_max": (
+                    max(system_memory_bytes) / (1024.0 ** 3)
+                    if system_memory_bytes else 0.0
+                ),
+                "system_memory_utilization_percent_median": percentile(
+                    system_memory_percent, 0.50
+                ),
+                "system_memory_utilization_percent_p95": percentile(
+                    system_memory_percent, 0.95
+                ),
+                "system_memory_scope": "whole_wsl_system_memavailable",
+                "system_memory_samples": len(system_memory_percent),
+                "process_groups": process_report,
+                "time_series": compute_time_series,
+                "time_series_enabled": self.include_compute_time_series,
             },
             "simulation": {
                 "world": self.world_name,

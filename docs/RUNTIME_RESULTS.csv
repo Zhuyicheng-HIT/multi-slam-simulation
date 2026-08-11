@@ -1,0 +1,4 @@
+run_id,route,status,last_stage,native_factor,imu,gnss,optical_flow,rgb,depth,camera_info,feature_tracks,vision_score,unified_odom,flight_complete,reason
+paper_visual_20260807_110249,small_rectangle,FAIL,integration_start,true,true,true,true,true,true,false,false,false,false,false,backend extrinsic parameter had 8 instead of 9 rotation values
+paper_visual_20260807_111030,small_rectangle,FAIL,backend_start,true,true,true,true,true,true,true,true,true,false,false,stale FAST-LIO overlay lacked trajectory messages so native type import fell back
+paper_visual_20260807_112819,small_rectangle,PARTIAL,preflight_topics,true,true,true,true,true,true,true,true,true,false,false,native backend started but committed no unified state within 120 seconds

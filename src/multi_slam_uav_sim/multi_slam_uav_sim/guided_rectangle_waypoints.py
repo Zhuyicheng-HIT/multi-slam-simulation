@@ -40,6 +40,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("hold_time", 2.0)
         self.declare_parameter("post_takeoff_hold_time_s", 3.0)
         self.declare_parameter("yaw_rate_deg_s", 12.0)
+        self.declare_parameter("face_rectangle_edges", True)
         self.declare_parameter("setpoint_rate_hz", 10.0)
         self.declare_parameter("preflight_wait_s", 45.0)
         self.declare_parameter("navigation_stable_s", 1.0)
@@ -50,6 +51,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("flow_max_age_s", 1.0)
         self.declare_parameter("command_retry_s", 60.0)
         self.declare_parameter("land_at_end", True)
+        self.declare_parameter("land_disarm_timeout_s", 45.0)
         self.declare_parameter("final_hold_time_s", 0.0)
         # SERIAL1/5762 is reserved for the MTF01P. Use the independent
         # SERIAL2 MAVLink endpoint for direct COMMAND_INT acknowledgements.
@@ -70,6 +72,12 @@ class GuidedRectangleWaypoints(Node):
             0.0, float(self.get_parameter("post_takeoff_hold_time_s").value)
         )
         self.yaw_rate = math.radians(max(1.0, float(self.get_parameter("yaw_rate_deg_s").value)))
+        self.face_rectangle_edges = bool(
+            self.get_parameter("face_rectangle_edges").value
+        )
+        self.land_disarm_timeout_s = float(
+            self.get_parameter("land_disarm_timeout_s").value
+        )
         self.rate_hz = max(1.0, float(self.get_parameter("setpoint_rate_hz").value))
         self.preflight_wait_s = float(self.get_parameter("preflight_wait_s").value)
         self.navigation_stable_s = float(self.get_parameter("navigation_stable_s").value)
@@ -166,7 +174,10 @@ class GuidedRectangleWaypoints(Node):
         self.last_statustext = msg.text
         if "using GPS" in msg.text:
             self.ekf_using_gps = True
-        self.get_logger().info(f"FCU: {msg.text}")
+        self.get_logger().info(
+            f"FCU: {msg.text}; wall_epoch_s={time.time():.6f}; "
+            f"wall_monotonic_s={time.monotonic():.6f}"
+        )
 
     def _mavlink_cb(self, msg):
         try:
@@ -352,6 +363,11 @@ class GuidedRectangleWaypoints(Node):
         """Hook for missions that supervise estimator health while moving."""
 
     def ensure_guided(self, label):
+        if not self.state.armed:
+            raise RuntimeError(
+                f"{label}: FCU disarmed during an active flight segment; "
+                f"mode={self.state.mode}, last_fcu_text={self.last_statustext}"
+            )
         if self.state.mode != "GUIDED":
             raise RuntimeError(
                 f"{label}: FCU left GUIDED mode; current mode={self.state.mode}, "
@@ -689,12 +705,17 @@ class GuidedRectangleWaypoints(Node):
             *start, seconds=self.post_takeoff_hold_time_s, yaw=self.home_yaw,
             label="post-takeoff hold", require_guided=True)
 
+        edge_yaws = (
+            [self.home_yaw, self.home_yaw + math.pi / 2.0,
+             self.home_yaw + math.pi, self.home_yaw + 3.0 * math.pi / 2.0]
+            if self.face_rectangle_edges else [self.home_yaw] * 4
+        )
         points = [
             (self.home_x, self.home_y, z, self.home_yaw),
-            (self.home_x + self.length_x, self.home_y, z, self.home_yaw),
-            (self.home_x + self.length_x, self.home_y + self.length_y, z, self.home_yaw + math.pi / 2.0),
-            (self.home_x, self.home_y + self.length_y, z, self.home_yaw + math.pi),
-            (self.home_x, self.home_y, z, self.home_yaw + 3.0 * math.pi / 2.0),
+            (self.home_x + self.length_x, self.home_y, z, edge_yaws[0]),
+            (self.home_x + self.length_x, self.home_y + self.length_y, z, edge_yaws[1]),
+            (self.home_x, self.home_y + self.length_y, z, edge_yaws[2]),
+            (self.home_x, self.home_y, z, edge_yaws[3]),
         ]
         current = points[0][:3]
         current_yaw = points[0][3]
@@ -722,7 +743,23 @@ class GuidedRectangleWaypoints(Node):
                 land_req.latitude = 0.0
                 land_req.longitude = 0.0
                 land_req.altitude = 0.0
-                self.call(self.land_cli, land_req, "land")
+                response = self.call(self.land_cli, land_req, "land")
+                if not bool(getattr(response, "success", False)):
+                    raise RuntimeError("LAND command was rejected by the FCU")
+                deadline = time.monotonic() + self.land_disarm_timeout_s
+                while rclpy.ok() and time.monotonic() < deadline:
+                    rclpy.spin_once(self, timeout_sec=0.1)
+                    self._log_status("landing descent")
+                    if not self.state.armed:
+                        self.get_logger().info(
+                            "LAND completed and FCU disarm confirmed."
+                        )
+                        break
+                else:
+                    raise RuntimeError(
+                        "LAND was accepted but FCU did not disarm within "
+                        f"{self.land_disarm_timeout_s:.1f}s"
+                    )
         else:
             self._publish_mission_phase("complete_hold")
             self.get_logger().info("Rectangle complete. Holding final setpoint; Ctrl+C to stop.")

@@ -5,6 +5,7 @@ import time
 
 import rclpy
 from nav_msgs.msg import Odometry
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
@@ -109,9 +110,15 @@ def main():
         args.wall_timeout if args.wall_timeout > 0.0
         else max(args.duration * 10.0, args.duration + 60.0)
     )
-    duration_ros_s, duration_wall_s = record_for_ros_duration(
-        node, args.duration, wall_timeout_s
-    )
+    record_started_wall = time.monotonic()
+    try:
+        duration_ros_s, duration_wall_s = record_for_ros_duration(
+            node, args.duration, wall_timeout_s
+        )
+    except (KeyboardInterrupt, ExternalShutdownException):
+        duration_wall_s = time.monotonic() - record_started_wall
+        stamps = [row[0] for row in node.estimate + node.truth]
+        duration_ros_s = max(stamps) - min(stamps) if stamps else 0.0
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     write_tum(output / "estimate.tum", node.estimate)
@@ -122,8 +129,9 @@ def main():
         f"duration_ros_s={duration_ros_s:.3f} duration_wall_s={duration_wall_s:.3f} "
         f"output={output}"
     )
-    node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        node.destroy_node()
+        rclpy.shutdown()
     return 0 if len(node.estimate) >= 10 and len(node.truth) >= 10 else 1
 
 

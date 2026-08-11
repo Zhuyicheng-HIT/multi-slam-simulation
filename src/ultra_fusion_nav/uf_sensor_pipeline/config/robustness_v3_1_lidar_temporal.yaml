@@ -1,0 +1,64 @@
+schema_version: 1
+defaults:
+  seed: 311
+  start_s: 0.0
+  duration_s: 0.0
+
+profiles:
+  a1_coherent_0:
+    description: Coherent frontend-contract LiDAR shift, zero control.
+    faults:
+      - {channel: native_lidar, type: time_offset, magnitude: 0.0, temporal_scope: coherent_frontend_contract}
+  a1_coherent_p0005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.0005, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_n0005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.0005, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_p001:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.001, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_n001:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.001, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_p002:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.002, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_n002:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.002, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_p005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.005, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_n005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.005, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_p010:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.010, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_n010:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.010, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_p020:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.020, temporal_scope: coherent_frontend_contract}]
+  a1_coherent_n020:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.020, temporal_scope: coherent_frontend_contract}]
+
+  a2_mismatch_0:
+    description: Factor-only LiDAR shift, zero control.
+    faults:
+      - {channel: native_lidar, type: time_offset, magnitude: 0.0, temporal_scope: factor_only}
+  a2_mismatch_p0005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.0005, temporal_scope: factor_only}]
+  a2_mismatch_n0005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.0005, temporal_scope: factor_only}]
+  a2_mismatch_p001:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.001, temporal_scope: factor_only}]
+  a2_mismatch_n001:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.001, temporal_scope: factor_only}]
+  a2_mismatch_p002:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.002, temporal_scope: factor_only}]
+  a2_mismatch_n002:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.002, temporal_scope: factor_only}]
+  a2_mismatch_p005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.005, temporal_scope: factor_only}]
+  a2_mismatch_n005:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.005, temporal_scope: factor_only}]
+  a2_mismatch_p010:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.010, temporal_scope: factor_only}]
+  a2_mismatch_n010:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.010, temporal_scope: factor_only}]
+  a2_mismatch_p020:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: 0.020, temporal_scope: factor_only}]
+  a2_mismatch_n020:
+    faults: [{channel: native_lidar, type: time_offset, magnitude: -0.020, temporal_scope: factor_only}]

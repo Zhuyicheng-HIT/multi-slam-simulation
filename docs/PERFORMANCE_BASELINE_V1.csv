@@ -1,0 +1,7 @@
+phase,scenario,run,build_type,solver_median_ms,rtf_median,system_cpu_median_pct,system_ram_median_gib,quality_candidates,window_candidates,solver_accepted,time_window_rejected,ate_rmse_m,rpe_translation_rmse_m,rpe_rotation_rmse_deg,first_unified_odom_s,optimization_errors,rollbacks
+V1,small_rectangle,r21,unspecified,46.522,0.478299,34.273,3.166,56,51,41,5,0.949682,0.034770,0.129132,54,0,0
+V1,small_rectangle,r22,unspecified,51.973,0.419835,34.324,3.204,72,59,48,13,0.404004,0.031045,0.119690,52,0,0
+V1,small_rectangle,r23,unspecified,61.087,0.428570,36.441,3.193,113,107,86,6,0.461433,0.023512,0.123956,56,0,0
+V1,S_curve,r21,unspecified,59.794,0.463920,32.760,3.212,222,,147,19,0.968271,0.057853,0.118455,59,0,0
+V1,S_curve,r22,unspecified,65.151,0.463435,33.828,3.200,253,,160,24,0.687625,0.058985,0.121600,48,0,0
+V1,S_curve,r23,unspecified,57.899,0.458190,33.447,3.205,279,,180,20,0.590215,0.058609,0.113038,53,0,0

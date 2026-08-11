@@ -1,0 +1,29 @@
+uf_rgbd_feature_frontend:
+  ros__parameters:
+    color_topic: /sensors/rgbd/color
+    depth_topic: /sensors/rgbd/depth
+    camera_info_topic: /front/d435i/color/camera_info
+    tracks_topic: /vision/feature_tracks
+    max_features: 240
+    minimum_distance_px: 12.0
+    forward_backward_threshold_px: 1.0
+    pnp_reprojection_threshold_px: 3.0
+    minimum_pnp_points: 8
+    depth_scale: 0.001
+    minimum_depth_m: 0.15
+    maximum_depth_m: 12.0
+    inverse_depth_sigma_ratio: 0.015
+    pixel_sigma_px: 0.8
+    # Cadence changes only how often tracking pairs become candidates. All
+    # quality and backend integrity thresholds remain unchanged across modes.
+    keyframe_profile: balanced
+    keyframe_period_s: 0.20
+    candidate_quality_enabled: true
+    candidate_minimum_tracks: 20
+    candidate_minimum_depth_tracks: 20
+    candidate_minimum_spatial_distribution: 0.08
+    candidate_minimum_parallax_px: 0.15
+    candidate_maximum_reprojection_error_px: 3.0
+    candidate_require_pnp: true
+    diagnostic_topic: /vision/frontend_diagnostics
+    cache_size: 12

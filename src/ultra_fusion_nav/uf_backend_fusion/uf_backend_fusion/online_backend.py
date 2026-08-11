@@ -11,8 +11,13 @@ from bisect import bisect_left, bisect_right
 from collections import Counter, deque
 import copy
 from dataclasses import dataclass, replace
+import gc
+import json
 import math
+import os
+from pathlib import Path as FilePath
 import queue
+import resource
 import threading
 import time
 
@@ -39,6 +44,7 @@ from uf_interfaces.msg import (
     ReliabilityScore,
     RelocalizationResult,
     SchedulerState,
+    VisualFeatureTracks,
 )
 
 from .imu_preintegration import (
@@ -48,6 +54,10 @@ from .imu_preintegration import (
     preintegrate_manifold,
 )
 from .manifold_window import ManifoldSlidingWindowBackend, propagate_state
+from .visual_reprojection import (
+    VisualTrackBatch,
+    validate_visual_linearization,
+)
 from .live_propagation import (
     live_propagation_admission,
     make_optimization_anchor,
@@ -125,9 +135,11 @@ def lidar_calibration_motion_from_message(msg):
     if int(msg.provenance) != RAW_LIDAR_SCAN_TO_SCAN:
         raise ValueError("calibration motion provenance is not raw LiDAR")
     if bool(msg.imu_aided) or bool(msg.backend_aided):
-        raise ValueError("calibration motion must be independent of IMU and backend")
+        raise ValueError(
+            "calibration motion must be independent of IMU and backend")
     if str(msg.rotation_convention) != "R_L_previous_from_L_current":
-        raise ValueError("calibration motion rotation convention is incompatible")
+        raise ValueError(
+            "calibration motion rotation convention is incompatible")
     start_s = stamp_seconds(msg.start_stamp)
     end_s = stamp_seconds(msg.header.stamp)
     if (
@@ -449,6 +461,216 @@ def stamp_seconds(stamp):
     return float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
 
 
+@dataclass(frozen=True)
+class VisualStateAssociation:
+    status: str
+    reason: str
+    previous_index: int
+    current_index: int
+    corrected_previous_stamp_s: float
+    corrected_current_stamp_s: float
+    nearest_previous_stamp_s: float
+    nearest_current_stamp_s: float
+    previous_delta_s: float
+    current_delta_s: float
+    missing_side: str
+
+
+@dataclass(frozen=True)
+class PendingVisualCandidate:
+    candidate_id: int
+    key: tuple[int, int]
+    message: object
+    arrival_ros_s: float
+    arrival_wall_s: float
+
+
+class GarbageCollectionProfiler:
+    """Bounded, opt-in GC timing counters for runtime correlation only."""
+
+    def __init__(self):
+        self.started_ns = {}
+        self.collections = [0, 0, 0]
+        self.duration_ms = [0.0, 0.0, 0.0]
+        self.callback = self._callback
+        gc.callbacks.append(self.callback)
+
+    def _callback(self, phase, info):
+        generation = int(info.get("generation", -1))
+        if generation < 0 or generation >= len(self.collections):
+            return
+        if phase == "start":
+            self.started_ns[generation] = time.perf_counter_ns()
+        elif phase == "stop":
+            started_ns = self.started_ns.pop(generation, None)
+            self.collections[generation] += 1
+            if started_ns is not None:
+                self.duration_ms[generation] += (
+                    time.perf_counter_ns() - started_ns
+                ) * 1.0e-6
+
+    def snapshot(self):
+        return {
+            "collections": tuple(self.collections),
+            "duration_ms": tuple(self.duration_ms),
+            "counts": tuple(gc.get_count()),
+        }
+
+    def close(self):
+        try:
+            gc.callbacks.remove(self.callback)
+        except ValueError:
+            pass
+
+
+def process_resource_snapshot():
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return {
+        "minor_faults": int(usage.ru_minflt),
+        "major_faults": int(usage.ru_majflt),
+        "voluntary_context_switches": int(usage.ru_nvcsw),
+        "involuntary_context_switches": int(usage.ru_nivcsw),
+        "user_cpu_s": float(usage.ru_utime),
+        "system_cpu_s": float(usage.ru_stime),
+    }
+
+
+def process_resource_delta(before, after):
+    return {
+        name: float(after[name]) - float(before[name])
+        for name in before
+    }
+
+
+def current_processor_and_frequency_khz():
+    """Read the current Linux CPU and its frequency outside the timed solve."""
+    processor = -1
+    frequency_khz = None
+    try:
+        fields = FilePath("/proc/self/stat").read_text(
+            encoding="ascii"
+        ).split(") ", 1)[1].split()
+        processor = int(fields[36])
+        frequency_path = FilePath(
+            f"/sys/devices/system/cpu/cpu{processor}/cpufreq/scaling_cur_freq"
+        )
+        frequency_khz = int(frequency_path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError, IndexError):
+        pass
+    return processor, frequency_khz
+
+
+def associate_visual_states(
+    previous_camera_stamp_s,
+    current_camera_stamp_s,
+    state_stamps,
+    *,
+    camera_to_imu_time_offset_s=0.0,
+    tolerance_s=0.065,
+):
+    """Causally bind the two camera observations to active window states.
+
+    ``camera_to_imu_time_offset_s`` follows ``t_imu = t_camera + td_C``.
+    It adjusts the measurement time used for association and never rewrites a
+    ROS message stamp. No interpolation is used: both observations must have a
+    real state inside the unchanged tolerance.
+    """
+    stamps = np.asarray(tuple(state_stamps), dtype=float)
+    previous = float(previous_camera_stamp_s) + float(
+        camera_to_imu_time_offset_s
+    )
+    current = float(current_camera_stamp_s) + float(
+        camera_to_imu_time_offset_s
+    )
+
+    def result(status, reason, *, previous_index=-1, current_index=-1,
+               previous_nearest=math.nan, current_nearest=math.nan,
+               previous_delta=math.inf, current_delta=math.inf,
+               missing_side="none"):
+        return VisualStateAssociation(
+            status, reason, int(previous_index), int(current_index),
+            previous, current, float(previous_nearest), float(current_nearest),
+            float(previous_delta), float(current_delta), str(missing_side),
+        )
+
+    if (
+        stamps.ndim != 1 or stamps.size < 2
+        or np.any(~np.isfinite(stamps))
+        or np.any(np.diff(stamps) <= 0.0)
+        or not math.isfinite(previous) or not math.isfinite(current)
+        or current <= previous or tolerance_s <= 0.0
+    ):
+        return result("reject", "invalid_timestamp_contract")
+    start = float(stamps[0])
+    end = float(stamps[-1])
+    if previous < start - tolerance_s:
+        return result("reject", "outside_active_window", missing_side="left")
+    if current > end + tolerance_s:
+        return result("wait", "waiting_for_right_state", missing_side="right")
+    previous_index = int(np.argmin(np.abs(stamps - previous)))
+    current_index = int(np.argmin(np.abs(stamps - current)))
+    previous_nearest = float(stamps[previous_index])
+    current_nearest = float(stamps[current_index])
+    previous_delta = abs(previous_nearest - previous)
+    current_delta = abs(current_nearest - current)
+    # When the newest observation is close to the right edge, a later state
+    # can still be the nearest causal association. Wait until that possibility
+    # is exhausted instead of rejecting on callback arrival order.
+    if current_delta > tolerance_s and end < current + tolerance_s:
+        return result(
+            "wait", "waiting_for_right_state",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="right",
+        )
+    if previous_delta > tolerance_s:
+        return result(
+            "reject", "state_tolerance_mismatch",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="left_gap",
+        )
+    if current_delta > tolerance_s:
+        return result(
+            "reject", "state_tolerance_mismatch",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="right_gap",
+        )
+    if previous_index >= current_index:
+        return result(
+            "reject", "observations_map_to_same_or_reversed_state",
+            previous_index=previous_index,
+            current_index=current_index,
+            previous_nearest=previous_nearest,
+            current_nearest=current_nearest,
+            previous_delta=previous_delta,
+            current_delta=current_delta,
+            missing_side="between",
+        )
+    return result(
+        "associated", "associated",
+        previous_index=previous_index,
+        current_index=current_index,
+        previous_nearest=previous_nearest,
+        current_nearest=current_nearest,
+        previous_delta=previous_delta,
+        current_delta=current_delta,
+    )
+
+
 def ros_time_from_seconds(stamp_s):
     stamp_s = float(stamp_s)
     if not math.isfinite(stamp_s) or stamp_s < 0.0:
@@ -479,7 +701,11 @@ def native_frame_odometry(header, factor):
     return message
 
 
-def native_trigger_order_status(last_stamp_ns, last_sequence, stamp_ns, sequence):
+def native_trigger_order_status(
+        last_stamp_ns,
+        last_sequence,
+        stamp_ns,
+        sequence):
     """Classify a NativeLidarFactor trigger without mutating backend state."""
     if last_stamp_ns is None or last_sequence is None:
         return "accept", 0
@@ -559,8 +785,12 @@ class LocalEnuProjector:
     def project(self, latitude_deg, longitude_deg, altitude_m):
         x, y, z = geodetic_to_ecef(latitude_deg, longitude_deg, altitude_m)
         dx, dy, dz = x - self.origin[0], y - self.origin[1], z - self.origin[2]
-        sin_latitude, cos_latitude = math.sin(self.latitude), math.cos(self.latitude)
-        sin_longitude, cos_longitude = math.sin(self.longitude), math.cos(self.longitude)
+        sin_latitude, cos_latitude = math.sin(
+            self.latitude), math.cos(
+            self.latitude)
+        sin_longitude, cos_longitude = math.sin(
+            self.longitude), math.cos(
+            self.longitude)
         return (
             -sin_longitude * dx + cos_longitude * dy,
             -sin_latitude * cos_longitude * dx
@@ -660,7 +890,9 @@ def gnss_jump_rejected(current_position, gnss_position, gate_m=20.0):
     measurement = np.asarray(gnss_position, dtype=float)
     if current.shape != (3,) or measurement.shape != (3,):
         raise ValueError("GNSS jump gate expects two 3-vectors")
-    if not np.all(np.isfinite(current)) or not np.all(np.isfinite(measurement)):
+    if not np.all(
+            np.isfinite(current)) or not np.all(
+            np.isfinite(measurement)):
         return True
     return float(np.linalg.norm(current - measurement)) > float(gate_m)
 
@@ -689,7 +921,8 @@ def gnss_temporal_jump_rejected(
         return True
     previous_stamp_s = float(previous_stamp_s)
     current_stamp_s = float(current_stamp_s)
-    if not math.isfinite(previous_stamp_s) or not math.isfinite(current_stamp_s):
+    if not math.isfinite(
+            previous_stamp_s) or not math.isfinite(current_stamp_s):
         return True
     dt_s = current_stamp_s - previous_stamp_s
     if dt_s <= 0.0:
@@ -770,7 +1003,8 @@ def gnss_covariance_diagonal(
 def covariance_update_due(last_stamp_s, current_stamp_s, update_period_s):
     current_stamp_s = float(current_stamp_s)
     update_period_s = float(update_period_s)
-    if not math.isfinite(current_stamp_s) or not math.isfinite(update_period_s):
+    if not math.isfinite(
+            current_stamp_s) or not math.isfinite(update_period_s):
         raise ValueError("covariance update timing must be finite")
     if update_period_s <= 0.0:
         raise ValueError("covariance update period must be positive")
@@ -1023,7 +1257,8 @@ def inflate_manifold_imu_covariance(
     elif values.size == 225:
         values = values.reshape(15, 15)
     if values.shape != (15, 15) or np.any(~np.isfinite(values)):
-        raise ValueError("manifold IMU covariance must be a finite 15x15 matrix")
+        raise ValueError(
+            "manifold IMU covariance must be a finite 15x15 matrix")
     motion_scale = float(motion_scale)
     minimum_bias_variance = float(minimum_bias_variance)
     if (
@@ -1045,7 +1280,8 @@ def inflate_manifold_imu_covariance(
     try:
         np.linalg.cholesky(inflated)
     except np.linalg.LinAlgError as error:
-        raise ValueError("inflated IMU covariance is not positive definite") from error
+        raise ValueError(
+            "inflated IMU covariance is not positive definite") from error
     return inflated
 
 
@@ -1185,7 +1421,11 @@ def _flow_record_is_future(item, current_stamp):
     return math.isfinite(stamp) and stamp > float(current_stamp)
 
 
-def select_flow_records(flow_records, previous_stamp, current_stamp, max_age_s):
+def select_flow_records(
+        flow_records,
+        previous_stamp,
+        current_stamp,
+        max_age_s):
     """Select one flow interval without consuming future samples.
 
     The normal association interval is ``(previous_stamp, current_stamp]``.
@@ -1222,10 +1462,16 @@ def select_flow_records(flow_records, previous_stamp, current_stamp, max_age_s):
             recent.append(item)
 
     if strict:
-        return strict, [item for item in records if _flow_record_is_future(item, current_stamp)], False
+        return strict, [
+            item for item in records if _flow_record_is_future(
+                item, current_stamp)], False
     if recent:
-        return recent, [item for item in records if _flow_record_is_future(item, current_stamp)], True
-    return [], [item for item in records if _flow_record_is_future(item, current_stamp)], False
+        return recent, [
+            item for item in records if _flow_record_is_future(
+                item, current_stamp)], True
+    return [], [
+        item for item in records if _flow_record_is_future(
+            item, current_stamp)], False
 
 
 class UnifiedBackendNode(Node):
@@ -1280,9 +1526,11 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("imu_startup_minimum_samples", 40)
         self.declare_parameter("imu_startup_minimum_span_s", 0.8)
         self.declare_parameter("imu_startup_maximum_mean_gyro_radps", 0.08)
-        self.declare_parameter("imu_startup_maximum_gyro_residual_rms_radps", 0.03)
+        self.declare_parameter(
+            "imu_startup_maximum_gyro_residual_rms_radps", 0.03)
         self.declare_parameter("imu_startup_gravity_tolerance_mps2", 0.60)
-        self.declare_parameter("imu_startup_maximum_accel_residual_rms_mps2", 0.40)
+        self.declare_parameter(
+            "imu_startup_maximum_accel_residual_rms_mps2", 0.40)
         self.declare_parameter("minimum_flow_quality", MIN_FLOW_QUALITY)
         self.declare_parameter("minimum_flow_distance_m", 0.08)
         self.declare_parameter("maximum_flow_distance_m", 12.0)
@@ -1306,12 +1554,14 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("imu_factor_enabled", True)
         self.declare_parameter("preserve_lio_anchor", False)
         self.declare_parameter("lidar_anchor_minimum_effective_weight", 0.10)
-        self.declare_parameter("lidar_anchor_maximum_covariance_inflation", 5.0)
+        self.declare_parameter(
+            "lidar_anchor_maximum_covariance_inflation", 5.0)
         self.declare_parameter("native_lidar_factor_enabled", True)
         self.declare_parameter("input_trigger_mode", "native_factor")
         self.declare_parameter("live_propagation_enabled", True)
         self.declare_parameter("live_propagation_rate_hz", 10.0)
-        self.declare_parameter("live_propagation_lidar_silence_timeout_s", 0.25)
+        self.declare_parameter(
+            "live_propagation_lidar_silence_timeout_s", 0.25)
         self.declare_parameter("live_propagation_minimum_interval_s", 0.08)
         self.declare_parameter("live_propagation_maximum_imu_age_s", 0.20)
         self.declare_parameter("native_lidar_factor_tolerance_s", 0.005)
@@ -1326,6 +1576,9 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("imu_reintegration_gyro_bias_threshold", 0.005)
         self.declare_parameter("marginal_rank_tolerance", 1.0e-9)
         self.declare_parameter("marginal_covariance_update_period_s", 1.0)
+        self.declare_parameter("performance_profiling_enabled", False)
+        self.declare_parameter("performance_profiling_capacity", 4096)
+        self.declare_parameter("performance_trace_path", "")
         self.declare_parameter("online_calibration_enabled", True)
         self.declare_parameter(
             "calibration_motion_topic", "/calibration/lidar_relative_motion"
@@ -1339,11 +1592,15 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("calibration_time_offset_step_s", 0.005)
         self.declare_parameter("calibration_minimum_correlation", 0.70)
         self.declare_parameter("calibration_minimum_correlation_margin", 0.05)
-        self.declare_parameter("calibration_minimum_excitation_eigenvalue", 1.0e-4)
+        self.declare_parameter(
+            "calibration_minimum_excitation_eigenvalue", 1.0e-4)
         self.declare_parameter("calibration_minimum_excitation_ratio", 0.05)
-        self.declare_parameter("calibration_minimum_accumulated_rotation_rad", 0.25)
-        self.declare_parameter("calibration_minimum_rotation_inlier_ratio", 0.70)
-        self.declare_parameter("calibration_maximum_rotation_residual_rad", 0.08)
+        self.declare_parameter(
+            "calibration_minimum_accumulated_rotation_rad", 0.25)
+        self.declare_parameter(
+            "calibration_minimum_rotation_inlier_ratio", 0.70)
+        self.declare_parameter(
+            "calibration_maximum_rotation_residual_rad", 0.08)
         self.declare_parameter("calibration_sharp_turn_rate_radps", 1.5)
         self.declare_parameter("calibration_solve_period_s", 1.0)
         self.declare_parameter("scheduler_timeout_s", 1.0)
@@ -1352,7 +1609,35 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("fixed_gnss_weight", 1.0)
         self.declare_parameter("fixed_imu_weight", 1.0)
         self.declare_parameter("fixed_optical_flow_weight", 1.0)
+        self.declare_parameter("fixed_vision_weight", 1.0)
         self.declare_parameter("fixed_covariance_inflation", 1.0)
+        self.declare_parameter("visual_factor_mode", "disabled")
+        self.declare_parameter("visual_tracks_topic", "/vision/feature_tracks")
+        self.declare_parameter("visual_time_offset_s", 0.0)
+        self.declare_parameter("visual_state_tolerance_s", 0.065)
+        self.declare_parameter("visual_pending_enabled", True)
+        self.declare_parameter("visual_pending_max_wait_s", 0.60)
+        self.declare_parameter("visual_pending_max_wall_wait_s", 3.0)
+        self.declare_parameter("visual_pending_max_queue", 64)
+        self.declare_parameter(
+            "visual_timing_diagnostic_topic", "/fusion/unified/visual_timing"
+        )
+        self.declare_parameter("visual_minimum_tracks", 20)
+        self.declare_parameter("visual_pixel_sigma_normalized", 0.002)
+        self.declare_parameter("visual_inverse_depth_variance_scale", 0.01)
+        self.declare_parameter("visual_state_consistency_enabled", True)
+        self.declare_parameter(
+            "visual_state_innovation_maximum_rmse_px", 6.0
+        )
+        self.declare_parameter(
+            "visual_minimum_projectable_track_ratio", 0.80
+        )
+        self.declare_parameter(
+            "visual_rotation_body_camera", [
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+        self.declare_parameter(
+            "visual_translation_body_camera_m", [
+                0.0, 0.0, 0.0])
         self.declare_parameter("publish_path_length", 2000)
         self.declare_parameter("path_publish_period_s", 0.5)
         self.declare_parameter("path_minimum_translation_m", 0.05)
@@ -1362,12 +1647,17 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("lidar_prediction_gate_enabled", True)
         self.declare_parameter("lidar_prediction_gate_max_position_m", 1.0)
         self.declare_parameter("lidar_prediction_gate_max_yaw_rad", 0.50)
-        self.declare_parameter("optimization_max_translation_correction_m", 1.0)
-        self.declare_parameter("optimization_max_rotation_correction_rad", 0.50)
+        self.declare_parameter(
+            "optimization_max_translation_correction_m", 1.0)
+        self.declare_parameter(
+            "optimization_max_rotation_correction_rad", 0.50)
         self.declare_parameter("optimization_max_velocity_correction_mps", 5.0)
-        self.declare_parameter("optimization_max_accel_bias_correction_mps2", 1.5)
-        self.declare_parameter("optimization_max_gyro_bias_correction_radps", 0.30)
-        self.declare_parameter("optimization_max_information_condition", 1.0e12)
+        self.declare_parameter(
+            "optimization_max_accel_bias_correction_mps2", 1.5)
+        self.declare_parameter(
+            "optimization_max_gyro_bias_correction_radps", 0.30)
+        self.declare_parameter(
+            "optimization_max_information_condition", 1.0e12)
         self.declare_parameter("frontend_state_seed_enabled", False)
         self.declare_parameter(
             "frontend_state_seed_topic", "/fusion/unified/frontend_state_seed"
@@ -1380,7 +1670,8 @@ class UnifiedBackendNode(Node):
             ["NORMAL", "DEGRADED", "RECOVERED"],
         )
         self.declare_parameter("frontend_map_max_position_variance_m2", 4.0)
-        self.declare_parameter("frontend_map_max_orientation_variance_rad2", 0.25)
+        self.declare_parameter(
+            "frontend_map_max_orientation_variance_rad2", 0.25)
         self.declare_parameter("frontend_scan_prediction_enabled", True)
         self.declare_parameter(
             "frontend_scan_request_topic", "/fast_lio/frontend_scan_request"
@@ -1393,6 +1684,17 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("scan_prediction_timestamp_tolerance_s", 0.002)
         self.declare_parameter("scan_prediction_state_tolerance", 1.0e-8)
         self.declare_parameter("scan_prediction_cache_size", 8)
+
+        self.performance_profiling_enabled = bool(
+            self.get_parameter("performance_profiling_enabled").value
+        )
+        self.performance_profiling_capacity = max(
+            64,
+            int(self.get_parameter("performance_profiling_capacity").value),
+        )
+        self.performance_trace_path = str(
+            self.get_parameter("performance_trace_path").value
+        )
 
         self.map_frame = str(self.get_parameter("map_frame").value)
         self.body_frame = str(self.get_parameter("body_frame").value)
@@ -1408,8 +1710,7 @@ class UnifiedBackendNode(Node):
             self.get_parameter("frontend_map_max_position_variance_m2").value
         )
         self.frontend_map_max_orientation_variance_rad2 = float(
-            self.get_parameter("frontend_map_max_orientation_variance_rad2").value
-        )
+            self.get_parameter("frontend_map_max_orientation_variance_rad2").value)
         if (
             not self.frontend_map_pose_topic
             or not self.frontend_map_commit_allowed_health_states
@@ -1418,7 +1719,8 @@ class UnifiedBackendNode(Node):
             or not math.isfinite(self.frontend_map_max_orientation_variance_rad2)
             or self.frontend_map_max_orientation_variance_rad2 <= 0.0
         ):
-            raise ValueError("front-end map commit gate parameters are invalid")
+            raise ValueError(
+                "front-end map commit gate parameters are invalid")
         self.gnss_max_age_s = float(self.get_parameter("gnss_max_age_s").value)
         self.gnss_future_tolerance_s = float(
             self.get_parameter("gnss_future_tolerance_s").value
@@ -1482,8 +1784,10 @@ class UnifiedBackendNode(Node):
             or self.imu_startup_gravity_tolerance_mps2 <= 0.0
             or self.imu_startup_maximum_accel_residual_rms_mps2 <= 0.0
         ):
-            raise ValueError("stationary IMU initialization limits are invalid")
-        self.minimum_flow_quality = int(self.get_parameter("minimum_flow_quality").value)
+            raise ValueError(
+                "stationary IMU initialization limits are invalid")
+        self.minimum_flow_quality = int(
+            self.get_parameter("minimum_flow_quality").value)
         self.minimum_flow_distance_m = float(
             self.get_parameter("minimum_flow_distance_m").value)
         self.maximum_flow_distance_m = float(
@@ -1513,18 +1817,20 @@ class UnifiedBackendNode(Node):
         if len(flow_sensor_offset) != 3 or not all(
             math.isfinite(value) for value in flow_sensor_offset
         ):
-            raise ValueError("flow_sensor_offset_body_m must be a finite 3-vector")
+            raise ValueError(
+                "flow_sensor_offset_body_m must be a finite 3-vector")
         self.flow_sensor_offset_body_m = np.asarray(
             flow_sensor_offset, dtype=float
         )
-        self.imu_factor_enabled = bool(self.get_parameter("imu_factor_enabled").value)
-        self.preserve_lio_anchor = bool(self.get_parameter("preserve_lio_anchor").value)
+        self.imu_factor_enabled = bool(
+            self.get_parameter("imu_factor_enabled").value)
+        self.preserve_lio_anchor = bool(
+            self.get_parameter("preserve_lio_anchor").value)
         self.lidar_anchor_minimum_effective_weight = float(
             self.get_parameter("lidar_anchor_minimum_effective_weight").value
         )
         self.lidar_anchor_maximum_covariance_inflation = float(
-            self.get_parameter("lidar_anchor_maximum_covariance_inflation").value
-        )
+            self.get_parameter("lidar_anchor_maximum_covariance_inflation").value)
         if not 0.0 < self.lidar_anchor_minimum_effective_weight <= 1.0:
             raise ValueError(
                 "lidar_anchor_minimum_effective_weight must be in (0, 1]"
@@ -1536,12 +1842,14 @@ class UnifiedBackendNode(Node):
         native_requested = bool(
             self.get_parameter("native_lidar_factor_enabled").value
         )
-        self.native_lidar_enabled = bool(native_requested and NativeLidarFactor is not None)
+        self.native_lidar_enabled = bool(
+            native_requested and NativeLidarFactor is not None)
         requested_trigger_mode = str(
             self.get_parameter("input_trigger_mode").value
         ).lower()
         if requested_trigger_mode not in {"native_factor", "lio_pair"}:
-            raise ValueError("input_trigger_mode must be native_factor or lio_pair")
+            raise ValueError(
+                "input_trigger_mode must be native_factor or lio_pair")
         self.input_trigger_mode = requested_trigger_mode
         if self.input_trigger_mode == "native_factor" and not self.native_lidar_enabled:
             self.input_trigger_mode = "lio_pair"
@@ -1552,8 +1860,7 @@ class UnifiedBackendNode(Node):
             self.get_parameter("live_propagation_rate_hz").value
         )
         self.live_propagation_lidar_silence_timeout_s = float(
-            self.get_parameter("live_propagation_lidar_silence_timeout_s").value
-        )
+            self.get_parameter("live_propagation_lidar_silence_timeout_s").value)
         self.live_propagation_minimum_interval_s = float(
             self.get_parameter("live_propagation_minimum_interval_s").value
         )
@@ -1603,7 +1910,8 @@ class UnifiedBackendNode(Node):
             or not math.isfinite(self.marginal_covariance_update_period_s)
             or self.marginal_covariance_update_period_s <= 0.0
         ):
-            raise ValueError("IMU reintegration and marginalization limits are invalid")
+            raise ValueError(
+                "IMU reintegration and marginalization limits are invalid")
         self.online_calibration_enabled = bool(
             self.get_parameter("online_calibration_enabled").value
         )
@@ -1663,13 +1971,77 @@ class UnifiedBackendNode(Node):
             raise ValueError("reliability_mode must be dynamic or fixed")
         self.fixed_weights = {
             modality: float(self.get_parameter(f"fixed_{modality}_weight").value)
-            for modality in ("lidar", "gnss", "imu", "optical_flow")
+            for modality in ("lidar", "gnss", "imu", "optical_flow", "vision")
         }
         if any(
             not math.isfinite(weight) or not 0.0 <= weight <= 1.0
             for weight in self.fixed_weights.values()
         ):
             raise ValueError("fixed modality weights must be finite in [0, 1]")
+        self.visual_factor_mode = str(
+            self.get_parameter("visual_factor_mode").value
+        ).lower()
+        if self.visual_factor_mode not in {"disabled", "paper_reprojection"}:
+            raise ValueError(
+                "visual_factor_mode must be disabled or paper_reprojection")
+        self.visual_time_offset_s = float(
+            self.get_parameter("visual_time_offset_s").value)
+        self.visual_state_tolerance_s = float(
+            self.get_parameter("visual_state_tolerance_s").value
+        )
+        self.visual_pending_enabled = bool(
+            self.get_parameter("visual_pending_enabled").value
+        )
+        self.visual_pending_max_wait_s = float(
+            self.get_parameter("visual_pending_max_wait_s").value
+        )
+        self.visual_pending_max_wall_wait_s = float(
+            self.get_parameter("visual_pending_max_wall_wait_s").value
+        )
+        self.visual_pending_max_queue = int(
+            self.get_parameter("visual_pending_max_queue").value
+        )
+        self.visual_minimum_tracks = int(
+            self.get_parameter("visual_minimum_tracks").value)
+        self.visual_pixel_sigma_normalized = float(
+            self.get_parameter("visual_pixel_sigma_normalized").value
+        )
+        self.visual_inverse_depth_variance_scale = float(
+            self.get_parameter("visual_inverse_depth_variance_scale").value
+        )
+        self.visual_state_consistency_enabled = bool(
+            self.get_parameter("visual_state_consistency_enabled").value
+        )
+        self.visual_state_innovation_maximum_rmse_px = float(
+            self.get_parameter(
+                "visual_state_innovation_maximum_rmse_px"
+            ).value
+        )
+        self.visual_minimum_projectable_track_ratio = float(
+            self.get_parameter(
+                "visual_minimum_projectable_track_ratio"
+            ).value
+        )
+        self.visual_rotation_body_camera = np.asarray(self.get_parameter(
+            "visual_rotation_body_camera").value, dtype=float).reshape(3, 3)
+        self.visual_translation_body_camera = np.asarray(
+            self.get_parameter("visual_translation_body_camera_m").value, dtype=float)
+        if (
+            self.visual_state_tolerance_s <= 0.0 or self.visual_minimum_tracks < 4
+            or self.visual_pending_max_wait_s <= 0.0
+            or self.visual_pending_max_wall_wait_s <= 0.0
+            or self.visual_pending_max_queue < 2
+            or self.visual_pixel_sigma_normalized <= 0.0
+            or self.visual_inverse_depth_variance_scale < 0.0
+            or self.visual_state_innovation_maximum_rmse_px <= 0.0
+            or not 0.0 < self.visual_minimum_projectable_track_ratio <= 1.0
+            or self.visual_translation_body_camera.shape != (3,)
+            or not np.allclose(
+                self.visual_rotation_body_camera.T @ self.visual_rotation_body_camera,
+                np.eye(3), atol=1.0e-5,
+            )
+        ):
+            raise ValueError("visual reprojection configuration is invalid")
         self.fixed_covariance_inflation = float(
             self.get_parameter("fixed_covariance_inflation").value)
         if (
@@ -1696,14 +2068,10 @@ class UnifiedBackendNode(Node):
         self.relocalization_enabled = bool(
             self.get_parameter("relocalization_enabled").value
         )
-        self.relocalization_pending_timeout_s = max(
-            0.2,
-            float(self.get_parameter("relocalization_pending_timeout_s").value),
-        )
-        self.relocalization_state_tolerance_s = max(
-            0.01,
-            float(self.get_parameter("relocalization_state_tolerance_s").value),
-        )
+        self.relocalization_pending_timeout_s = max(0.2, float(
+            self.get_parameter("relocalization_pending_timeout_s").value), )
+        self.relocalization_state_tolerance_s = max(0.01, float(
+            self.get_parameter("relocalization_state_tolerance_s").value), )
         self.relocalization_result_max_age_s = max(
             self.relocalization_state_tolerance_s,
             float(self.get_parameter("relocalization_result_max_age_s").value),
@@ -1734,7 +2102,8 @@ class UnifiedBackendNode(Node):
             or self.lidar_prediction_gate_max_yaw_rad <= 0.0
             or not math.isfinite(self.lidar_prediction_gate_max_yaw_rad)
         ):
-            raise ValueError("LiDAR prediction gate limits must be finite and positive")
+            raise ValueError(
+                "LiDAR prediction gate limits must be finite and positive")
         self.optimization_integrity_limits = {
             "maximum_translation_correction_m": float(self.get_parameter(
                 "optimization_max_translation_correction_m").value),
@@ -1756,7 +2125,8 @@ class UnifiedBackendNode(Node):
         ):
             raise ValueError("optimization integrity limits must be positive")
         if self.transactional_update_enabled and self.backend_solver_mode != "manifold":
-            raise ValueError("transactional updates require the manifold backend")
+            raise ValueError(
+                "transactional updates require the manifold backend")
         self.frontend_state_seed_enabled = bool(
             self.get_parameter("frontend_state_seed_enabled").value
         )
@@ -1781,7 +2151,8 @@ class UnifiedBackendNode(Node):
         )
         if self.frontend_scan_prediction_enabled:
             if self.backend_solver_mode != "manifold":
-                raise ValueError("front-end scan prediction requires manifold backend")
+                raise ValueError(
+                    "front-end scan prediction requires manifold backend")
             if not self.native_lidar_enabled or self.input_trigger_mode != "native_factor":
                 raise ValueError(
                     "front-end scan prediction requires native-factor triggering"
@@ -1839,6 +2210,7 @@ class UnifiedBackendNode(Node):
             durability=QoSDurabilityPolicy.VOLATILE,
         )
         window_size = max(2, int(self.get_parameter("window_size").value))
+        self.window_size = window_size
         if self.backend_solver_mode == "manifold":
             self.backend = ManifoldSlidingWindowBackend(
                 max_states=window_size,
@@ -1860,6 +2232,8 @@ class UnifiedBackendNode(Node):
                     self.get_parameter("lm_damping_down").value
                 ),
                 marginal_rank_tolerance=self.marginal_rank_tolerance,
+                profiling_enabled=self.performance_profiling_enabled,
+                profiling_capacity=self.performance_profiling_capacity,
             )
         else:
             self.backend = SlidingWindowBackend(max_states=window_size)
@@ -1887,7 +2261,8 @@ class UnifiedBackendNode(Node):
         self.relocalization_lock = threading.Lock()
         self.pending_relocalization = None
         self.map_from_lio = np.eye(4, dtype=float)
-        self.native_work_queue = queue.Queue(maxsize=self.native_worker_queue_size)
+        self.native_work_queue = queue.Queue(
+            maxsize=self.native_worker_queue_size)
         self.native_worker_stop = threading.Event()
         self.native_worker_thread = None
         self.pending_lio = deque(maxlen=32)
@@ -1910,6 +2285,20 @@ class UnifiedBackendNode(Node):
         self.scheduler_arrival = None
         self.scheduler_health = "UNAVAILABLE"
         self.scores = {}
+        self.visual_lock = threading.Lock()
+        self.visual_tracks = deque(maxlen=64)
+        self.pending_visual_candidates = deque()
+        self.pending_visual_keys = set()
+        self.visual_candidate_sequence = 0
+        self.visual_state_stamps = deque(maxlen=self.window_size)
+        self.visual_timing_reason_counts = Counter()
+        self.last_visual_reason = "disabled"
+        self.last_visual_reprojection_rmse_normalized = -1.0
+        self.last_visual_reprojection_residual_dimension = 0
+        self.last_visual_prefit_rmse_normalized = -1.0
+        self.last_visual_prefit_rmse_px = -1.0
+        self.last_visual_prefit_valid_track_ratio = -1.0
+        self.last_visual_prefit_jacobian_rank = 0
         self.counts = {
             "lio": 0, "published": 0, "lidar_factors": 0,
             "lidar_disabled": 0, "gnss_factors": 0, "gnss_jump_rejected": 0,
@@ -1921,6 +2310,20 @@ class UnifiedBackendNode(Node):
             "flow_clock_mismatch": 0,
             "flow_disabled_quality": 0,
             "flow_disabled_rotation": 0,
+            "visual_received": 0, "visual_factor_attempts": 0,
+            "visual_factors": 0, "visual_rejected_time": 0,
+            "visual_rejected_tracks": 0,
+            "visual_window_associated_candidates": 0,
+            "visual_solver_accepted": 0,
+            "visual_solver_rejected": 0,
+            "visual_pending_enqueued": 0,
+            "visual_pending_waits": 0,
+            "visual_pending_expired": 0,
+            "visual_pending_overflow": 0,
+            "visual_duplicate_candidates": 0,
+            "visual_quality_rejected_dv": 0,
+            "visual_state_consistency_rejected": 0,
+            "visual_linearization_invalid": 0,
             "flow_los_diagnostic_samples": 0,
             "flow_los_diagnostic_invalid": 0,
             "flow_lever_arm_compensated": 0,
@@ -2005,12 +2408,32 @@ class UnifiedBackendNode(Node):
         self.last_path_publish_stamp_s = None
         self.last_callback_ms = 0.0
         self.phase_timing = {
-            name: {"count": 0, "total_ms": 0.0, "max_ms": 0.0, "last_ms": 0.0}
+            name: {
+                "count": 0,
+                "total_ms": 0.0,
+                "max_ms": 0.0,
+                "last_ms": 0.0,
+                "samples": (
+                    deque(maxlen=self.performance_profiling_capacity)
+                    if self.performance_profiling_enabled else None
+                ),
+            }
             for name in (
                 "prepare", "pre_state", "snapshot", "add_state", "lidar_factor",
-                "aux_factors", "optimize", "reintegrate", "post_optimize", "publish",
+                "gnss_factor", "flow_factor", "visual_association",
+                "visual_factor_construction", "imu_factor", "aux_factors",
+                "optimize", "reintegrate", "integrity_check", "commit",
+                "post_optimize", "publish",
             )
         }
+        self.current_cycle_phase = None
+        self.performance_cycle_trace = deque(
+            maxlen=self.performance_profiling_capacity
+        )
+        self.gc_profiler = (
+            GarbageCollectionProfiler()
+            if self.performance_profiling_enabled else None
+        )
         self.last_imu_reason = "unavailable"
         self.last_imu_startup_reason = "not_attempted"
         self.last_imu_startup_sample_count = 0
@@ -2093,7 +2516,13 @@ class UnifiedBackendNode(Node):
         self.path_pub = self.create_publisher(
             Path, str(self.get_parameter("path_topic").value), 10)
         self.diagnostic_pub = self.create_publisher(
-            DiagnosticArray, str(self.get_parameter("diagnostic_topic").value), 10)
+            DiagnosticArray, str(
+                self.get_parameter("diagnostic_topic").value), 10)
+        self.visual_timing_pub = self.create_publisher(
+            DiagnosticArray,
+            str(self.get_parameter("visual_timing_diagnostic_topic").value),
+            100,
+        )
         self.fusion_epoch_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
@@ -2154,6 +2583,12 @@ class UnifiedBackendNode(Node):
         self.create_subscription(
             SchedulerState, str(self.get_parameter("scheduler_topic").value),
             self._scheduler, 20)
+        self.create_subscription(
+            VisualFeatureTracks,
+            str(self.get_parameter("visual_tracks_topic").value),
+            self._visual_tracks,
+            qos_profile_sensor_data,
+        )
         if self.relocalization_enabled:
             self.create_subscription(
                 RelocalizationResult,
@@ -2166,7 +2601,7 @@ class UnifiedBackendNode(Node):
                 self._lidar_calibration_motion,
                 qos_profile_sensor_data,
             )
-        for modality in ("lidar", "gnss", "imu", "optical_flow"):
+        for modality in ("lidar", "gnss", "imu", "optical_flow", "vision"):
             self.create_subscription(
                 ReliabilityScore, f"/reliability/{modality}_score",
                 lambda msg, name=modality: self._score(name, msg),
@@ -2188,8 +2623,7 @@ class UnifiedBackendNode(Node):
         if native_requested and NativeLidarFactor is None:
             self.get_logger().warning(
                 "FAST-LIO NativeLidarFactor is unavailable; using lio_pair trigger mode. "
-                "Source the patched FAST-LIO overlay before launching the backend."
-            )
+                "Source the patched FAST-LIO overlay before launching the backend.")
         self.get_logger().info(
             f"Unified backend active: solver={self.backend_solver_mode}; "
             f"reliability_mode={self.reliability_mode}; native LiDAR + GNSS/flow; "
@@ -2209,6 +2643,383 @@ class UnifiedBackendNode(Node):
         if received_s is None or received_s > now_s:
             return math.inf
         return now_s - received_s
+
+    def _visual_tracks(self, msg):
+        current = stamp_seconds(msg.header.stamp)
+        previous = stamp_seconds(msg.previous_stamp)
+        if (
+            not math.isfinite(current) or not math.isfinite(previous)
+            or previous <= 0.0 or current <= previous
+        ):
+            self.last_visual_reason = "invalid_track_timestamps"
+            return
+        key = (
+            int(round(previous * 1.0e9)),
+            int(round(current * 1.0e9)),
+        )
+        with self.visual_lock:
+            self.visual_candidate_sequence += 1
+            candidate = PendingVisualCandidate(
+                self.visual_candidate_sequence,
+                key,
+                copy.deepcopy(msg),
+                self._now_s(),
+                time.monotonic(),
+            )
+            if self.visual_pending_enabled:
+                if key in self.pending_visual_keys:
+                    self.counts["visual_duplicate_candidates"] += 1
+                    self.last_visual_reason = "duplicate_candidate"
+                    return
+                if len(self.pending_visual_candidates) >= self.visual_pending_max_queue:
+                    dropped = self.pending_visual_candidates.popleft()
+                    self.pending_visual_keys.discard(dropped.key)
+                    self.counts["visual_pending_overflow"] += 1
+                    self.counts["visual_rejected_time"] += 1
+                    self.visual_timing_reason_counts["queue_overflow"] += 1
+                    self._publish_visual_timing(
+                        dropped, "rejected", "queue_overflow", ()
+                    )
+                self.pending_visual_candidates.append(candidate)
+                self.pending_visual_keys.add(key)
+                self.counts["visual_pending_enqueued"] += 1
+            else:
+                self.visual_tracks.append(candidate)
+        self.counts["visual_received"] += 1
+
+    def _publish_visual_timing(
+        self,
+        candidate,
+        outcome,
+        reason,
+        state_stamps,
+        association=None,
+    ):
+        message = candidate.message
+        now_ros_s = self._now_s()
+        now_wall_s = time.monotonic()
+        stamps = tuple(float(value) for value in state_stamps)
+        previous_stamp = stamp_seconds(message.previous_stamp)
+        current_stamp = stamp_seconds(message.header.stamp)
+        lidar_intervals = np.diff(stamps) if len(stamps) >= 2 else np.asarray([])
+        values = {
+            "candidate_id": candidate.candidate_id,
+            "outcome": outcome,
+            "reason": reason,
+            "visual_previous_stamp_s": previous_stamp,
+            "visual_timestamp_s": current_stamp,
+            "arrival_ros_s": candidate.arrival_ros_s,
+            "arrival_wall_s": candidate.arrival_wall_s,
+            "ros_sim_time_s": now_ros_s,
+            "active_window_start_s": stamps[0] if stamps else -1.0,
+            "active_window_end_s": stamps[-1] if stamps else -1.0,
+            "visual_frontend_latency_s": max(
+                0.0, candidate.arrival_ros_s - current_stamp
+            ),
+            "backend_queue_latency_s": max(
+                0.0, now_ros_s - candidate.arrival_ros_s
+            ),
+            "backend_queue_wall_latency_s": max(
+                0.0, now_wall_s - candidate.arrival_wall_s
+            ),
+            "keyframe_interval_s": current_stamp - previous_stamp,
+            "lidar_state_interval_median_s": (
+                float(np.median(lidar_intervals)) if lidar_intervals.size else -1.0
+            ),
+            "camera_imu_time_offset_s": self.visual_time_offset_s,
+            "pending_queue_size": len(self.pending_visual_candidates),
+        }
+        if association is not None:
+            values.update({
+                "corrected_previous_stamp_s": (
+                    association.corrected_previous_stamp_s
+                ),
+                "corrected_visual_timestamp_s": (
+                    association.corrected_current_stamp_s
+                ),
+                "nearest_previous_state_stamp_s": (
+                    association.nearest_previous_stamp_s
+                ),
+                "nearest_state_timestamp_s": (
+                    association.nearest_current_stamp_s
+                ),
+                "delta_previous_state_s": association.previous_delta_s,
+                "delta_to_nearest_state_s": association.current_delta_s,
+                "previous_state_index": association.previous_index,
+                "current_state_index": association.current_index,
+                "missing_side": association.missing_side,
+            })
+        status = DiagnosticStatus()
+        status.name = "visual_time_association"
+        status.hardware_id = "d435i_to_unified_window"
+        status.level = (
+            DiagnosticStatus.OK if outcome in {"associated", "accepted"}
+            else DiagnosticStatus.WARN
+        )
+        status.message = str(reason)
+        status.values = [
+            KeyValue(key=str(name), value=str(value))
+            for name, value in values.items()
+        ]
+        array = DiagnosticArray()
+        array.header.stamp = self.get_clock().now().to_msg()
+        array.status.append(status)
+        self.visual_timing_pub.publish(array)
+
+    @staticmethod
+    def _selected_visual_tracks(message):
+        return [
+            track for track in message.tracks
+            if track.depth_valid and track.klt_inlier and track.geometric_inlier
+            and track.track_age >= 2 and track.inverse_depth > 0.0
+            and math.isfinite(track.inverse_depth)
+            and math.isfinite(track.previous_x) and math.isfinite(track.previous_y)
+            and math.isfinite(track.current_x) and math.isfinite(track.current_y)
+        ]
+
+    def _add_visual_message_factor(
+        self, message, previous_index, current_index
+    ):
+        self.counts["visual_factor_attempts"] += 1
+        if self.visual_factor_mode == "disabled":
+            self.last_visual_reason = "disabled_by_parameter"
+            return False
+        if self.backend_solver_mode != "manifold":
+            self.last_visual_reason = "paper_factor_requires_manifold_backend"
+            return False
+        decision = self._decision("vision", default_enabled=True)
+        if (
+            not bool(decision.get("factor_enabled", False))
+            or float(decision.get("reliability_weight", 0.0)) <= 0.0
+        ):
+            self.last_visual_reason = "vision_frs_gate_disabled"
+            self.counts["visual_quality_rejected_dv"] += 1
+            return False
+        selected = self._selected_visual_tracks(message)
+        if len(selected) < self.visual_minimum_tracks:
+            self.last_visual_reason = f"insufficient_geometric_tracks:{len(selected)}"
+            self.counts["visual_rejected_tracks"] += 1
+            return False
+        anchor = np.asarray([[track.previous_x, track.previous_y]
+                            for track in selected])
+        current = np.asarray([[track.current_x, track.current_y]
+                             for track in selected])
+        inverse_depth = np.asarray([track.inverse_depth for track in selected])
+        depth_variance = np.asarray([
+            max(0.0, float(track.inverse_depth_variance)) for track in selected
+        ])
+        variance = (
+            self.visual_pixel_sigma_normalized ** 2
+            + self.visual_inverse_depth_variance_scale * depth_variance
+        )
+        try:
+            tracks = VisualTrackBatch(
+                anchor, current, inverse_depth, variance,
+                self.visual_rotation_body_camera,
+                self.visual_translation_body_camera,
+            )
+            camera_matrix = np.asarray(
+                message.camera_matrix, dtype=float
+            ).reshape(3, 3)
+            check = validate_visual_linearization(
+                self.backend.state(previous_index),
+                self.backend.state(current_index),
+                tracks,
+                camera_matrix[0, 0],
+                camera_matrix[1, 1],
+                maximum_reprojection_rmse_px=(
+                    self.visual_state_innovation_maximum_rmse_px
+                ),
+                minimum_valid_track_ratio=(
+                    self.visual_minimum_projectable_track_ratio
+                ),
+            )
+            self.last_visual_prefit_rmse_normalized = (
+                check.reprojection_rmse_normalized
+            )
+            self.last_visual_prefit_rmse_px = check.reprojection_rmse_px
+            self.last_visual_prefit_valid_track_ratio = check.valid_track_ratio
+            self.last_visual_prefit_jacobian_rank = check.jacobian_rank
+            if self.visual_state_consistency_enabled and not check.valid:
+                self.last_visual_reason = (
+                    f"visual_linearization:{check.reason}:"
+                    f"rmse_px={check.reprojection_rmse_px:.6f}:"
+                    f"valid_ratio={check.valid_track_ratio:.6f}:"
+                    f"rank={check.jacobian_rank}"
+                )
+                self.counts["visual_state_consistency_rejected"] += 1
+                self.counts["visual_linearization_invalid"] += int(
+                    check.reason != "state_innovation_reprojection_rmse"
+                )
+                return False
+            self.backend.add_visual_reprojection(
+                previous_index, current_index, tracks, decision=decision,
+            )
+        except (ValueError, FloatingPointError) as error:
+            self.last_visual_reason = f"invalid_track_batch:{error}"
+            self.counts["visual_rejected_tracks"] += 1
+            return False
+        self.last_visual_reason = "accepted_paper_reprojection"
+        self.counts["visual_factors"] += 1
+        return True
+
+    def _legacy_visual_factor(
+            self,
+            previous_stamp,
+            current_stamp,
+            previous_index,
+            current_index):
+        self.counts["visual_factor_attempts"] += 1
+        if self.visual_factor_mode == "disabled":
+            self.last_visual_reason = "disabled_by_parameter"
+            return False
+        if self.backend_solver_mode != "manifold":
+            self.last_visual_reason = "paper_factor_requires_manifold_backend"
+            return False
+        corrected_previous = float(previous_stamp) - self.visual_time_offset_s
+        corrected_current = float(current_stamp) - self.visual_time_offset_s
+        with self.visual_lock:
+            candidates = list(self.visual_tracks)
+            while self.visual_tracks and (
+                stamp_seconds(self.visual_tracks[0].message.header.stamp)
+                < corrected_previous - self.visual_state_tolerance_s
+            ):
+                self.visual_tracks.popleft()
+        if not candidates:
+            self.last_visual_reason = "no_feature_tracks"
+            self.counts["visual_rejected_time"] += 1
+            return False
+
+        def timing_error(candidate):
+            message = candidate.message
+            return max(
+                abs(stamp_seconds(message.previous_stamp) - corrected_previous),
+                abs(stamp_seconds(message.header.stamp) - corrected_current),
+            )
+        candidate = min(candidates, key=timing_error)
+        message = candidate.message
+        error_s = timing_error(candidate)
+        if error_s > self.visual_state_tolerance_s:
+            self.last_visual_reason = f"state_time_mismatch:{error_s:.6f}"
+            self.counts["visual_rejected_time"] += 1
+            association = associate_visual_states(
+                stamp_seconds(message.previous_stamp),
+                stamp_seconds(message.header.stamp),
+                (previous_stamp, current_stamp),
+                camera_to_imu_time_offset_s=self.visual_time_offset_s,
+                tolerance_s=self.visual_state_tolerance_s,
+            )
+            self.visual_timing_reason_counts["legacy_state_time_mismatch"] += 1
+            self._publish_visual_timing(
+                candidate,
+                "rejected",
+                self.last_visual_reason,
+                (previous_stamp, current_stamp),
+                association,
+            )
+            return False
+        selected = self._selected_visual_tracks(message)
+        if len(selected) < self.visual_minimum_tracks:
+            self.last_visual_reason = f"insufficient_geometric_tracks:{len(selected)}"
+            self.counts["visual_rejected_tracks"] += 1
+            return False
+        # Avoid double-counting the legacy attempt inside the common helper.
+        self.counts["visual_factor_attempts"] -= 1
+        accepted = self._add_visual_message_factor(
+            message, previous_index, current_index
+        )
+        association = associate_visual_states(
+            stamp_seconds(message.previous_stamp),
+            stamp_seconds(message.header.stamp),
+            (previous_stamp, current_stamp),
+            camera_to_imu_time_offset_s=self.visual_time_offset_s,
+            tolerance_s=self.visual_state_tolerance_s,
+        )
+        self._publish_visual_timing(
+            candidate,
+            "accepted" if accepted else "rejected",
+            self.last_visual_reason,
+            (previous_stamp, current_stamp),
+            association,
+        )
+        return accepted
+
+    def _stage_pending_visual_factors(self, state_stamps):
+        """Add all causally associable observations; return staged candidates."""
+        staged = []
+        consumed = set()
+        latest_state = float(state_stamps[-1]) if state_stamps else -math.inf
+        now_ros = self._now_s()
+        now_wall = time.monotonic()
+        with self.visual_lock:
+            candidates = tuple(self.pending_visual_candidates)
+        for candidate in candidates:
+            message = candidate.message
+            corrected_current = (
+                stamp_seconds(message.header.stamp) + self.visual_time_offset_s
+            )
+            association_started = time.perf_counter_ns()
+            association = associate_visual_states(
+                stamp_seconds(message.previous_stamp),
+                stamp_seconds(message.header.stamp),
+                state_stamps,
+                camera_to_imu_time_offset_s=self.visual_time_offset_s,
+                tolerance_s=self.visual_state_tolerance_s,
+            )
+            self._record_phase_timing(
+                "visual_association", association_started
+            )
+            sim_wait = max(0.0, latest_state - corrected_current)
+            wall_wait = max(0.0, now_wall - candidate.arrival_wall_s)
+            expired = (
+                sim_wait > self.visual_pending_max_wait_s
+                or wall_wait > self.visual_pending_max_wall_wait_s
+            )
+            if association.status == "wait" and not expired:
+                self.counts["visual_pending_waits"] += 1
+                self.last_visual_reason = association.reason
+                continue
+            if association.status != "associated" or expired:
+                reason = (
+                    "pending_wait_expired" if expired else association.reason
+                )
+                consumed.add(candidate.key)
+                self.counts["visual_pending_expired"] += int(expired)
+                self.counts["visual_rejected_time"] += 1
+                self.visual_timing_reason_counts[reason] += 1
+                self.last_visual_reason = reason
+                self._publish_visual_timing(
+                    candidate, "rejected", reason, state_stamps, association
+                )
+                continue
+            consumed.add(candidate.key)
+            self.counts["visual_window_associated_candidates"] += 1
+            construction_started = time.perf_counter_ns()
+            accepted = self._add_visual_message_factor(
+                message,
+                association.previous_index,
+                association.current_index,
+            )
+            self._record_phase_timing(
+                "visual_factor_construction", construction_started
+            )
+            if accepted:
+                staged.append(candidate)
+            self._publish_visual_timing(
+                candidate,
+                "accepted" if accepted else "rejected",
+                self.last_visual_reason,
+                state_stamps,
+                association,
+            )
+        if consumed:
+            with self.visual_lock:
+                self.pending_visual_candidates = deque(
+                    candidate for candidate in self.pending_visual_candidates
+                    if candidate.key not in consumed
+                )
+                self.pending_visual_keys.difference_update(consumed)
+        return staged
 
     def _score(self, modality, msg):
         self.scores[modality] = {
@@ -2274,7 +3085,10 @@ class UnifiedBackendNode(Node):
         return transform
 
     def _relocalization_result(self, msg):
-        if int(msg.state) != int(RelocalizationResult.SUCCESS) or not bool(msg.accepted):
+        if int(
+            msg.state) != int(
+            RelocalizationResult.SUCCESS) or not bool(
+                msg.accepted):
             if int(msg.state) == int(RelocalizationResult.FAILED):
                 self.counts["relocalization_rejections"] += 1
             return
@@ -2301,15 +3115,18 @@ class UnifiedBackendNode(Node):
                 )[3:6]
             ))
             if position_error > 0.05 or rotation_error > 0.05:
-                raise ValueError("relocalization pose and map alignment disagree")
+                raise ValueError(
+                    "relocalization pose and map alignment disagree")
             stamp = stamp_seconds(msg.header.stamp)
             if stamp <= 0.0:
                 raise ValueError("relocalization result timestamp is invalid")
             if self.backend.state_count <= 0 or self.last_lio_stamp is None:
-                raise ValueError("relocalization requires an initialized state")
+                raise ValueError(
+                    "relocalization requires an initialized state")
             result_age_s = float(self.last_lio_stamp) - stamp
             if result_age_s < -self.relocalization_state_tolerance_s:
-                raise ValueError("relocalization result is ahead of backend state")
+                raise ValueError(
+                    "relocalization result is ahead of backend state")
             if result_age_s > self.relocalization_result_max_age_s:
                 raise ValueError("relocalization result is stale")
             with self.relocalization_lock:
@@ -2319,12 +3136,14 @@ class UnifiedBackendNode(Node):
                         == transaction_id
                     ):
                         return
-                    raise ValueError("another relocalization transaction is pending")
+                    raise ValueError(
+                        "another relocalization transaction is pending")
                 self.pending_relocalization = (
                     stamp, alignment, recovered_pose, source_pose,
                     np.asarray(msg.pose.covariance, dtype=float),
                 )
-                self.pending_relocalization_candidate_id = int(msg.candidate_id)
+                self.pending_relocalization_candidate_id = int(
+                    msg.candidate_id)
                 self.pending_relocalization_transaction_id = transaction_id
                 self.pending_relocalization_deadline_s = (
                     self._now_s() + self.relocalization_pending_timeout_s
@@ -2363,16 +3182,20 @@ class UnifiedBackendNode(Node):
             self.pending_relocalization_deadline_s = None
         result_stamp, alignment, _, _, covariance = pending
         if self.backend.state_count <= 0 or self.last_lio_stamp is None:
-            raise ValueError("relocalization commit requires a current backend state")
+            raise ValueError(
+                "relocalization commit requires a current backend state")
         anchor_stamp = float(self.last_lio_stamp)
         current_state = np.asarray(self.backend.state(-1), dtype=float).copy()
         if current_state.shape != (15,) or np.any(~np.isfinite(current_state)):
             raise ValueError("relocalization commit state is invalid")
         previous_alignment = np.asarray(self.map_from_lio, dtype=float)
-        if previous_alignment.shape != (4, 4) or np.any(~np.isfinite(previous_alignment)):
+        if previous_alignment.shape != (
+                4, 4) or np.any(
+                ~np.isfinite(previous_alignment)):
             raise ValueError("current map alignment is invalid")
         epoch_correction = alignment @ np.linalg.inv(previous_alignment)
-        corrected_pose = epoch_correction @ pose_vector_to_matrix(current_state[:6])
+        corrected_pose = epoch_correction @ pose_vector_to_matrix(
+            current_state[:6])
         recovered = current_state.copy()
         recovered[:6] = matrix_to_pose_vector(corrected_pose)
         recovered[6:9] = epoch_correction[:3, :3] @ current_state[6:9]
@@ -2511,6 +3334,18 @@ class UnifiedBackendNode(Node):
             )
             stats["flow_discarded"] = previous_count - len(retained_flow)
 
+        if hasattr(self, "visual_lock"):
+            with self.visual_lock:
+                stats["visual_discarded"] = (
+                    len(self.visual_tracks) + len(self.pending_visual_candidates)
+                )
+                self.visual_tracks.clear()
+                self.pending_visual_candidates.clear()
+                self.pending_visual_keys.clear()
+            self.visual_state_stamps = deque(
+                [result_stamp], maxlen=self.window_size
+            )
+
         stats["native_buffer_discarded"] = self.native_lidar_buffer.clear()
         stats["pending_lio_discarded"] = len(self.pending_lio)
         stats["pending_imu_lio_discarded"] = len(self.pending_imu_lio)
@@ -2579,7 +3414,9 @@ class UnifiedBackendNode(Node):
         score_fresh = self._score_is_fresh(modality, now)
         if modality == "lidar" and not score_fresh:
             return scheduler_decision(1.0, default_enabled, 1.0)
-        if self._age_s(now, self.scheduler_arrival) <= self.scheduler_timeout_s:
+        if self._age_s(
+                now,
+                self.scheduler_arrival) <= self.scheduler_timeout_s:
             item = self.scheduler.get(modality)
             if item is not None:
                 decision = scheduler_decision(item[0], item[1], item[2])
@@ -2641,7 +3478,8 @@ class UnifiedBackendNode(Node):
         ):
             return decision
         decision["factor_enabled"] = True
-        decision["reliability_weight"] = max(0.05, decision["reliability_weight"])
+        decision["reliability_weight"] = max(
+            0.05, decision["reliability_weight"])
         decision["anchor_override"] = True
         decision["covariance_inflation"] = max(
             1.0,
@@ -2909,7 +3747,11 @@ class UnifiedBackendNode(Node):
     def _gnss(self, msg):
         if msg.status.status < NavSatStatus.STATUS_FIX:
             return
-        values = (float(msg.latitude), float(msg.longitude), float(msg.altitude))
+        values = (
+            float(
+                msg.latitude), float(
+                msg.longitude), float(
+                msg.altitude))
         if not all(math.isfinite(value) for value in values):
             return
         if self.projector is None:
@@ -2953,7 +3795,8 @@ class UnifiedBackendNode(Node):
             ):
                 self.counts["gnss_duplicates"] += 1
                 return
-            if self.gnss_buffer and stamp_s < float(self.gnss_buffer[-1]["stamp_s"]):
+            if self.gnss_buffer and stamp_s < float(
+                    self.gnss_buffer[-1]["stamp_s"]):
                 self.counts["gnss_out_of_order"] += 1
             ordered = sorted(
                 [*self.gnss_buffer, observation],
@@ -2970,8 +3813,7 @@ class UnifiedBackendNode(Node):
         samples = ordered_imu_samples(self._imu_snapshot())
         if not self.imu_factor_enabled or len(samples) < 2:
             self.last_imu_reason = (
-                "disabled" if not self.imu_factor_enabled else "insufficient_samples"
-            )
+                "disabled" if not self.imu_factor_enabled else "insufficient_samples")
             return None
         stamps = [sample.stamp_s for sample in samples]
         start = max(0, bisect_left(stamps, previous_stamp) - 1)
@@ -2985,8 +3827,10 @@ class UnifiedBackendNode(Node):
             self._record_imu_invalid(result.reason)
             return None
         map_rotation = rpy_to_rotation_matrix(previous_orientation)
-        delta_position = map_rotation @ np.asarray(result.delta_position, dtype=float)
-        delta_velocity = map_rotation @ np.asarray(result.delta_velocity, dtype=float)
+        delta_position = map_rotation @ np.asarray(
+            result.delta_position, dtype=float)
+        delta_velocity = map_rotation @ np.asarray(
+            result.delta_velocity, dtype=float)
         right_to_rpy = np.linalg.inv(
             right_perturbation_jacobian_rpy(previous_orientation)
         )
@@ -3028,7 +3872,8 @@ class UnifiedBackendNode(Node):
             decision=decision,
         )
         self.counts["imu_factors"] += 1
-        return np.concatenate((nominal_covariance, bias_random_walk_covariance))
+        return np.concatenate(
+            (nominal_covariance, bias_random_walk_covariance))
 
     def _manifold_imu_measurement(
         self, previous_stamp, current_stamp, previous_state,
@@ -3036,8 +3881,7 @@ class UnifiedBackendNode(Node):
         samples = ordered_imu_samples(self._imu_snapshot())
         if not self.imu_factor_enabled or len(samples) < 2:
             self.last_imu_reason = (
-                "disabled" if not self.imu_factor_enabled else "insufficient_samples"
-            )
+                "disabled" if not self.imu_factor_enabled else "insufficient_samples")
             return None
         calibration_offset = effective_time_offset(
             self.last_calibration_update,
@@ -3063,7 +3907,11 @@ class UnifiedBackendNode(Node):
             return None
         return self._finalize_manifold_imu_measurement(result)
 
-    def _add_manifold_imu_factor(self, previous_index, current_index, measurement):
+    def _add_manifold_imu_factor(
+            self,
+            previous_index,
+            current_index,
+            measurement):
         if measurement is None:
             return None
         self.backend.add_imu_preintegrated(
@@ -3082,11 +3930,212 @@ class UnifiedBackendNode(Node):
         timing["total_ms"] += elapsed_ms
         timing["max_ms"] = max(timing["max_ms"], elapsed_ms)
         timing["last_ms"] = elapsed_ms
+        if timing["samples"] is not None:
+            timing["samples"].append(elapsed_ms)
+        if self.current_cycle_phase is not None:
+            self.current_cycle_phase[name] = (
+                self.current_cycle_phase.get(name, 0.0) + elapsed_ms
+            )
         return elapsed_ms
 
     def _phase_mean_ms(self, name):
         timing = self.phase_timing[name]
         return timing["total_ms"] / max(1, timing["count"])
+
+    def _phase_profile_summary(self):
+        if not self.performance_profiling_enabled:
+            return {}
+        summary = {}
+        for name, timing in self.phase_timing.items():
+            if not timing["samples"]:
+                continue
+            values = np.fromiter(timing["samples"], dtype=float)
+            summary[name] = {
+                "count": int(values.size),
+                "p50_ms": float(np.percentile(values, 50)),
+                "p90_ms": float(np.percentile(values, 90)),
+                "p95_ms": float(np.percentile(values, 95)),
+                "max_ms": float(np.max(values)),
+            }
+        return summary
+
+    def _begin_performance_cycle(self, callback_started_ns, stamp_s):
+        if not self.performance_profiling_enabled:
+            return None
+        begin_profile = getattr(self.backend, "begin_profile_cycle", None)
+        if begin_profile is not None:
+            begin_profile()
+        self.current_cycle_phase = {
+            "pre_state": float(self.phase_timing["pre_state"]["last_ms"])
+        }
+        return {
+            "stamp_s": float(stamp_s),
+            "callback_started_ns": int(callback_started_ns),
+            "wall_started_s": time.monotonic(),
+            "resource": process_resource_snapshot(),
+            "gc": self.gc_profiler.snapshot(),
+            "factor_counts": {
+                "lidar": int(self.counts["native_lidar_factors"]),
+                "imu": int(self.counts["imu_factors"]),
+                "gnss": int(self.counts["gnss_factors"]),
+                "flow": int(self.counts["flow_factors"]),
+                "visual": int(self.counts["visual_factors"]),
+            },
+        }
+
+    @staticmethod
+    def _factor_name_counts(records):
+        counts = Counter(record.name for record in records if record.enabled)
+        return {
+            "lidar": int(
+                counts["lidar_point_plane"]
+                + counts["lidar_point_plane_condensed"]
+            ),
+            "imu": int(counts["imu_preintegrated"]),
+            "gnss": int(counts["gnss"]),
+            "flow": int(
+                counts["optical_flow"] + counts["optical_flow_body"]
+            ),
+            "visual": int(counts["visual_reprojection"]),
+            "prior": int(counts["prior"] + counts["marginal_prior"]),
+            "total": int(sum(counts.values())),
+        }
+
+    def _finish_performance_cycle(
+        self, context, staged_visual_candidates, state_committed
+    ):
+        if context is None:
+            return
+        callback_total_ms = (
+            time.perf_counter_ns() - context["callback_started_ns"]
+        ) * 1.0e-6
+        finish_profile = getattr(self.backend, "finish_profile_cycle", None)
+        backend_profile = finish_profile() if finish_profile is not None else {}
+        resource_after = process_resource_snapshot()
+        gc_after = self.gc_profiler.snapshot()
+        processor, frequency_khz = current_processor_and_frequency_khz()
+        try:
+            rss_bytes = int(
+                FilePath("/proc/self/statm").read_text(
+                    encoding="ascii"
+                ).split()[1]
+            ) * int(os.sysconf("SC_PAGE_SIZE"))
+        except (OSError, ValueError, IndexError):
+            rss_bytes = -1
+        active_factor_counts = self._factor_name_counts(
+            self.backend.factor_summary()
+        )
+        factor_counters = {
+            "lidar": int(self.counts["native_lidar_factors"]),
+            "imu": int(self.counts["imu_factors"]),
+            "gnss": int(self.counts["gnss_factors"]),
+            "flow": int(self.counts["flow_factors"]),
+            "visual": int(self.counts["visual_factors"]),
+        }
+        factor_counts = {
+            name: value - context["factor_counts"][name]
+            for name, value in factor_counters.items()
+        }
+        factor_counts["total"] = int(sum(factor_counts.values()))
+        phases = dict(self.current_cycle_phase or {})
+        phases["callback_total"] = float(callback_total_ms)
+        trace = {
+            "schema_version": 2,
+            "stamp_s": context["stamp_s"],
+            "wall_started_s": context["wall_started_s"],
+            "wall_finished_s": time.monotonic(),
+            "phases_ms": phases,
+            "solver_profile_ms": backend_profile,
+            "solver_duration_ms": float(
+                backend_profile.get(
+                    "optimize_total", getattr(self.backend, "last_solve_ms", 0.0)
+                )
+            ),
+            "window_state_count": int(self.backend.state_count),
+            "factor_counts": active_factor_counts,
+            "factor_counts_added": factor_counts,
+            "active_factor_counts": active_factor_counts,
+            "lidar_correspondence_count": int(self.last_native_matches),
+            "visual_candidates_staged": int(len(staged_visual_candidates)),
+            "marginalization_happened": bool(
+                backend_profile.get("marginalization_happened", False)
+            ),
+            "state_committed": bool(state_committed),
+            "last_reason": str(self.last_reason),
+            "resource_delta": process_resource_delta(
+                context["resource"], resource_after
+            ),
+            "rss_bytes": int(rss_bytes),
+            "gc": {
+                "collections": [
+                    int(after) - int(before)
+                    for before, after in zip(
+                        context["gc"]["collections"], gc_after["collections"]
+                    )
+                ],
+                "duration_ms": [
+                    float(after) - float(before)
+                    for before, after in zip(
+                        context["gc"]["duration_ms"], gc_after["duration_ms"]
+                    )
+                ],
+                "allocation_counts_after": list(gc_after["counts"]),
+            },
+            "processor": int(processor),
+            "cpu_frequency_khz": frequency_khz,
+            "load_average": list(os.getloadavg()),
+            "optimization_errors": int(self.counts["optimization_errors"]),
+            "integrity_rejects": int(
+                sum(
+                    count
+                    for reason, count in
+                    self.optimization_integrity_reason_counts.items()
+                    if reason != "ok"
+                )
+            ),
+            "rollbacks": int(self.counts["optimization_rollbacks"]),
+            "integrity": {
+                "reason": self.last_optimization_integrity.reason,
+                "translation_correction_m": float(
+                    self.last_optimization_integrity.translation_correction_m
+                ),
+                "rotation_correction_rad": float(
+                    self.last_optimization_integrity.rotation_correction_rad
+                ),
+                "velocity_correction_mps": float(
+                    self.last_optimization_integrity.velocity_correction_mps
+                ),
+                "accel_bias_correction_mps2": float(
+                    self.last_optimization_integrity.accel_bias_correction_mps2
+                ),
+                "gyro_bias_correction_radps": float(
+                    self.last_optimization_integrity.gyro_bias_correction_radps
+                ),
+            },
+            "scan_prediction": {
+                "cache_hits": int(self.counts["scan_prediction_cache_hits"]),
+                "cache_misses": int(self.counts["scan_prediction_cache_misses"]),
+                "reuse_rejected": int(
+                    self.counts["scan_prediction_reuse_rejected"]
+                ),
+                "last_reason": self.last_scan_prediction_reason,
+                "last_imu_reason": self.last_imu_reason,
+            },
+        }
+        self.performance_cycle_trace.append(trace)
+        self.current_cycle_phase = None
+
+    def _write_performance_trace(self):
+        if not self.performance_trace_path or not self.performance_cycle_trace:
+            return
+        output = FilePath(self.performance_trace_path).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(output.name + ".tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            for record in self.performance_cycle_trace:
+                stream.write(json.dumps(record, sort_keys=True, allow_nan=False))
+                stream.write("\n")
+        os.replace(temporary, output)
 
     def _manifold_imu_bias_changed(self, previous_index, measurement):
         """Check whether the optimized start bias invalidates this delta."""
@@ -3137,7 +4186,11 @@ class UnifiedBackendNode(Node):
         if bool(observation.get("temporal_jump", False)):
             self.counts["gnss_jump_rejected"] += 1
             return
-        self.backend.add_gnss(index, gnss_position, covariance=covariance, decision=decision)
+        self.backend.add_gnss(
+            index,
+            gnss_position,
+            covariance=covariance,
+            decision=decision)
         self.counts["gnss_factors"] += 1
 
     def _flow_los_diagnostic(self, records, previous_state,
@@ -3237,13 +4290,18 @@ class UnifiedBackendNode(Node):
         }
         self.last_flow_los_diagnostic = diagnostic
         self.counts["flow_los_diagnostic_samples"] += 1
-        self.flow_los_residual_no_lever_norms.append(residual_without_lever_norm)
+        self.flow_los_residual_no_lever_norms.append(
+            residual_without_lever_norm)
         self.flow_los_residual_norms.append(residual_norm)
         self.flow_los_lever_arm_norms.append(lever_norm)
         return diagnostic
 
-    def _flow_lever_arm_correction(self, records, previous_stamp, current_stamp,
-                                   previous_state):
+    def _flow_lever_arm_correction(
+            self,
+            records,
+            previous_stamp,
+            current_stamp,
+            previous_state):
         """Estimate sensor-point motion to remove from horizontal flow delta.
 
         Prefer one IMU integration for each optical-flow exposure.  This keeps
@@ -3263,9 +4321,10 @@ class UnifiedBackendNode(Node):
             }
         observation = flow_los_observation(records)
         integration_s = (
-            float(observation["integration_s"])
-            if observation is not None else float(current_stamp - previous_stamp)
-        )
+            float(
+                observation["integration_s"]) if observation is not None else float(
+                current_stamp -
+                previous_stamp))
         if not math.isfinite(integration_s) or integration_s <= 0.0:
             self.counts["flow_lever_arm_unavailable"] += 1
             self.last_flow_lever_arm_displacement = None
@@ -3369,7 +4428,8 @@ class UnifiedBackendNode(Node):
             }
         correction = np.asarray(correction, dtype=float)
         self.counts["flow_lever_arm_compensated"] += 1
-        self.last_flow_lever_arm_displacement = tuple(float(value) for value in correction)
+        self.last_flow_lever_arm_displacement = tuple(
+            float(value) for value in correction)
         self.flow_lever_arm_displacement_norms.append(
             float(np.linalg.norm(correction[:2]))
         )
@@ -3400,7 +4460,8 @@ class UnifiedBackendNode(Node):
         if observation is None:
             self.last_flow_reason = "no_valid_observation"
             return
-        flow_delta_body_sensor = np.asarray(observation["delta_body"], dtype=float)
+        flow_delta_body_sensor = np.asarray(
+            observation["delta_body"], dtype=float)
         lever_correction, lever_evidence = self._flow_lever_arm_correction(
             records, previous_stamp, current_stamp, previous_state,
         )
@@ -3562,7 +4623,8 @@ class UnifiedBackendNode(Node):
             self.last_exception = f"{type(error).__name__}:{error}"
             return
         try:
-            validate_native_frame_contract(factor, self.map_frame, self.body_frame)
+            validate_native_frame_contract(
+                factor, self.map_frame, self.body_frame)
         except ValueError as error:
             self.counts["native_lidar_invalid"] += 1
             self.last_reason = "invalid_native_lidar_frame_contract"
@@ -3883,10 +4945,8 @@ class UnifiedBackendNode(Node):
             self.last_reason = "waiting_for_initial_native_lidar_factor"
             return
         pose = msg.pose.pose
-        position = np.asarray(
-            [float(pose.position.x), float(pose.position.y), float(pose.position.z)],
-            dtype=float,
-        )
+        position = np.asarray([float(pose.position.x), float(
+            pose.position.y), float(pose.position.z)], dtype=float, )
         orientation = quaternion_xyzw_to_rpy([
             float(pose.orientation.x), float(pose.orientation.y),
             float(pose.orientation.z), float(pose.orientation.w),
@@ -3981,20 +5041,23 @@ class UnifiedBackendNode(Node):
             initial_state = scan_prediction.end_state.copy()
             manifold_measurement = scan_prediction.measurement
             self.counts["imu_propagated_initializations"] += 1
-            reference = manifold_motion_reference(previous_state, initial_state)
+            reference = manifold_motion_reference(
+                previous_state, initial_state)
         elif self.backend_solver_mode == "manifold":
             manifold_measurement = self._manifold_imu_measurement(
                 self.last_lio_stamp, stamp, previous_state,
             )
             if manifold_measurement is not None:
-                initial_state = propagate_state(previous_state, manifold_measurement)
+                initial_state = propagate_state(
+                    previous_state, manifold_measurement)
                 self.counts["imu_propagated_initializations"] += 1
             else:
                 initial_state = previous_state.copy()
                 initial_state[:3] += previous_state[6:9] * (
                     stamp - self.last_lio_stamp
                 )
-            reference = manifold_motion_reference(previous_state, initial_state)
+            reference = manifold_motion_reference(
+                previous_state, initial_state)
         else:
             initial_state = previous_state.copy()
             initial_state[:3] = position
@@ -4025,14 +5088,20 @@ class UnifiedBackendNode(Node):
                     self.last_reason = f"native_lidar_prediction_gate:{gate_reason}"
                     return
         self._record_phase_timing("pre_state", started)
+        performance_context = self._begin_performance_cycle(started, stamp)
         snapshot_started = time.perf_counter_ns()
-        transaction_snapshot = (
-            self.backend.snapshot() if self.transactional_update_enabled else None
-        )
+        transaction_snapshot = (self.backend.snapshot(
+        ) if self.transactional_update_enabled else None)
         self._record_phase_timing("snapshot", snapshot_started)
         self.active_transaction_snapshot = transaction_snapshot
         add_state_started = time.perf_counter_ns()
         current_index = self.backend.add_state(initial_state)
+        transaction_visual_state_stamps = list(self.visual_state_stamps)
+        transaction_visual_state_stamps.append(float(stamp))
+        transaction_visual_state_stamps = transaction_visual_state_stamps[
+            -self.backend.state_count:
+        ]
+        staged_visual_candidates = []
         self._record_phase_timing("add_state", add_state_started)
         if self.last_lio_stamp is None:
             self.lio_origin = position.copy()
@@ -4077,11 +5146,8 @@ class UnifiedBackendNode(Node):
                         and calibration_update.locked
                     ):
                         native_factor = replace(
-                            native_factor,
-                            lidar_to_body_rotation=(
-                                calibration_update.lidar_to_body_rotation.copy()
-                            ),
-                        )
+                            native_factor, lidar_to_body_rotation=(
+                                calibration_update.lidar_to_body_rotation.copy()), )
                 except (ValueError, np.linalg.LinAlgError) as error:
                     self.last_exception = (
                         f"calibration_{type(error).__name__}:{error}"
@@ -4171,8 +5237,7 @@ class UnifiedBackendNode(Node):
             if lidar_factor_added:
                 self.counts["native_lidar_factors"] += 1
         if native_factor is None and (
-            self.backend_solver_mode == "linear" or self.allow_lio_pose_fallback
-        ):
+                self.backend_solver_mode == "linear" or self.allow_lio_pose_fallback):
             self.backend.add_lidar_pose(
                 current_index, position, orientation,
                 covariance=[0.05 ** 2] * 3 + [0.03 ** 2] * 3,
@@ -4208,12 +5273,26 @@ class UnifiedBackendNode(Node):
         aux_factors_started = time.perf_counter_ns()
         if self.last_lio_stamp is not None:
             previous_index = current_index - 1
+            gnss_started = time.perf_counter_ns()
             self._gnss_factor(stamp, reference["position"], current_index)
+            self._record_phase_timing("gnss_factor", gnss_started)
+            flow_started = time.perf_counter_ns()
             self._flow_factor(
                 self.last_lio_stamp, stamp, reference["yaw"],
                 previous_index, current_index, reference["delta_position"],
                 previous_state=previous_state,
             )
+            self._record_phase_timing("flow_factor", flow_started)
+            if self.visual_pending_enabled:
+                staged_visual_candidates = self._stage_pending_visual_factors(
+                    transaction_visual_state_stamps
+                )
+            else:
+                if self._legacy_visual_factor(
+                    self.last_lio_stamp, stamp, previous_index, current_index
+                ):
+                    staged_visual_candidates = [None]
+            imu_factor_started = time.perf_counter_ns()
             if self.backend_solver_mode == "manifold":
                 imu_diagnostic_covariance = self._add_manifold_imu_factor(
                     previous_index, current_index, manifold_measurement
@@ -4223,10 +5302,12 @@ class UnifiedBackendNode(Node):
                     self.last_lio_stamp, stamp, reference["orientation"],
                     previous_index, current_index,
                 )
+            self._record_phase_timing("imu_factor", imu_factor_started)
         self._record_phase_timing("aux_factors", aux_factors_started)
         self._record_phase_timing("prepare", started)
         post_optimize_started = time.perf_counter_ns()
         state_committed = False
+        commit_started = None
         try:
             optimize_started = time.perf_counter_ns()
             self.backend.optimize()
@@ -4234,7 +5315,8 @@ class UnifiedBackendNode(Node):
             solve_ms = float(getattr(self.backend, "last_solve_ms", 0.0))
             self.backend_solve_count += 1
             self.backend_solve_ms_total += solve_ms
-            self.backend_solve_ms_max = max(self.backend_solve_ms_max, solve_ms)
+            self.backend_solve_ms_max = max(
+                self.backend_solve_ms_max, solve_ms)
             # A preintegrated delta is linearized at the start-state bias. The
             # first nonlinear solve can move that bias enough to invalidate the
             # delta, especially after a long or dynamic interval. Recompute it
@@ -4255,8 +5337,7 @@ class UnifiedBackendNode(Node):
                     self.backend.state(current_index - 1),
                 )
                 if updated_measurement is not None and self.backend.replace_imu_preintegrated(
-                    current_index - 1, current_index, updated_measurement
-                ):
+                        current_index - 1, current_index, updated_measurement):
                     manifold_measurement = updated_measurement
                     imu_diagnostic_covariance = np.asarray(
                         updated_measurement.covariance, dtype=float
@@ -4264,7 +5345,8 @@ class UnifiedBackendNode(Node):
                     self.counts["imu_reintegrations"] += 1
                     reintegration_started = time.perf_counter_ns()
                     self.backend.optimize()
-                    self._record_phase_timing("reintegrate", reintegration_started)
+                    self._record_phase_timing(
+                        "reintegrate", reintegration_started)
                     second_solve_ms = float(
                         getattr(self.backend, "last_solve_ms", 0.0)
                     )
@@ -4277,8 +5359,7 @@ class UnifiedBackendNode(Node):
             if imu_diagnostic_covariance is not None:
                 try:
                     residual = self.backend.latest_factor_residual(
-                        "imu_preintegrated", covariance=imu_diagnostic_covariance
-                    )
+                        "imu_preintegrated", covariance=imu_diagnostic_covariance)
                     if residual is not None:
                         self.last_imu_preintegration_residual_mahalanobis = (
                             residual.mahalanobis_squared
@@ -4296,8 +5377,18 @@ class UnifiedBackendNode(Node):
                     self.counts["imu_residual_errors"] += 1
             else:
                 self.last_imu_preintegration_residual_mahalanobis = -1.0
+            if self.backend_solver_mode == "manifold":
+                visual_residual = self.backend.latest_factor_rmse(
+                    "visual_reprojection"
+                )
+                if visual_residual is not None:
+                    (
+                        self.last_visual_reprojection_rmse_normalized,
+                        self.last_visual_reprojection_residual_dimension,
+                    ) = visual_residual
             estimate = self.backend.state(current_index)
             if self.transactional_update_enabled:
+                integrity_started = time.perf_counter_ns()
                 self.last_optimization_integrity = validate_optimized_state(
                     initial_state,
                     estimate,
@@ -4306,12 +5397,18 @@ class UnifiedBackendNode(Node):
                     self.backend.last_cost,
                     **self.optimization_integrity_limits,
                 )
+                self._record_phase_timing(
+                    "integrity_check", integrity_started
+                )
                 self.optimization_integrity_reason_counts[
                     self.last_optimization_integrity.reason
                 ] += 1
                 if not self.last_optimization_integrity.valid:
                     self.backend.restore(transaction_snapshot)
                     self.active_transaction_snapshot = None
+                    self.counts["visual_solver_rejected"] += len(
+                        staged_visual_candidates
+                    )
                     self.counts["optimization_rejected"] += 1
                     self.counts["optimization_rollbacks"] += 1
                     self.last_reason = (
@@ -4321,18 +5418,33 @@ class UnifiedBackendNode(Node):
                     self.last_callback_ms = (
                         time.perf_counter_ns() - started
                     ) * 1.0e-6
+                    self._finish_performance_cycle(
+                        performance_context,
+                        staged_visual_candidates,
+                        state_committed,
+                    )
                     return
+            commit_started = time.perf_counter_ns()
             publish_started = time.perf_counter_ns()
             self._publish(msg.header, estimate, manifold_measurement)
             self._record_phase_timing("publish", publish_started)
             self.active_transaction_snapshot = None
             self.counts["lio"] += 1
+            self.visual_state_stamps = deque(
+                transaction_visual_state_stamps, maxlen=self.window_size
+            )
+            self.counts["visual_solver_accepted"] += len(
+                staged_visual_candidates
+            )
             self.last_reason = "ok"
             state_committed = True
         except (np.linalg.LinAlgError, ValueError, IndexError) as error:
             if transaction_snapshot is not None:
                 self.backend.restore(transaction_snapshot)
                 self.active_transaction_snapshot = None
+                self.counts["visual_solver_rejected"] += len(
+                    staged_visual_candidates
+                )
                 self.counts["optimization_rollbacks"] += 1
             self.counts["optimization_errors"] += 1
             self.last_reason = f"optimization_error:{type(error).__name__}"
@@ -4340,9 +5452,15 @@ class UnifiedBackendNode(Node):
         self._record_phase_timing("post_optimize", post_optimize_started)
         if state_committed:
             self.last_lio_stamp = stamp
-            self.last_lio_position = np.asarray(estimate[:3], dtype=float).copy()
+            self.last_lio_position = np.asarray(
+                estimate[:3], dtype=float).copy()
             self.last_lio_yaw = float(estimate[5])
+        if commit_started is not None:
+            self._record_phase_timing("commit", commit_started)
         self.last_callback_ms = (time.perf_counter_ns() - started) * 1.0e-6
+        self._finish_performance_cycle(
+            performance_context, staged_visual_candidates, state_committed
+        )
 
     def _publish_frontend_state_seed(self, header, state, covariance):
         if self.frontend_state_seed_pub is None:
@@ -4352,7 +5470,8 @@ class UnifiedBackendNode(Node):
         state = np.asarray(state, dtype=float)
         covariance = np.asarray(covariance, dtype=float)
         if state.shape != (15,) or covariance.shape != (15, 15):
-            raise ValueError("frontend state seed has an invalid state dimension")
+            raise ValueError(
+                "frontend state seed has an invalid state dimension")
         if np.any(~np.isfinite(state)) or np.any(~np.isfinite(covariance)):
             raise ValueError("frontend state seed must be finite")
         orientation = rpy_to_quaternion_xyzw(state[3:6])
@@ -4390,8 +5509,10 @@ class UnifiedBackendNode(Node):
         request.header.stamp = ros_time_from_seconds(factor.stamp_s)
         request.header.frame_id = self.map_frame
         request.scan_sequence = int(factor.scan_sequence)
-        request.scan_begin_stamp = ros_time_from_seconds(float(factor.scan_begin_s))
-        request.scan_end_stamp = ros_time_from_seconds(float(factor.scan_end_s))
+        request.scan_begin_stamp = ros_time_from_seconds(
+            float(factor.scan_begin_s))
+        request.scan_end_stamp = ros_time_from_seconds(
+            float(factor.scan_end_s))
         request.map_frame = self.map_frame
         request.body_frame = self.body_frame
         request.sensor_frame = str(factor.sensor_frame)
@@ -4413,19 +5534,25 @@ class UnifiedBackendNode(Node):
         message.reason = str(prediction.reason if reason is None else reason)
         message.map_frame = self.map_frame
         message.body_frame = self.body_frame
-        message.scan_begin_stamp = ros_time_from_seconds(prediction.scan_begin_s)
+        message.scan_begin_stamp = ros_time_from_seconds(
+            prediction.scan_begin_s)
         message.scan_end_stamp = ros_time_from_seconds(prediction.scan_end_s)
-        message.begin_position = [float(value) for value in prediction.begin_state[:3]]
+        message.begin_position = [float(value)
+                                  for value in prediction.begin_state[:3]]
         message.begin_orientation_xyzw = [
-            float(value) for value in self._state_orientation_xyzw(prediction.begin_state)
-        ]
-        message.end_position = [float(value) for value in prediction.end_state[:3]]
+            float(value) for value in self._state_orientation_xyzw(
+                prediction.begin_state)]
+        message.end_position = [float(value)
+                                for value in prediction.end_state[:3]]
         message.end_orientation_xyzw = [
-            float(value) for value in self._state_orientation_xyzw(prediction.end_state)
-        ]
-        message.end_velocity_map = [float(value) for value in prediction.end_state[6:9]]
-        message.accel_bias = [float(value) for value in prediction.end_state[9:12]]
-        message.gyro_bias = [float(value) for value in prediction.end_state[12:15]]
+            float(value) for value in self._state_orientation_xyzw(
+                prediction.end_state)]
+        message.end_velocity_map = [float(value)
+                                    for value in prediction.end_state[6:9]]
+        message.accel_bias = [float(value)
+                              for value in prediction.end_state[9:12]]
+        message.gyro_bias = [float(value)
+                             for value in prediction.end_state[12:15]]
         matrix = np.asarray(covariance, dtype=float)
         if matrix.shape != (15, 15) or np.any(~np.isfinite(matrix)):
             matrix = np.eye(15, dtype=float)
@@ -4483,7 +5610,11 @@ class UnifiedBackendNode(Node):
             return
         previous_stamp_s = float(anchor.stamp_s)
         previous_state = np.asarray(anchor.state, dtype=float)
-        anchor_covariance = np.asarray(anchor.covariance, dtype=float).reshape(15, 15)
+        anchor_covariance = np.asarray(
+            anchor.covariance,
+            dtype=float).reshape(
+            15,
+            15)
         cached = self.scan_prediction_by_sequence.get(sequence)
         if cached is not None:
             reusable, _cached_reason = prediction_reusable(
@@ -4540,8 +5671,10 @@ class UnifiedBackendNode(Node):
                 propagated.covariance, dtype=float
             ).reshape(15, 15)
         self.scan_prediction_by_sequence[sequence] = prediction
-        while len(self.scan_prediction_by_sequence) > self.scan_prediction_cache_size:
-            self.scan_prediction_by_sequence.pop(next(iter(self.scan_prediction_by_sequence)))
+        while len(
+                self.scan_prediction_by_sequence) > self.scan_prediction_cache_size:
+            self.scan_prediction_by_sequence.pop(
+                next(iter(self.scan_prediction_by_sequence)))
         if not prediction.valid:
             self.counts["scan_prediction_rejected"] += 1
             self.last_scan_prediction_reason = prediction.reason
@@ -4574,8 +5707,11 @@ class UnifiedBackendNode(Node):
             if update_due:
                 try:
                     candidate = self.backend.marginal_covariance(-1)
-                    if candidate.shape != (15, 15) or np.any(~np.isfinite(candidate)):
-                        raise ValueError("optimizer returned an invalid covariance")
+                    if candidate.shape != (
+                            15, 15) or np.any(
+                            ~np.isfinite(candidate)):
+                        raise ValueError(
+                            "optimizer returned an invalid covariance")
                     self.last_state_covariance = candidate
                     self.last_covariance_stamp_s = output_stamp_s
                     self.counts["marginal_covariance_updates"] += 1
@@ -4606,7 +5742,9 @@ class UnifiedBackendNode(Node):
         if state_covariance is None:
             state_covariance = self._fallback_state_covariance()
         state_covariance = np.asarray(state_covariance, dtype=float)
-        if state_covariance.shape != (15, 15) or np.any(~np.isfinite(state_covariance)):
+        if state_covariance.shape != (
+                15, 15) or np.any(
+                ~np.isfinite(state_covariance)):
             raise ValueError("backend state covariance must be finite 15x15")
         return 0.5 * (state_covariance + state_covariance.T)
 
@@ -4615,7 +5753,9 @@ class UnifiedBackendNode(Node):
         state_covariance = np.asarray(state_covariance, dtype=float)
         if state.shape != (15,) or np.any(~np.isfinite(state)):
             raise ValueError("backend output state must be a finite 15-vector")
-        if state_covariance.shape != (15, 15) or np.any(~np.isfinite(state_covariance)):
+        if state_covariance.shape != (
+                15, 15) or np.any(
+                ~np.isfinite(state_covariance)):
             raise ValueError("backend output covariance must be finite 15x15")
         orientation = np.asarray(state[3:6], dtype=float)
         qx, qy, qz, qw = rpy_to_quaternion_xyzw(orientation)
@@ -4639,7 +5779,8 @@ class UnifiedBackendNode(Node):
         pose_covariance, velocity_covariance = (
             state_covariance_to_odometry_covariances(state, state_covariance)
         )
-        output.pose.covariance = [float(value) for value in pose_covariance.ravel()]
+        output.pose.covariance = [float(value)
+                                  for value in pose_covariance.ravel()]
         for row in range(3):
             for column in range(3):
                 output.twist.covariance[row * 6 + column] = float(
@@ -4728,7 +5869,8 @@ class UnifiedBackendNode(Node):
             self.path.poses.append(pose)
             if len(self.path.poses) > self.max_path:
                 self.path.poses = self.path.poses[-self.max_path:]
-            self.last_path_sample_position = np.asarray(state[:3], dtype=float).copy()
+            self.last_path_sample_position = np.asarray(
+                state[:3], dtype=float).copy()
             self.last_path_sample_orientation = orientation.copy()
             self.counts["path_samples"] += 1
         if covariance_update_due(
@@ -4757,6 +5899,13 @@ class UnifiedBackendNode(Node):
         )
 
     def log_final_summary(self):
+        try:
+            self._write_performance_trace()
+        except OSError as error:
+            print(f"Performance trace write failed: {type(error).__name__}:{error}")
+        finally:
+            if self.gc_profiler is not None:
+                self.gc_profiler.close()
         average_solve_ms = (
             self.backend_solve_ms_total / self.backend_solve_count
             if self.backend_solve_count > 0 else 0.0
@@ -4814,8 +5963,7 @@ class UnifiedBackendNode(Node):
             f"{self.counts['calibration_motion_rejected']};"
             "calibration_mode="
             f"{'apply' if self.calibration_apply_locked_values else 'shadow'};"
-            f"calibration_time_offset_s={self.last_calibration_update.time_offset_s:.6f}"
-        )
+            f"calibration_time_offset_s={self.last_calibration_update.time_offset_s:.6f}")
         invalid_reasons = ",".join(
             f"{name}:{count}"
             for name, count in sorted(self.imu_invalid_reasons.items())
@@ -4923,6 +6071,25 @@ class UnifiedBackendNode(Node):
             f"flow_disabled_quality={self.counts['flow_disabled_quality']};"
             f"flow_disabled_rotation={self.counts['flow_disabled_rotation']};"
             f"flow_clock_mismatch={self.counts['flow_clock_mismatch']};"
+            f"visual_received={self.counts['visual_received']};"
+            f"visual_attempts={self.counts['visual_factor_attempts']};"
+            f"visual_factors={self.counts['visual_factors']};"
+            f"visual_rejected_time={self.counts['visual_rejected_time']};"
+            f"visual_rejected_tracks={self.counts['visual_rejected_tracks']};"
+            "visual_state_consistency_rejected="
+            f"{self.counts['visual_state_consistency_rejected']};"
+            f"visual_last_reason={self.last_visual_reason};"
+            "visual_prefit_rmse_normalized="
+            f"{self.last_visual_prefit_rmse_normalized:.9g};"
+            f"visual_prefit_rmse_px={self.last_visual_prefit_rmse_px:.9g};"
+            "visual_prefit_valid_track_ratio="
+            f"{self.last_visual_prefit_valid_track_ratio:.9g};"
+            "visual_prefit_jacobian_rank="
+            f"{self.last_visual_prefit_jacobian_rank};"
+            "visual_reprojection_rmse_normalized="
+            f"{self.last_visual_reprojection_rmse_normalized:.9g};"
+            "visual_reprojection_residual_dimension="
+            f"{self.last_visual_reprojection_residual_dimension};"
             f"flow_last_reason={self.last_flow_reason};"
             f"flow_rotation_phase={self.last_flow_rotation_phase};"
             f"flow_los_samples={self.counts['flow_los_diagnostic_samples']};"
@@ -4954,9 +6121,7 @@ class UnifiedBackendNode(Node):
             f"publish_max_ms={self.phase_timing['publish']['max_ms']:.3f};"
             f"covariance_source={self.last_covariance_source};"
             "marginal_covariance_errors="
-            f"{self.counts['marginal_covariance_errors']}",
-            flush=True,
-        )
+            f"{self.counts['marginal_covariance_errors']}", flush=True, )
 
     def _diagnostics(self):
         average_solve_ms = (
@@ -5071,6 +6236,14 @@ class UnifiedBackendNode(Node):
             self._key(
                 "optimization_velocity_correction_mps",
                 f"{self.last_optimization_integrity.velocity_correction_mps:.9g}",
+            ),
+            self._key(
+                "optimization_accel_bias_correction_mps2",
+                f"{self.last_optimization_integrity.accel_bias_correction_mps2:.9g}",
+            ),
+            self._key(
+                "optimization_gyro_bias_correction_radps",
+                f"{self.last_optimization_integrity.gyro_bias_correction_radps:.9g}",
             ),
             self._key(
                 "optimization_information_rank",
@@ -5332,6 +6505,76 @@ class UnifiedBackendNode(Node):
         diagnostic.values.extend(
             self._key(name, value) for name, value in self.counts.items()
         )
+        diagnostic.values.extend([
+            self._key(
+                "visual_reprojection_rmse_normalized",
+                f"{self.last_visual_reprojection_rmse_normalized:.9g}",
+            ),
+            self._key(
+                "visual_reprojection_residual_dimension",
+                self.last_visual_reprojection_residual_dimension,
+            ),
+            self._key(
+                "visual_prefit_rmse_normalized",
+                f"{self.last_visual_prefit_rmse_normalized:.9g}",
+            ),
+            self._key(
+                "visual_prefit_rmse_px",
+                f"{self.last_visual_prefit_rmse_px:.9g}",
+            ),
+            self._key(
+                "visual_prefit_valid_track_ratio",
+                f"{self.last_visual_prefit_valid_track_ratio:.9g}",
+            ),
+            self._key(
+                "visual_prefit_jacobian_rank",
+                self.last_visual_prefit_jacobian_rank,
+            ),
+            self._key("visual_pending_enabled", self.visual_pending_enabled),
+            self._key(
+                "visual_pending_queue_size",
+                len(self.pending_visual_candidates),
+            ),
+            self._key(
+                "visual_state_window_start_s",
+                self.visual_state_stamps[0] if self.visual_state_stamps else -1.0,
+            ),
+            self._key(
+                "visual_state_window_end_s",
+                self.visual_state_stamps[-1] if self.visual_state_stamps else -1.0,
+            ),
+            self._key(
+                "visual_timing_reason_counts",
+                ",".join(
+                    f"{name}:{count}" for name, count
+                    in sorted(self.visual_timing_reason_counts.items())
+                ) or "none",
+            ),
+        ])
+        diagnostic.values.append(self._key(
+            "performance_profiling_enabled",
+            self.performance_profiling_enabled,
+        ))
+        if self.performance_profiling_enabled:
+            profiles = {
+                f"callback_{name}": values
+                for name, values in self._phase_profile_summary().items()
+            }
+            profiles.update({
+                f"solver_{name}": values
+                for name, values in getattr(
+                    self.backend, "profile_summary", lambda: {})()
+                .items()
+            })
+            for name, values in sorted(profiles.items()):
+                diagnostic.values.append(self._key(
+                    f"profile_{name}_count", values["count"]
+                ))
+                for percentile_name in ("p50_ms", "p90_ms", "p95_ms", "max_ms"):
+                    diagnostic.values.append(self._key(
+                        f"profile_{name}_{percentile_name}",
+                        f"{values[percentile_name]:.6f}",
+                    ))
         array = DiagnosticArray()
         array.header.stamp = self.get_clock().now().to_msg()
         array.status.append(diagnostic)

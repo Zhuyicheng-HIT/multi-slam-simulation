@@ -122,7 +122,10 @@ LIVOX_INPUT_MISSED_CHECKS=${LIVOX_INPUT_MISSED_CHECKS:-5}
 topic_publisher_count() {
   local topic=$1
   local info count
-  info=$(timeout 5s ros2 topic info --no-daemon --spin-time 1.0 "$topic" 2>/dev/null || true)
+  # Reuse the active graph daemon. A fresh --no-daemon process can complete
+  # its short discovery window before the Gazebo bridge endpoints appear,
+  # causing a false zero-publisher result and a 20 s bootstrap stall/failure.
+  info=$(timeout 5s ros2 topic info "$topic" 2>/dev/null || true)
   count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$info")
   printf '%s' "${count:-0}"
 }
@@ -243,16 +246,26 @@ fi
 # ownership contract while FAST-LIO is running.
 livox_lidar_publishers=0
 livox_imu_publishers=0
+ownership_stable_samples=0
 wait_attempts=$(( LIVOX_INPUT_WAIT_S * 2 ))
 for (( _attempt=1; _attempt<=wait_attempts; _attempt++ )); do
   livox_lidar_publishers=$(topic_publisher_count /livox/lidar)
   livox_imu_publishers=$(topic_publisher_count /livox/imu)
-  if (( livox_lidar_publishers == 1 && livox_imu_publishers == 1 )); then
+  if (( livox_lidar_publishers > 1 || livox_imu_publishers > 1 )); then
     break
+  fi
+  if (( livox_lidar_publishers == 1 && livox_imu_publishers == 1 )); then
+    ownership_stable_samples=$((ownership_stable_samples + 1))
+    if (( ownership_stable_samples >= 2 )); then
+      break
+    fi
+  else
+    ownership_stable_samples=0
   fi
   sleep 0.5
 done
-if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 )); then
+if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 || \
+      ownership_stable_samples < 2 )); then
   printf 'FAST-LIO input ownership error: /livox/lidar publishers=%s, /livox/imu publishers=%s; expected exactly one each.\n' \
     "$livox_lidar_publishers" "$livox_imu_publishers" >&2
   printf 'Stop duplicate Livox adapters, or set START_LIVOX_POINTCLOUD_BRIDGE=0 when the simulator/driver already provides /livox/*.\n' >&2

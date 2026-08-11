@@ -1,0 +1,51 @@
+
+# Cross-session localization counterpart of d435i_rtabmap_feature_aligned.yaml.
+# Odometry and feature extraction are intentionally identical to the mapping
+# baseline. Only memory/database behavior is changed for Session 2.
+d435i_rtabmap:
+  topics:
+    rgb: /front/d435i/color/image_raw
+    depth: /front/d435i/aligned_depth_to_color/image_raw
+    camera_info: /front/d435i/color/camera_info
+    odom: /rtabmap/odom
+
+  launch:
+    frame_id: base_link
+    vo_frame_id: odom
+    use_sim_time: true
+    approx_sync: false
+    qos: 1
+    visual_odometry: true
+    rtabmap_viz: false
+    rviz: false
+    delete_db_on_start: false
+    database_path: ~/.ros/d435i_rtabmap_localization.db
+
+  odometry_parameters:
+    Vis/MaxFeatures: 1000
+    Kp/MaxFeatures: 1000
+    Kp/DetectorStrategy: 6
+    Odom/MinDepth: 0.105
+    Odom/MaxDepth: 10.0
+    Vis/MinInliers: 10
+    Odom/ResetCountdown: 3
+    Odom/Strategy: 0
+    OdomF2M/MaxSize: 2000
+    OdomF2F/MaxSize: 1000
+
+  rtabmap_parameters:
+    Kp/MaxFeatures: 1000
+    Kp/DetectorStrategy: 6
+    Vis/FeatureType: 6
+    RGBD/OptimizeMaxError: 3.0
+    RGBD/ProximityBySpace: true
+    RGBD/ProximityPathMaxNeighbors: 1
+    RGBD/LoopClosureReextractFeatures: true
+    RGBD/LocalizationSmoothing: true
+    RGBD/MaxOdomCacheSize: 10
+    RGBD/StartAtOrigin: false
+    Rtabmap/LoopThr: 0.11
+    Mem/IncrementalMemory: false
+    Mem/InitWMWithAllNodes: true
+    Mem/LocalizationDataSaved: false
+    Mem/LocalizationReadOnly: false
