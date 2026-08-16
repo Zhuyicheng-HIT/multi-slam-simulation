@@ -104,6 +104,20 @@ cuf_ws && bash tools/run_stable_five_source_validation.sh
 详细边界与已验证指标见
 [`docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md`](docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md)。
 
+### 5.0.1 大八字 UI 与点云地图演示
+
+下面一条命令启动 Gazebo 图形界面、五源统一后端、视觉前端和单个 RViz，
+随后按统一后端定位执行一次三维大八字。RViz 默认显示在线共享点云、统一轨迹
+和位姿；飞行结束后还会导出在线地图并尝试显示离线融合地图：
+
+```bash
+cuf_ws && bash tools/run_figure8_ui_demo.sh
+```
+
+启动到传感器和后端全部就绪可能需要数分钟。运行期间按 `Ctrl+C` 会停止该入口
+拥有的 Gazebo、RViz、SITL、MAVROS 和算法子进程。航线控制不读取 Gazebo 真值，
+真值只用于评估。
+
 ### 5.1 基础 Gazebo + FAST-LIO 可视化
 
 打开第 1 个 Ubuntu 终端，启动 Gazebo、APM、MAVROS2、D435i、MID360 和光流：

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -Eeo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
@@ -32,6 +32,8 @@ source "$REPO_ROOT/install/setup.bash"
 if [[ -f "$LIDAR_WS/install/setup.bash" ]]; then
   source "$LIDAR_WS/install/setup.bash"
 fi
+export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+set -u
 
 SIM_SHARE=$(ros2 pkg prefix multi_slam_uav_sim)/share/multi_slam_uav_sim
 HYBRID_SHARE=$(ros2 pkg prefix hybridfusion_map_fusion)/share/hybridfusion_map_fusion
@@ -91,7 +93,8 @@ wait_for_publisher() {
         "$topic" >&2
       return 1
     fi
-    info=$(timeout 5s ros2 topic info "$topic" 2>/dev/null || true)
+    info=$(timeout 5s ros2 topic info --no-daemon --spin-time 1 "$topic" \
+      2>/dev/null || true)
     count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$info")
     count=${count:-0}
     if (( count > 0 )); then
@@ -112,8 +115,10 @@ wait_for_service() {
         "$service" >&2
       return 1
     fi
-    if timeout 5s ros2 service type "$service" 2>/dev/null | \
-        grep -q '^std_srvs/srv/Trigger$'; then
+    if timeout 5s ros2 service list --no-daemon --spin-time 1 -t \
+        2>/dev/null | awk -v name="$service" \
+        '$1 == name && $2 == "[std_srvs/srv/Trigger]" { found = 1 }
+         END { exit !found }'; then
       printf 'ready service: %s\n' "$service"
       return 0
     fi
