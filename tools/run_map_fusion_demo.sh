@@ -17,8 +17,8 @@ case "$OFFLINE_METHOD" in
   *) printf 'OFFLINE_METHOD must be gicp or hybrid.\n' >&2; exit 2 ;;
 esac
 case "$DEMO_ROUTE" in
-  short_s|long_s) ;;
-  *) printf 'DEMO_ROUTE must be short_s or long_s.\n' >&2; exit 2 ;;
+  short_s|long_s|figure8) ;;
+  *) printf 'DEMO_ROUTE must be short_s or figure8 (long_s is retained as an alias).\n' >&2; exit 2 ;;
 esac
 for value in "$DEMO_GUI" "$DEMO_RVIZ" "$KEEP_DEMO_OPEN"; do
   [[ "$value" == 0 || "$value" == 1 ]] || {
