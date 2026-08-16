@@ -89,6 +89,21 @@ bash tools/setup_ubuntu.sh
 话题桥，但应保持这些命令可用。若关键架构调整确实无法兼容旧命令，必须在
 同一个版本中更新本节和迁移说明，并在合并或发布前明确告知，不允许静默失效。
 
+### 5.0 五源统一后端 + EKF3 一键严格验证
+
+已完成环境恢复并配置 `cuf_ws` 的机器，使用下面一条命令启动当前仿真稳定
+候选。它会启动完整五源栈、执行一次短矩形、让 EKF3 消费 ExternalNav、记录
+评测证据并在落地解锁后自动清理子进程：
+
+```bash
+cuf_ws && bash tools/run_stable_five_source_validation.sh
+```
+
+退出码为零才表示轨迹精度、五类因子、ExternalNav 连续性、EKF3 消费、TF
+契约和落地解锁全部通过。当前稳定默认只监测在线时标，不自动改写传感器时间。
+详细边界与已验证指标见
+[`docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md`](docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md)。
+
 ### 5.1 基础 Gazebo + FAST-LIO 可视化
 
 打开第 1 个 Ubuntu 终端，启动 Gazebo、APM、MAVROS2、D435i、MID360 和光流：
@@ -204,6 +219,23 @@ bash tools/run_unified_rectangle_validation.sh
 `run_unified_rectangle_validation.sh` 的文件名为兼容旧实验保留；通过
 `VALIDATION_ROUTE=s_curve` 选择长 S，无需改脚本名。
 
+### 5.3 五源统一后端 + EKF3 单圈严格验收
+
+下面的稳定候选入口同时启用飞控 IMU、MID360 原生点面因子、GNSS/BDS、
+MTF-01P 风格光流和 D435i 重投影因子，并让 ArduPilot EKF3 实际消费唯一的
+`/mavros/odometry/out`。航线只飞一圈短矩形；在线时间标定保留 shadow 诊断，
+不会自动修改生产时间戳：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/run_stable_five_source_validation.sh
+```
+
+脚本会记录 rosbag2、检查五类因子均实际进入窗口、执行因果三维 ATE 验收、确认
+MAVROS 坐标契约、EKF3 消费、降落和解锁，并清理本轮子进程。当前稳定候选的
+边界、协方差/不断流策略、实测结果和上机前门槛见
+[五源 ExternalNav 稳定候选报告](docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md)。
+
 ## 6. 查看 RGB-D
 
 彩色图：
@@ -314,6 +346,7 @@ python3 tools/plot_s_curve_world_audit.py \
 
 ## 9. 进一步阅读
 
+- [五源 ExternalNav 稳定候选与严格验收](docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md)
 - [四源融合稳定候选版与视觉协作接口](docs/RELEASE_FOUR_SOURCE_V1.md)
 - [LiDAR 点云稳定候选版与视觉点云接口](docs/RELEASE_LIDAR_POINTCLOUD_V1.md)
 - [城市结构与统一后端严格航线验证](docs/urban_strict_route_validation_20260807.md)

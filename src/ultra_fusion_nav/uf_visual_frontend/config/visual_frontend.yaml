@@ -10,8 +10,16 @@ uf_rgbd_feature_frontend:
     pnp_reprojection_threshold_px: 3.0
     minimum_pnp_points: 8
     depth_scale: 0.001
-    minimum_depth_m: 0.15
-    maximum_depth_m: 12.0
+    minimum_depth_m: 0.30
+    maximum_depth_m: 6.0
+    # Robust depth is sampled only around the sparse KLT tracks. This rejects
+    # holes and edge outliers without scanning the full depth image.
+    depth_neighborhood_radius_px: 1
+    depth_minimum_support: 3
+    depth_minimum_inlier_ratio: 0.60
+    depth_inlier_absolute_tolerance_m: 0.03
+    depth_inlier_relative_tolerance: 0.03
+    depth_noise_floor_m: 0.005
     inverse_depth_sigma_ratio: 0.015
     pixel_sigma_px: 0.8
     # Cadence changes only how often tracking pairs become candidates. All
@@ -22,8 +30,15 @@ uf_rgbd_feature_frontend:
     candidate_minimum_tracks: 20
     candidate_minimum_depth_tracks: 20
     candidate_minimum_spatial_distribution: 0.08
+    # Compatibility/diagnostic threshold only. Stationary RGB-D tracks are not
+    # rejected for low motion; cadence still controls candidate publication.
     candidate_minimum_parallax_px: 0.15
-    candidate_maximum_reprojection_error_px: 3.0
+    # A successful RANSAC solve is not sufficient: distant, nearly coplanar
+    # points can fit pixels while leaving the six-DoF pose ill-conditioned.
+    candidate_maximum_reprojection_error_px: 2.0
+    candidate_minimum_pnp_inlier_ratio: 0.50
+    candidate_minimum_pnp_information_rank: 6
+    candidate_maximum_pnp_condition_number: 500.0
     candidate_require_pnp: true
     diagnostic_topic: /vision/frontend_diagnostics
     cache_size: 12

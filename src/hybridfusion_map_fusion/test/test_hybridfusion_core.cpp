@@ -5,6 +5,8 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <vector>
 
 namespace hf = hybridfusion_map_fusion;
@@ -122,4 +124,52 @@ TEST(HybridFusionCore, LiveMapMetricsDoNotInventGroundTruthError)
   EXPECT_TRUE(std::isnan(result.metrics.translation_error_m));
   EXPECT_TRUE(std::isnan(result.metrics.rotation_error_deg));
   EXPECT_GT(result.metrics.inlier_ratio, 0.99);
+}
+
+TEST(HybridFusionCore, ResultArtifactsIncludeMachineReadableTransform)
+{
+  const auto output = std::filesystem::temp_directory_path() /
+    "hybridfusion_transform_artifact_test";
+  std::filesystem::remove_all(output);
+
+  hf::CloudPtr visual(new hf::CloudT);
+  hf::CloudPtr lidar(new hf::CloudT);
+  hf::PointT point;
+  point.x = 1.0F;
+  point.y = 2.0F;
+  point.z = 3.0F;
+  visual->push_back(point);
+  lidar->push_back(point);
+
+  hf::Dataset dataset;
+  dataset.dataset_id = "transform_artifact";
+  dataset.visual_frame = "odom";
+  dataset.lidar_frame = "camera_init";
+  hf::RegistrationResult result;
+  result.converged = true;
+  result.method = "initial";
+  result.transform_lidar_to_visual = hf::xyz_rpy_transform(
+    {1.0, -2.0, 0.5, 0.1, -0.2, 0.3});
+  hf::Config config;
+
+  hf::write_result_artifacts(
+    output.string(), result, visual, lidar, dataset, config);
+
+  std::ifstream transform_stream(output / "transform.yaml");
+  const std::string transform_text(
+    (std::istreambuf_iterator<char>(transform_stream)),
+    std::istreambuf_iterator<char>());
+  EXPECT_NE(transform_text.find("quaternion_xyzw:"), std::string::npos);
+  EXPECT_NE(transform_text.find("matrix_row_major:"), std::string::npos);
+  EXPECT_NE(transform_text.find("parent_frame: odom"), std::string::npos);
+  EXPECT_NE(transform_text.find("child_frame: camera_init"), std::string::npos);
+
+  std::ifstream result_stream(output / "result.json");
+  const std::string result_text(
+    (std::istreambuf_iterator<char>(result_stream)),
+    std::istreambuf_iterator<char>());
+  EXPECT_NE(
+    result_text.find("transform_lidar_to_visual_quaternion_xyzw"),
+    std::string::npos);
+  std::filesystem::remove_all(output);
 }

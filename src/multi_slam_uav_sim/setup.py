@@ -10,6 +10,10 @@ def files_under(root):
     return [str(p) for p in Path(root).rglob("*") if p.is_file()]
 
 
+def files_directly_under(root):
+    return [str(p) for p in Path(root).iterdir() if p.is_file()]
+
+
 data_files = [
     ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
     (f"share/{package_name}", ["package.xml"]),
@@ -17,7 +21,7 @@ data_files = [
     (f"share/{package_name}/launch", glob("launch/*.launch.py")),
     (f"share/{package_name}/config", glob("config/*")),
     (f"share/{package_name}/params", glob("params/*")),
-    (f"share/{package_name}/scripts", glob("scripts/*")),
+    (f"share/{package_name}/scripts", files_directly_under("scripts")),
 ]
 
 for model_dir in sorted(Path("models").iterdir()):
@@ -55,6 +59,7 @@ setup(
             "guided_flight = multi_slam_uav_sim.guided_flight:main",
             "guided_rectangle_waypoints = multi_slam_uav_sim.guided_rectangle_waypoints:main",
             "guided_s_curve_waypoints = multi_slam_uav_sim.guided_s_curve_waypoints:main",
+            "guided_vertical_profile = multi_slam_uav_sim.guided_vertical_profile:main",
             "livox_mid360_bridge = multi_slam_uav_sim.livox_mid360_bridge:main",
             "flow_gazebo_accuracy = multi_slam_uav_sim.flow_gazebo_accuracy:main",
             "mavros_stream_requester = multi_slam_uav_sim.mavros_stream_requester:main",
@@ -67,6 +72,7 @@ setup(
             "people_motion = multi_slam_uav_sim.people_motion:main",
             "rgbd_camera_follow = multi_slam_uav_sim.rgbd_camera_follow:main",
             "simulation_performance_monitor = multi_slam_uav_sim.simulation_performance_monitor:main",
+            "topic_ownership_guard = multi_slam_uav_sim.topic_ownership_guard:main",
         ]
     },
 )

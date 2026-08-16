@@ -1,0 +1,8 @@
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -1743 +1743,3 @@ public:
+-            pubNativeLidarFactor = this->create_publisher<fast_lio::msg::NativeLidarFactor>(native_factor_topic, rclcpp::SensorDataQoS());
++            pubNativeLidarFactor = this->create_publisher<fast_lio::msg::NativeLidarFactor>(
++                native_factor_topic,
++                rclcpp::QoS(rclcpp::KeepLast(8)).reliable());

@@ -3,10 +3,36 @@
 from collections import defaultdict, deque
 from dataclasses import dataclass
 import math
+import threading
 import time
 from typing import Sequence
 
 import numpy as np
+
+try:
+    from uf_backend_core_cpp import (
+        imu_preintegrated_cost as cpp_imu_preintegrated_cost,
+        imu_preintegrated_normal as cpp_imu_preintegrated_normal,
+        lidar_point_plane_cost as cpp_lidar_point_plane_cost,
+        lidar_point_plane_normal as cpp_lidar_point_plane_normal,
+        marginal_prior_cost as cpp_marginal_prior_cost,
+        marginal_prior_normal as cpp_marginal_prior_normal,
+        state_plus_batch as cpp_state_plus_batch,
+        visual_reprojection_cost as cpp_visual_reprojection_cost,
+        visual_reprojection_normal as cpp_visual_reprojection_normal,
+    )
+    CPP_MATH_CORE_AVAILABLE = True
+except ImportError:
+    cpp_imu_preintegrated_cost = None
+    cpp_imu_preintegrated_normal = None
+    cpp_lidar_point_plane_cost = None
+    cpp_lidar_point_plane_normal = None
+    cpp_marginal_prior_cost = None
+    cpp_marginal_prior_normal = None
+    cpp_state_plus_batch = None
+    cpp_visual_reprojection_cost = None
+    cpp_visual_reprojection_normal = None
+    CPP_MATH_CORE_AVAILABLE = False
 
 from .imu_preintegration import ManifoldPreintegratedImu
 from .manifold import (
@@ -327,6 +353,62 @@ def imu_residual_jacobians(states, previous, current, measurement, gravity):
     return residual, jacobian_i, jacobian_j
 
 
+def _cpp_imu_factor_arguments(factor, states, gravity):
+    previous, current = factor["indices"]
+    measurement = factor["measurement"]
+    return (
+        states[previous],
+        states[current],
+        gravity,
+        float(measurement.dt_s),
+        np.asarray(measurement.delta_position, dtype=float),
+        np.asarray(measurement.delta_velocity, dtype=float),
+        np.asarray(measurement.delta_quaternion, dtype=float),
+        np.asarray(measurement.accel_bias_linearization, dtype=float),
+        np.asarray(measurement.gyro_bias_linearization, dtype=float),
+        np.asarray(
+            measurement.jacobian_delta_position_accel_bias,
+            dtype=float,
+        ).reshape(3, 3),
+        np.asarray(
+            measurement.jacobian_delta_position_gyro_bias,
+            dtype=float,
+        ).reshape(3, 3),
+        np.asarray(
+            measurement.jacobian_delta_velocity_accel_bias,
+            dtype=float,
+        ).reshape(3, 3),
+        np.asarray(
+            measurement.jacobian_delta_velocity_gyro_bias,
+            dtype=float,
+        ).reshape(3, 3),
+        np.asarray(
+            measurement.jacobian_delta_rotation_gyro_bias,
+            dtype=float,
+        ).reshape(3, 3),
+        factor["information_matrix"],
+        factor["effective_weight"],
+    )
+
+
+def _cpp_visual_factor_arguments(factor, states):
+    previous, current = factor["indices"]
+    tracks = factor["measurement"]
+    return (
+        states[previous],
+        states[current],
+        tracks.anchor_normalized,
+        tracks.current_normalized,
+        tracks.inverse_depth,
+        factor["variance"],
+        tracks.rotation_body_camera,
+        tracks.translation_body_camera,
+        factor["effective_weight"],
+        2.5,
+        1.0e-4,
+    )
+
+
 class ManifoldSlidingWindowBackend:
     """Gauss-Newton fixed-lag smoother with right-local SO(3) increments."""
 
@@ -344,6 +426,7 @@ class ManifoldSlidingWindowBackend:
         lm_min_damping=1.0e-12,
         lm_max_damping=1.0e12,
         marginal_rank_tolerance=1.0e-9,
+        cpp_math_core_enabled=True,
         profiling_enabled=False,
         profiling_capacity=4096,
     ):
@@ -380,6 +463,10 @@ class ManifoldSlidingWindowBackend:
         # Levenberg-Marquardt damping is deliberately excluded from that
         # prior: damping is a solver device, not an observation.
         self.marginal_rank_tolerance = float(marginal_rank_tolerance)
+        self.cpp_math_core_requested = bool(cpp_math_core_enabled)
+        self.cpp_math_core_enabled = bool(
+            self.cpp_math_core_requested and CPP_MATH_CORE_AVAILABLE
+        )
         self._lm_damping = min(
             self.lm_max_damping, max(self.lm_min_damping, self.damping)
         )
@@ -400,6 +487,7 @@ class ManifoldSlidingWindowBackend:
         self._profile_samples = defaultdict(
             lambda: deque(maxlen=self.profiling_capacity)
         )
+        self._profile_samples_lock = threading.Lock()
         self._profile_cycle = None
         self._profile_cycle_counts = None
         self._last_profile_cycle = {}
@@ -434,7 +522,8 @@ class ManifoldSlidingWindowBackend:
         if started_ns is None:
             return 0.0
         elapsed_ms = (time.perf_counter_ns() - started_ns) * 1.0e-6
-        self._profile_samples[str(name)].append(elapsed_ms)
+        with self._profile_samples_lock:
+            self._profile_samples[str(name)].append(elapsed_ms)
         if self._profile_cycle is not None:
             self._profile_cycle[str(name)] += elapsed_ms
             self._profile_cycle_counts[str(name)] += 1
@@ -444,8 +533,13 @@ class ManifoldSlidingWindowBackend:
         """Return bounded wall-time percentiles for opt-in runtime profiling."""
         if not self.profiling_enabled:
             return {}
+        with self._profile_samples_lock:
+            snapshot = {
+                name: tuple(samples)
+                for name, samples in self._profile_samples.items()
+            }
         summary = {}
-        for name, samples in self._profile_samples.items():
+        for name, samples in snapshot.items():
             if not samples:
                 continue
             values = np.fromiter(samples, dtype=float)
@@ -755,20 +849,31 @@ class ManifoldSlidingWindowBackend:
             delta_position,
             covariance=1.0,
             decision=None):
+        measurement = np.asarray(delta_position, dtype=float)
+        if measurement.shape not in ((2,), (3,)):
+            raise ValueError("optical flow must be a planar 2- or 3-vector")
+        if np.any(~np.isfinite(measurement)):
+            raise ValueError("optical flow measurement must be finite")
         self._append(
-            "optical_flow", (previous, current), 3, decision,
-            measurement=np.asarray(delta_position, dtype=float),
-            variance=_positive_diagonal(covariance, 3),
+            "optical_flow", (previous, current), 2, decision,
+            measurement=measurement[:2].copy(),
+            variance=_positive_diagonal(covariance, 2),
         )
 
     def add_optical_flow_body(
         self, previous, current, delta_body, linearization_yaw=None,
         covariance=1.0, decision=None,
     ):
+        measurement = np.asarray(delta_body, dtype=float).copy()
+        if measurement.shape == (2,):
+            measurement = np.r_[measurement, 0.0]
+        if measurement.shape != (3,) or np.any(~np.isfinite(measurement)):
+            raise ValueError("body optical flow must be a finite 2- or 3-vector")
+        measurement[2] = 0.0
         self._append(
-            "optical_flow_body", (previous, current), 3, decision,
-            measurement=np.asarray(delta_body, dtype=float),
-            variance=_positive_diagonal(covariance, 3),
+            "optical_flow_body", (previous, current), 2, decision,
+            measurement=measurement,
+            variance=_positive_diagonal(covariance, 2),
         )
 
     def add_visual_reprojection(
@@ -823,15 +928,14 @@ class ManifoldSlidingWindowBackend:
             return (
                 states[indices[1]][POSITION]
                 - states[indices[0]][POSITION]
-                - factor["measurement"]
-            )
+            )[:2] - factor["measurement"]
         if name == "optical_flow_body":
             return (
                 states[indices[1]][POSITION]
                 - states[indices[0]][POSITION]
                 - rpy_to_rotation_matrix(states[indices[0]][ROTATION])
                 @ factor["measurement"]
-            )
+            )[:2]
         if name == "visual_reprojection":
             return visual_reprojection_residual_jacobians(
                 states[indices[0]], states[indices[1]], factor["measurement"]
@@ -861,6 +965,29 @@ class ManifoldSlidingWindowBackend:
             return hessian, gradient, 0.0
         name = factor["name"]
         if name == "marginal_prior":
+            if self.cpp_math_core_enabled:
+                references = np.asarray(factor["references"], dtype=float)
+                local_states = np.asarray(
+                    [states[index] for index in factor["indices"]],
+                    dtype=float,
+                )
+                (
+                    transformed_hessian,
+                    transformed_gradient,
+                    cost,
+                ) = cpp_marginal_prior_normal(
+                    references,
+                    local_states,
+                    factor["normal_hessian"],
+                    factor["normal_gradient"],
+                )
+                indices = np.concatenate([
+                    np.arange(index * STATE_SIZE, (index + 1) * STATE_SIZE)
+                    for index in factor["indices"]
+                ])
+                hessian[np.ix_(indices, indices)] += transformed_hessian
+                gradient[indices] += transformed_gradient
+                return hessian, gradient, float(cost)
             local = np.concatenate([
                 state_local(reference, states[index])
                 for reference, index in zip(factor["references"], factor["indices"])
@@ -920,6 +1047,26 @@ class ManifoldSlidingWindowBackend:
             return hessian, gradient, cost
         if name == "lidar_point_plane":
             index = factor["indices"][0]
+            if self.cpp_math_core_enabled:
+                measurement = factor["measurement"]
+                local_hessian, local_gradient, cost = (
+                    cpp_lidar_point_plane_normal(
+                        states[index][:6],
+                        measurement.lidar_points,
+                        measurement.plane_normals,
+                        measurement.plane_points,
+                        measurement.lidar_to_body_rotation,
+                        measurement.lidar_to_body_translation,
+                        factor["variance"],
+                        factor["effective_weight"],
+                        self.lidar_huber_delta,
+                    )
+                )
+                start = index * STATE_SIZE
+                pose = slice(start, start + 6)
+                hessian[pose, pose] += local_hessian
+                gradient[pose] += local_gradient
+                return hessian, gradient, float(cost)
             residual, pose_jacobian = point_plane_residual_jacobian(
                 factor["measurement"], states[index][:6]
             )
@@ -978,10 +1125,10 @@ class ManifoldSlidingWindowBackend:
             information = factor["effective_weight"] / factor["variance"]
             information_matrix = np.diag(information)
             previous_position = slice(
-                previous * STATE_SIZE, previous * STATE_SIZE + 3
+                previous * STATE_SIZE, previous * STATE_SIZE + 2
             )
             current_position = slice(
-                current * STATE_SIZE, current * STATE_SIZE + 3
+                current * STATE_SIZE, current * STATE_SIZE + 2
             )
             weighted_residual = information * residual
             gradient[previous_position] -= weighted_residual
@@ -1001,12 +1148,12 @@ class ManifoldSlidingWindowBackend:
             rotation_jacobian = (
                 rpy_to_rotation_matrix(states[previous][ROTATION])
                 @ skew(factor["measurement"])
-            )
+            )[:2, :]
             previous_start = previous * STATE_SIZE
             current_start = current * STATE_SIZE
-            previous_position = slice(previous_start, previous_start + 3)
+            previous_position = slice(previous_start, previous_start + 2)
             previous_rotation = slice(previous_start + 3, previous_start + 6)
-            current_position = slice(current_start, current_start + 3)
+            current_position = slice(current_start, current_start + 2)
             weighted_residual = information * residual
             weighted_rotation = information[:, None] * rotation_jacobian
             gradient[previous_position] -= weighted_residual
@@ -1025,6 +1172,48 @@ class ManifoldSlidingWindowBackend:
             hessian[current_position, current_position] += information_matrix
             cost = 0.5 * float(np.sum(information * residual ** 2))
             return hessian, gradient, cost
+
+        if name == "imu_preintegrated" and self.cpp_math_core_enabled:
+            previous, current = factor["indices"]
+            local_hessian, local_gradient, cost = (
+                cpp_imu_preintegrated_normal(
+                    *_cpp_imu_factor_arguments(factor, states, self.gravity)
+                )
+            )
+            indices = np.r_[
+                np.arange(
+                    previous * STATE_SIZE,
+                    (previous + 1) * STATE_SIZE,
+                ),
+                np.arange(
+                    current * STATE_SIZE,
+                    (current + 1) * STATE_SIZE,
+                ),
+            ]
+            hessian[np.ix_(indices, indices)] += local_hessian
+            gradient[indices] += local_gradient
+            return hessian, gradient, float(cost)
+
+        if name == "visual_reprojection" and self.cpp_math_core_enabled:
+            previous, current = factor["indices"]
+            local_hessian, local_gradient, cost = (
+                cpp_visual_reprojection_normal(
+                    *_cpp_visual_factor_arguments(factor, states)
+                )
+            )
+            indices = np.r_[
+                np.arange(
+                    previous * STATE_SIZE,
+                    (previous + 1) * STATE_SIZE,
+                ),
+                np.arange(
+                    current * STATE_SIZE,
+                    (current + 1) * STATE_SIZE,
+                ),
+            ]
+            hessian[np.ix_(indices, indices)] += local_hessian
+            gradient[indices] += local_gradient
+            return hessian, gradient, float(cost)
 
         jacobians = {}
         if name == "visual_reprojection":
@@ -1116,6 +1305,16 @@ class ManifoldSlidingWindowBackend:
             return 0.0
         name = factor["name"]
         if name == "marginal_prior":
+            if self.cpp_math_core_enabled:
+                return float(cpp_marginal_prior_cost(
+                    np.asarray(factor["references"], dtype=float),
+                    np.asarray(
+                        [states[index] for index in factor["indices"]],
+                        dtype=float,
+                    ),
+                    factor["normal_hessian"],
+                    factor["normal_gradient"],
+                ))
             local = np.concatenate([
                 state_local(reference, states[index])
                 for reference, index in zip(
@@ -1128,6 +1327,19 @@ class ManifoldSlidingWindowBackend:
             )
         if name == "lidar_point_plane":
             index = factor["indices"][0]
+            if self.cpp_math_core_enabled:
+                measurement = factor["measurement"]
+                return float(cpp_lidar_point_plane_cost(
+                    states[index][:6],
+                    measurement.lidar_points,
+                    measurement.plane_normals,
+                    measurement.plane_points,
+                    measurement.lidar_to_body_rotation,
+                    measurement.lidar_to_body_translation,
+                    factor["variance"],
+                    factor["effective_weight"],
+                    self.lidar_huber_delta,
+                ))
             residual = point_plane_residual(
                 factor["measurement"], states[index][:6]
             )
@@ -1148,6 +1360,10 @@ class ManifoldSlidingWindowBackend:
                 + delta @ factor["normal_hessian"] @ delta
             )
             return 0.5 * float(cost)
+        if name == "visual_reprojection" and self.cpp_math_core_enabled:
+            return float(cpp_visual_reprojection_cost(
+                *_cpp_visual_factor_arguments(factor, states)
+            ))
         if name == "visual_reprojection":
             previous, current = factor["indices"]
             residual, _, _, valid = visual_reprojection_residual_jacobians(
@@ -1159,6 +1375,10 @@ class ManifoldSlidingWindowBackend:
             standardized = residual / np.sqrt(variance)
             loss, _ = huber_loss_and_weight(standardized, 2.5)
             return factor["effective_weight"] * float(np.sum(loss))
+        if name == "imu_preintegrated" and self.cpp_math_core_enabled:
+            return float(cpp_imu_preintegrated_cost(
+                *_cpp_imu_factor_arguments(factor, states, self.gravity)
+            ))
 
         residual = self._residual(factor, states)
         if "information_matrix" in factor:
@@ -1234,12 +1454,19 @@ class ManifoldSlidingWindowBackend:
                     rejected_steps += 1
                     continue
                 update_started = self._profile_start()
-                candidate = []
-                for index, state in enumerate(states):
-                    local = increment[
-                        index * STATE_SIZE:(index + 1) * STATE_SIZE
-                    ]
-                    candidate.append(state_plus(state, local))
+                if self.cpp_math_core_enabled:
+                    candidate_matrix = cpp_state_plus_batch(
+                        np.asarray(states, dtype=float),
+                        increment.reshape((-1, STATE_SIZE)),
+                    )
+                    candidate = [row.copy() for row in candidate_matrix]
+                else:
+                    candidate = []
+                    for index, state in enumerate(states):
+                        local = increment[
+                            index * STATE_SIZE:(index + 1) * STATE_SIZE
+                        ]
+                        candidate.append(state_plus(state, local))
                 self._profile_stop("state_update", update_started)
                 candidate_hessian = None
                 candidate_gradient = None

@@ -107,6 +107,7 @@ def live_propagation_admission(
     last_output_stamp_s,
     latest_lidar_activity_s,
     lidar_silence_timeout_s,
+    maximum_output_age_s,
     minimum_output_interval_s,
     maximum_imu_age_s,
 ):
@@ -117,6 +118,7 @@ def live_propagation_admission(
         target_stamp_s,
         anchor_stamp_s,
         lidar_silence_timeout_s,
+        maximum_output_age_s,
         minimum_output_interval_s,
         maximum_imu_age_s,
     )
@@ -130,6 +132,7 @@ def live_propagation_admission(
         return False, "clock_unavailable"
     if (
         float(lidar_silence_timeout_s) < 0.0
+        or float(maximum_output_age_s) <= 0.0
         or float(minimum_output_interval_s) <= 0.0
         or float(maximum_imu_age_s) <= 0.0
     ):
@@ -142,7 +145,16 @@ def live_propagation_admission(
         or latest_lidar_activity_s > now_s
     ):
         return False, "lidar_clock_invalid"
-    if now_s - latest_lidar_activity_s <= float(lidar_silence_timeout_s):
+    output_age_s = math.inf
+    if last_output_stamp_s is not None:
+        last_output_stamp_s = float(last_output_stamp_s)
+        if not math.isfinite(last_output_stamp_s):
+            return False, "last_output_invalid"
+        output_age_s = now_s - last_output_stamp_s
+    if (
+        now_s - latest_lidar_activity_s <= float(lidar_silence_timeout_s)
+        and output_age_s <= float(maximum_output_age_s)
+    ):
         return False, "lidar_recent"
     imu_age_s = now_s - latest_imu_stamp_s
     if imu_age_s < -0.05:
@@ -152,13 +164,57 @@ def live_propagation_admission(
     if target_stamp_s <= anchor_stamp_s + float(minimum_output_interval_s):
         return False, "imu_not_advanced"
     if last_output_stamp_s is not None:
-        last_output_stamp_s = float(last_output_stamp_s)
-        if not math.isfinite(last_output_stamp_s):
-            return False, "last_output_invalid"
         if target_stamp_s <= (
             last_output_stamp_s + float(minimum_output_interval_s)
         ):
             return False, "output_not_advanced"
+    return True, "ready"
+
+
+def auxiliary_keyframe_admission(
+    now_s,
+    latest_imu_stamp_s,
+    last_state_stamp_s,
+    latest_native_arrival_s,
+    lidar_silence_timeout_s,
+    minimum_state_interval_s,
+    maximum_imu_age_s,
+):
+    """Admit one non-LiDAR graph state after a real native-factor outage."""
+    required = (
+        now_s,
+        latest_imu_stamp_s,
+        last_state_stamp_s,
+        latest_native_arrival_s,
+        lidar_silence_timeout_s,
+        minimum_state_interval_s,
+        maximum_imu_age_s,
+    )
+    if any(value is None or not math.isfinite(float(value)) for value in required):
+        return False, "invalid_time"
+    now_s = float(now_s)
+    latest_imu_stamp_s = float(latest_imu_stamp_s)
+    last_state_stamp_s = float(last_state_stamp_s)
+    latest_native_arrival_s = float(latest_native_arrival_s)
+    if min(now_s, latest_imu_stamp_s, last_state_stamp_s) <= 0.0:
+        return False, "clock_unavailable"
+    if (
+        float(lidar_silence_timeout_s) < 0.0
+        or float(minimum_state_interval_s) <= 0.0
+        or float(maximum_imu_age_s) <= 0.0
+    ):
+        raise ValueError("auxiliary keyframe timing limits are invalid")
+    if latest_native_arrival_s > now_s:
+        return False, "lidar_from_future"
+    if now_s - latest_native_arrival_s <= float(lidar_silence_timeout_s):
+        return False, "lidar_recent"
+    imu_age_s = now_s - latest_imu_stamp_s
+    if imu_age_s < -0.05:
+        return False, "imu_from_future"
+    if imu_age_s > float(maximum_imu_age_s):
+        return False, "imu_stale"
+    if latest_imu_stamp_s <= last_state_stamp_s + float(minimum_state_interval_s):
+        return False, "imu_not_advanced"
     return True, "ready"
 
 

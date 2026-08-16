@@ -5,6 +5,7 @@ from nav_msgs.msg import Odometry
 from uf_interfaces.msg import FusionEpoch
 from uf_sensor_pipeline.external_nav_gate import (
     ExternalNavGate,
+    capability_covariance_scale,
     capability_support_allowed,
     fusion_epoch_advances,
     odometry_state_guard_reason,
@@ -51,6 +52,18 @@ class SchedulerStateGateTest(unittest.TestCase):
         self.assertFalse(capability_support_allowed(
             support, ("propagation", "horizontal_motion"), 0.15
         ))
+
+    def test_capability_loss_inflates_covariance_without_forcing_outage(self):
+        self.assertAlmostEqual(
+            capability_covariance_scale(0.8, 0.15, 5.0), 1.25
+        )
+        self.assertAlmostEqual(
+            capability_covariance_scale(0.0, 0.15, 5.0), 5.0
+        )
+        self.assertEqual(
+            capability_covariance_scale(0.0, 0.15, 5.0, enabled=False),
+            1.0,
+        )
 
     def test_only_new_applied_fusion_epoch_resets_jump_reference(self):
         self.assertTrue(fusion_epoch_advances(True, 4, 3))
@@ -130,6 +143,31 @@ class SchedulerStateGateTest(unittest.TestCase):
         self.assertEqual(
             odometry_state_guard_reason(current),
             "position_covariance_exceeds_limit",
+        )
+
+    def test_state_guard_can_keep_finite_degraded_covariance_streaming(self):
+        current = self.odometry(10.1)
+        current.pose.covariance[7] = 100000.0
+        current.pose.covariance[35] = 1000.0
+        self.assertEqual(
+            odometry_state_guard_reason(
+                current,
+                stop_on_excessive_covariance=False,
+            ),
+            "ok",
+        )
+
+    def test_degraded_covariance_mode_still_rejects_physical_jump(self):
+        previous = self.odometry(10.0)
+        current = self.odometry(10.1, position=(8.0, 0.0, 0.0))
+        current.pose.covariance[0] = 100000.0
+        self.assertEqual(
+            odometry_state_guard_reason(
+                current,
+                previous,
+                stop_on_excessive_covariance=False,
+            ),
+            "position_jump_exceeds_limit",
         )
 
     def test_state_guard_rejects_position_and_orientation_jumps(self):

@@ -6,8 +6,35 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 LOG_DIR=${LOG_DIR:-"$REPO_ROOT/logs/unified_backend_$(date +%Y%m%d_%H%M%S)"}
 LIDAR_WS=${LIDAR_WS:-"$HOME/multi-slam-deps/mid360_ws"}
 ENABLE_VISION=${ENABLE_VISION:-false}
+case "${ENABLE_VISION,,}" in
+  1|true|yes|on)
+    ENABLE_VISION_ARG=true
+    VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
+    ;;
+  0|false|no|off)
+    ENABLE_VISION_ARG=false
+    VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-disabled}
+    ;;
+  *)
+    printf 'ENABLE_VISION must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
+case "$VISUAL_FACTOR_MODE" in
+  disabled|paper_reprojection) ;;
+  *)
+    printf 'VISUAL_FACTOR_MODE must be disabled or paper_reprojection.\n' >&2
+    exit 2
+    ;;
+esac
+RGBD_MINIMUM_DEPTH_M=${RGBD_MINIMUM_DEPTH_M:-0.30}
+RGBD_MAXIMUM_DEPTH_M=${RGBD_MAXIMUM_DEPTH_M:-6.0}
 PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-false}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
+PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-false}
+CALIBRATION_APPLY_LOCKED_TIME_OFFSET=${CALIBRATION_APPLY_LOCKED_TIME_OFFSET:-false}
+CALIBRATION_APPLY_LOCKED_ROTATION=${CALIBRATION_APPLY_LOCKED_ROTATION:-false}
+VISUAL_TIME_CALIBRATION_APPLY_LOCKED=${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}
 USE_SIM_TIME=${USE_SIM_TIME:-true}
 FRONTEND_STATE_SEED_ENABLED=${FRONTEND_STATE_SEED_ENABLED:-false}
 # The unified backend owns the trajectory by default.  Keep the legacy
@@ -18,6 +45,13 @@ FRONTEND_STATE_SEED_ENABLED=${FRONTEND_STATE_SEED_ENABLED:-false}
 FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-false}
 EXTERNAL_NAV_OUTPUT_TOPIC=${EXTERNAL_NAV_OUTPUT_TOPIC:-/mavros/odometry/out}
 RELOCALIZATION_SEARCH_TIMEOUT_S=${RELOCALIZATION_SEARCH_TIMEOUT_S:-6.0}
+if [[ -z "${PUBLISH_MAVROS_FRAME_TRANSFORMS+x}" ]]; then
+  if [[ "$EXTERNAL_NAV_OUTPUT_TOPIC" == "/mavros/odometry/out" ]]; then
+    PUBLISH_MAVROS_FRAME_TRANSFORMS=true
+  else
+    PUBLISH_MAVROS_FRAME_TRANSFORMS=false
+  fi
+fi
 
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
@@ -71,7 +105,7 @@ trap cleanup EXIT INT TERM
 
 setsid ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
   use_sim_time:="$USE_SIM_TIME" \
-  enable_vision:="$ENABLE_VISION" \
+  enable_vision:="$ENABLE_VISION_ARG" \
   >"$LOG_DIR/sensor_pipeline.log" 2>&1 &
 pids+=("$!")
 
@@ -87,13 +121,32 @@ setsid env \
   NUMEXPR_NUM_THREADS="$BACKEND_NUMERIC_THREADS" \
   ros2 launch uf_backend_fusion online_backend.launch.py \
   use_sim_time:="$USE_SIM_TIME" \
+  enable_vision:="$ENABLE_VISION_ARG" \
+  visual_factor_mode:="$VISUAL_FACTOR_MODE" \
+  rgbd_minimum_depth_m:="$RGBD_MINIMUM_DEPTH_M" \
+  rgbd_maximum_depth_m:="$RGBD_MAXIMUM_DEPTH_M" \
   preserve_lio_anchor:="$PRESERVE_LIO_ANCHOR" \
   frontend_state_seed_enabled:="$FRONTEND_STATE_SEED_ENABLED_ARG" \
   frontend_scan_prediction_enabled:="$FRONTEND_SCAN_PREDICTION_ENABLED_ARG" \
+  performance_profiling_enabled:="$PERFORMANCE_PROFILING_ENABLED" \
+  calibration_apply_locked_time_offset:="$CALIBRATION_APPLY_LOCKED_TIME_OFFSET" \
+  calibration_apply_locked_rotation:="$CALIBRATION_APPLY_LOCKED_ROTATION" \
+  visual_time_calibration_apply_locked:="$VISUAL_TIME_CALIBRATION_APPLY_LOCKED" \
   external_nav_output_topic:="$EXTERNAL_NAV_OUTPUT_TOPIC" \
+  publish_mavros_frame_transforms:="$PUBLISH_MAVROS_FRAME_TRANSFORMS" \
   relocalization_search_timeout_s:="$RELOCALIZATION_SEARCH_TIMEOUT_S" \
   >"$LOG_DIR/online_backend.log" 2>&1 &
 pids+=("$!")
 
 printf 'Unified backend stack started. Logs: %s\n' "$LOG_DIR"
-wait "${pids[@]}"
+# All three launch processes are intended to remain alive together. Stop the
+# stack as soon as any one exits so callers cannot mistake stale DDS discovery
+# or a surviving sidecar for a healthy unified backend.
+if wait -n "${pids[@]}"; then
+  status=0
+else
+  status=$?
+fi
+printf 'Unified backend stack child exited unexpectedly (status=%s).\n' \
+  "$status" >&2
+exit "$status"

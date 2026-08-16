@@ -391,14 +391,32 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     sleep 1
   done
   printf 'Requesting ArduPilot telemetry streams for MAVROS pose/IMU/GPS topics...\n'
-  ros2 run multi_slam_uav_sim mavros_stream_requester --ros-args \
-    -p use_sim_time:="$USE_SIM_TIME" \
-    -p mavros_ns:=/mavros \
-    -p stream_rate_hz:=20 \
-    -p position_rate_hz:=20.0 \
-    -p imu_rate_hz:=100.0 \
-    -p gps_rate_hz:=10.0 \
-    >"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
+  : >"$LOG_DIR/mavros_stream_requester.log"
+  mavros_imu_ready=0
+  for stream_attempt in 1 2; do
+    printf '\n--- telemetry request attempt %s ---\n' "$stream_attempt" \
+      >>"$LOG_DIR/mavros_stream_requester.log"
+    ros2 run multi_slam_uav_sim mavros_stream_requester --ros-args \
+      -p use_sim_time:="$USE_SIM_TIME" \
+      -p mavros_ns:=/mavros \
+      -p timeout_s:=${MAVROS_STREAM_CONNECT_TIMEOUT_S:-60.0} \
+      -p stream_rate_hz:=20 \
+      -p position_rate_hz:=20.0 \
+      -p imu_rate_hz:=100.0 \
+      -p gps_rate_hz:=10.0 \
+      >>"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
+    if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
+        --topic /mavros/imu/data_raw --timeout 15 \
+        --reliability best_effort >/dev/null 2>&1; then
+      mavros_imu_ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$mavros_imu_ready" != 1 ]]; then
+    printf 'MAVROS connected but HIGHRES_IMU telemetry is unavailable.\n' >&2
+    exit 5
+  fi
 fi
 
 setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \

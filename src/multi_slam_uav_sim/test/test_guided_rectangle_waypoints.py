@@ -199,3 +199,30 @@ def test_strict_route_hold_does_not_require_fresh_backend_feedback(monkeypatch):
     node.publish_setpoint(99.0, 98.0, 97.0, 0.0)
 
     assert calls == [(1.0, 2.0, 3.0, 0.4)]
+
+
+def test_calibration_only_finish_requests_land_once():
+    node = GuidedSCurveWaypoints.__new__(GuidedSCurveWaypoints)
+    node.final_hold_time_s = 0.0
+    node.land_at_end = True
+    node.land_disarm_timeout_s = 5.0
+    node.state = SimpleNamespace(armed=False)
+    phases = []
+    calls = []
+    messages = []
+    node._publish_mission_phase = phases.append
+    node.land_cli = SimpleNamespace(wait_for_service=lambda timeout_sec: True)
+    node.call = lambda client, request, label: (
+        calls.append((client, request, label))
+        or SimpleNamespace(success=True)
+    )
+    node._log_status = lambda _label: None
+    node.get_logger = lambda: SimpleNamespace(info=messages.append)
+
+    node.finish_mission((0.0, 0.0, 5.0), 0.0, "calibration")
+
+    assert phases == ["landing"]
+    assert len(calls) == 1
+    assert calls[0][0] is node.land_cli
+    assert calls[0][2] == "land"
+    assert messages == ["LAND completed and FCU disarm confirmed."]

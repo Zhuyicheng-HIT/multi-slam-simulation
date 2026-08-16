@@ -1,0 +1,15 @@
+/fast_lio/native_lidar_factor:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 2048
+/fast_lio/frontend_scan_request:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 2048
+/sensors/imu:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 2048

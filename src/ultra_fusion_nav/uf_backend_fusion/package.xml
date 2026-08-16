@@ -17,7 +17,9 @@
   <exec_depend>rosbag2_py</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>uf_interfaces</exec_depend>
+  <exec_depend>uf_backend_core_cpp</exec_depend>
   <exec_depend>uf_reliability</exec_depend>
   <exec_depend>uf_relocalization</exec_depend>
   <exec_depend>uf_sensor_pipeline</exec_depend>

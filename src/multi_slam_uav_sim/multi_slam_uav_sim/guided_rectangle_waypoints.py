@@ -51,7 +51,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("flow_max_age_s", 1.0)
         self.declare_parameter("command_retry_s", 60.0)
         self.declare_parameter("land_at_end", True)
-        self.declare_parameter("land_disarm_timeout_s", 45.0)
+        self.declare_parameter("land_disarm_timeout_s", 60.0)
         self.declare_parameter("final_hold_time_s", 0.0)
         # SERIAL1/5762 is reserved for the MTF01P. Use the independent
         # SERIAL2 MAVLink endpoint for direct COMMAND_INT acknowledgements.

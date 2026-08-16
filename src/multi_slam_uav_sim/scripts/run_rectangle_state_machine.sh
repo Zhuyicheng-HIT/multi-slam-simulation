@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+# Keep launchers on the middleware validated by the restored workspace. A
+# caller can still override this for an explicit transport comparison.
+export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PKG_SHARE=$(cd "$SCRIPT_DIR/.." && pwd)
 WS_INSTALL=$(cd "$PKG_SHARE/../../.." && pwd)
@@ -32,15 +36,9 @@ Continuing because the state-machine node has its own bounded wait for
 /mavros/state.connected. This script will not start Gazebo, SITL, or MAVROS.
 EOF
 fi
-clock_ready=false
-for _attempt in 1 2 3; do
-  if timeout 8s ros2 topic echo /clock --once --field clock \
-      --qos-reliability best_effort >/dev/null 2>&1; then
-    clock_ready=true
-    break
-  fi
-done
-if [[ "$clock_ready" != true ]]; then
+if ! python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
+    --topic /clock --timeout 24 --reliability best_effort \
+    >/dev/null 2>&1; then
   printf 'ROS simulation /clock is unavailable. Start the updated simulation stack first.\n' >&2
   exit 2
 fi

@@ -93,7 +93,7 @@ class SchedulerCoreTest(unittest.TestCase):
         self.assertFalse(result.factor_enabled["gnss"])
         self.assertEqual(result.covariance_inflation["gnss"], 20.0)
 
-    def test_required_imu_failure_is_failsafe(self):
+    def test_required_imu_failure_is_risk_when_other_sources_survive(self):
         core = ReliabilitySchedulerCore(SchedulerConfig(
             active_modalities=("lidar", "gnss", "imu", "optical_flow"),
             required_modalities=("imu",),
@@ -107,7 +107,66 @@ class SchedulerCoreTest(unittest.TestCase):
             "imu": score(0.90, valid=False),
             "optical_flow": score(0.10),
         }, 0.1)
-        self.assertEqual(result.health_state, "FAILSAFE")
+        self.assertEqual(result.health_state, "RISK")
+        self.assertTrue(result.factor_enabled["lidar"])
+        self.assertTrue(result.factor_enabled["gnss"])
+        self.assertTrue(result.factor_enabled["optical_flow"])
+        self.assertEqual(result.capability_support["propagation"], 0.0)
+
+    def test_imu_only_keeps_bounded_estimator_available(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "gnss", "imu", "optical_flow"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=1,
+            stale_after_s=1.0,
+            transition_dwell_s=0.0,
+        ))
+        result = core.update({
+            "lidar": score(1.0, valid=False),
+            "gnss": score(1.0, valid=False),
+            "imu": score(0.10),
+            "optical_flow": score(1.0, valid=False),
+        }, 0.1)
+        self.assertNotEqual(result.health_state, "FAILSAFE")
+        self.assertTrue(result.factor_enabled["imu"])
+        self.assertGreater(result.capability_support["propagation"], 0.0)
+        self.assertEqual(result.capability_support["horizontal_motion"], 0.0)
+        self.assertEqual(result.estimator_support, 0.0)
+
+    def test_each_single_healthy_source_keeps_output_available(self):
+        modalities = ("lidar", "gnss", "imu", "optical_flow", "vision")
+        for survivor in modalities:
+            with self.subTest(survivor=survivor):
+                core = ReliabilitySchedulerCore(SchedulerConfig(
+                    active_modalities=modalities,
+                    required_modalities=("imu",),
+                    minimum_usable_modalities=1,
+                    stale_after_s=1.0,
+                    transition_dwell_s=0.0,
+                    recovery_dwell_s=0.0,
+                ))
+                scores = {
+                    name: score(
+                        0.10 if name == survivor else 1.0,
+                        valid=name == survivor,
+                    )
+                    for name in modalities
+                }
+                result = core.update(scores, 0.1)
+
+                self.assertNotEqual(result.health_state, "FAILSAFE")
+                self.assertTrue(result.factor_enabled[survivor])
+                self.assertEqual(
+                    sum(result.factor_enabled.values()),
+                    1,
+                )
+                if survivor == "imu":
+                    self.assertIn(
+                        result.health_state,
+                        ("DEGRADED", "RECOVERED", "NORMAL"),
+                    )
+                else:
+                    self.assertEqual(result.health_state, "RISK")
 
     def test_lidar_can_use_a_longer_score_timeout_without_extending_imu(self):
         core = ReliabilitySchedulerCore(SchedulerConfig(
@@ -171,7 +230,7 @@ class SchedulerCoreTest(unittest.TestCase):
         }, 0.1)
         self.assertFalse(result.factor_enabled["imu"])
         self.assertEqual(result.covariance_inflation["imu"], 20.0)
-        self.assertEqual(result.health_state, "FAILSAFE")
+        self.assertEqual(result.health_state, "RISK")
 
     def test_rotation_gated_flow_only_degrades_four_source_system(self):
         core = ReliabilitySchedulerCore(SchedulerConfig(
@@ -255,6 +314,44 @@ class SchedulerCoreTest(unittest.TestCase):
             "optical_flow": score(0.10, arrival_s=0.2),
         }, 0.3)
         self.assertTrue(reenabled.factor_enabled["gnss"])
+
+    def test_provisional_gnss_breaks_innovation_bootstrap_deadlock(self):
+        result = self.core.update({
+            "gnss": score(
+                0.55254698,
+                arrival_s=0.0,
+                reasons=(
+                    "incomplete_paper_evidence",
+                    "provisional_gnss_direct_evidence_only",
+                ),
+                hard_gate_allowed=False,
+            ),
+            "optical_flow": score(0.10, arrival_s=0.0),
+        }, 0.1)
+
+        self.assertTrue(result.factor_enabled["gnss"])
+        self.assertAlmostEqual(
+            result.reliability_weights["gnss"], 0.44745302
+        )
+        self.assertAlmostEqual(
+            result.covariance_inflation["gnss"], 1.0 / 0.44745302
+        )
+        self.assertIn(
+            "gnss_provisional_bootstrap", result.reasons["gnss"]
+        )
+
+    def test_nonprovisional_gnss_still_obeys_enable_hysteresis(self):
+        result = self.core.update({
+            "gnss": score(
+                0.60,
+                arrival_s=0.0,
+                reasons=("large_covariance_eq23",),
+                hard_gate_allowed=False,
+            ),
+            "optical_flow": score(0.10, arrival_s=0.0),
+        }, 0.1)
+
+        self.assertFalse(result.factor_enabled["gnss"])
 
     def test_soft_only_evidence_cannot_binary_disable_an_enabled_factor(self):
         self.core.update({

@@ -232,6 +232,12 @@ class ReliabilityTimelineRecorder(Node):
                 "keyframe_period_s": self._finite_float(
                     values, "keyframe_period_s"
                 ),
+                "last_geometric_tracks": int(
+                    values.get("last_geometric_tracks", 0)
+                ),
+                "last_valid_depth_tracks": int(
+                    values.get("last_valid_depth_tracks", 0)
+                ),
                 "last_frontend_latency_s": self._finite_float(
                     values, "last_frontend_latency_s"
                 ),
@@ -244,6 +250,12 @@ class ReliabilityTimelineRecorder(Node):
                 "last_mean_reprojection_error_px": self._finite_float(
                     values, "last_mean_reprojection_error_px"
                 ),
+                "quality_rejection_counts": {
+                    name.removeprefix("quality_rejected_"): int(value)
+                    for name, value in values.items()
+                    if name.startswith("quality_rejected_")
+                    and name != "quality_rejected_candidates"
+                },
             })
             self.events.append(event)
 
@@ -394,6 +406,12 @@ class ReliabilityTimelineRecorder(Node):
                 "visual_pending_overflow": int(
                     values.get("visual_pending_overflow", 0)
                 ),
+                "visual_prebootstrap_dropped": int(
+                    values.get("visual_prebootstrap_dropped", 0)
+                ),
+                "visual_pending_pre_window_dropped": int(
+                    values.get("visual_pending_pre_window_dropped", 0)
+                ),
                 "visual_duplicate_candidates": int(
                     values.get("visual_duplicate_candidates", 0)
                 ),
@@ -420,6 +438,26 @@ class ReliabilityTimelineRecorder(Node):
                 ),
                 "visual_reprojection_rmse_normalized": float(
                     values.get("visual_reprojection_rmse_normalized", -1.0)
+                ),
+                "visual_time_offset_s": float(
+                    values.get("visual_time_offset_s", 0.0)
+                ),
+                "visual_time_offset_locked": str(
+                    values.get("visual_time_offset_locked", "false")
+                ).lower() in {"1", "true", "yes"},
+                "visual_time_calibration_correlation": float(
+                    values.get("visual_time_calibration_correlation", -1.0)
+                ),
+                "visual_time_calibration_margin": float(
+                    values.get("visual_time_calibration_margin", 0.0)
+                ),
+                "visual_time_calibration_pair_count": int(
+                    values.get("visual_time_calibration_pair_count", 0)
+                ),
+                "visual_time_calibration_reason": str(
+                    values.get(
+                        "visual_time_calibration_reason", "insufficient_samples"
+                    )
                 ),
                 "backend_solve_ms": float(values.get("backend_solve_ms", 0.0)),
                 "backend_solve_mean_ms": float(
@@ -482,6 +520,15 @@ class ReliabilityTimelineRecorder(Node):
                 "native_lidar_matches": int(values.get("native_lidar_matches", 0)),
                 "native_lidar_stamp_error_ms": float(
                     values.get("native_lidar_stamp_error_ms", -1.0)
+                ),
+                "native_lidar_callback_source_age_s": float(
+                    values.get("native_lidar_callback_source_age_s", -1.0)
+                ),
+                "native_lidar_worker_source_age_s": float(
+                    values.get("native_lidar_worker_source_age_s", -1.0)
+                ),
+                "output_source_age_s": float(
+                    values.get("output_source_age_s", -1.0)
                 ),
                 "lidar_prediction_position_innovation_m": float(
                     values.get("lidar_prediction_position_innovation_m", -1.0)
@@ -585,12 +632,27 @@ def summarize(events):
         values = [event[name] for event in lio if math.isfinite(event[name])]
         return statistics.median(values) if values else None
 
-    def backend_nonnegative_median(name):
-        values = [
+    def backend_nonnegative_values(name):
+        return [
             event[name] for event in backend
             if math.isfinite(event[name]) and event[name] >= 0.0
         ]
+
+    def backend_nonnegative_median(name):
+        values = backend_nonnegative_values(name)
         return statistics.median(values) if values else None
+
+    def backend_nonnegative_percentile(name, fraction):
+        values = sorted(backend_nonnegative_values(name))
+        if not values:
+            return None
+        position = (len(values) - 1) * float(fraction)
+        lower = int(math.floor(position))
+        upper = int(math.ceil(position))
+        if lower == upper:
+            return float(values[lower])
+        weight = position - lower
+        return float(values[lower] * (1.0 - weight) + values[upper] * weight)
 
     def flow_nonnegative_median(name):
         values = [
@@ -608,6 +670,13 @@ def summarize(events):
 
     def frontend_max(name):
         return max((event[name] for event in visual_frontend), default=0)
+
+    visual_quality_rejection_counts = {}
+    for event in visual_frontend:
+        for reason, count in event.get("quality_rejection_counts", {}).items():
+            visual_quality_rejection_counts[reason] = max(
+                visual_quality_rejection_counts.get(reason, 0), int(count)
+            )
     states = []
     for event in scheduler:
         state = event["health_state"]
@@ -692,6 +761,17 @@ def summarize(events):
         "backend_visual_pending_overflow_max": max(
             (event["visual_pending_overflow"] for event in backend), default=0
         ),
+        "backend_visual_prebootstrap_dropped_max": max(
+            (event["visual_prebootstrap_dropped"] for event in backend),
+            default=0,
+        ),
+        "backend_visual_pending_pre_window_dropped_max": max(
+            (
+                event["visual_pending_pre_window_dropped"]
+                for event in backend
+            ),
+            default=0,
+        ),
         "backend_visual_duplicate_candidates_max": max(
             (event["visual_duplicate_candidates"] for event in backend),
             default=0,
@@ -707,6 +787,26 @@ def summarize(events):
             (event["visual_linearization_invalid"] for event in backend),
             default=0,
         ),
+        "backend_visual_time_offset_locked": (
+            backend[-1]["visual_time_offset_locked"] if backend else False
+        ),
+        "backend_visual_time_offset_s_last": (
+            backend[-1]["visual_time_offset_s"] if backend else None
+        ),
+        "backend_visual_time_calibration_correlation_last": (
+            backend[-1]["visual_time_calibration_correlation"]
+            if backend else None
+        ),
+        "backend_visual_time_calibration_margin_last": (
+            backend[-1]["visual_time_calibration_margin"] if backend else None
+        ),
+        "backend_visual_time_calibration_pair_count_max": max(
+            (event["visual_time_calibration_pair_count"] for event in backend),
+            default=0,
+        ),
+        "backend_visual_time_calibration_reasons": sorted({
+            event["visual_time_calibration_reason"] for event in backend
+        }),
         "visual_frontend_samples": len(visual_frontend),
         "visual_raw_frames_max": frontend_max("raw_frames"),
         "visual_tracked_frames_max": frontend_max("tracked_frames"),
@@ -717,6 +817,7 @@ def summarize(events):
         "visual_quality_rejected_candidates_max": frontend_max(
             "quality_rejected_candidates"
         ),
+        "visual_quality_rejection_counts": visual_quality_rejection_counts,
         "visual_published_candidates_max": frontend_max("published_candidates"),
         "visual_keyframe_profiles": sorted({
             event["keyframe_profile"] for event in visual_frontend
@@ -858,6 +959,31 @@ def summarize(events):
         ),
         "backend_native_lidar_stamp_error_ms_median": backend_nonnegative_median(
             "native_lidar_stamp_error_ms"
+        ),
+        "backend_native_lidar_callback_source_age_s_median": (
+            backend_nonnegative_median("native_lidar_callback_source_age_s")
+        ),
+        "backend_native_lidar_callback_source_age_s_p95": (
+            backend_nonnegative_percentile(
+                "native_lidar_callback_source_age_s", 0.95
+            )
+        ),
+        "backend_native_lidar_worker_source_age_s_median": (
+            backend_nonnegative_median("native_lidar_worker_source_age_s")
+        ),
+        "backend_native_lidar_worker_source_age_s_p95": (
+            backend_nonnegative_percentile(
+                "native_lidar_worker_source_age_s", 0.95
+            )
+        ),
+        "backend_output_source_age_s_median": backend_nonnegative_median(
+            "output_source_age_s"
+        ),
+        "backend_output_source_age_s_p95": backend_nonnegative_percentile(
+            "output_source_age_s", 0.95
+        ),
+        "backend_output_source_age_s_max": max(
+            (event["output_source_age_s"] for event in backend), default=-1.0
         ),
         "backend_lidar_factor_sources": sorted({
             event["lidar_factor_source"] for event in backend

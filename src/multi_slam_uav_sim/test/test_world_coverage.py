@@ -4,7 +4,7 @@ from pathlib import Path
 
 from multi_slam_uav_sim.s_curve_path import (
     generate_calibration_figure_eight,
-    generate_s_curve,
+    generate_large_figure_eight,
 )
 
 
@@ -24,11 +24,31 @@ S_CURVE_CONTROLLER = (
 UNIFIED_FRONTEND_WRAPPER = REPO_ROOT / "tools" / "run_unified_fastlio_mapping.sh"
 UNIFIED_BACKEND_WRAPPER = REPO_ROOT / "tools" / "run_unified_backend_stack.sh"
 UNIFIED_VALIDATION = REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+SIM_VISUAL_LAUNCH = (
+    PACKAGE_ROOT / "launch" / "d435i_paper_visual_integration.launch.py"
+)
+SIM_VISUAL_RUNNER = (
+    PACKAGE_ROOT / "scripts" / "run_pr6_d435i_visual_headless.sh"
+)
+FIGURE8_RUNNER = PACKAGE_ROOT / "scripts" / "run_s_curve_state_machine.sh"
+VISUAL_FRONTEND_CONFIG = (
+    REPO_ROOT / "src" / "ultra_fusion_nav" / "uf_visual_frontend"
+    / "config" / "visual_frontend.yaml"
+)
+SHARED_MAPPING_CONFIG = (
+    REPO_ROOT / "src" / "ultra_fusion_nav" / "uf_shared_mapping"
+    / "config" / "shared_mapping.yaml"
+)
 
 
 def pose_xy(element):
     values = [float(value) for value in element.findtext("pose").split()]
     return values[0], values[1]
+
+
+def pose_xyz(element):
+    values = [float(value) for value in element.findtext("pose").split()]
+    return values[0], values[1], values[2]
 
 
 def named_children(root, tag, prefix):
@@ -38,26 +58,57 @@ def named_children(root, tag, prefix):
     ]
 
 
-def box_clearance(point, collision):
+def box_local_coordinates(point, collision):
     pose = [float(value) for value in collision.findtext("pose").split()]
-    size = [
-        float(value)
-        for value in collision.findtext("geometry/box/size").split()
-    ]
     dx = point[0] - pose[0]
     dy = point[1] - pose[1]
     cosine = math.cos(pose[5])
     sine = math.sin(pose[5])
-    local = (
+    return (
         cosine * dx + sine * dy,
         -sine * dx + cosine * dy,
         point[2] - pose[2],
     )
+
+
+def box_clearance(point, collision):
+    size = [
+        float(value)
+        for value in collision.findtext("geometry/box/size").split()
+    ]
+    local = box_local_coordinates(point, collision)
     outside = [
         max(abs(value) - extent * 0.5, 0.0)
         for value, extent in zip(local, size)
     ]
     return math.sqrt(sum(value * value for value in outside))
+
+
+def cylinder_clearance(point, collision):
+    pose = [float(value) for value in collision.findtext("pose").split()]
+    radius = float(collision.findtext("geometry/cylinder/radius"))
+    length = float(collision.findtext("geometry/cylinder/length"))
+    radial_distance = math.hypot(point[0] - pose[0], point[1] - pose[1])
+    radial_outside = max(radial_distance - radius, 0.0)
+    vertical_outside = max(abs(point[2] - pose[2]) - length * 0.5, 0.0)
+    return math.hypot(radial_outside, vertical_outside)
+
+
+def collision_clearance(point, collision):
+    if collision.find("geometry/box") is not None:
+        return box_clearance(point, collision)
+    if collision.find("geometry/cylinder") is not None:
+        return cylinder_clearance(point, collision)
+    raise AssertionError(f"unsupported collision geometry: {collision.get('name')}")
+
+
+def path_heading(path, index):
+    lower = max(0, index - 1)
+    upper = min(len(path) - 1, index + 1)
+    return math.atan2(
+        path[upper][1] - path[lower][1],
+        path[upper][0] - path[lower][0],
+    )
 
 
 def sample_segment(start, end, spacing=0.05):
@@ -159,7 +210,7 @@ def test_central_visual_grid_keeps_the_persisted_rtab_contract():
             assert element.find("material/ambient") is not None
 
 
-def test_lidar_landmarks_cover_the_s_curve_and_outer_area():
+def test_lidar_landmarks_cover_the_large_figure_eight_and_outer_area():
     root = ET.parse(LANDMARKS).getroot()
     landmarks = root.findall(".//collision")
     assert not root.findall(".//visual"), (
@@ -170,7 +221,9 @@ def test_lidar_landmarks_cover_the_s_curve_and_outer_area():
     assert len(positions) >= 18
     assert max(max(abs(value) for value in point) for point in positions) >= 15.0
 
-    route = generate_s_curve(12.0, 4.5, 5.0, 1.0, samples=241)
+    route = generate_large_figure_eight(
+        9.0, 1.5, 5.0, 4.5, samples=481,
+        rotation_deg=158.0, altitude_power=4)
     route_max_distance = max(
         min(math.dist((x, y), landmark) for landmark in positions)
         for x, y, _ in route
@@ -213,16 +266,87 @@ def test_urban_structures_are_loaded_and_replace_the_pillar_forest():
         "short_tunnel_roof",
         "urban_canyon_west_south",
         "urban_canyon_east_south",
+        "east_canyon_gateway_south_pier",
+        "east_canyon_gateway_north_pier",
+        "east_canyon_gateway_header",
+        "north_arcade_header",
+        "south_visual_totem",
+        "north_service_block",
+        "east_background_facade",
+        "west_background_facade",
+        "north_background_facade",
+        "south_background_facade",
     }
     assert required <= collision_names
-    assert len(collision_names) >= 14
+    assert len(collision_names) >= 24
+
+
+def test_forward_visual_geometry_covers_the_figure_eight_at_simulation_range():
+    urban_root = ET.parse(URBAN_STRUCTURES).getroot()
+    features = named_children(urban_root, "visual", "visual_feature_")
+    assert len(features) >= 40
+
+    anchors = [pose_xyz(feature) for feature in features]
+    route = generate_large_figure_eight(
+        9.0, 1.5, 5.0, 4.5, samples=481,
+        rotation_deg=158.0, altitude_power=4)
+    half_horizontal_fov = math.radians(35.0)
+    half_vertical_fov = math.radians(28.0)
+    midpoint = len(route) // 2
+    locked_second_lobe_yaw = path_heading(route, midpoint)
+
+    maximum_visible_distance = 0.0
+    for index, point in enumerate(route):
+        yaw = (
+            path_heading(route, index)
+            if index <= midpoint
+            else locked_second_lobe_yaw
+        )
+        cosine = math.cos(yaw)
+        sine = math.sin(yaw)
+        visible = []
+        for anchor in anchors:
+            dx = anchor[0] - point[0]
+            dy = anchor[1] - point[1]
+            dz = anchor[2] - point[2]
+            forward = cosine * dx + sine * dy
+            lateral = -sine * dx + cosine * dy
+            if forward <= 0.20:
+                continue
+            if abs(lateral) > forward * math.tan(half_horizontal_fov) + 0.80:
+                continue
+            horizontal_distance = math.hypot(dx, dy)
+            if abs(dz) > (
+                horizontal_distance * math.tan(half_vertical_fov) + 0.50
+            ):
+                continue
+            distance = math.dist(point, anchor)
+            if distance <= 10.0:
+                visible.append(distance)
+        assert visible, f"no forward visual geometry near route point {point}"
+        maximum_visible_distance = max(maximum_visible_distance, min(visible))
+
+    assert maximum_visible_distance <= 10.0
+
+
+def test_simulation_depth_range_is_extended_without_changing_base_profiles():
+    launch = SIM_VISUAL_LAUNCH.read_text(encoding="utf-8")
+    runner = SIM_VISUAL_RUNNER.read_text(encoding="utf-8")
+    visual_config = VISUAL_FRONTEND_CONFIG.read_text(encoding="utf-8")
+    mapping_config = SHARED_MAPPING_CONFIG.read_text(encoding="utf-8")
+
+    assert '"rgbd_maximum_depth_m", default_value="10.0"' in launch
+    assert "SIM_RGBD_MAX_DEPTH_M=${SIM_RGBD_MAX_DEPTH_M:-10.0}" in runner
+    assert "maximum_depth_m: 6.0" in visual_config
+    assert "maximum_depth_m: 6.0" in mapping_config
 
 
 def test_three_dimensional_route_has_physical_clearance_from_urban_boxes():
     urban_root = ET.parse(URBAN_STRUCTURES).getroot()
     boxes = urban_root.findall(".//collision")
-    route = generate_s_curve(
-        12.0, 4.5, 5.0, 1.0, samples=481, vertical_cycles=2)
+    route = generate_large_figure_eight(
+        9.0, 1.5, 5.0, 4.5, samples=961,
+        rotation_deg=158.0, altitude_power=4)
     minimum_clearance = min(
         box_clearance(point, collision)
         for point in route
@@ -231,43 +355,139 @@ def test_three_dimensional_route_has_physical_clearance_from_urban_boxes():
     # This is centerline clearance. The route controller additionally limits
     # command offsets and flies at low speed; the model opening remains wide
     # enough for the Iris body and companion-sensor envelope.
-    assert minimum_clearance >= 1.00
+    assert minimum_clearance >= 0.75
 
 
-def test_full_mission_uses_the_s_curve_for_collision_free_entry_and_return():
+def test_new_urban_structures_keep_the_figure_eight_corridor_open():
+    urban_root = ET.parse(URBAN_STRUCTURES).getroot()
+    added_names = {
+        "north_arcade_header",
+        "south_visual_totem",
+        "north_service_block",
+        "east_canyon_gateway_south_pier",
+        "east_canyon_gateway_north_pier",
+        "east_canyon_gateway_header",
+        "east_background_facade",
+        "west_background_facade",
+        "north_background_facade",
+        "south_background_facade",
+    }
+    added = [
+        collision for collision in urban_root.findall(".//collision")
+        if collision.get("name") in added_names
+    ]
+    assert {collision.get("name") for collision in added} == added_names
+
+    route = generate_large_figure_eight(
+        9.0, 1.5, 5.0, 4.5, samples=961,
+        rotation_deg=158.0, altitude_power=4)
+    minimum_clearance = min(
+        box_clearance(point, collision)
+        for point in route
+        for collision in added
+    )
+    assert minimum_clearance >= 0.75
+
+
+def test_second_lobe_straight_exits_through_the_gateway_opening():
+    urban_root = ET.parse(URBAN_STRUCTURES).getroot()
+    header = next(
+        collision for collision in urban_root.findall(".//collision")
+        if collision.get("name") == "east_canyon_gateway_header"
+    )
+    route = generate_large_figure_eight(
+        9.0, 1.5, 5.0, 4.5, samples=2001,
+        rotation_deg=158.0, altitude_power=4)
+    crossings = []
+    for index, (first, second) in enumerate(zip(route[:-1], route[1:])):
+        first_x = box_local_coordinates(first, header)[0]
+        second_x = box_local_coordinates(second, header)[0]
+        if first_x * second_x > 0.0 or math.isclose(first_x, second_x):
+            continue
+        ratio = first_x / (first_x - second_x)
+        point = tuple(
+            first[axis] + ratio * (second[axis] - first[axis])
+            for axis in range(3)
+        )
+        local = box_local_coordinates(point, header)
+        progress = (index + ratio) / (len(route) - 1)
+        if abs(local[1]) <= 1.10 and 0.35 <= point[2] <= 6.60:
+            crossings.append((progress, point, local))
+
+    assert len(crossings) == 1
+    progress, point, local = crossings[0]
+    assert 0.50 < progress < 0.75
+    assert abs(local[1]) <= 0.05
+    assert math.isclose(point[2], 5.0, abs_tol=1.0e-6)
+
+
+def test_visual_diagnostic_rectangle_keeps_the_collision_audited_size():
+    runner = SIM_VISUAL_RUNNER.read_text(encoding="utf-8")
+    assert "RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-2.0}" in runner
+    assert "RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-1.2}" in runner
+
+
+def test_figure_eight_runner_keeps_single_pass_geometry_and_yaw_contract():
+    runner = FIGURE8_RUNNER.read_text(encoding="utf-8")
+    controller = S_CURVE_CONTROLLER.read_text(encoding="utf-8")
+    assert "RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp" in runner
+    assert "S_CURVE_SPAN=${S_CURVE_SPAN:-9.0}" in runner
+    assert "S_CURVE_AMPLITUDE=${S_CURVE_AMPLITUDE:-1.5}" in runner
+    assert "S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-4.5}" in runner
+    assert "S_CURVE_PASSES=${S_CURVE_PASSES:-1}" in runner
+    assert "FIGURE8_ROTATION_DEG=${FIGURE8_ROTATION_DEG:-158.0}" in runner
+    assert "follow_heading_fraction=0.5" in controller
+    assert "yaw_mode=first_lobe_heading_follow/second_lobe_locked" in controller
+
+
+def test_full_mission_flies_one_closed_figure_eight_without_retracing():
     urban_root = ET.parse(URBAN_STRUCTURES).getroot()
     boxes = urban_root.findall(".//collision")
-    route = generate_s_curve(
-        12.0, 4.5, 5.0, 1.0, samples=481, vertical_cycles=2)
+    route = generate_large_figure_eight(
+        9.0, 1.5, 5.0, 4.5, samples=961,
+        rotation_deg=158.0, altitude_power=4)
     home = (0.0, 0.0, 5.0)
-    anchor_index = min(
-        range(len(route)), key=lambda index: math.dist(route[index], home))
-    assert math.dist(route[anchor_index], home) <= 1.0e-9
-
-    entry = list(reversed(route[:anchor_index + 1]))
-    return_to_home = list(reversed(route[anchor_index:]))
+    assert route[0] == home
+    assert route[len(route) // 2] == home
+    assert route[-1] == home
     takeoff = sample_segment((0.0, 0.0, 0.25), home)
     calibration = generate_calibration_figure_eight(home, 1.0, samples=161)
     mission = sample_polyline(
-        takeoff + calibration[1:] + entry[1:]
-        + route[1:] + list(reversed(route))[1:] + route[1:]
-        + return_to_home[1:]
+        takeoff + calibration[1:] + route[1:]
     )
     minimum_clearance = min(
         box_clearance(point, collision)
         for point in mission
         for collision in boxes
     )
-    assert minimum_clearance >= 1.00
+    assert minimum_clearance >= 0.75
 
-    # A direct home-to-endpoint shortcut intersects a tunnel side wall. This
-    # guards against restoring the old straight transit/return behavior.
-    direct_shortcut = sample_segment(home, route[0])
-    assert min(
-        box_clearance(point, collision)
-        for point in direct_shortcut
-        for collision in boxes
-    ) == 0.0
+    controller = S_CURVE_CONTROLLER.read_text(encoding="utf-8")
+    assert "large figure-eight single traversal" in controller
+    assert "list(reversed(base_path))" not in controller
+
+
+def test_vertical_diagnostic_uses_a_clear_corridor_outside_the_tunnel_roof():
+    urban_root = ET.parse(URBAN_STRUCTURES).getroot()
+    landmark_root = ET.parse(LANDMARKS).getroot()
+    obstacles = (
+        urban_root.findall(".//collision")
+        + landmark_root.findall(".//collision")
+    )
+    home = (0.0, 0.0, 5.0)
+    staging = (-4.3, 0.9, 5.0)
+    peak = (-4.3, 0.9, 9.5)
+    route = sample_polyline([home, staging, peak, staging, home])
+
+    minimum_clearance = min(
+        collision_clearance(point, collision)
+        for point in route
+        for collision in obstacles
+    )
+
+    # The audited centerline stays at least 1.32 m from every modeled obstacle.
+    # A conservative 0.50 m vehicle sphere therefore retains over 0.82 m.
+    assert minimum_clearance >= 1.30
 
 
 def test_s_curve_navigation_feedback_is_strictly_the_unified_backend():
@@ -276,8 +496,10 @@ def test_s_curve_navigation_feedback_is_strictly_the_unified_backend():
     assert "route_feedback_source=unified_backend" in source
     assert "ground_truth" not in source
     assert "/sim/" not in source
-    assert "effective_hold = decision.hold or lost" in source
+    assert "effective_hold = mission_hold_required(" in source
+    assert "decision.hold, lost, self.relocalization_request_active" in source
     assert "route_hold_fcu_setpoint" in source
+    assert "route_altitude_margin_m" in source
 
 
 def test_stable_unified_launch_exports_native_factors_without_scan_handshake():

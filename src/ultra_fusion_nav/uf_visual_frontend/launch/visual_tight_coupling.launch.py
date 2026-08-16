@@ -6,6 +6,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -16,6 +17,14 @@ def generate_launch_description():
     backend_config = os.path.join(
         get_package_share_directory(
             "uf_backend_fusion"), "config", "online_backend.yaml"
+    )
+    reliability_config = os.path.join(
+        get_package_share_directory("uf_reliability"),
+        "config", "reliability.yaml",
+    )
+    scheduler_config = os.path.join(
+        get_package_share_directory("uf_reliability"),
+        "config", "scheduler_config.yaml",
     )
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
@@ -29,10 +38,14 @@ def generate_launch_description():
             "visual_candidate_quality_enabled", default_value="true"
         ),
         DeclareLaunchArgument("visual_pending_enabled", default_value="true"),
+        DeclareLaunchArgument("rgbd_minimum_depth_m", default_value="0.30"),
+        DeclareLaunchArgument("rgbd_maximum_depth_m", default_value="6.0"),
         DeclareLaunchArgument(
             "performance_profiling_enabled", default_value="false"
         ),
         DeclareLaunchArgument("performance_trace_path", default_value=""),
+        DeclareLaunchArgument("backend_process_prefix", default_value=""),
+        DeclareLaunchArgument("backend_numeric_threads", default_value="1"),
         DeclareLaunchArgument(
             "external_nav_output_topic",
             default_value="/fusion/runtime_external_nav",
@@ -42,7 +55,7 @@ def generate_launch_description():
             "camera_time_calibration_enabled", default_value="true"
         ),
         DeclareLaunchArgument(
-            "visual_initialization_require_time_lock", default_value="true"
+            "visual_initialization_require_time_lock", default_value="false"
         ),
         Node(
             package="uf_visual_frontend", executable="rgbd_feature_frontend",
@@ -54,24 +67,44 @@ def generate_launch_description():
                 "candidate_quality_enabled": LaunchConfiguration(
                     "visual_candidate_quality_enabled"
                 ),
+                "minimum_depth_m": ParameterValue(
+                    LaunchConfiguration("rgbd_minimum_depth_m"),
+                    value_type=float,
+                ),
+                "maximum_depth_m": ParameterValue(
+                    LaunchConfiguration("rgbd_maximum_depth_m"),
+                    value_type=float,
+                ),
             }], output="screen",
             condition=IfCondition(LaunchConfiguration("enabled")),
         ),
         Node(
             package="uf_reliability", executable="reliability_monitor",
-            parameters=[{
+            parameters=[reliability_config, {
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "vision.minimum_depth_m": ParameterValue(
+                    LaunchConfiguration("rgbd_minimum_depth_m"),
+                    value_type=float,
+                ),
+                "vision.maximum_depth_m": ParameterValue(
+                    LaunchConfiguration("rgbd_maximum_depth_m"),
+                    value_type=float,
+                ),
             }],
             condition=IfCondition(LaunchConfiguration("start_fusion_stack")),
             output="screen",
         ),
         Node(
             package="uf_reliability", executable="reliability_scheduler",
-            parameters=[{
+            parameters=[scheduler_config, {
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "active_modalities": ["lidar", "gnss", "imu", "optical_flow", "vision"],
                 "required_modalities": ["imu"],
-                "minimum_usable_modalities": 2,
+                # One valid propagation source is enough to keep publishing a
+                # bounded estimator state. Optional factors are scheduled
+                # independently and the safety state machine handles the
+                # resulting DEGRADED/RISK condition.
+                "minimum_usable_modalities": 1,
             }],
             condition=IfCondition(LaunchConfiguration("start_fusion_stack")),
             output="screen",
@@ -79,6 +112,21 @@ def generate_launch_description():
         Node(
             package="uf_backend_fusion", executable="online_backend_fusion",
             name="unified_backend_fusion",
+            prefix=LaunchConfiguration("backend_process_prefix"),
+            additional_env={
+                "OMP_NUM_THREADS": LaunchConfiguration(
+                    "backend_numeric_threads"
+                ),
+                "OPENBLAS_NUM_THREADS": LaunchConfiguration(
+                    "backend_numeric_threads"
+                ),
+                "MKL_NUM_THREADS": LaunchConfiguration(
+                    "backend_numeric_threads"
+                ),
+                "NUMEXPR_NUM_THREADS": LaunchConfiguration(
+                    "backend_numeric_threads"
+                ),
+            },
             parameters=[backend_config, {
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "visual_factor_mode": LaunchConfiguration("visual_factor_mode"),
@@ -131,10 +179,16 @@ def generate_launch_description():
                     "NORMAL", "RECOVERED", "DEGRADED", "RISK",
                     "RELOCALIZING",
                 ],
+                # Keep a finite, fresh estimator stream available when any
+                # source survives. Capability loss is expressed by the safety
+                # state and bounded covariance inflation instead of an outage.
                 "require_capability_support": False,
+                "inflate_covariance_from_estimator_support": True,
+                "minimum_capability_support": 0.15,
                 "maximum_propagation_age_s": 0.65,
                 "maximum_position_variance_m2": 25.0,
                 "maximum_orientation_variance_rad2": 1.0,
+                "stop_on_excessive_covariance": False,
                 "maximum_position_step_m": 1.0,
                 "maximum_linear_speed_mps": 10.0,
                 "maximum_orientation_step_rad": 0.5,

@@ -35,6 +35,9 @@ class CandidateQuality:
     median_parallax_px: float
     spatial_distribution: float
     mean_reprojection_error_px: float
+    pnp_inlier_ratio: float
+    pnp_information_rank: int
+    pnp_condition_number: float
 
 
 def visual_candidate_quality(
@@ -45,10 +48,20 @@ def visual_candidate_quality(
     minimum_depth_tracks=20,
     minimum_spatial_distribution=0.08,
     minimum_parallax_px=0.15,
-    maximum_reprojection_error_px=3.0,
+    maximum_reprojection_error_px=2.0,
+    minimum_pnp_inlier_ratio=0.50,
+    minimum_pnp_information_rank=6,
+    maximum_pnp_condition_number=500.0,
     require_pnp=True,
 ):
-    """Evaluate information content without changing measurement timestamps."""
+    """Evaluate RGB-D measurement health without requiring camera motion.
+
+    ``minimum_parallax_px`` remains in the API for configuration compatibility.
+    Median parallax is still reported as a diagnostic, but stationary tracks are
+    not a sensor fault: depth, PnP, spatial coverage and reprojection checks are
+    sufficient to decide whether the candidate is usable.
+    """
+    _ = minimum_parallax_px
     geometric = np.asarray(result.geometric_inlier, dtype=bool)
     depth = np.asarray(result.depth_valid, dtype=bool)
     selected = geometric & depth
@@ -81,10 +94,18 @@ def visual_candidate_quality(
         reason = "insufficient_geometric_tracks"
     elif valid_depth_tracks < int(minimum_depth_tracks):
         reason = "insufficient_depth_tracks"
+    elif float(result.pnp_inlier_ratio) < float(minimum_pnp_inlier_ratio):
+        reason = "insufficient_pnp_inlier_ratio"
+    elif int(result.pnp_information_rank) < int(minimum_pnp_information_rank):
+        reason = "insufficient_pnp_information_rank"
+    elif (
+        not math.isfinite(float(result.pnp_condition_number))
+        or float(result.pnp_condition_number)
+        > float(maximum_pnp_condition_number)
+    ):
+        reason = "ill_conditioned_pnp_geometry"
     elif distribution < float(minimum_spatial_distribution):
         reason = "insufficient_spatial_coverage"
-    elif median_parallax < float(minimum_parallax_px):
-        reason = "insufficient_parallax"
     elif (
         not math.isfinite(mean_reprojection)
         or mean_reprojection > float(maximum_reprojection_error_px)
@@ -98,7 +119,23 @@ def visual_candidate_quality(
         median_parallax_px=median_parallax,
         spatial_distribution=distribution,
         mean_reprojection_error_px=mean_reprojection,
+        pnp_inlier_ratio=float(result.pnp_inlier_ratio),
+        pnp_information_rank=int(result.pnp_information_rank),
+        pnp_condition_number=float(result.pnp_condition_number),
     )
+
+
+def inverse_depth_variance(depth_m, robust_depth_sigma_m, relative_sigma_ratio):
+    """Propagate per-track depth uncertainty into inverse-depth variance."""
+    depth = float(depth_m)
+    if not math.isfinite(depth) or depth <= 0.0:
+        return math.inf
+    relative_sigma = max(0.0, float(relative_sigma_ratio)) * depth
+    measured_sigma = float(robust_depth_sigma_m)
+    if not math.isfinite(measured_sigma) or measured_sigma < 0.0:
+        measured_sigma = 0.0
+    depth_sigma = max(relative_sigma, measured_sigma)
+    return max(1.0e-10, (depth_sigma / (depth * depth)) ** 2)
 
 
 def stamp_ns(stamp):
@@ -119,8 +156,14 @@ class ExactRgbdFeatureFrontend(Node):
             "pnp_reprojection_threshold_px": 3.0,
             "minimum_pnp_points": 8,
             "depth_scale": 0.001,
-            "minimum_depth_m": 0.15,
-            "maximum_depth_m": 12.0,
+            "minimum_depth_m": 0.30,
+            "maximum_depth_m": 6.0,
+            "depth_neighborhood_radius_px": 1,
+            "depth_minimum_support": 3,
+            "depth_minimum_inlier_ratio": 0.60,
+            "depth_inlier_absolute_tolerance_m": 0.03,
+            "depth_inlier_relative_tolerance": 0.03,
+            "depth_noise_floor_m": 0.005,
             "inverse_depth_sigma_ratio": 0.015,
             "pixel_sigma_px": 0.8,
             "keyframe_profile": "balanced",
@@ -130,7 +173,10 @@ class ExactRgbdFeatureFrontend(Node):
             "candidate_minimum_depth_tracks": 20,
             "candidate_minimum_spatial_distribution": 0.08,
             "candidate_minimum_parallax_px": 0.15,
-            "candidate_maximum_reprojection_error_px": 3.0,
+            "candidate_maximum_reprojection_error_px": 2.0,
+            "candidate_minimum_pnp_inlier_ratio": 0.50,
+            "candidate_minimum_pnp_information_rank": 6,
+            "candidate_maximum_pnp_condition_number": 500.0,
             "candidate_require_pnp": True,
             "diagnostic_topic": "/vision/frontend_diagnostics",
             "cache_size": 12,
@@ -147,6 +193,12 @@ class ExactRgbdFeatureFrontend(Node):
             self.get_parameter("depth_scale").value,
             self.get_parameter("minimum_depth_m").value,
             self.get_parameter("maximum_depth_m").value,
+            self.get_parameter("depth_neighborhood_radius_px").value,
+            self.get_parameter("depth_minimum_support").value,
+            self.get_parameter("depth_minimum_inlier_ratio").value,
+            self.get_parameter("depth_inlier_absolute_tolerance_m").value,
+            self.get_parameter("depth_inlier_relative_tolerance").value,
+            self.get_parameter("depth_noise_floor_m").value,
         )
         self.cache_size = int(self.get_parameter("cache_size").value)
         self.keyframe_profile = str(
@@ -187,7 +239,8 @@ class ExactRgbdFeatureFrontend(Node):
         }
         self.quality_reasons = {}
         self.last_quality = CandidateQuality(
-            False, "not_evaluated", 0, 0, 0.0, 0.0, math.inf
+            False, "not_evaluated", 0, 0, 0.0, 0.0, math.inf,
+            0.0, 0, math.inf
         )
         self.last_frontend_latency_s = math.inf
         self.publisher = self.create_publisher(
@@ -278,6 +331,12 @@ class ExactRgbdFeatureFrontend(Node):
                 "candidate_minimum_parallax_px").value,
             maximum_reprojection_error_px=self.get_parameter(
                 "candidate_maximum_reprojection_error_px").value,
+            minimum_pnp_inlier_ratio=self.get_parameter(
+                "candidate_minimum_pnp_inlier_ratio").value,
+            minimum_pnp_information_rank=self.get_parameter(
+                "candidate_minimum_pnp_information_rank").value,
+            maximum_pnp_condition_number=self.get_parameter(
+                "candidate_maximum_pnp_condition_number").value,
             require_pnp=self.get_parameter("candidate_require_pnp").value,
         )
         self.last_quality = quality
@@ -328,8 +387,11 @@ class ExactRgbdFeatureFrontend(Node):
                 track.inverse_depth = 1.0 / track.depth_m
                 sigma_ratio = float(self.get_parameter(
                     "inverse_depth_sigma_ratio").value)
-                track.inverse_depth_variance = max(
-                    1.0e-10, (sigma_ratio * track.inverse_depth) ** 2)
+                track.inverse_depth_variance = inverse_depth_variance(
+                    track.depth_m,
+                    result.depth_sigma_m[index],
+                    sigma_ratio,
+                )
             column = min(7, max(0, int(current[0] * 8 / max(1, color.width))))
             row = min(7, max(0, int(current[1] * 8 / max(1, color.height))))
             track.grid_cell = row * 8 + column
@@ -391,6 +453,9 @@ class ExactRgbdFeatureFrontend(Node):
             "last_mean_reprojection_error_px": (
                 self.last_quality.mean_reprojection_error_px
             ),
+            "last_pnp_inlier_ratio": self.last_quality.pnp_inlier_ratio,
+            "last_pnp_information_rank": self.last_quality.pnp_information_rank,
+            "last_pnp_condition_number": self.last_quality.pnp_condition_number,
             "last_frontend_latency_s": self.last_frontend_latency_s,
         })
         values.update({

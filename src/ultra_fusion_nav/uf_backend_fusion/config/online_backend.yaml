@@ -30,6 +30,11 @@ unified_backend_fusion:
     # preintegration and must not consume FCU-fused local position.
     # Set to linear only for controlled rollback comparisons.
     backend_solver_mode: manifold
+    cpp_math_core_enabled: true
+    cpp_math_core_required: true
+    # Native LiDAR/scan handshakes and FCU IMU ingress use separate mutually
+    # exclusive callback groups. Numeric kernels remain single-threaded.
+    executor_threads: 2
     # Stable four-source behavior is unchanged unless the dedicated visual
     # launch overrides this with paper_reprojection.
     visual_factor_mode: disabled
@@ -38,21 +43,33 @@ unified_backend_fusion:
     # FCU gyro. The configured value remains active until a stable estimate is
     # locked, so four-source operation is unchanged during visual warm-up.
     visual_time_calibration_enabled: true
-    visual_time_calibration_apply_locked: true
+    # Keep estimating and reporting the offset, but do not apply a weak lock to
+    # live factors in the stable baseline.
+    visual_time_calibration_apply_locked: false
     visual_time_calibration_window_s: 12.0
     visual_time_calibration_minimum_pairs: 8
-    visual_time_calibration_range_s: 0.060
+    # The previous +/-60 ms search locked at its positive boundary. Search a
+    # wider interval, but reject either boundary rather than reporting a
+    # truncated peak as an observable calibration.
+    visual_time_calibration_range_s: 0.120
     visual_time_calibration_step_s: 0.002
     visual_time_calibration_minimum_correlation: 0.65
-    visual_time_calibration_minimum_margin: 0.02
+    visual_time_calibration_minimum_margin: 0.002
+    # Adjacent 2 ms cells are samples of one interpolated peak, not independent
+    # offset hypotheses. Use at least one 100 Hz FCU IMU period for the margin.
+    visual_time_calibration_peak_exclusion_s: 0.010
+    visual_time_calibration_reject_boundary_candidates: true
     visual_time_calibration_lock_count: 3
     visual_time_calibration_stability_s: 0.006
-    # A visual factor is not admitted until the time offset is locked and
-    # several consecutive cross-modal reprojection checks agree with the
-    # already observable four-source state.
+    # A lock needs physical rotation and votes from independent time windows.
+    visual_time_calibration_minimum_accumulated_rotation_rad: 0.10
+    visual_time_calibration_minimum_interval_rotation_rad: 0.001
+    visual_time_calibration_minimum_lock_candidate_separation_s: 1.0
+    # Time calibration remains observable in shadow mode. Visual admission is
+    # governed by consecutive cross-modal reprojection checks, not time lock.
     visual_initialization_enabled: true
     visual_initialization_minimum_batches: 3
-    visual_initialization_require_time_lock: true
+    visual_initialization_require_time_lock: false
     visual_state_tolerance_s: 0.065
     # Hold already-arrived camera observations until both real LiDAR/IMU
     # states are present. The original tolerance is unchanged; no future
@@ -61,8 +78,23 @@ unified_backend_fusion:
     visual_pending_max_wait_s: 0.60
     visual_pending_max_wall_wait_s: 3.0
     visual_pending_max_queue: 64
+    # Each feature batch has its own reliability score with the same camera
+    # timestamp. Wait briefly for cross-topic callback reordering, then reject
+    # explicitly instead of silently falling back to the continuous D_V score.
+    visual_factor_score_topic: /reliability/vision_factor_score
+    visual_factor_score_tolerance_s: 0.010
+    visual_factor_score_max_wait_s: 0.25
+    visual_factor_score_max_wall_wait_s: 0.25
+    visual_factor_score_history_size: 128
     visual_timing_diagnostic_topic: /fusion/unified/visual_timing
     visual_minimum_tracks: 20
+    visual_pnp_minimum_inlier_ratio: 0.50
+    visual_pnp_minimum_information_rank: 6
+    visual_pnp_maximum_condition_number: 500.0
+    visual_pnp_maximum_mean_reprojection_error_px: 2.0
+    # Prevent a dense, correlated image batch from gaining information merely
+    # because more pixels describe the same local geometry.
+    visual_information_reference_tracks: 20
     visual_pixel_sigma_normalized: 0.002
     visual_inverse_depth_variance_scale: 0.01
     # Cross-modal innovation gate at the current window linearization. The
@@ -71,11 +103,13 @@ unified_backend_fusion:
     visual_state_consistency_enabled: true
     visual_state_innovation_maximum_rmse_px: 6.0
     visual_minimum_projectable_track_ratio: 0.80
+    visual_minimum_jacobian_rank: 6
+    visual_maximum_jacobian_condition_number: 50000.0
     # T_body_camera for the simulated front D435i optical frame. Camera axes
     # are x-right/y-down/z-forward; body axes are x-forward/y-left/z-up.
     # Hardware deployments must replace these values with measured calibration.
     visual_rotation_body_camera: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
-    visual_translation_body_camera_m: [0.30, 0.0, 0.02]
+    visual_translation_body_camera_m: [0.20, 0.0, 0.02]
     nonlinear_max_iterations: 4
     nonlinear_damping: 1.0e-6
     nonlinear_convergence_threshold: 1.0e-5
@@ -90,7 +124,8 @@ unified_backend_fusion:
     gnss_max_age_s: 2.0
     gnss_future_tolerance_s: 0.05
     flow_max_age_s: 1.0
-    imu_buffer_s: 5.0
+    # Cover the complete 12 s visual calibration window and search margin.
+    imu_buffer_s: 15.0
     # Cross-topic callbacks may deliver LIO before the final FCU IMU sample.
     # Wait briefly for timestamp coverage instead of silently dropping IMU.
     imu_factor_wait_s: 0.080
@@ -113,6 +148,15 @@ unified_backend_fusion:
     gnss_default_variance_m2: 4.0
     gnss_jump_gate_m: 20.0
     gnss_jump_speed_mps: 15.0
+    # Independent 99% chi-square gates. NIS uses
+    # S=P_position_predicted+R_gnss, not measurement covariance alone.
+    gnss_xy_nis_gate: 9.210  # 2 DoF
+    gnss_z_nis_gate: 6.635   # 1 DoF
+    gnss_minimum_reliability_weight: 0.05
+    # Huber-style per-axis innovation scaling never removes a healthy,
+    # continuous GNSS axis completely. Invalid fixes and temporal jumps remain
+    # hard gates before this recovery floor is applied.
+    gnss_minimum_axis_information_scale: 0.01
     # Keep optical flow in the body frame and relinearize its map projection
     # against the previous window state. A valid gyro-compensated exposure is
     # retained through yaw; residual and scheduler gates remain authoritative.
@@ -121,6 +165,8 @@ unified_backend_fusion:
     flow_rotation_upper_yaw_rate_radps: 0.30
     flow_rotation_recovery_dwell_s: 0.8
     flow_rotation_recovery_ramp_s: 1.5
+    # Diagnostic motion threshold only. A healthy stationary exposure remains
+    # a valid zero-horizontal-displacement constraint.
     flow_rotation_minimum_translation_m: 0.01
     flow_rotation_recovery_max_base_score: 0.55
     flow_rotation_imu_max_gap_s: 0.12
@@ -149,9 +195,9 @@ unified_backend_fusion:
     native_lidar_factor_tolerance_s: 0.005
     native_lidar_factor_wait_s: 0.030
     native_lidar_minimum_matches: 50
-    # Best-effort is retained, but preintegration cannot discard intermediate
-    # IMU samples while the nonlinear solver owns the Python executor thread.
-    native_lidar_qos_depth: 32
+    # The worker is latest-only. Match that policy in DDS so overload discards
+    # obsolete keyframes before they can create seconds of callback latency.
+    native_lidar_qos_depth: 1
     # The nonlinear worker owns all window mutations. Retain only the newest
     # unprocessed LiDAR keyframe so a slow solve cannot build stale latency.
     native_worker_queue_size: 1
@@ -162,8 +208,18 @@ unified_backend_fusion:
     live_propagation_enabled: true
     live_propagation_rate_hz: 10.0
     live_propagation_lidar_silence_timeout_s: 0.25
+    # Repeated stale FAST-LIO scan requests do not count as fresh localization.
+    # Publish IMU propagation whenever the last unified state is this old.
+    live_propagation_maximum_output_age_s: 0.20
     live_propagation_minimum_interval_s: 0.08
     live_propagation_maximum_imu_age_s: 0.20
+    # If native LiDAR packets really stop, the same single backend worker
+    # creates low-rate graph states so fresh GNSS/flow/vision observations can
+    # still be consumed. No FAST-LIO pose or synthetic LiDAR factor is added.
+    auxiliary_keyframe_enabled: true
+    auxiliary_keyframe_lidar_silence_timeout_s: 0.35
+    auxiliary_keyframe_minimum_interval_s: 0.20
+    auxiliary_keyframe_maximum_imu_age_s: 0.20
     # Re-integrate the active IMU interval once the optimized start bias moves
     # beyond these conservative thresholds (m/s^2 and rad/s).
     imu_reintegration_accel_bias_threshold: 0.05
@@ -177,6 +233,10 @@ unified_backend_fusion:
     # Shadow-only until the locked bundle is also applied to scan timing,
     # deskew, and the front-end extrinsic while preserving world LiDAR pose.
     calibration_apply_locked_values: false
+    # Fixed measured extrinsics are authoritative. Time and rotation can be
+    # promoted independently after their own controlled A/B validation.
+    calibration_apply_locked_time_offset: false
+    calibration_apply_locked_rotation: false
     # The paper's OSC default uses a long asynchronous overlap window. Keep
     # the acceptance gates unchanged while allowing enough independent scan
     # pairs to accumulate under the low-rate calibration-motion worker.
@@ -185,14 +245,28 @@ unified_backend_fusion:
     calibration_time_offset_range_s: 0.10
     calibration_time_offset_step_s: 0.005
     calibration_minimum_correlation: 0.70
-    calibration_minimum_correlation_margin: 0.05
+    # At a 5 ms grid, a 20 ms-separated correct hypothesis has a milliscale
+    # correlation margin. Stability and excitation gates remain mandatory.
+    calibration_minimum_correlation_margin: 0.002
+    # Compare independent time hypotheses and reject static/noise locks.
+    calibration_minimum_time_peak_separation_s: 0.020
+    calibration_minimum_time_accumulated_rotation_rad: 0.25
     calibration_minimum_excitation_eigenvalue: 1.0e-4
     calibration_minimum_excitation_ratio: 0.05
     calibration_minimum_accumulated_rotation_rad: 0.25
     calibration_minimum_rotation_inlier_ratio: 0.70
     calibration_maximum_rotation_residual_rad: 0.08
     calibration_sharp_turn_rate_radps: 1.5
-    calibration_solve_period_s: 1.0
+    # The observable turn window can be shorter than one second. Frozen-bag
+    # replay showed that 1.0 s samples only one valid hypothesis, while 0.3 s
+    # captures the required three consecutive candidates without relaxing any
+    # correlation, peak-separation, or accumulated-rotation gate.
+    calibration_solve_period_s: 0.3
+    # Lock votes must contain new motion rather than three solves of nearly the
+    # same overlapping window. Revoke a lock after three independent,
+    # mutually-consistent high-confidence contradictions.
+    calibration_minimum_lock_candidate_separation_s: 1.0
+    calibration_time_unlock_count: 3
     scheduler_timeout_s: 1.0
     reliability_mode: dynamic
     fixed_lidar_weight: 1.0
@@ -240,3 +314,7 @@ unified_backend_fusion:
     scan_prediction_timestamp_tolerance_s: 0.002
     scan_prediction_state_tolerance: 1.0e-8
     scan_prediction_cache_size: 8
+    # Separate DDS topics may reorder, so wait briefly for factor N-1. A
+    # repeated request after this grace marks the missing factor as dropped
+    # and advances the real-time front-end instead of deadlocking forever.
+    scan_prediction_missing_factor_grace_s: 0.5

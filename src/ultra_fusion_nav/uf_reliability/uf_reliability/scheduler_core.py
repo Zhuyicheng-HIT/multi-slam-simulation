@@ -130,15 +130,19 @@ class ReliabilitySchedulerCore:
         # A relocalization search is a recovery service, not an estimator
         # measurement. Its failure must not invalidate capabilities that are
         # still supported by live IMU/GNSS/flow/LiDAR factors. True pose loss
-        # remains covered below by required_usable and usable_count.
+        # remains covered below by valid_count and usable_count. Required
+        # modalities describe estimator capability, not an output kill switch:
+        # one live independent source must keep the state stream available for
+        # the safety controller to hold or relocalize.
         if relocalization_requested:
             return "RELOCALIZING"
         if (
             valid_count == 0
-            or not required_usable
             or usable_count < self.config.minimum_usable_modalities
         ):
             return "FAILSAFE"
+        if not required_usable:
+            return "RISK"
         if operational_severity >= self.config.risk_threshold:
             return "RISK"
         if (
@@ -261,6 +265,13 @@ class ReliabilitySchedulerCore:
                 name == "imu" and valid and hard_gate_allowed
                 and not imu_hard_failure
             )
+            gnss_provisional_bootstrap = bool(
+                name == "gnss"
+                and valid
+                and not hard_gate_allowed
+                and value < self.config.failsafe_threshold
+                and "provisional_gnss_direct_evidence_only" in sample_reasons
+            )
             if imu_soft_degradation:
                 operational_value = min(
                     value, self.config.imu_soft_max_degradation)
@@ -281,6 +292,14 @@ class ReliabilitySchedulerCore:
                 # Keep valid IMU propagation enabled through high dynamics;
                 # covariance inflation above carries the reliability penalty.
                 self.factor_enabled[name] = True
+            elif gnss_provisional_bootstrap:
+                # Eq. 23 needs a backend innovation, but that innovation cannot
+                # exist until at least one factor is considered. Direct
+                # fix/covariance evidence may therefore start GNSS at its
+                # conservative partial weight; the backend prefit NIS remains
+                # the authoritative per-observation gate.
+                self.factor_enabled[name] = True
+                sample_reasons.append("gnss_provisional_bootstrap")
             elif self.factor_enabled[name]:
                 if stale or not valid:
                     self.factor_enabled[name] = False

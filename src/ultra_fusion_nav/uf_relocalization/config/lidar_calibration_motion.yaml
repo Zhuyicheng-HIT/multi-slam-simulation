@@ -4,10 +4,10 @@ lidar_calibration_motion_node:
     # odometry, native factors, or backend-deskewed point clouds.
     input_topic: /livox/lidar
     output_topic: /calibration/lidar_relative_motion
-    # The backend hand-eye/time solver accepts intervals up to 0.50 s and
-    # needs at least eight pairs in its five-second observability window.
-    minimum_interval_s: 0.42
-    maximum_interval_s: 0.50
+    # Preserve turn-entry/exit timing structure. Half-second registrations
+    # make the correlation peak broad even when its coefficient is high.
+    minimum_interval_s: 0.18
+    maximum_interval_s: 0.26
     minimum_range_m: 0.50
     maximum_range_m: 30.0
     voxel_size_m: 0.40

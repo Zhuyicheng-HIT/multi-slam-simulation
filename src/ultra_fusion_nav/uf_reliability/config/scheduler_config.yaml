@@ -7,7 +7,10 @@ reliability_scheduler:
     # alternative pose/position constraints, so one bad optional factor cannot
     # by itself declare the complete estimator unavailable.
     required_modalities: [imu]
-    minimum_usable_modalities: 2
+    # Keep the output stream alive while any one fresh, usable source remains.
+    # Missing IMU propagation raises RISK and lets the safety state machine
+    # hold, but is not by itself an ExternalNav kill switch.
+    minimum_usable_modalities: 1
     score_timeout_s: 1.0
     # Native point-to-plane diagnostics are intentionally throttled to 1 Hz.
     # Allow bounded processing jitter without extending IMU/flow freshness.

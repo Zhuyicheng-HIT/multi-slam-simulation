@@ -56,8 +56,8 @@ public:
     min_keyframe_translation_m_ = declare_parameter("min_keyframe_translation_m", 0.20);
     min_keyframe_rotation_deg_ = declare_parameter("min_keyframe_rotation_deg", 7.5);
     min_keyframe_period_s_ = declare_parameter("min_keyframe_period_s", 0.75);
-    depth_min_m_ = declare_parameter("depth_min_m", 0.25);
-    depth_max_m_ = declare_parameter("depth_max_m", 12.0);
+    depth_min_m_ = declare_parameter("depth_min_m", 0.30);
+    depth_max_m_ = declare_parameter("depth_max_m", 6.0);
     pixel_stride_ = static_cast<int>(std::max<std::int64_t>(
         1, declare_parameter("pixel_stride", 3)));
     max_points_per_keyframe_ = static_cast<int>(std::max<std::int64_t>(
@@ -340,8 +340,8 @@ private:
   double min_keyframe_translation_m_{0.20};
   double min_keyframe_rotation_deg_{7.5};
   double min_keyframe_period_s_{0.75};
-  double depth_min_m_{0.25};
-  double depth_max_m_{12.0};
+  double depth_min_m_{0.30};
+  double depth_max_m_{6.0};
   int pixel_stride_{3};
   int max_points_per_keyframe_{45000};
   double map_voxel_leaf_m_{0.06};

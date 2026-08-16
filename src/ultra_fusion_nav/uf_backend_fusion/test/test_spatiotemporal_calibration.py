@@ -9,12 +9,58 @@ from uf_backend_fusion.spatiotemporal_calibration import (
     CalibrationUpdate,
     LidarMotionSample,
     OnlineSpatiotemporalCalibrator,
+    _estimate_interval_time_offset_prepared,
+    _estimate_time_offset_prepared,
+    _integrate_gyro,
+    _integrate_prepared_gyro,
+    _integrate_prepared_orientation,
+    _prepare_gyro_interpolation,
+    _prepare_gyro_orientation_trajectory,
     effective_time_offset,
     estimate_time_offset,
 )
 
 
 class SpatiotemporalCalibrationTest(unittest.TestCase):
+    def test_prepared_gyro_integration_matches_public_helper(self):
+        samples = [
+            ImuSample(
+                index * 0.01,
+                (0.0, 0.0, 0.0),
+                (0.1 + 0.01 * index, -0.02, 0.15),
+            )
+            for index in range(31)
+        ]
+        stamps, values = _prepare_gyro_interpolation(samples)
+        expected = _integrate_gyro(samples, 0.035, 0.265)
+        actual = _integrate_prepared_gyro(
+            stamps, values, 0.035, 0.265
+        )
+        np.testing.assert_allclose(actual, expected, atol=1.0e-12)
+
+    def test_prepared_time_offset_matches_public_helper(self):
+        samples = [
+            ImuSample(
+                index * 0.01,
+                (0.0, 0.0, 0.0),
+                (0.4 + 0.2 * math.sin(index * 0.07), 0.0, 0.0),
+            )
+            for index in range(401)
+        ]
+        rates = [
+            (stamp, 0.4 + 0.2 * math.sin((stamp + 0.02) * 7.0))
+            for stamp in np.arange(0.5, 3.5, 0.1)
+        ]
+        offsets = np.arange(-0.05, 0.0501, 0.005)
+        expected = estimate_time_offset(
+            rates, samples, offsets, minimum_pairs=10
+        )
+        stamps, values = _prepare_gyro_interpolation(samples)
+        actual = _estimate_time_offset_prepared(
+            rates, stamps, values, offsets, minimum_pairs=10
+        )
+        self.assertEqual(actual, expected)
+
     def test_tentative_time_offset_is_diagnostic_only_until_locked(self):
         tentative = CalibrationUpdate(
             True, False, -0.08, np.eye(3), 0.85, 0.10, -1.0,
@@ -25,6 +71,9 @@ class SpatiotemporalCalibrationTest(unittest.TestCase):
             (0.01, 0.02, 0.03), 30, "accepted",
         )
         self.assertEqual(effective_time_offset(tentative), 0.0)
+        self.assertAlmostEqual(
+            effective_time_offset(tentative, time_locked=True), -0.08
+        )
         self.assertEqual(effective_time_offset(locked, enabled=False), 0.0)
         self.assertAlmostEqual(effective_time_offset(locked), 0.035)
 
@@ -52,6 +101,330 @@ class SpatiotemporalCalibrationTest(unittest.TestCase):
         self.assertTrue(result.valid)
         self.assertAlmostEqual(result.offset_s, true_offset, delta=0.006)
         self.assertGreater(result.correlation, 0.95)
+
+    def test_time_offset_margin_uses_an_independent_peak(self):
+        true_offset = 0.020
+
+        def rate(stamp):
+            return 0.5 + 0.2 * math.sin(4.1 * stamp) + 0.1 * math.sin(9.3 * stamp)
+
+        samples = [
+            ImuSample(
+                index * 0.01,
+                (0.0, 0.0, 0.0),
+                (rate(index * 0.01 - true_offset), 0.0, 0.0),
+            )
+            for index in range(601)
+        ]
+        rates = [(stamp, rate(stamp)) for stamp in np.arange(0.5, 5.5, 0.1)]
+        offsets = np.arange(-0.05, 0.0501, 0.002)
+        adjacent = estimate_time_offset(
+            rates, samples, offsets, minimum_pairs=20
+        )
+        independent = estimate_time_offset(
+            rates,
+            samples,
+            offsets,
+            minimum_pairs=20,
+            minimum_peak_separation_s=0.010,
+        )
+
+        self.assertAlmostEqual(independent.offset_s, true_offset, delta=0.004)
+        self.assertGreater(independent.margin, adjacent.margin)
+
+    def test_interval_time_offset_uses_matching_integration_windows(self):
+        true_offset = 0.035
+
+        def gyro_at(stamp):
+            return np.asarray([
+                0.15 * math.sin(2.3 * stamp),
+                0.10 * math.cos(1.7 * stamp + 0.2),
+                0.35 * math.sin(3.1 * stamp)
+                + 0.12 * math.sin(7.3 * stamp),
+            ])
+
+        samples = [
+            ImuSample(
+                index * 0.005,
+                (0.0, 0.0, 0.0),
+                tuple(gyro_at(index * 0.005)),
+            )
+            for index in range(1601)
+        ]
+        stamps, values = _prepare_gyro_interpolation(samples)
+        orientations, segments = _prepare_gyro_orientation_trajectory(
+            stamps, values
+        )
+        intervals = []
+        for start_s in np.arange(0.5, 6.8, 0.18):
+            end_s = start_s + 0.16
+            rotation = _integrate_prepared_orientation(
+                stamps,
+                values,
+                orientations,
+                segments,
+                start_s + true_offset,
+                end_s + true_offset,
+            )
+            intervals.append((start_s, end_s, so3_log(rotation), 1.0))
+        result = _estimate_interval_time_offset_prepared(
+            intervals,
+            stamps,
+            values,
+            np.arange(-0.10, 0.1001, 0.005),
+            np.eye(3),
+            minimum_pairs=20,
+            minimum_peak_separation_s=0.020,
+        )
+
+        self.assertTrue(result.valid)
+        self.assertAlmostEqual(result.offset_s, true_offset, delta=0.006)
+        self.assertGreater(result.correlation, 0.95)
+        self.assertGreater(result.margin, 0.002)
+
+    def test_interval_time_offset_locks_after_stable_updates(self):
+        true_offset = -0.040
+
+        def gyro_at(stamp):
+            return np.asarray([
+                0.14 * math.sin(2.5 * stamp),
+                0.11 * math.cos(1.9 * stamp),
+                0.30 * math.sin(3.4 * stamp)
+                + 0.10 * math.cos(7.7 * stamp),
+            ])
+
+        samples = [
+            ImuSample(
+                index * 0.005,
+                (0.0, 0.0, 0.0),
+                tuple(gyro_at(index * 0.005)),
+            )
+            for index in range(1801)
+        ]
+        stamps, values = _prepare_gyro_interpolation(samples)
+        orientations, segments = _prepare_gyro_orientation_trajectory(
+            stamps, values
+        )
+        calibrator = OnlineSpatiotemporalCalibrator(
+            window_s=7.0,
+            minimum_pairs=20,
+            minimum_correlation=0.70,
+            minimum_correlation_margin=0.002,
+            minimum_time_peak_separation_s=0.020,
+            minimum_time_accumulated_rotation_rad=0.25,
+            sharp_turn_rate_radps=1.5,
+            lock_count=3,
+            solve_period_s=0.0,
+        )
+        calibrator.set_initial_rotation(np.eye(3))
+        for start_s in np.arange(0.6, 7.6, 0.18):
+            end_s = start_s + 0.16
+            rotation = _integrate_prepared_orientation(
+                stamps,
+                values,
+                orientations,
+                segments,
+                start_s + true_offset,
+                end_s + true_offset,
+            )
+            calibrator.update(
+                LidarMotionSample(start_s, end_s, rotation, weight=1.0),
+                samples,
+            )
+
+        self.assertTrue(calibrator.time_locked)
+        self.assertAlmostEqual(
+            calibrator.time_offset_s, true_offset, delta=0.006
+        )
+
+    def test_time_lock_requires_one_consecutive_candidate_cluster(self):
+        calibrator = OnlineSpatiotemporalCalibrator(
+            minimum_pairs=3,
+            lock_count=3,
+            stability_tolerance_s=0.008,
+        )
+
+        self.assertFalse(calibrator._update_time_lock(-0.015, 0.0))
+        self.assertFalse(calibrator._update_time_lock(-0.035, 1.0))
+        self.assertFalse(calibrator._update_time_lock(-0.035, 2.0))
+        self.assertEqual(list(calibrator.time_offset_history), [-0.035, -0.035])
+        self.assertFalse(calibrator.time_locked)
+
+        self.assertTrue(calibrator._update_time_lock(-0.030, 3.0))
+        self.assertTrue(calibrator.time_locked)
+        self.assertAlmostEqual(calibrator.time_offset_s, -0.035)
+
+    def test_time_lock_ignores_an_isolated_conflicting_candidate(self):
+        calibrator = OnlineSpatiotemporalCalibrator(
+            minimum_pairs=3,
+            lock_count=3,
+            stability_tolerance_s=0.008,
+        )
+        for stamp_s, offset_s in enumerate((-0.005, 0.0, 0.005)):
+            calibrator._update_time_lock(offset_s, stamp_s)
+        locked_offset_s = calibrator.time_offset_s
+
+        self.assertTrue(calibrator.time_locked)
+        self.assertFalse(calibrator._update_time_lock(0.050, 3.0))
+        self.assertTrue(calibrator.time_locked)
+        self.assertAlmostEqual(calibrator.time_offset_s, locked_offset_s)
+
+    def test_time_lock_votes_require_independent_motion_intervals(self):
+        calibrator = OnlineSpatiotemporalCalibrator(
+            minimum_pairs=3,
+            lock_count=3,
+            minimum_time_lock_candidate_separation_s=1.0,
+        )
+
+        self.assertFalse(calibrator._update_time_lock(0.020, 10.0))
+        self.assertFalse(calibrator._update_time_lock(0.020, 10.2))
+        self.assertFalse(calibrator._update_time_lock(0.020, 10.4))
+        self.assertEqual(calibrator.time_lock_candidate_count, 1)
+        self.assertEqual(list(calibrator.time_offset_history), [0.020])
+
+        self.assertFalse(calibrator._update_time_lock(0.020, 11.1))
+        self.assertTrue(calibrator._update_time_lock(0.020, 12.2))
+        self.assertTrue(calibrator.time_locked)
+
+    def test_stable_high_confidence_contradictions_revoke_time_lock(self):
+        calibrator = OnlineSpatiotemporalCalibrator(
+            minimum_pairs=3,
+            lock_count=3,
+            stability_tolerance_s=0.008,
+            minimum_time_lock_candidate_separation_s=1.0,
+            time_unlock_count=3,
+        )
+        for stamp_s in (0.0, 1.0, 2.0):
+            calibrator._update_time_lock(0.0, stamp_s)
+        self.assertTrue(calibrator.time_locked)
+
+        self.assertFalse(calibrator._update_time_lock(0.050, 3.0))
+        self.assertFalse(calibrator._update_time_lock(0.052, 4.0))
+        self.assertTrue(calibrator.time_locked)
+        self.assertFalse(calibrator._update_time_lock(0.048, 5.0))
+
+        self.assertFalse(calibrator.time_locked)
+        self.assertEqual(calibrator.time_lock_revocations, 1)
+        self.assertEqual(calibrator.time_lock_conflict_count, 3)
+
+    def test_static_intervals_never_lock_time_offset(self):
+        samples = [
+            ImuSample(
+                index * 0.01,
+                (0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0),
+            )
+            for index in range(801)
+        ]
+        calibrator = OnlineSpatiotemporalCalibrator(
+            minimum_pairs=8,
+            minimum_correlation_margin=0.0,
+            minimum_time_accumulated_rotation_rad=0.25,
+            lock_count=3,
+        )
+        calibrator.set_initial_rotation(np.eye(3))
+        for start_s in np.arange(0.5, 5.5, 0.2):
+            calibrator.update(
+                LidarMotionSample(start_s, start_s + 0.15, np.eye(3)),
+                samples,
+            )
+
+        self.assertFalse(calibrator.time_locked)
+        self.assertEqual(
+            calibrator.last_time_candidate.reason,
+            "unexcited_interval_rotation",
+        )
+
+    def test_inconsistent_interval_rotations_never_lock_time_offset(self):
+        rng = np.random.default_rng(7)
+        samples = [
+            ImuSample(
+                index * 0.005,
+                (0.0, 0.0, 0.0),
+                (
+                    0.15 * math.sin(index * 0.013),
+                    0.10 * math.cos(index * 0.017),
+                    0.20 * math.sin(index * 0.023),
+                ),
+            )
+            for index in range(1601)
+        ]
+        calibrator = OnlineSpatiotemporalCalibrator(
+            window_s=7.0,
+            minimum_pairs=12,
+            minimum_correlation=0.70,
+            minimum_correlation_margin=0.002,
+            minimum_time_accumulated_rotation_rad=0.25,
+            lock_count=3,
+        )
+        calibrator.set_initial_rotation(np.eye(3))
+        for start_s in np.arange(0.6, 6.8, 0.18):
+            random_vector = rng.normal(0.0, 0.08, size=3)
+            calibrator.update(
+                LidarMotionSample(
+                    start_s,
+                    start_s + 0.16,
+                    so3_exp(random_vector),
+                ),
+                samples,
+            )
+
+        self.assertFalse(calibrator.time_locked)
+        self.assertLess(calibrator.last_time_candidate.correlation, 0.70)
+
+    def test_interval_time_offset_rejects_boundary_peak(self):
+        samples = [
+            ImuSample(
+                index * 0.01,
+                (0.0, 0.0, 0.0),
+                (0.0, 0.0, math.sin(index * 0.07)),
+            )
+            for index in range(601)
+        ]
+        stamps, values = _prepare_gyro_interpolation(samples)
+        orientations, segments = _prepare_gyro_orientation_trajectory(
+            stamps, values
+        )
+        intervals = []
+        for start_s in np.arange(0.5, 4.8, 0.2):
+            end_s = start_s + 0.15
+            rotation = _integrate_prepared_orientation(
+                stamps,
+                values,
+                orientations,
+                segments,
+                start_s + 0.05,
+                end_s + 0.05,
+            )
+            intervals.append((start_s, end_s, so3_log(rotation), 1.0))
+        result = _estimate_interval_time_offset_prepared(
+            intervals,
+            stamps,
+            values,
+            [-0.05, 0.0, 0.05],
+            np.eye(3),
+            minimum_pairs=8,
+        )
+
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "peak_at_search_boundary")
+
+    def test_time_offset_reports_insufficient_overlap(self):
+        samples = [
+            ImuSample(index * 0.01, (0.0, 0.0, 0.0), (0.1, 0.0, 0.0))
+            for index in range(20)
+        ]
+        rates = [(1.0 + index * 0.1, 0.1 + 0.01 * index) for index in range(8)]
+        result = estimate_time_offset(
+            rates,
+            samples,
+            [-0.01, 0.0, 0.01],
+            minimum_pairs=5,
+            minimum_peak_separation_s=0.005,
+        )
+
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "insufficient_overlapping_samples")
 
     def test_rotation_hand_eye_requires_three_axis_excitation(self):
         extrinsic = so3_exp(np.asarray([0.25, -0.18, 0.31]))

@@ -88,6 +88,61 @@ class VisualLinearizationCheck:
     reprojection_rmse_normalized: float
     reprojection_rmse_px: float
     jacobian_rank: int
+    jacobian_condition_number: float
+    whitened_nis_per_dof: float
+    information_trace: float
+    information_max_eigenvalue: float
+
+
+def visual_pose_observability(points3d, rotation, translation):
+    """Return dimensionless six-DoF rank and condition for RGB-D PnP geometry."""
+    points = np.asarray(points3d, dtype=float)
+    rotation = np.asarray(rotation, dtype=float)
+    translation = np.asarray(translation, dtype=float).reshape(-1)
+    if (
+        points.ndim != 2 or points.shape[1] != 3 or len(points) < 3
+        or rotation.shape != (3, 3) or translation.shape != (3,)
+        or np.any(~np.isfinite(points)) or np.any(~np.isfinite(rotation))
+        or np.any(~np.isfinite(translation))
+    ):
+        return 0, math.inf
+    current = points @ rotation.T + translation
+    valid = np.isfinite(current).all(axis=1) & (current[:, 2] > 1.0e-4)
+    current = current[valid]
+    if len(current) < 3:
+        return 0, math.inf
+    median_depth = float(np.median(current[:, 2]))
+    if not math.isfinite(median_depth) or median_depth <= 0.0:
+        return 0, math.inf
+    x, y, z = current.T
+    inverse_z = 1.0 / z
+    projection = np.zeros((len(current), 2, 3), dtype=float)
+    projection[:, 0, 0] = inverse_z
+    projection[:, 1, 1] = inverse_z
+    projection[:, 0, 2] = -x * inverse_z * inverse_z
+    projection[:, 1, 2] = -y * inverse_z * inverse_z
+    skew = np.zeros((len(current), 3, 3), dtype=float)
+    skew[:, 0, 1] = -z
+    skew[:, 0, 2] = y
+    skew[:, 1, 0] = z
+    skew[:, 1, 2] = -x
+    skew[:, 2, 0] = -y
+    skew[:, 2, 1] = x
+    rotation_columns = np.einsum(
+        "nij,njk->nik", projection, -skew, optimize=True
+    )
+    translation_columns = projection * median_depth
+    jacobian = np.concatenate(
+        (rotation_columns, translation_columns), axis=2
+    ).reshape(-1, 6)
+    information = jacobian.T @ jacobian / max(1, len(current))
+    eigenvalues = np.linalg.eigvalsh(information)
+    maximum = float(eigenvalues[-1]) if eigenvalues.size else 0.0
+    tolerance = max(1.0e-12, maximum * 1.0e-9)
+    rank = int(np.count_nonzero(eigenvalues > tolerance))
+    if rank < 6:
+        return rank, math.inf
+    return rank, maximum / float(eigenvalues[0])
 
 
 def _project_with_jacobian(point_camera, minimum_depth=1.0e-4):
@@ -221,6 +276,8 @@ def validate_visual_linearization(
     *,
     maximum_reprojection_rmse_px=6.0,
     minimum_valid_track_ratio=0.8,
+    minimum_jacobian_rank=6,
+    maximum_jacobian_condition_number=5.0e4,
 ):
     """Check a factor at the current window linearization before staging it.
 
@@ -236,6 +293,10 @@ def validate_visual_linearization(
     focal_y_px = float(focal_y_px)
     maximum_reprojection_rmse_px = float(maximum_reprojection_rmse_px)
     minimum_valid_track_ratio = float(minimum_valid_track_ratio)
+    minimum_jacobian_rank = int(minimum_jacobian_rank)
+    maximum_jacobian_condition_number = float(
+        maximum_jacobian_condition_number
+    )
     if (
         not isinstance(tracks, VisualTrackBatch)
         or not math.isfinite(focal_x_px) or focal_x_px <= 0.0
@@ -243,6 +304,9 @@ def validate_visual_linearization(
         or not math.isfinite(maximum_reprojection_rmse_px)
         or maximum_reprojection_rmse_px <= 0.0
         or not 0.0 < minimum_valid_track_ratio <= 1.0
+        or not 1 <= minimum_jacobian_rank <= 6
+        or not math.isfinite(maximum_jacobian_condition_number)
+        or maximum_jacobian_condition_number <= 1.0
     ):
         raise ValueError("visual linearization check configuration is invalid")
     residual, anchor_jacobian, current_jacobian, valid = (
@@ -254,11 +318,16 @@ def validate_visual_linearization(
     total_count = tracks.track_count
     valid_ratio = valid_count / max(1, total_count)
 
-    def result(valid_result, reason, normalized=math.inf, pixels=math.inf,
-               rank=0):
+    def result(
+        valid_result, reason, normalized=math.inf, pixels=math.inf,
+        rank=0, condition=math.inf, nis_per_dof=math.inf,
+        information_trace=0.0, information_max_eigenvalue=0.0,
+    ):
         return VisualLinearizationCheck(
             bool(valid_result), str(reason), valid_count, total_count,
             float(valid_ratio), float(normalized), float(pixels), int(rank),
+            float(condition), float(nis_per_dof), float(information_trace),
+            float(information_max_eigenvalue),
         )
 
     if valid_count == 0 or residual.size != valid_count * 2:
@@ -276,19 +345,51 @@ def validate_visual_linearization(
     pixel_residual = residual_2d * np.asarray([focal_x_px, focal_y_px])
     pixel_rmse = float(np.sqrt(np.mean(np.sum(pixel_residual ** 2, axis=1))))
     relative_jacobian = current_jacobian[:, :6] - anchor_jacobian[:, :6]
-    rank = int(np.linalg.matrix_rank(relative_jacobian))
+    variance = tracks.variance.reshape(-1, 2)[valid].reshape(-1)
+    whitened_nis_per_dof = float(np.mean(residual * residual / variance))
+    representative_depth = float(np.median(1.0 / tracks.inverse_depth[valid]))
+    scaled_jacobian = relative_jacobian.copy()
+    scaled_jacobian[:, :3] *= representative_depth
+    whitened_jacobian = scaled_jacobian / np.sqrt(variance)[:, None]
+    information = (
+        whitened_jacobian.T @ whitened_jacobian / max(1, valid_count)
+    )
+    eigenvalues = np.linalg.eigvalsh(information)
+    maximum_eigenvalue = float(eigenvalues[-1])
+    tolerance = max(1.0e-12, maximum_eigenvalue * 1.0e-9)
+    rank = int(np.count_nonzero(eigenvalues > tolerance))
+    condition = (
+        maximum_eigenvalue / float(eigenvalues[0])
+        if rank == 6 else math.inf
+    )
+    information_trace = float(np.trace(information))
     if not math.isfinite(normalized_rmse) or not math.isfinite(pixel_rmse):
-        return result(False, "nonfinite_reprojection_rmse", rank=rank)
-    if rank < 3:
+        return result(
+            False, "nonfinite_reprojection_rmse", rank=rank,
+            condition=condition, nis_per_dof=whitened_nis_per_dof,
+            information_trace=information_trace,
+            information_max_eigenvalue=maximum_eigenvalue,
+        )
+    if rank < minimum_jacobian_rank:
         return result(
             False, "insufficient_visual_jacobian_rank",
-            normalized_rmse, pixel_rmse, rank,
+            normalized_rmse, pixel_rmse, rank, condition,
+            whitened_nis_per_dof, information_trace, maximum_eigenvalue,
+        )
+    if condition > maximum_jacobian_condition_number:
+        return result(
+            False, "ill_conditioned_visual_jacobian",
+            normalized_rmse, pixel_rmse, rank, condition,
+            whitened_nis_per_dof, information_trace, maximum_eigenvalue,
         )
     if pixel_rmse > maximum_reprojection_rmse_px:
         return result(
             False, "state_innovation_reprojection_rmse",
-            normalized_rmse, pixel_rmse, rank,
+            normalized_rmse, pixel_rmse, rank, condition,
+            whitened_nis_per_dof, information_trace, maximum_eigenvalue,
         )
     return result(
-        True, "linearization_valid", normalized_rmse, pixel_rmse, rank
+        True, "linearization_valid", normalized_rmse, pixel_rmse, rank,
+        condition, whitened_nis_per_dof, information_trace,
+        maximum_eigenvalue,
     )

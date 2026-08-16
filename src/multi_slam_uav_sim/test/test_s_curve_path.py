@@ -3,7 +3,9 @@ import unittest
 
 from multi_slam_uav_sim.s_curve_path import (
     backend_error_to_fcu_setpoint,
+    clamp_route_altitude_setpoint,
     generate_calibration_figure_eight,
+    generate_large_figure_eight,
     generate_s_curve,
     normalize_angle,
     polyline_length,
@@ -47,6 +49,64 @@ class SCurvePathTest(unittest.TestCase):
         self.assertLessEqual(max(point[2] for point in points), 6.0)
         self.assertGreater(polyline_length(points), 20.0)
 
+    def test_large_figure_eight_is_closed_once_and_mostly_low_altitude(self):
+        points = generate_large_figure_eight(
+            9.0, 1.5, 5.0, 4.5, samples=481,
+            rotation_deg=158.0, altitude_power=4)
+        center = (0.0, 0.0, 5.0)
+
+        self.assertEqual(points[0], center)
+        self.assertEqual(points[len(points) // 2], center)
+        self.assertEqual(points[-1], center)
+        self.assertAlmostEqual(min(point[2] for point in points), 5.0)
+        self.assertAlmostEqual(max(point[2] for point in points), 9.5)
+        low_altitude_ratio = sum(
+            point[2] <= 8.0 for point in points
+        ) / len(points)
+        self.assertGreaterEqual(low_altitude_ratio, 0.70)
+        self.assertGreater(polyline_length(points), 38.0)
+
+        rounded = [
+            tuple(round(value, 6) for value in point[:2])
+            for point in points[:-1]
+        ]
+        duplicates = {
+            point for point in rounded if rounded.count(point) > 1
+        }
+        self.assertEqual(duplicates, {(0.0, 0.0)})
+
+        # The central route is genuinely straight; curvature starts only after
+        # the tangent exits the central corridor.
+        first_direction = points[1]
+        for point in points[2:40]:
+            cross = (
+                first_direction[0] * point[1]
+                - first_direction[1] * point[0]
+            )
+            self.assertAlmostEqual(cross, 0.0, places=6)
+            self.assertAlmostEqual(point[2], 5.0, places=6)
+        midpoint = len(points) // 2
+        inbound = (
+            points[midpoint][0] - points[midpoint - 20][0],
+            points[midpoint][1] - points[midpoint - 20][1],
+        )
+        outbound = (
+            points[midpoint + 20][0] - points[midpoint][0],
+            points[midpoint + 20][1] - points[midpoint][1],
+        )
+        self.assertAlmostEqual(
+            inbound[0] * outbound[1] - inbound[1] * outbound[0],
+            0.0,
+            places=6,
+        )
+
+    def test_large_figure_eight_rejects_invalid_altitude_shape(self):
+        with self.assertRaises(ValueError):
+            generate_large_figure_eight(9.0, 1.5, 5.0, 4.5,
+                                        altitude_power=3)
+        with self.assertRaises(ValueError):
+            generate_large_figure_eight(9.0, 0.0, 5.0, 4.5)
+
     def test_reverse_pass_connects_without_position_or_altitude_jump(self):
         points = generate_s_curve(12.0, 4.5, 5.0, 1.0)
         reverse = list(reversed(points))
@@ -81,6 +141,18 @@ class SCurvePathTest(unittest.TestCase):
             backend_error_to_fcu_setpoint(
                 (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                 0.0, 0.0, 1.0)
+
+    def test_route_altitude_guard_limits_feedback_without_changing_estimator(self):
+        self.assertAlmostEqual(
+            clamp_route_altitude_setpoint(12.0, 5.0, 4.5, 0.5),
+            10.0,
+        )
+        self.assertAlmostEqual(
+            clamp_route_altitude_setpoint(3.0, 5.0, 4.5, 0.5),
+            4.5,
+        )
+        with self.assertRaises(ValueError):
+            clamp_route_altitude_setpoint(5.0, math.nan, 4.5, 0.5)
 
     def test_arc_length_resampling_preserves_endpoints_and_spacing(self):
         source = generate_s_curve(12.0, 4.5, 5.0, 1.0, 481)

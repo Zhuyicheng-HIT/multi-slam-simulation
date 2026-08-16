@@ -17,6 +17,7 @@ def generate_launch_description():
     enable_nmea_gnss = LaunchConfiguration("enable_nmea_gnss")
     optical_flow_input_topic = LaunchConfiguration("optical_flow_input_topic")
     gnss_input_topic = LaunchConfiguration("gnss_input_topic")
+    gnss_algorithm_rate_hz = LaunchConfiguration("gnss_algorithm_rate_hz")
     d435_color_input_topic = LaunchConfiguration("d435_color_input_topic")
     d435_depth_input_topic = LaunchConfiguration("d435_depth_input_topic")
     fcu_flow_input_topic = LaunchConfiguration("fcu_flow_input_topic")
@@ -59,6 +60,7 @@ def generate_launch_description():
                 {
                     "use_sim_time": use_sim_time,
                     "input_topic": LaunchConfiguration("gnss_raw_input_topic"),
+                    "output_rate_hz": gnss_algorithm_rate_hz,
                 },
             ],
             output="screen",
@@ -111,7 +113,10 @@ def generate_launch_description():
         if modality == "optical_flow":
             source_parameters = {"input_topic": optical_flow_input_topic}
         elif modality == "gnss":
-            source_parameters = {"input_topic": gnss_input_topic}
+            source_parameters = {
+                "input_topic": gnss_input_topic,
+                "output_topic": "/sensors/gnss/fix_unthrottled",
+            }
         elif modality == "depth":
             source_parameters = {"input_topic": d435_depth_input_topic}
         elif modality == "color":
@@ -131,10 +136,25 @@ def generate_launch_description():
                 condition=(
                     IfCondition(enable_vision)
                     if modality in ("depth", "color")
+                    else UnlessCondition(enable_nmea_gnss)
+                    if modality == "gnss"
                     else None
                 ),
             )
         )
+    nodes.append(
+        Node(
+            package="uf_sensor_pipeline",
+            executable="fault_injector",
+            name="fault_injector_gnss",
+            parameters=[
+                config,
+                {"input_topic": gnss_input_topic, "use_sim_time": use_sim_time},
+            ],
+            output="screen",
+            condition=IfCondition(enable_nmea_gnss),
+        )
+    )
     nodes.append(
         Node(
             package="uf_sensor_pipeline",
@@ -179,6 +199,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "gnss_raw_input_topic", default_value="/mavros/gpsstatus/gps1/raw"
+        ),
+        DeclareLaunchArgument(
+            "gnss_algorithm_rate_hz",
+            default_value="2.5",
+            description="Paired fix/raw rate exposed to the companion estimator (2-3 Hz)",
         ),
         DeclareLaunchArgument(
             "d435_color_input_topic",

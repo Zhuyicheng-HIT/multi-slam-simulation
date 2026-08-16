@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeo pipefail
 
+# Fast DDS discovery is unreliable in the restored WSL environment.  Keep an
+# explicit caller override, but make the validated ROS 2 transport the default.
+export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PKG_SHARE=$(cd "$SCRIPT_DIR/.." && pwd)
 WS_INSTALL=$(cd "$PKG_SHARE/../../.." && pwd)
@@ -22,8 +26,9 @@ ACTIVE_FILE=${ACTIVE_FILE:-$WS_ROOT/logs/d435i_visual_slam/.active_headless}
 RUN_SMALL_RECTANGLE=${RUN_SMALL_RECTANGLE:-0}
 EXIT_AFTER_RECTANGLE=${EXIT_AFTER_RECTANGLE:-0}
 EXPECT_EXTERNAL_VISUAL_MOTION=${EXPECT_EXTERNAL_VISUAL_MOTION:-0}
-RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-6.0}
-RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-4.0}
+RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-2.0}
+RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-1.2}
+RECTANGLE_TAKEOFF_ALT=${RECTANGLE_TAKEOFF_ALT:-2.0}
 RECTANGLE_SPEED_MPS=${RECTANGLE_SPEED_MPS:-0.8}
 RECTANGLE_YAW_RATE_DEG_S=${RECTANGLE_YAW_RATE_DEG_S:-12.0}
 RECTANGLE_FACE_EDGES=${RECTANGLE_FACE_EDGES:-1}
@@ -41,12 +46,28 @@ case "$EXPECT_EXTERNAL_VISUAL_MOTION" in
   *) printf 'EXPECT_EXTERNAL_VISUAL_MOTION must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 PR6_START_RTABMAP=${PR6_START_RTABMAP:-1}
+VISUAL_BRIDGE_ENABLED=${VISUAL_BRIDGE_ENABLED:-1}
+VISUAL_FRONTEND_ENABLED=${VISUAL_FRONTEND_ENABLED:-1}
+NATIVE_LIDAR_WAIT_S=${NATIVE_LIDAR_WAIT_S:-240}
+EXTERNAL_NAV_WAIT_S=${EXTERNAL_NAV_WAIT_S:-120}
 case "$PR6_START_RTABMAP" in
   0) PR6_START_RTABMAP_BOOL=false ;;
   1) PR6_START_RTABMAP_BOOL=true ;;
   *) printf 'PR6_START_RTABMAP must be 0 or 1.\n' >&2; exit 2 ;;
 esac
+case "$VISUAL_BRIDGE_ENABLED" in
+  0) VISUAL_BRIDGE_ENABLED_BOOL=false ;;
+  1) VISUAL_BRIDGE_ENABLED_BOOL=true ;;
+  *) printf 'VISUAL_BRIDGE_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$VISUAL_FRONTEND_ENABLED" in
+  0) VISUAL_FRONTEND_ENABLED_BOOL=false ;;
+  1) VISUAL_FRONTEND_ENABLED_BOOL=true ;;
+  *) printf 'VISUAL_FRONTEND_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
+SIM_RGBD_MIN_DEPTH_M=${SIM_RGBD_MIN_DEPTH_M:-0.30}
+SIM_RGBD_MAX_DEPTH_M=${SIM_RGBD_MAX_DEPTH_M:-10.0}
 case "$VISUAL_FACTOR_MODE" in
   disabled|paper_reprojection) ;;
   *) printf 'VISUAL_FACTOR_MODE must be disabled or paper_reprojection.\n' >&2; exit 2 ;;
@@ -58,7 +79,10 @@ case "$VISUAL_KEYFRAME_PROFILE" in
 esac
 VISUAL_CANDIDATE_QUALITY_ENABLED=${VISUAL_CANDIDATE_QUALITY_ENABLED:-1}
 VISUAL_PENDING_ENABLED=${VISUAL_PENDING_ENABLED:-1}
+VISUAL_REQUIRE_TIME_LOCK=${VISUAL_REQUIRE_TIME_LOCK:-0}
 PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-0}
+BACKEND_CPUSET=${BACKEND_CPUSET:-}
+BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 case "$VISUAL_CANDIDATE_QUALITY_ENABLED" in
   0) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=false ;;
   1) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=true ;;
@@ -69,11 +93,28 @@ case "$VISUAL_PENDING_ENABLED" in
   1) VISUAL_PENDING_ENABLED_BOOL=true ;;
   *) printf 'VISUAL_PENDING_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
+case "$VISUAL_REQUIRE_TIME_LOCK" in
+  0) VISUAL_REQUIRE_TIME_LOCK_BOOL=false ;;
+  1) VISUAL_REQUIRE_TIME_LOCK_BOOL=true ;;
+  *) printf 'VISUAL_REQUIRE_TIME_LOCK must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 case "$PERFORMANCE_PROFILING_ENABLED" in
   0) PERFORMANCE_PROFILING_ENABLED_BOOL=false ;;
   1) PERFORMANCE_PROFILING_ENABLED_BOOL=true ;;
   *) printf 'PERFORMANCE_PROFILING_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
+if [[ ! "$BACKEND_NUMERIC_THREADS" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'BACKEND_NUMERIC_THREADS must be a positive integer.\n' >&2
+  exit 2
+fi
+BACKEND_PROCESS_PREFIX=""
+if [[ -n "$BACKEND_CPUSET" ]]; then
+  if ! taskset --cpu-list "$BACKEND_CPUSET" true 2>/dev/null; then
+    printf 'BACKEND_CPUSET is not a valid CPU list: %s\n' "$BACKEND_CPUSET" >&2
+    exit 2
+  fi
+  BACKEND_PROCESS_PREFIX="taskset --cpu-list $BACKEND_CPUSET"
+fi
 ONLINE_MAPPING_MODE=${ONLINE_MAPPING_MODE:-disabled}
 case "$ONLINE_MAPPING_MODE" in
   disabled) SHARED_MAPPING_ENABLED=false; SHARED_MAPPING_RGBD_ENABLED=false ;;
@@ -82,6 +123,23 @@ case "$ONLINE_MAPPING_MODE" in
   *) printf 'ONLINE_MAPPING_MODE must be disabled, lidar_only, or joint.\n' >&2; exit 2 ;;
 esac
 mkdir -p "$RUN_DIR" "$(dirname "$ACTIVE_FILE")"
+printf 'visual_bridge_enabled=%s\nvisual_frontend_enabled=%s\n' \
+  "$VISUAL_BRIDGE_ENABLED" "$VISUAL_FRONTEND_ENABLED" \
+  >"$RUN_DIR/visual_ablation_mode.env"
+printf 'visual_factor_mode=%s\nvisual_keyframe_profile=%s\n' \
+  "$VISUAL_FACTOR_MODE" "$VISUAL_KEYFRAME_PROFILE" \
+  >>"$RUN_DIR/visual_ablation_mode.env"
+printf 'rtabmap_enabled=%s\nonline_mapping_mode=%s\n' \
+  "$PR6_START_RTABMAP" "$ONLINE_MAPPING_MODE" \
+  >>"$RUN_DIR/visual_ablation_mode.env"
+printf 'backend_cpuset=%s\nbackend_numeric_threads=%s\n' \
+  "${BACKEND_CPUSET:-normal}" "$BACKEND_NUMERIC_THREADS" \
+  >>"$RUN_DIR/visual_ablation_mode.env"
+printf 'visual_require_time_lock=%s\n' "$VISUAL_REQUIRE_TIME_LOCK" \
+  >>"$RUN_DIR/visual_ablation_mode.env"
+printf 'sim_rgbd_depth_range_m=%s..%s\n' \
+  "$SIM_RGBD_MIN_DEPTH_M" "$SIM_RGBD_MAX_DEPTH_M" \
+  >>"$RUN_DIR/visual_ablation_mode.env"
 STARTUP_TRACE="$RUN_DIR/startup_chain.tsv"
 printf 'stage\twall_utc\telapsed_wall_s\n' >"$STARTUP_TRACE"
 
@@ -147,15 +205,13 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 wait_for_topic() {
-  local topic=$1 timeout_s=${2:-90} started=$SECONDS
-  while (( SECONDS - started < timeout_s )); do
-    if timeout 5s ros2 topic echo "$topic" --no-daemon --spin-time 2.0 \
-        --once --qos-reliability best_effort >/dev/null 2>&1; then
-      printf 'ready: %s\n' "$topic"
-      return 0
-    fi
-    sleep 1
-  done
+  local topic=$1 timeout_s=${2:-90}
+  if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
+      --topic "$topic" --timeout "$timeout_s" \
+      --reliability best_effort >/dev/null; then
+    printf 'ready: %s\n' "$topic"
+    return 0
+  fi
   printf 'Timed out waiting for %s\n' "$topic" >&2
   return 1
 }
@@ -174,28 +230,51 @@ wait_for_publisher() {
   return 1
 }
 
-get_parameter_with_discovery_retry() {
-  local node=$1 parameter=$2 timeout_s=${3:-45} started=$SECONDS value=
+existing_lio_adapter_pids() {
+  ps -eo pid=,args= | awk '
+    $0 ~ /[/]uf_lio_adapter[/]lib[/]uf_lio_adapter[/]lio_adapter([[:space:]]|$)/ {
+      print $1
+    }'
+}
+
+wait_for_single_publisher() {
+  local topic=$1 timeout_s=${2:-45} started=$SECONDS info= count=0 stable=0
   while (( SECONDS - started < timeout_s )); do
-    value=$(timeout 8s ros2 param get "$node" "$parameter" 2>/dev/null || true)
-    if [[ -n "$value" ]]; then
-      printf '%s\n' "$value"
-      return 0
+    info=$(timeout 5s ros2 topic info "$topic" --no-daemon 2>/dev/null || true)
+    count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$info")
+    count=${count:-0}
+    if (( count > 1 )); then
+      printf 'Refusing duplicate ownership of %s: publishers=%s\n' \
+        "$topic" "$count" >&2
+      return 1
+    fi
+    if (( count == 1 )); then
+      stable=$((stable + 1))
+      (( stable >= 2 )) && return 0
+    else
+      stable=0
     fi
     sleep 1
   done
+  printf 'Timed out waiting for single publisher of %s: publishers=%s\n' \
+    "$topic" "$count" >&2
   return 1
+}
+
+get_parameter_with_discovery_retry() {
+  local node=$1 parameter=$2 timeout_s=${3:-45}
+  python3 "$PKG_SHARE/scripts/wait_for_ros_parameter.py" \
+    --node "$node" --parameter "$parameter" --timeout "$timeout_s"
 }
 
 wait_for_livox_ownership() {
   local timeout_s=${1:-90} started=$SECONDS stable=0 lidar_info imu_info
   local lidar_count=0 imu_count=0
   while (( SECONDS - started < timeout_s )); do
-    # Use the already-running ROS graph daemon here.  A fresh --no-daemon
-    # process can finish discovery before the Gazebo bridge is visible and
-    # incorrectly report an otherwise healthy topic as unknown.
-    lidar_info=$(timeout 5s ros2 topic info /livox/lidar 2>/dev/null || true)
-    imu_info=$(timeout 5s ros2 topic info /livox/imu 2>/dev/null || true)
+    # Query DDS directly.  The ROS graph daemon may retain the previous RMW
+    # graph after switching middleware and can otherwise report zero owners.
+    lidar_info=$(timeout 5s ros2 topic info /livox/lidar --no-daemon 2>/dev/null || true)
+    imu_info=$(timeout 5s ros2 topic info /livox/imu --no-daemon 2>/dev/null || true)
     lidar_count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$lidar_info")
     imu_count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$imu_info")
     lidar_count=${lidar_count:-0}
@@ -217,24 +296,29 @@ wait_for_livox_ownership() {
 }
 
 wait_for_valid_vision() {
-  local timeout_s=${1:-60} started=$SECONDS sample=
-  while (( SECONDS - started < timeout_s )); do
-    sample=$(timeout 5s ros2 topic echo /reliability/vision_score \
-      --no-daemon --spin-time 2.0 --once --field valid \
-      --qos-reliability best_effort 2>/dev/null || true)
-    if grep -qi '^true$' <<<"$sample"; then
-      printf 'ready: D_V_rgbd valid\n'
-      return 0
-    fi
-    sleep 1
-  done
+  local timeout_s=${1:-60}
+  if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
+      --topic /reliability/vision_score --timeout "$timeout_s" \
+      --reliability best_effort --field valid --equals true >/dev/null; then
+    printf 'ready: D_V_rgbd valid\n'
+    return 0
+  fi
   printf 'Timed out waiting for valid D_V_rgbd\n' >&2
   return 1
 }
 
 printf 'Starting PR #6 sensor stack. Logs: %s\n' "$RUN_DIR"
+PR6_HEADLESS=${PR6_HEADLESS:-1}
+if [[ "$PR6_HEADLESS" == "1" ]]; then
+  PR6_GAZEBO_GUI=0
+elif [[ "$PR6_HEADLESS" == "0" ]]; then
+  PR6_GAZEBO_GUI=1
+else
+  printf 'PR6_HEADLESS must be 0 or 1, got %s\n' "$PR6_HEADLESS" >&2
+  exit 2
+fi
 setsid env \
-  HEADLESS=1 GAZEBO_GUI=0 SHOW_FLOW_WINDOW=0 \
+  HEADLESS="$PR6_HEADLESS" GAZEBO_GUI="$PR6_GAZEBO_GUI" SHOW_FLOW_WINDOW=0 \
   LOG_DIR="$RUN_DIR/sensor_stack" \
   LOCK_FILE="$RUN_DIR/apm_sensor_stack.lock" \
   ENABLE_D435_BRIDGE=0 ENABLE_D435_POINTCLOUD=false \
@@ -250,15 +334,34 @@ record_pid stack_supervisor "$!"
 # Construct every backend subscription while Gazebo/SITL are still starting.
 # This removes CLI readiness polling from the estimator critical path while
 # preserving the volatile NativeLidarFactor bootstrap contract.
+stale_lio_pids=$(existing_lio_adapter_pids)
+if [[ -n "$stale_lio_pids" ]]; then
+  printf 'Refusing to start: an independent lio_adapter is already running (PIDs: %s).\n' \
+    "$(tr '\n' ' ' <<<"$stale_lio_pids")" >&2
+  exit 2
+fi
+backend_prefix_launch_args=()
+if [[ -n "$BACKEND_PROCESS_PREFIX" ]]; then
+  backend_prefix_launch_args+=(
+    "backend_process_prefix:=$BACKEND_PROCESS_PREFIX"
+  )
+fi
 setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   use_sim_time:=true \
+  start_rgbd_bridge:="$VISUAL_BRIDGE_ENABLED_BOOL" \
+  start_visual_frontend:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
   visual_factor_mode:="$VISUAL_FACTOR_MODE" \
   visual_keyframe_profile:="$VISUAL_KEYFRAME_PROFILE" \
   visual_candidate_quality_enabled:="$VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL" \
   visual_pending_enabled:="$VISUAL_PENDING_ENABLED_BOOL" \
+  rgbd_minimum_depth_m:="$SIM_RGBD_MIN_DEPTH_M" \
+  rgbd_maximum_depth_m:="$SIM_RGBD_MAX_DEPTH_M" \
+  visual_initialization_require_time_lock:="$VISUAL_REQUIRE_TIME_LOCK_BOOL" \
   performance_profiling_enabled:="$PERFORMANCE_PROFILING_ENABLED_BOOL" \
   performance_trace_path:="$RUN_DIR/backend_cycle_trace.jsonl" \
+  "${backend_prefix_launch_args[@]}" \
+  backend_numeric_threads:="$BACKEND_NUMERIC_THREADS" \
   shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
   shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
   shared_mapping_output_directory:="$RUN_DIR/shared_map" \
@@ -266,6 +369,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"
 wait_for_publisher /fusion/unified/diagnostics 60
+wait_for_single_publisher /lio/diagnostics 60
 trace_stage backend_subscriber_ready
 
 # The latest mainline sensor supervisor owns the single Gazebo-to-ROS clock
@@ -290,7 +394,12 @@ setsid env \
   bash "$PKG_SHARE/scripts/run_mid360_fastlio_mapping.sh" \
   >"$RUN_DIR/fastlio_supervisor.log" 2>&1 &
 record_pid fastlio_supervisor "$!"
-if ! wait_for_topic /fast_lio/native_lidar_factor 120; then
+if ! wait_for_topic /fast_lio/native_lidar_factor "$NATIVE_LIDAR_WAIT_S"; then
+  timeout 10s ros2 topic info /fast_lio/native_lidar_factor --verbose \
+    >"$RUN_DIR/startup_failure_native_factor_topic.txt" 2>&1 || true
+  timeout 10s ros2 topic echo /fusion/unified/diagnostics \
+    --no-daemon --spin-time 7.0 --once --full-length \
+    >"$RUN_DIR/startup_failure_native_factor_diagnostics.yaml" 2>&1 || true
   printf 'NativeLidarFactor is required for the paper-mode regression.\n' >&2
   exit 3
 fi
@@ -341,13 +450,22 @@ wait_for_topic /sim/optical_flow/rad 90
 trace_stage flow_ready
 wait_for_topic /mavros/global_position/raw/fix 120
 trace_stage gnss_ready
-wait_for_topic /sensors/rgbd/color 90
-wait_for_topic /sensors/rgbd/depth 45
-wait_for_topic /front/d435i/color/camera_info 45
-wait_for_publisher /reliability/vision_score 45
-wait_for_publisher /vision/frontend_diagnostics 45
-wait_for_publisher /fusion/unified/visual_timing 45
-trace_stage visual_frontend_ready
+if [[ "$VISUAL_BRIDGE_ENABLED" == 1 ]]; then
+  wait_for_topic /sensors/rgbd/color 90
+  wait_for_topic /sensors/rgbd/depth 45
+  wait_for_topic /front/d435i/color/camera_info 45
+  trace_stage visual_bridge_ready
+else
+  trace_stage visual_bridge_disabled
+fi
+if [[ "$VISUAL_FRONTEND_ENABLED" == 1 ]]; then
+  wait_for_publisher /reliability/vision_score 45
+  wait_for_publisher /vision/frontend_diagnostics 45
+  wait_for_publisher /fusion/unified/visual_timing 45
+  trace_stage visual_frontend_ready
+else
+  trace_stage visual_frontend_disabled
+fi
 backend_visual_mode=$(get_parameter_with_discovery_retry \
   /unified_backend_fusion visual_factor_mode 45 || true)
 if [[ "$backend_visual_mode" != *"$VISUAL_FACTOR_MODE"* ]]; then
@@ -361,7 +479,16 @@ if [[ "$PR6_START_RTABMAP" == 1 ]]; then
   wait_for_publisher /rtabmap/odom 120
 fi
 wait_for_publisher /reliability/scheduler_state 45
-wait_for_topic /fusion/runtime_external_nav 45
+if ! wait_for_topic /fusion/runtime_external_nav "$EXTERNAL_NAV_WAIT_S"; then
+  timeout 10s ros2 topic echo /external_nav/diagnostics \
+    --no-daemon --spin-time 7.0 --once --full-length \
+    >"$RUN_DIR/startup_failure_external_nav_diagnostics.yaml" 2>&1 || true
+  timeout 10s ros2 topic echo /reliability/scheduler_state \
+    --no-daemon --spin-time 7.0 --once --full-length \
+    >"$RUN_DIR/startup_failure_scheduler_state.yaml" 2>&1 || true
+  printf 'ExternalNav gate did not become usable.\n' >&2
+  exit 7
+fi
 trace_stage external_nav_gate_open
 if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
   # At startup the shared map is intentionally empty. Under software-rendered
@@ -371,7 +498,8 @@ if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
   # source/conflict metrics remain mandatory post-mission validation.
   wait_for_publisher /mapping/shared/points 45
   mapping_output=$(timeout 10s ros2 param get \
-    /uf_shared_mapping output_directory 2>/dev/null || true)
+    /uf_shared_mapping output_directory \
+    --no-daemon --spin-time 3.0 2>/dev/null || true)
   if [[ "$mapping_output" != *"$RUN_DIR/shared_map"* ]]; then
     printf 'Shared-map output contract mismatch: expected=%s actual=%s\n' \
       "$RUN_DIR/shared_map" "$mapping_output" >&2
@@ -382,7 +510,8 @@ fi
 
 if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
   setsid ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
-    -p takeoff_alt:=3.0 -p length_x:="$RECTANGLE_LENGTH_X" \
+    -p use_sim_time:=true \
+    -p takeoff_alt:="$RECTANGLE_TAKEOFF_ALT" -p length_x:="$RECTANGLE_LENGTH_X" \
     -p length_y:="$RECTANGLE_LENGTH_Y" \
     -p speed_mps:="$RECTANGLE_SPEED_MPS" \
     -p yaw_rate_deg_s:="$RECTANGLE_YAW_RATE_DEG_S" \
@@ -396,14 +525,22 @@ fi
 # tracks before starting a configured motion mission deadlocks at the static
 # takeoff pose.  The raw RGB-D stream and frontend publishers are verified
 # above; only the first quality-valid candidate is allowed to wait for motion.
-if [[ "$RUN_SMALL_RECTANGLE" == 1 || "$EXPECT_EXTERNAL_VISUAL_MOTION" == 1 ]]; then
-  wait_for_topic /vision/feature_tracks 120
-  wait_for_valid_vision 120
-  trace_stage visual_ready
+if [[ "$VISUAL_FRONTEND_ENABLED" == 1 ]]; then
+  if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
+    wait_for_topic /vision/feature_tracks 120
+    wait_for_valid_vision 120
+    trace_stage visual_ready
+  elif [[ "$EXPECT_EXTERNAL_VISUAL_MOTION" == 1 ]]; then
+    # The external mission starts only after this wrapper reports ready.  Let
+    # the scheduler keep vision disabled until that motion creates parallax.
+    trace_stage visual_waiting_for_external_motion
+  else
+    wait_for_topic /vision/feature_tracks 90
+    wait_for_valid_vision 120
+    trace_stage visual_ready
+  fi
 else
-  wait_for_topic /vision/feature_tracks 90
-  wait_for_valid_vision 120
-  trace_stage visual_ready
+  trace_stage visual_candidate_gate_disabled
 fi
 
 printf 'Paper reprojection + D435i visual integration is ready.\n'

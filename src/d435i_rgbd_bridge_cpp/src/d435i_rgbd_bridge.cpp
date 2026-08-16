@@ -107,8 +107,8 @@ public:
       "camera_link_frame", "d435i_link");
     mode_ = declare_parameter<std::string>("mode", "cpp");
     depth_encoding_ = declare_parameter<std::string>("depth_encoding", "16UC1");
-    max_depth_m_ = declare_parameter<double>("max_depth_m", 10.0);
-    min_depth_m_ = declare_parameter<double>("min_depth_m", 0.105);
+    max_depth_m_ = declare_parameter<double>("max_depth_m", 6.0);
+    min_depth_m_ = declare_parameter<double>("min_depth_m", 0.3);
     sync_queue_depth_ = std::max(
       1, static_cast<int>(declare_parameter<int64_t>("sync_queue_depth", 2)));
     qos_depth_ = std::max(
@@ -881,8 +881,8 @@ private:
   const std::string color_frame_{"front_d435i_color_optical_frame"};
   const std::string depth_frame_{"front_d435i_depth_optical_frame"};
   const std::string imu_frame_{"front_d435i_imu_frame"};
-  double max_depth_m_{10.0};
-  double min_depth_m_{0.105};
+  double max_depth_m_{6.0};
+  double min_depth_m_{0.3};
   double pointcloud_hz_{10.0};
   double performance_stats_period_s_{5.0};
   int sync_queue_depth_{2};

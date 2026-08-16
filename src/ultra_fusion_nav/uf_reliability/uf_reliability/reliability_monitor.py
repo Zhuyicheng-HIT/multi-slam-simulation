@@ -1,7 +1,7 @@
 import bisect
 import copy
 import math
-from collections import deque
+from collections import OrderedDict, deque
 
 import numpy as np
 import rclpy
@@ -25,6 +25,7 @@ from .flow_rotation_gate import (
 from .scoring import (
     gnss_integrity_quality,
     gnss_score,
+    imu_health_admission,
     imu_score,
     lidar_factor_score,
     lidar_innovation_score,
@@ -37,8 +38,34 @@ from .scoring import (
 )
 
 
+VISION_HEALTH_TOPIC = "/reliability/vision_score"
+VISION_FACTOR_SCORE_TOPIC = "/reliability/vision_factor_score"
+
+
 def stamp_ns(header):
     return int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+
+
+def score_operationally_usable(
+    valid,
+    evidence,
+    observation_count,
+    minimum_observation_count,
+    minimum_evidence_coverage=1.0,
+):
+    coverage = float(evidence.get("evidence_weight_coverage", 0.0))
+    return bool(
+        valid
+        and int(observation_count) >= int(minimum_observation_count)
+        and coverage + 1.0e-9 >= float(minimum_evidence_coverage)
+    )
+
+
+def conservative_partial_score(score, evidence_coverage):
+    """Treat unavailable evidence as fully degraded during bootstrap."""
+    bounded_score = min(1.0, max(0.0, float(score)))
+    bounded_coverage = min(1.0, max(0.0, float(evidence_coverage)))
+    return 1.0 - bounded_coverage * (1.0 - bounded_score)
 
 
 def vector_norm(vector):
@@ -115,16 +142,24 @@ def interpolate_lio(samples, timestamp_s, maximum_gap_s):
     ])
 
 
-def depth_valid_ratio(msg):
+def depth_valid_ratio(msg, minimum_depth_m=0.30, maximum_depth_m=6.0):
     if msg.height == 0 or msg.width == 0:
         return 0.0
     encoding = msg.encoding.upper()
     if encoding == "32FC1":
         values = np.frombuffer(msg.data, dtype=np.float32)
-        valid = np.isfinite(values) & (values > 0.05)
+        valid = (
+            np.isfinite(values)
+            & (values >= float(minimum_depth_m) - 1.0e-6)
+            & (values <= float(maximum_depth_m) + 1.0e-6)
+        )
     elif encoding in ("16UC1", "MONO16"):
         values = np.frombuffer(msg.data, dtype=np.uint16)
-        valid = values > 0
+        minimum_mm = max(0, int(math.ceil(
+            float(minimum_depth_m) * 1000.0 - 1.0e-9)))
+        maximum_mm = max(0, int(math.floor(
+            float(maximum_depth_m) * 1000.0 + 1.0e-9)))
+        valid = (values >= minimum_mm) & (values <= maximum_mm)
     else:
         return 0.0
     return float(np.mean(valid)) if len(valid) else 0.0
@@ -165,6 +200,57 @@ def image_feature_support(msg):
     return feature_count, spatial_uniformity, blur_energy
 
 
+def visual_factor_track_metrics(message):
+    """Measure exactly the visual tracks eligible for backend factor creation."""
+    tracks = list(message.tracks)
+    geometry_eligible = []
+    selected = []
+    for track in tracks:
+        coordinates_finite = all(math.isfinite(float(value)) for value in (
+            track.previous_x,
+            track.previous_y,
+            track.current_x,
+            track.current_y,
+        ))
+        geometry_valid = bool(
+            track.klt_inlier
+            and track.geometric_inlier
+            and int(track.track_age) >= 2
+            and coordinates_finite
+        )
+        if not geometry_valid:
+            continue
+        geometry_eligible.append(track)
+        if bool(
+            track.depth_valid
+            and float(track.inverse_depth) > 0.0
+            and math.isfinite(float(track.inverse_depth))
+        ):
+            selected.append(track)
+    reprojection = [
+        float(track.reprojection_error_px) for track in selected
+        if math.isfinite(float(track.reprojection_error_px))
+        and float(track.reprojection_error_px) >= 0.0
+    ]
+    occupied_cells = {
+        int(track.grid_cell) for track in selected
+        if 0 <= int(track.grid_cell) < 64
+    }
+    selected_count = len(selected)
+    geometry_count = len(geometry_eligible)
+    return {
+        "raw_track_count": len(tracks),
+        "geometry_eligible_count": geometry_count,
+        "selected_track_count": selected_count,
+        "selected_track_ratio": selected_count / max(1, len(tracks)),
+        "depth_valid_ratio": selected_count / max(1, geometry_count),
+        "spatial_distribution": len(occupied_cells) / 64.0,
+        "mean_reprojection_error_px": (
+            float(np.mean(reprojection)) if reprojection else -1.0
+        ),
+    }
+
+
 class ReliabilityMonitor(Node):
     def __init__(self):
         super().__init__("reliability_monitor")
@@ -200,6 +286,8 @@ class ReliabilityMonitor(Node):
             "gnss.good_satellites": 10,
             "gnss.good_hdop": 1.0,
             "gnss.maximum_hdop": 4.0,
+            "gnss.minimum_startup_evidence_coverage": 0.45,
+            "gnss.prefit_nis_timeout_s": 2.0,
             "imu.tau_preintegration": 5.0,
             "imu.accel_excitation_scale": 0.5,
             "imu.gyro_excitation_scale": 0.15,
@@ -207,6 +295,7 @@ class ReliabilityMonitor(Node):
             "imu.gyro_saturation": 10.0,
             "imu.weights": [0.35, 0.45, 0.20],
             "imu.minimum_window_samples": 20,
+            "imu.minimum_startup_evidence_coverage": 0.55,
             "imu.backend_diagnostic_topic": "/fusion/unified/diagnostics",
             "imu.preintegration_residual_timeout_s": 2.0,
             "optical_flow.tau_translation": 0.30,
@@ -234,13 +323,22 @@ class ReliabilityMonitor(Node):
             "vision.minimum_features": 20,
             "vision.track_evidence_enabled": True,
             "vision.klt_weight": 0.15,
+            "vision.factor_score_topic": VISION_FACTOR_SCORE_TOPIC,
+            "vision.camera_cache_size": 4,
+            "vision.minimum_camera_evidence_coverage": 0.75,
+            "vision.minimum_depth_m": 0.30,
+            "vision.maximum_depth_m": 6.0,
         }
         for name, value in parameters.items():
             self.declare_parameter(name, value)
         self.score_publishers = {
             name: self.create_publisher(
                 ReliabilityScore,
-                f"/reliability/{name}_score",
+                (
+                    VISION_HEALTH_TOPIC
+                    if name == "vision"
+                    else f"/reliability/{name}_score"
+                ),
                 20) for name in (
                 "lidar",
                 "lidar_map",
@@ -248,6 +346,17 @@ class ReliabilityMonitor(Node):
                 "imu",
                 "optical_flow",
                 "vision")}
+        vision_factor_topic = str(
+            self.get_parameter("vision.factor_score_topic").value)
+        if vision_factor_topic == VISION_HEALTH_TOPIC:
+            raise ValueError(
+                "vision.factor_score_topic must differ from camera health topic"
+            )
+        self.vision_factor_publisher = self.create_publisher(
+            ReliabilityScore,
+            vision_factor_topic,
+            20,
+        )
         self.gnss_integrity_pub = self.create_publisher(
             GnssIntegrity, "/reliability/gnss_integrity", 20)
         self.last_imu = None
@@ -263,6 +372,9 @@ class ReliabilityMonitor(Node):
         self.lidar_innovation_position = None
         self.lidar_innovation_yaw = None
         self.lidar_innovation_arrival = None
+        self.gnss_prefit_nis = None
+        self.gnss_prefit_residual_norm_m = None
+        self.gnss_prefit_stamp_s = None
         self.last_gnss = None
         self.last_gnss_ns = None
         self.last_gnss_arrival_ns = None
@@ -313,6 +425,8 @@ class ReliabilityMonitor(Node):
         self.latest_spatial_uniformity = 0.0
         self.last_vision_publish_ns = None
         self.last_visual_tracks_ns = None
+        self.vision_color_metrics = OrderedDict()
+        self.vision_depth_metrics = OrderedDict()
 
         self.create_subscription(
             LioDiagnostics,
@@ -378,10 +492,21 @@ class ReliabilityMonitor(Node):
         valid=True,
         observation_count=1,
         minimum_observation_count=1,
+        minimum_evidence_coverage=1.0,
+        publisher=None,
     ):
         score, evidence, reasons = result
-        complete = evidence.get("score_complete", 0.0) >= 0.5
-        usable = bool(valid and complete)
+        usable = score_operationally_usable(
+            valid,
+            evidence,
+            observation_count,
+            minimum_observation_count,
+            minimum_evidence_coverage,
+        )
+        evidence["minimum_operational_evidence_coverage"] = float(
+            minimum_evidence_coverage
+        )
+        evidence["score_operationally_usable"] = 1.0 if usable else 0.0
         msg = ReliabilityScore()
         msg.header = copy.deepcopy(header)
         msg.modality = modality
@@ -393,7 +518,8 @@ class ReliabilityMonitor(Node):
         msg.reasons = reasons
         msg.evidence_names = list(evidence.keys())
         msg.evidence_values = [float(value) for value in evidence.values()]
-        self.score_publishers[modality].publish(msg)
+        target = self.score_publishers[modality] if publisher is None else publisher
+        target.publish(msg)
 
     def _lidar(self, msg):
         paper_result = lidar_score(
@@ -510,6 +636,29 @@ class ReliabilityMonitor(Node):
             if position_innovation is not None and yaw_innovation is not None
             else None
         )
+        gnss_prefit_nis = nonnegative_diagnostic_value(
+            msg,
+            "unified_backend_fusion",
+            "gnss_prefit_nis",
+        )
+        gnss_prefit_residual = nonnegative_diagnostic_value(
+            msg,
+            "unified_backend_fusion",
+            "gnss_prefit_residual_norm_m",
+        )
+        gnss_prefit_stamp = nonnegative_diagnostic_value(
+            msg,
+            "unified_backend_fusion",
+            "gnss_prefit_stamp_s",
+        )
+        if (
+            gnss_prefit_nis is not None
+            and gnss_prefit_residual is not None
+            and gnss_prefit_stamp is not None
+        ):
+            self.gnss_prefit_nis = gnss_prefit_nis
+            self.gnss_prefit_residual_norm_m = gnss_prefit_residual
+            self.gnss_prefit_stamp_s = gnss_prefit_stamp
 
     def _gnss(self, msg):
         current_ns = stamp_ns(msg.header)
@@ -519,6 +668,8 @@ class ReliabilityMonitor(Node):
             msg.position_covariance[8])
         innovation = -1.0
         innovation_mahalanobis = -1.0
+        backend_prefit_age_s = -1.0
+        backend_prefit_used = False
         jump = False
         if self.last_gnss is not None and self.last_gnss_ns is not None:
             dt = max(1.0e-3, (current_ns - self.last_gnss_ns) * 1.0e-9)
@@ -534,6 +685,18 @@ class ReliabilityMonitor(Node):
                     innovation / max(0.01, covariance)
         if jump and innovation_mahalanobis < 0.0:
             innovation_mahalanobis = 10.0
+        current_s = current_ns * 1.0e-9
+        if self.gnss_prefit_stamp_s is not None:
+            backend_prefit_age_s = current_s - self.gnss_prefit_stamp_s
+            if (
+                0.0 <= backend_prefit_age_s
+                <= float(self.get_parameter("gnss.prefit_nis_timeout_s").value)
+                and self.gnss_prefit_nis is not None
+                and self.gnss_prefit_residual_norm_m is not None
+            ):
+                innovation_mahalanobis = float(self.gnss_prefit_nis)
+                innovation = float(self.gnss_prefit_residual_norm_m)
+                backend_prefit_used = True
         raw = None
         if self.last_gps_raw is not None and self.last_gps_raw_arrival_ns is not None:
             age_s = (current_ns - self.last_gps_raw_arrival_ns) * 1.0e-9
@@ -561,18 +724,42 @@ class ReliabilityMonitor(Node):
             (1.0 if msg.status.status >= 0 else 0.0)
             if integrity_quality is None else integrity_quality
         )
-        result = gnss_score(
+        score, evidence, reasons = gnss_score(
             q_fix, covariance, innovation_mahalanobis,
             self.get_parameter("gnss.tau_covariance").value,
             self.get_parameter("gnss.tau_innovation").value,
             tuple(self.get_parameter("gnss.weights").value),
             hard_jump=jump,
         )
-        result[1].update(integrity_evidence)
-        result[1]["vdop"] = -1.0 if vdop is None else vdop
-        result[1]["fcu_metadata_fresh"] = 0.0 if raw is None else 1.0
-        result[2].extend(integrity_reasons)
-        self._publish("gnss", msg.header, result, True)
+        evidence.update(integrity_evidence)
+        evidence["vdop"] = -1.0 if vdop is None else vdop
+        evidence["fcu_metadata_fresh"] = 0.0 if raw is None else 1.0
+        evidence["innovation_source_backend_prefit"] = (
+            1.0 if backend_prefit_used else 0.0
+        )
+        evidence["backend_prefit_age_s"] = backend_prefit_age_s
+        reasons.extend(integrity_reasons)
+        evidence_coverage = float(evidence["evidence_weight_coverage"])
+        if innovation_mahalanobis < 0.0:
+            evidence["partial_score_eq23"] = float(score)
+            score = conservative_partial_score(score, evidence_coverage)
+            evidence["provisional_score_missing_as_degraded"] = float(score)
+            evidence["hard_gate_allowed"] = 0.0
+            reasons.append("provisional_gnss_direct_evidence_only")
+        direct_evidence_valid = bool(
+            msg.status.status >= 0
+            and math.isfinite(covariance)
+            and covariance >= 0.0
+        )
+        self._publish(
+            "gnss",
+            msg.header,
+            (score, evidence, reasons),
+            direct_evidence_valid,
+            minimum_evidence_coverage=self.get_parameter(
+                "gnss.minimum_startup_evidence_coverage"
+            ).value,
+        )
         integrity = GnssIntegrity()
         integrity.header = copy.deepcopy(msg.header)
         integrity.fix_status = int(msg.status.status)
@@ -590,7 +777,9 @@ class ReliabilityMonitor(Node):
         self.last_gnss = copy.deepcopy(msg)
         self.last_gnss_ns = current_ns
         self.last_gnss_arrival_ns = current_ns
-        self.last_gnss_lio_position = None if self.lio_position is None else self.lio_position.copy()
+        self.last_gnss_lio_position = (
+            None if self.lio_position is None else self.lio_position.copy()
+        )
 
     def _imu(self, msg):
         current_ns = stamp_ns(msg.header)
@@ -598,39 +787,61 @@ class ReliabilityMonitor(Node):
                             msg.linear_acceleration.y,
                             msg.linear_acceleration.z],
                            dtype=float)
-        jerk = 0.0
-        if self.last_imu is not None and self.last_imu_ns is not None:
-            dt = (current_ns - self.last_imu_ns) * 1.0e-9
-            if dt > 1.0e-4:
-                jerk = float(np.linalg.norm(accel - self.last_imu) / dt)
-        self.last_imu = accel
-        self.last_imu_ns = current_ns
         gyro = np.asarray([msg.angular_velocity.x,
                            msg.angular_velocity.y,
                            msg.angular_velocity.z],
                           dtype=float)
-        timestamp_s = current_ns * 1.0e-9
-        self.flow_imu_yaw_samples.append((timestamp_s, float(gyro[2])))
-        self.flow_imu_samples.append(
-            (timestamp_s, tuple(float(value) for value in gyro)))
-        cutoff_s = timestamp_s - 5.0
-        while (
-            self.flow_imu_yaw_samples
-            and self.flow_imu_yaw_samples[0][0] < cutoff_s
+        sample_finite = bool(
+            np.all(np.isfinite(accel)) and np.all(np.isfinite(gyro))
+        )
+        timestamp_valid = bool(
+            current_ns > 0
+            and (self.last_imu_ns is None or current_ns > self.last_imu_ns)
+        )
+        jerk = 0.0
+        if (
+            sample_finite
+            and timestamp_valid
+            and self.last_imu is not None
+            and self.last_imu_ns is not None
         ):
-            self.flow_imu_yaw_samples.popleft()
-        while (
-            self.flow_imu_samples
-            and self.flow_imu_samples[0][0] < cutoff_s
+            dt = (current_ns - self.last_imu_ns) * 1.0e-9
+            if dt > 1.0e-4:
+                jerk = float(np.linalg.norm(accel - self.last_imu) / dt)
+        if sample_finite and timestamp_valid:
+            self.last_imu = accel
+            self.last_imu_ns = current_ns
+            timestamp_s = current_ns * 1.0e-9
+            self.flow_imu_yaw_samples.append((timestamp_s, float(gyro[2])))
+            self.flow_imu_samples.append(
+                (timestamp_s, tuple(float(value) for value in gyro)))
+            cutoff_s = timestamp_s - 5.0
+            while (
+                self.flow_imu_yaw_samples
+                and self.flow_imu_yaw_samples[0][0] < cutoff_s
+            ):
+                self.flow_imu_yaw_samples.popleft()
+            while (
+                self.flow_imu_samples
+                and self.flow_imu_samples[0][0] < cutoff_s
+            ):
+                self.flow_imu_samples.popleft()
+            self.imu_window.append((accel, gyro))
+        health_failure = not sample_finite or not timestamp_valid
+        if (
+            not health_failure
+            and self.last_imu_publish_ns is not None
+            and current_ns - self.last_imu_publish_ns < 100_000_000
         ):
-            self.flow_imu_samples.popleft()
-        self.imu_window.append((accel, gyro))
-        if self.last_imu_publish_ns is not None and current_ns - \
-                self.last_imu_publish_ns < 100_000_000:
             return
-        self.last_imu_publish_ns = current_ns
-        accel_values = np.asarray([sample[0] for sample in self.imu_window])
-        gyro_values = np.asarray([sample[1] for sample in self.imu_window])
+        if timestamp_valid:
+            self.last_imu_publish_ns = current_ns
+        accel_values = np.asarray(
+            [sample[0] for sample in self.imu_window], dtype=float
+        )
+        gyro_values = np.asarray(
+            [sample[1] for sample in self.imu_window], dtype=float
+        )
         accel_excitation = float(
             np.mean(
                 np.std(
@@ -646,11 +857,14 @@ class ReliabilityMonitor(Node):
                           self.get_parameter("imu.accel_excitation_scale").value +
                              gyro_excitation /
                              self.get_parameter("imu.gyro_excitation_scale").value))
-        accel_norm = float(np.linalg.norm(accel))
-        gyro_norm = float(np.linalg.norm(gyro))
+        accel_norm = float(np.linalg.norm(accel)) if sample_finite else -1.0
+        gyro_norm = float(np.linalg.norm(gyro)) if sample_finite else -1.0
         saturation = (
-            accel_norm >= self.get_parameter("imu.accel_saturation").value
-            or gyro_norm >= self.get_parameter("imu.gyro_saturation").value
+            sample_finite
+            and (
+                accel_norm >= self.get_parameter("imu.accel_saturation").value
+                or gyro_norm >= self.get_parameter("imu.gyro_saturation").value
+            )
         )
         residual = -1.0
         residual_age_s = -1.0
@@ -661,10 +875,16 @@ class ReliabilityMonitor(Node):
             if residual_age_s <= float(self.get_parameter(
                     "imu.preintegration_residual_timeout_s").value):
                 residual = float(self.imu_preintegration_residual)
-        result = imu_score(
+        paper_result = imu_score(
             excitation, residual, saturation,
             self.get_parameter("imu.tau_preintegration").value,
             tuple(self.get_parameter("imu.weights").value),
+        )
+        result = imu_health_admission(
+            paper_result,
+            sample_finite=sample_finite,
+            saturation=saturation,
+            timestamp_valid=timestamp_valid,
         )
         result[1]["accel_norm_mps2"] = accel_norm
         result[1]["gyro_norm_radps"] = gyro_norm
@@ -674,14 +894,19 @@ class ReliabilityMonitor(Node):
             1.0 if residual >= 0.0 else 0.0
         )
         if residual < 0.0:
-            result[2].append("preintegration_residual_unavailable_eq21")
+            result[2].append(
+                "diagnostic_only:preintegration_residual_unavailable_eq21"
+            )
         self._publish(
             "imu",
             msg.header,
             result,
-            True,
+            not health_failure and not saturation,
             len(self.imu_window),
             self.get_parameter("imu.minimum_window_samples").value,
+            self.get_parameter(
+                "imu.minimum_startup_evidence_coverage"
+            ).value,
         )
 
     def _flow_lever_arm_displacement(self, msg):
@@ -899,68 +1124,102 @@ class ReliabilityMonitor(Node):
         )
 
     def _depth(self, msg):
-        self.latest_depth_ratio = depth_valid_ratio(msg)
-        self._publish_vision(msg.header)
+        current_ns = stamp_ns(msg.header)
+        self.vision_depth_metrics[current_ns] = depth_valid_ratio(
+            msg,
+            self.get_parameter("vision.minimum_depth_m").value,
+            self.get_parameter("vision.maximum_depth_m").value,
+        )
+        self._trim_vision_cache(self.vision_depth_metrics)
+        self._publish_vision_pair(current_ns, msg.header)
 
     def _color(self, msg):
-        (self.latest_feature_count, self.latest_spatial_uniformity,
-         self.latest_blur_energy) = image_feature_support(msg)
-        self._publish_vision(msg.header)
+        current_ns = stamp_ns(msg.header)
+        self.vision_color_metrics[current_ns] = image_feature_support(msg)
+        self._trim_vision_cache(self.vision_color_metrics)
+        self._publish_vision_pair(current_ns, msg.header)
 
-    def _publish_vision(self, header):
-        if bool(self.get_parameter("vision.track_evidence_enabled").value):
+    def _trim_vision_cache(self, cache):
+        maximum_size = max(
+            1, int(self.get_parameter("vision.camera_cache_size").value))
+        while len(cache) > maximum_size:
+            cache.popitem(last=False)
+
+    def _publish_vision_pair(self, current_ns, header):
+        if (
+            current_ns not in self.vision_color_metrics
+            or current_ns not in self.vision_depth_metrics
+        ):
             return
-        current_ns = stamp_ns(header)
+        feature_count, spatial_uniformity, blur_energy = (
+            self.vision_color_metrics.pop(current_ns)
+        )
+        depth_ratio = self.vision_depth_metrics.pop(current_ns)
         if self.last_vision_publish_ns is not None and current_ns - \
                 self.last_vision_publish_ns < 200_000_000:
             return
         self.last_vision_publish_ns = current_ns
         result = vision_score(
-            self.latest_feature_count, self.get_parameter("vision.feature_reference").value,
-            self.latest_spatial_uniformity, -1.0, self.latest_depth_ratio,
+            feature_count, self.get_parameter("vision.feature_reference").value,
+            spatial_uniformity, -1.0, depth_ratio,
             self.get_parameter("vision.tau_reprojection_px").value,
             tuple(self.get_parameter("vision.weights").value),
         )
-        result[1]["blur_energy_diagnostic"] = self.latest_blur_energy
+        result[1]["blur_energy_diagnostic"] = blur_energy
         result[1]["projection_consistency_unavailable"] = -1.0
+        result[1]["camera_health_exact_rgbd_pair"] = 1.0
         self._publish(
             "vision",
             header,
             result,
-            self.latest_depth_ratio >= 0.0,
-            self.latest_feature_count,
+            depth_ratio >= 0.0,
+            feature_count,
             self.get_parameter("vision.minimum_features").value,
+            self.get_parameter(
+                "vision.minimum_camera_evidence_coverage").value,
         )
 
     def _visual_tracks(self, msg):
+        if not bool(self.get_parameter("vision.track_evidence_enabled").value):
+            return
         current_ns = stamp_ns(msg.header)
         if self.last_visual_tracks_ns is not None and current_ns <= self.last_visual_tracks_ns:
             return
         self.last_visual_tracks_ns = current_ns
-        feature_count = int(msg.feature_count)
-        depth_ratio = float(msg.valid_depth_count) / max(1, feature_count)
+        metrics = visual_factor_track_metrics(msg)
+        feature_count = int(metrics["selected_track_count"])
+        depth_ratio = float(metrics["depth_valid_ratio"])
         result = vision_score(
             feature_count,
             self.get_parameter("vision.feature_reference").value,
-            float(msg.spatial_distribution),
-            float(msg.mean_reprojection_error_px),
+            float(metrics["spatial_distribution"]),
+            float(metrics["mean_reprojection_error_px"]),
             depth_ratio,
             self.get_parameter("vision.tau_reprojection_px").value,
             tuple(self.get_parameter("vision.weights").value),
         )
         score, evidence, reasons = result
-        klt_ratio = max(0.0, min(1.0, float(msg.klt_inlier_ratio)))
+        selection_ratio = max(
+            0.0, min(1.0, float(metrics["selected_track_ratio"])))
         klt_weight = max(
             0.0, min(
                 0.5, float(
                     self.get_parameter("vision.klt_weight").value)))
-        score = (1.0 - klt_weight) * score + klt_weight * (1.0 - klt_ratio)
-        evidence["klt_forward_backward_inlier_ratio"] = klt_ratio
+        score = (
+            (1.0 - klt_weight) * score
+            + klt_weight * (1.0 - selection_ratio)
+        )
+        evidence["factor_raw_track_count"] = float(metrics["raw_track_count"])
+        evidence["factor_geometry_eligible_count"] = float(
+            metrics["geometry_eligible_count"])
+        evidence["factor_selected_track_count"] = float(feature_count)
+        evidence["factor_selected_track_ratio"] = selection_ratio
         evidence["klt_extension_weight"] = klt_weight
         evidence["pnp_geometric_verification"] = 1.0 if msg.pnp_valid else 0.0
         evidence["valid_depth_track_ratio"] = depth_ratio
-        if klt_ratio < 0.5:
-            reasons.append("weak_klt_forward_backward_consistency")
+        evidence["factor_candidate_score"] = 1.0
+        if selection_ratio < 0.5:
+            reasons.append("weak_selected_track_retention")
         if not msg.pnp_valid:
             reasons.append("pnp_geometric_verification_failed")
         self._publish(
@@ -970,9 +1229,14 @@ class ReliabilityMonitor(Node):
              evidence,
              reasons),
             bool(
-                msg.pnp_valid and feature_count >= self.get_parameter("vision.minimum_features").value),
+                msg.pnp_valid
+                and feature_count >= self.get_parameter(
+                    "vision.minimum_features"
+                ).value
+            ),
             feature_count,
             self.get_parameter("vision.minimum_features").value,
+            publisher=self.vision_factor_publisher,
         )
 
     def _outage_timer(self):

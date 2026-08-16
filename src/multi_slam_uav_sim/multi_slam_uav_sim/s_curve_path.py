@@ -1,4 +1,4 @@
-"""Deterministic 3D S-curve path generation for repeatable flight tests."""
+"""Deterministic 3D route generation for repeatable flight tests."""
 
 from __future__ import annotations
 
@@ -64,6 +64,19 @@ def backend_error_to_fcu_setpoint(
         fcu_position[1] + fcu_error_y,
         fcu_position[2] + error_z,
     )
+
+
+def clamp_route_altitude_setpoint(
+        command_z, origin_fcu_z, peak_rise, margin):
+    """Bound route altitude without feeding FCU state into the estimator."""
+    values = (command_z, origin_fcu_z, peak_rise, margin)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("route altitude guard values must be finite")
+    if peak_rise < 0.0 or margin < 0.0:
+        raise ValueError("route altitude guard limits must be non-negative")
+    lower = origin_fcu_z - margin
+    upper = origin_fcu_z + peak_rise + margin
+    return min(max(command_z, lower), upper)
 
 
 def generate_calibration_figure_eight(
@@ -139,6 +152,105 @@ def generate_s_curve(
             vertical_cycles * angle
         )
         points.append((x, y, z))
+    return points
+
+
+def generate_large_figure_eight(
+    longitudinal_span: float,
+    lateral_amplitude: float,
+    base_altitude: float,
+    peak_rise: float,
+    samples: int = 481,
+    rotation_deg: float = 158.0,
+    altitude_power: int = 4,
+) -> list[Point3]:
+    """Generate a closed figure-eight with straight crossings and round lobes.
+
+    Each lobe consists of a straight tangent, the major arc of a circle, and a
+    second straight tangent. Mirroring and reversing the first lobe makes the
+    two center-crossing branches continuous while sharing only the center
+    point, never a route segment. Altitude changes only on the outer arcs.
+    """
+    longitudinal_span = float(longitudinal_span)
+    lateral_amplitude = float(lateral_amplitude)
+    base_altitude = float(base_altitude)
+    peak_rise = float(peak_rise)
+    rotation_deg = float(rotation_deg)
+    samples = int(samples)
+    altitude_power = int(altitude_power)
+    values = (
+        longitudinal_span,
+        lateral_amplitude,
+        base_altitude,
+        peak_rise,
+        rotation_deg,
+    )
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("figure-eight dimensions must be finite")
+    if longitudinal_span <= 0.0 or lateral_amplitude <= 0.0:
+        raise ValueError("figure-eight span and amplitude must be positive")
+    half_span = 0.5 * longitudinal_span
+    if lateral_amplitude >= half_span:
+        raise ValueError("figure-eight lobe radius must be smaller than half span")
+    if peak_rise < 0.0 or samples < 9:
+        raise ValueError("invalid figure-eight altitude or sample count")
+    if samples % 2 == 0:
+        raise ValueError("figure-eight sample count must be odd")
+    if altitude_power < 2 or altitude_power % 2 != 0:
+        raise ValueError("figure-eight altitude power must be an even integer")
+
+    rotation = math.radians(rotation_deg)
+    cosine = math.cos(rotation)
+    sine = math.sin(rotation)
+    radius = lateral_amplitude
+    tangent_distance = math.sqrt(half_span * half_span - radius * radius)
+    tangent_x = tangent_distance * tangent_distance / half_span
+    tangent_y = radius * tangent_distance / half_span
+    theta_upper = math.atan2(tangent_y, tangent_x - half_span)
+    arc_angle = 2.0 * theta_upper
+    arc_length = radius * arc_angle
+    lobe_length = 2.0 * tangent_distance + arc_length
+
+    first_lobe: list[Point3] = []
+    lobe_samples = (samples + 1) // 2
+    for index in range(lobe_samples):
+        distance = lobe_length * index / float(lobe_samples - 1)
+        altitude = base_altitude
+        if distance <= tangent_distance:
+            ratio = distance / tangent_distance
+            axis_x = tangent_x * ratio
+            axis_y = tangent_y * ratio
+        elif distance <= tangent_distance + arc_length:
+            arc_distance = distance - tangent_distance
+            arc_phase = arc_distance / arc_length
+            theta = theta_upper - arc_distance / radius
+            axis_x = half_span + radius * math.cos(theta)
+            axis_y = radius * math.sin(theta)
+            altitude += (
+                peak_rise
+                * math.sin(math.pi * arc_phase) ** altitude_power
+            )
+        else:
+            ratio = (
+                distance - tangent_distance - arc_length
+            ) / tangent_distance
+            axis_x = tangent_x * (1.0 - ratio)
+            axis_y = -tangent_y * (1.0 - ratio)
+        first_lobe.append((
+            cosine * axis_x - sine * axis_y,
+            sine * axis_x + cosine * axis_y,
+            altitude,
+        ))
+
+    second_lobe = [
+        (-x, -y, z)
+        for x, y, z in reversed(first_lobe)
+    ]
+    points = first_lobe + second_lobe[1:]
+    center = (0.0, 0.0, base_altitude)
+    points[0] = center
+    points[len(points) // 2] = center
+    points[-1] = center
     return points
 
 

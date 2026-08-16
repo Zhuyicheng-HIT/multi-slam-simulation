@@ -30,8 +30,11 @@ d435i_run_dir_owned "$run_dir" "$project_root"
 d435i_run_dir_owned \
   "$project_root/artifacts/runtime-regression-test/reports/headless" \
   "$project_root"
+d435i_run_dir_owned \
+  "$project_root/logs/tmp/full_online_capture/online" \
+  "$project_root"
 if d435i_run_dir_owned "$project_root/tmp/headless" "$project_root"; then
-  printf 'run directory outside logs/artifacts was accepted\n' >&2
+  printf 'run directory outside owned logs/artifacts roots was accepted\n' >&2
   exit 1
 fi
 

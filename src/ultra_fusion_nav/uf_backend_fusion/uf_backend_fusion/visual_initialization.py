@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from .manifold import so3_log
-from .spatiotemporal_calibration import estimate_time_offset
+from .spatiotemporal_calibration import estimate_interval_time_offset
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class VisualTimeCalibrationUpdate:
     margin: float
     pair_count: int
     reason: str
+    candidate_offset_s: float = 0.0
 
 
 class OnlineVisualTimeCalibrator:
@@ -33,9 +34,14 @@ class OnlineVisualTimeCalibrator:
         offset_step_s=0.002,
         minimum_correlation=0.65,
         minimum_correlation_margin=0.02,
+        minimum_peak_separation_s=0.010,
+        reject_boundary_candidates=True,
         history_length=4,
         lock_count=3,
         stability_tolerance_s=0.006,
+        minimum_accumulated_rotation_rad=0.10,
+        minimum_interval_rotation_rad=0.001,
+        minimum_lock_candidate_separation_s=1.0,
         minimum_interval_s=0.03,
         maximum_interval_s=0.50,
     ):
@@ -44,9 +50,13 @@ class OnlineVisualTimeCalibrator:
             or minimum_pairs < 3
             or offset_step_s <= 0.0
             or offset_range_s < 0.0
+            or minimum_peak_separation_s < 0.0
             or history_length < lock_count
             or lock_count < 1
             or stability_tolerance_s <= 0.0
+            or minimum_accumulated_rotation_rad <= 0.0
+            or minimum_interval_rotation_rad < 0.0
+            or minimum_lock_candidate_separation_s < 0.0
             or minimum_interval_s <= 0.0
             or maximum_interval_s <= minimum_interval_s
         ):
@@ -61,12 +71,25 @@ class OnlineVisualTimeCalibrator:
         )
         self.minimum_correlation = float(minimum_correlation)
         self.minimum_correlation_margin = float(minimum_correlation_margin)
+        self.minimum_peak_separation_s = float(minimum_peak_separation_s)
+        self.reject_boundary_candidates = bool(reject_boundary_candidates)
+        self.offset_step_s = float(offset_step_s)
         self.lock_count = int(lock_count)
         self.stability_tolerance_s = float(stability_tolerance_s)
+        self.minimum_accumulated_rotation_rad = float(
+            minimum_accumulated_rotation_rad
+        )
+        self.minimum_interval_rotation_rad = float(
+            minimum_interval_rotation_rad
+        )
+        self.minimum_lock_candidate_separation_s = float(
+            minimum_lock_candidate_separation_s
+        )
         self.minimum_interval_s = float(minimum_interval_s)
         self.maximum_interval_s = float(maximum_interval_s)
-        self.motion_rates = deque()
+        self.motion_intervals = deque()
         self.offset_history = deque(maxlen=int(history_length))
+        self.last_lock_candidate_stamp_s = None
         self.time_offset_s = self.initial_offset_s
         self.locked = False
         self.last_update = VisualTimeCalibrationUpdate(
@@ -92,6 +115,7 @@ class OnlineVisualTimeCalibrator:
         current_stamp_s,
         relative_rotation,
         imu_samples,
+        rotation_body_camera=None,
     ):
         previous_stamp_s = float(previous_stamp_s)
         current_stamp_s = float(current_stamp_s)
@@ -108,35 +132,99 @@ class OnlineVisualTimeCalibrator:
             )
             return self.last_update
         rotation = self._validated_rotation(relative_rotation)
-        angle_rad = float(np.linalg.norm(so3_log(rotation)))
-        rate_radps = angle_rad / dt_s
-        midpoint_s = 0.5 * (previous_stamp_s + current_stamp_s)
-        self.motion_rates.append((midpoint_s, rate_radps))
-        while (
-            self.motion_rates
-            and midpoint_s - self.motion_rates[0][0] > self.window_s
+        rotation_body_camera = self._validated_rotation(
+            np.eye(3) if rotation_body_camera is None else rotation_body_camera
+        )
+        # solvePnP maps points from the previous camera coordinates into the
+        # current camera coordinates. Its transpose is the physical camera
+        # rotation. Conjugate it into FCU body axes before comparing it with
+        # the signed gyro integral over the exact same interval.
+        physical_body_rotation = (
+            rotation_body_camera @ rotation.T @ rotation_body_camera.T
+        )
+        body_rotation_vector = so3_log(physical_body_rotation)
+        if (
+            np.linalg.norm(body_rotation_vector)
+            < self.minimum_interval_rotation_rad
         ):
-            self.motion_rates.popleft()
-        candidate = estimate_time_offset(
-            tuple(self.motion_rates),
+            self.last_update = VisualTimeCalibrationUpdate(
+                False,
+                self.locked,
+                self.time_offset_s,
+                -1.0,
+                0.0,
+                len(self.motion_intervals),
+                "insufficient_visual_interval_rotation",
+            )
+            return self.last_update
+        self.motion_intervals.append((
+            previous_stamp_s,
+            current_stamp_s,
+            body_rotation_vector,
+            1.0,
+        ))
+        self.motion_intervals = deque(sorted(
+            self.motion_intervals, key=lambda item: item[1]
+        ))
+        newest_stamp_s = self.motion_intervals[-1][1]
+        while (
+            self.motion_intervals
+            and newest_stamp_s - self.motion_intervals[0][1] > self.window_s
+        ):
+            self.motion_intervals.popleft()
+        accumulated_rotation_rad = float(sum(
+            np.linalg.norm(item[2]) for item in self.motion_intervals
+        ))
+        candidate = estimate_interval_time_offset(
+            tuple(self.motion_intervals),
             tuple(imu_samples),
             self.candidate_offsets_s,
+            observation_to_body_rotation=np.eye(3),
             minimum_pairs=self.minimum_pairs,
+            minimum_peak_separation_s=self.minimum_peak_separation_s,
         )
         if not candidate.valid:
             self.last_update = VisualTimeCalibrationUpdate(
                 False, self.locked, self.time_offset_s,
                 candidate.correlation, candidate.margin,
                 candidate.pair_count, candidate.reason,
+                float(candidate.offset_s),
             )
             return self.last_update
-        if candidate.correlation < self.minimum_correlation:
+        boundary_distance_s = min(
+            abs(candidate.offset_s - float(self.candidate_offsets_s[0])),
+            abs(candidate.offset_s - float(self.candidate_offsets_s[-1])),
+        )
+        if (
+            self.reject_boundary_candidates
+            and boundary_distance_s <= 0.5 * self.offset_step_s + 1.0e-12
+        ):
+            reason = "visual_time_offset_search_boundary"
+        elif candidate.correlation < self.minimum_correlation:
             reason = "low_visual_imu_correlation"
         elif candidate.margin < self.minimum_correlation_margin:
             reason = "ambiguous_visual_time_offset"
+        elif accumulated_rotation_rad < self.minimum_accumulated_rotation_rad:
+            reason = "insufficient_visual_rotation"
         else:
             reason = "candidate_ready"
         accepted = reason == "candidate_ready"
+        if accepted and not self.locked:
+            if (
+                self.last_lock_candidate_stamp_s is not None
+                and current_stamp_s - self.last_lock_candidate_stamp_s + 1.0e-12
+                < self.minimum_lock_candidate_separation_s
+            ):
+                accepted = False
+                reason = "visual_time_offset_vote_not_independent"
+            else:
+                self.last_lock_candidate_stamp_s = current_stamp_s
+        if not accepted and not self.locked:
+            # Locking requires consecutive observable candidates; isolated
+            # weak/ambiguous peaks must not accumulate. A vote from the same
+            # overlapping window is deferred, not treated as a contradiction.
+            if reason != "visual_time_offset_vote_not_independent":
+                self.offset_history.clear()
         if accepted and not self.locked:
             self.offset_history.append(float(candidate.offset_s))
             recent = np.asarray(self.offset_history, dtype=float)
@@ -162,6 +250,7 @@ class OnlineVisualTimeCalibrator:
             candidate.margin,
             candidate.pair_count,
             reason,
+            float(candidate.offset_s),
         )
         return self.last_update
 

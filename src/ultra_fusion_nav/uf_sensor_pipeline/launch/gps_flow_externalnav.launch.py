@@ -29,6 +29,19 @@ def generate_launch_description():
             package="uf_sensor_pipeline",
             executable="fault_injector",
             name="fault_injector_gnss",
+            parameters=[
+                sensor_config,
+                {
+                    "use_sim_time": use_sim_time,
+                    "output_topic": "/sensors/gnss/fix_unthrottled",
+                },
+            ],
+            output="screen",
+        ),
+        Node(
+            package="uf_sensor_pipeline",
+            executable="gnss_metadata_relay",
+            name="gnss_metadata_relay",
             parameters=[sensor_config, {"use_sim_time": use_sim_time}],
             output="screen",
         ),

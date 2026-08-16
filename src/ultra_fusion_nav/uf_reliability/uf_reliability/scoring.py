@@ -601,6 +601,86 @@ def imu_score(excitation, preintegration_residual_mahalanobis, saturation,
     return finalize_score(score, coverage, evidence, reasons)
 
 
+def imu_health_admission(
+    paper_result,
+    *,
+    sample_finite=True,
+    saturation=False,
+    stream_valid=True,
+    timestamp_valid=True,
+    noise_anomaly=None,
+    bias_anomaly=None,
+):
+    """Convert Eq. 21 diagnostics into the scheduler-facing IMU health gate.
+
+    Low excitation is an observability diagnostic and preintegration NIS is a
+    factor-consistency diagnostic.  Neither means that the propagation IMU is
+    unhealthy, so they must not lower its admission weight.  Only direct
+    hardware/data-path failures are hard gates here.  ``None`` for a noise or
+    bias anomaly explicitly means that no validated detector is available.
+    """
+    paper_score, paper_evidence, paper_reasons = paper_result
+    evidence = dict(paper_evidence)
+    saturation = bool(
+        saturation
+        or float(evidence.get("saturation_indicator_eq21", 0.0)) >= 0.5
+    )
+    paper_coverage = float(evidence.get("evidence_weight_coverage", 0.0))
+    paper_complete = float(evidence.get("score_complete", 0.0))
+    evidence["paper_score_eq21"] = float(paper_score)
+    evidence["paper_evidence_weight_coverage_eq21"] = paper_coverage
+    evidence["paper_score_complete_eq21"] = paper_complete
+    evidence["imu_observability_degradation_diagnostic"] = float(
+        evidence.get("excitation_term_eq21", -1.0)
+    )
+    evidence["imu_factor_consistency_degradation_diagnostic"] = float(
+        evidence.get("residual_term_eq21", -1.0)
+    )
+
+    health_failures = []
+    if not bool(stream_valid):
+        health_failures.append("imu_stream_outage_health_gate")
+    if not bool(timestamp_valid):
+        health_failures.append("imu_timestamp_health_gate")
+    if not bool(sample_finite):
+        health_failures.append("imu_nonfinite_sample_health_gate")
+    if bool(saturation):
+        health_failures.append("imu_saturation_health_gate")
+    if noise_anomaly is True:
+        health_failures.append("imu_noise_health_gate")
+    if bias_anomaly is True:
+        health_failures.append("imu_bias_health_gate")
+
+    score = 1.0 if health_failures else 0.0
+    evidence.update({
+        "imu_health_admission_score": score,
+        "imu_health_sample_finite": 1.0 if sample_finite else 0.0,
+        "imu_health_stream_valid": 1.0 if stream_valid else 0.0,
+        "imu_health_timestamp_valid": 1.0 if timestamp_valid else 0.0,
+        "imu_health_saturation_clear": 0.0 if saturation else 1.0,
+        "imu_noise_anomaly_check_available": (
+            0.0 if noise_anomaly is None else 1.0
+        ),
+        "imu_bias_anomaly_check_available": (
+            0.0 if bias_anomaly is None else 1.0
+        ),
+        "imu_health_admission_only": 1.0,
+        # Admission evidence is complete even when the optional Eq. 21 NIS or
+        # unvalidated noise/bias detectors are unavailable.
+        "evidence_weight_coverage": 1.0,
+        "score_complete": 1.0,
+    })
+    reasons = [
+        f"diagnostic_only:{reason}" for reason in paper_reasons
+    ]
+    reasons.extend(health_failures)
+    if noise_anomaly is None:
+        reasons.append("imu_noise_health_gate_unavailable")
+    if bias_anomaly is None:
+        reasons.append("imu_bias_health_gate_unavailable")
+    return finalize_score(score, 1.0, evidence, reasons)
+
+
 def optical_flow_score(delta_position_flow_m, delta_position_prediction_m,
                        quality, ground_distance_m, tau_translation=0.30,
                        weights=(0.60, 0.25, 0.15),

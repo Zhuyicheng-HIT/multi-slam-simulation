@@ -1,7 +1,10 @@
+import ast
 import gc
+import inspect
 import math
 import queue
 import threading
+import textwrap
 import unittest
 from collections import deque
 from types import SimpleNamespace
@@ -19,8 +22,12 @@ from uf_backend_fusion.native_lidar import (
 from uf_backend_fusion.online_backend import (
     GarbageCollectionProfiler,
     apply_flow_rotation_gate,
+    apply_gnss_prefit_gate,
     apply_lidar_anchor_floor,
     associate_visual_states,
+    combine_visual_reliability_decisions,
+    committed_state_missing_imu_factor,
+    consume_timestamped_reliability_score,
     covariance_update_due,
     flow_los_observation,
     flow_observation_delta,
@@ -29,6 +36,9 @@ from uf_backend_fusion.online_backend import (
     fused_motion_reference,
     gnss_jump_rejected,
     gnss_covariance_diagonal,
+    gnss_axis_information_scale,
+    gnss_prefit_axis_nis,
+    gnss_prefit_statistics,
     gnss_temporal_jump_rejected,
     imu_interval_covered,
     imu_interval_status,
@@ -39,6 +49,7 @@ from uf_backend_fusion.online_backend import (
     inflate_manifold_imu_covariance,
     lidar_bypass_allowed,
     lidar_calibration_motion_from_message,
+    lidar_prediction_factor_admission,
     lidar_prediction_gate,
     lidar_prediction_innovation,
     manifold_motion_reference,
@@ -51,8 +62,14 @@ from uf_backend_fusion.online_backend import (
     pose_vector_to_matrix,
     matrix_to_pose_vector,
     scheduler_decision,
+    seed_calibrator_rotation_nonblocking,
     select_gnss_observation,
     retain_stamped_records_after,
+    visual_factor_score_wait_status,
+    visual_factor_score_for_mode,
+    visual_factor_score_source_stamp,
+    visual_time_calibration_imu_coverage,
+    visual_batch_information_scale,
     unwrap_yaw,
     UnifiedBackendNode,
     validate_optimized_state,
@@ -62,6 +79,75 @@ from uf_reliability.flow_rotation_gate import FlowRotationGateResult
 
 
 class OnlineBackendHelpersTest(unittest.TestCase):
+    def test_visual_time_calibration_waits_for_complete_offset_search(self):
+        offsets = np.asarray([-0.12, 0.0, 0.12])
+        incomplete = [
+            ImuSample(stamp, np.zeros(3), np.zeros(3))
+            for stamp in np.arange(0.80, 1.16, 0.01)
+        ]
+        complete = incomplete + [
+            ImuSample(stamp, np.zeros(3), np.zeros(3))
+            for stamp in np.arange(1.16, 1.23, 0.01)
+        ]
+        missing_history = [
+            ImuSample(stamp, np.zeros(3), np.zeros(3))
+            for stamp in np.arange(0.95, 1.23, 0.01)
+        ]
+
+        self.assertEqual(
+            visual_time_calibration_imu_coverage(
+                incomplete, 1.0, 1.1, offsets
+            ),
+            "wait_future",
+        )
+        self.assertEqual(
+            visual_time_calibration_imu_coverage(
+                complete, 1.0, 1.1, offsets
+            ),
+            "ready",
+        )
+        self.assertEqual(
+            visual_time_calibration_imu_coverage(
+                missing_history, 1.0, 1.1, offsets
+            ),
+            "missing_history",
+        )
+
+    def test_every_literal_backend_counter_is_initialized(self):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(UnifiedBackendNode)))
+        initialized = set()
+        used = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                        and target.attr == "counts"
+                    ):
+                        initialized.update(
+                            key.value
+                            for key in node.value.keys
+                            if isinstance(key, ast.Constant)
+                            and isinstance(key.value, str)
+                        )
+            if isinstance(node, ast.Subscript):
+                value = node.value
+                key = node.slice
+                if (
+                    isinstance(value, ast.Attribute)
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id == "self"
+                    and value.attr == "counts"
+                    and isinstance(key, ast.Constant)
+                    and isinstance(key.value, str)
+                ):
+                    used.add(key.value)
+
+        self.assertTrue(initialized)
+        self.assertEqual(used - initialized, set())
+
     @staticmethod
     def _integrity_limits():
         return {
@@ -84,6 +170,47 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertGreaterEqual(after["collections"][0], before["collections"][0] + 1)
         self.assertGreaterEqual(after["duration_ms"][0], before["duration_ms"][0])
         self.assertEqual(gc.isenabled(), enabled_before)
+
+    def test_calibration_seed_is_nonblocking_and_idempotent(self):
+        class Calibrator:
+            def __init__(self):
+                self.initial_rotation_set = False
+                self.last_update = None
+                self.calls = 0
+
+            def set_initial_rotation(self, rotation):
+                self.calls += 1
+                self.initial_rotation_set = True
+                self.last_update = np.asarray(rotation, dtype=float).copy()
+
+        calibrator = Calibrator()
+        lock = threading.Lock()
+        rotation = np.eye(3)
+
+        lock.acquire()
+        update, reason = seed_calibrator_rotation_nonblocking(
+            calibrator, lock, rotation
+        )
+        self.assertIsNone(update)
+        self.assertEqual(reason, "calibration_busy")
+        self.assertEqual(calibrator.calls, 0)
+        lock.release()
+
+        update, reason = seed_calibrator_rotation_nonblocking(
+            calibrator, lock, rotation
+        )
+        self.assertEqual(reason, "initialized")
+        np.testing.assert_allclose(update, rotation)
+        self.assertEqual(calibrator.calls, 1)
+
+        lock.acquire()
+        update, reason = seed_calibrator_rotation_nonblocking(
+            calibrator, lock, rotation
+        )
+        self.assertIsNone(update)
+        self.assertEqual(reason, "already_initialized")
+        self.assertEqual(calibrator.calls, 1)
+        lock.release()
 
     @staticmethod
     def _calibration_motion(**overrides):
@@ -139,6 +266,244 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         )
         self.assertEqual(association.status, "reject")
         self.assertEqual(association.missing_side, "left")
+
+    def test_prebootstrap_visual_keeps_time_shadow_without_queue(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.visual_candidate_sequence = 0
+        node.visual_pending_enabled = True
+        node.visual_pending_max_queue = 64
+        node.visual_state_stamps = deque([1.0], maxlen=8)
+        node.visual_lock = threading.Lock()
+        node.pending_visual_candidates = deque()
+        node.pending_visual_keys = set()
+        node.visual_factor_score_wait_started = {}
+        node.visual_tracks = deque()
+        node.visual_timing_reason_counts = {
+            "prebootstrap_window_unavailable": 0
+        }
+        node.last_visual_reason = "none"
+        node.counts = {
+            "visual_received": 0,
+            "visual_prebootstrap_dropped": 0,
+            "visual_pending_enqueued": 0,
+            "visual_pending_overflow": 0,
+            "visual_rejected_time": 0,
+            "visual_duplicate_candidates": 0,
+            "visual_time_calibration_geometry_rejected": 0,
+        }
+        node._now_s = lambda: 1.3
+        node._visual_pnp_metrics = lambda _message: {"selected": [object()]}
+        node._visual_pnp_admissible = lambda _message, _metrics: True
+        calibration_updates = []
+        node._update_visual_time_calibration = (
+            lambda _message, previous, current:
+            calibration_updates.append((previous, current))
+        )
+
+        def message(previous_s, current_s):
+            return SimpleNamespace(
+                previous_stamp=SimpleNamespace(
+                    sec=int(previous_s),
+                    nanosec=int(round((previous_s % 1.0) * 1.0e9)),
+                ),
+                header=SimpleNamespace(
+                    stamp=SimpleNamespace(
+                        sec=int(current_s),
+                        nanosec=int(round((current_s % 1.0) * 1.0e9)),
+                    )
+                ),
+            )
+
+        node._visual_tracks(message(1.0, 1.2))
+
+        self.assertEqual(calibration_updates, [(1.0, 1.2)])
+        self.assertEqual(node.counts["visual_received"], 1)
+        self.assertEqual(node.counts["visual_prebootstrap_dropped"], 1)
+        self.assertEqual(node.counts["visual_pending_enqueued"], 0)
+        self.assertFalse(node.pending_visual_candidates)
+        self.assertEqual(
+            node.last_visual_reason, "prebootstrap_window_unavailable"
+        )
+
+        node.visual_state_stamps.append(1.1)
+        node._visual_tracks(message(1.1, 1.3))
+
+        self.assertEqual(calibration_updates[-1], (1.1, 1.3))
+        self.assertEqual(node.counts["visual_received"], 2)
+        self.assertEqual(node.counts["visual_prebootstrap_dropped"], 1)
+        self.assertEqual(node.counts["visual_pending_enqueued"], 1)
+        self.assertEqual(len(node.pending_visual_candidates), 1)
+
+    def test_pending_visual_left_of_window_is_discarded(self):
+        node = object.__new__(UnifiedBackendNode)
+        candidate = SimpleNamespace(
+            key=(200_000_000, 400_000_000),
+            message=SimpleNamespace(
+                previous_stamp=SimpleNamespace(sec=0, nanosec=200_000_000),
+                header=SimpleNamespace(
+                    stamp=SimpleNamespace(sec=0, nanosec=400_000_000)
+                ),
+            ),
+            arrival_ros_s=0.4,
+            arrival_wall_s=0.0,
+        )
+        node.visual_lock = threading.Lock()
+        node.pending_visual_candidates = deque([candidate])
+        node.pending_visual_keys = {candidate.key}
+        node.visual_factor_score_wait_started = {candidate.key: (0.4, 0.0)}
+        node.visual_state_tolerance_s = 0.065
+        node.visual_pending_max_wait_s = 0.60
+        node.visual_pending_max_wall_wait_s = 3.0
+        node.visual_timing_reason_counts = {"pre_window_stale": 0}
+        node.last_visual_reason = "none"
+        node.counts = {
+            "visual_pending_pre_window_dropped": 0,
+            "visual_rejected_time": 0,
+            "visual_pending_expired": 0,
+        }
+        node._effective_visual_time_offset_s = lambda: 0.0
+        node._now_s = lambda: 1.1
+        node._record_phase_timing = lambda *_args: None
+        timing = []
+        node._publish_visual_timing = (
+            lambda _candidate, outcome, reason, _stamps, _association=None:
+            timing.append((outcome, reason))
+        )
+
+        staged = node._stage_pending_visual_factors([1.0, 1.1])
+
+        self.assertEqual(staged, [])
+        self.assertFalse(node.pending_visual_candidates)
+        self.assertFalse(node.pending_visual_keys)
+        self.assertFalse(node.visual_factor_score_wait_started)
+        self.assertEqual(
+            node.counts["visual_pending_pre_window_dropped"], 1
+        )
+        self.assertEqual(node.counts["visual_rejected_time"], 1)
+        self.assertEqual(node.counts["visual_pending_expired"], 0)
+        self.assertEqual(timing, [("rejected", "pre_window_stale")])
+
+    def test_visual_factor_score_is_consumed_exactly_once(self):
+        records = (
+            {"sequence": 1, "source_stamp_s": 10.000, "weight": 0.8},
+            {"sequence": 2, "source_stamp_s": 10.020, "weight": 0.7},
+        )
+        matched, retained, error_s = consume_timestamped_reliability_score(
+            records, 10.019, tolerance_s=0.005
+        )
+        self.assertEqual(matched["sequence"], 2)
+        self.assertAlmostEqual(error_s, 0.001)
+        self.assertEqual(tuple(record["sequence"] for record in retained), (1,))
+
+        matched_again, retained_again, _ = (
+            consume_timestamped_reliability_score(
+                retained, 10.019, tolerance_s=0.005
+            )
+        )
+        self.assertIsNone(matched_again)
+        self.assertEqual(retained_again, retained)
+
+    def test_visual_factor_score_outside_tolerance_is_retained(self):
+        records = (
+            {"sequence": 1, "source_stamp_s": 5.0, "weight": 0.8},
+        )
+        matched, retained, error_s = consume_timestamped_reliability_score(
+            records, 5.02, tolerance_s=0.01
+        )
+        self.assertIsNone(matched)
+        self.assertEqual(retained, records)
+        self.assertAlmostEqual(error_s, 0.02)
+
+    def test_visual_factor_score_wait_expires_on_either_clock(self):
+        waiting = visual_factor_score_wait_status(
+            10.0, 20.0, 10.20, 20.20, 0.25, 0.25
+        )
+        self.assertEqual(waiting[0], "wait")
+        ros_expired = visual_factor_score_wait_status(
+            10.0, 20.0, 10.25, 20.10, 0.25, 0.25
+        )
+        self.assertEqual(ros_expired[0], "expired")
+        wall_expired = visual_factor_score_wait_status(
+            10.0, 20.0, 10.10, 20.25, 0.25, 0.25
+        )
+        self.assertEqual(wall_expired[0], "expired")
+
+    def test_fixed_reliability_does_not_require_dynamic_visual_score(self):
+        score = visual_factor_score_for_mode("fixed", None)
+        self.assertTrue(score["valid"])
+        self.assertEqual(score["weight"], 1.0)
+        self.assertEqual(score["degradation_score"], 0.0)
+        self.assertIn("fixed_reliability_mode", score["reasons"])
+
+    def test_dynamic_reliability_preserves_missing_visual_score(self):
+        self.assertIsNone(visual_factor_score_for_mode("dynamic", None))
+
+    def test_fixed_visual_score_uses_candidate_source_stamp(self):
+        score = visual_factor_score_for_mode("fixed", None)
+        self.assertAlmostEqual(
+            visual_factor_score_source_stamp(score, 12.34), 12.34
+        )
+        score["source_stamp_s"] = 12.30
+        self.assertAlmostEqual(
+            visual_factor_score_source_stamp(score, 12.34), 12.30
+        )
+
+    def test_visual_factor_score_mode_rejects_unknown_mode(self):
+        with self.assertRaisesRegex(ValueError, "dynamic or fixed"):
+            visual_factor_score_for_mode("hybrid", None)
+
+    def test_visual_batch_information_is_capped_at_reference_equivalent(self):
+        self.assertEqual(visual_batch_information_scale(8, 20), 1.0)
+        self.assertEqual(visual_batch_information_scale(20, 20), 1.0)
+        self.assertEqual(visual_batch_information_scale(40, 20), 2.0)
+        with self.assertRaises(ValueError):
+            visual_batch_information_scale(0, 20)
+
+    def test_visual_factor_decision_uses_conservative_intersection(self):
+        sensor = {
+            "factor_enabled": True,
+            "reliability_weight": 0.7,
+            "covariance_inflation": 1.5,
+            "degradation_score": 0.3,
+            "reasons": ("camera_healthy",),
+        }
+        factor = {
+            "valid": True,
+            "weight": 0.4,
+            "degradation_score": 0.6,
+            "reasons": ("weak_selected_track_retention",),
+        }
+        combined = combine_visual_reliability_decisions(sensor, factor)
+        self.assertTrue(combined["factor_enabled"])
+        self.assertAlmostEqual(combined["reliability_weight"], 0.4)
+        self.assertAlmostEqual(combined["covariance_inflation"], 2.5)
+        self.assertAlmostEqual(combined["degradation_score"], 0.6)
+        self.assertIn("camera_healthy", combined["reasons"])
+        self.assertIn(
+            "factor:weak_selected_track_retention", combined["reasons"]
+        )
+
+    def test_invalid_visual_factor_score_cannot_override_sensor_health(self):
+        sensor = {
+            "factor_enabled": True,
+            "reliability_weight": 0.9,
+            "covariance_inflation": 1.2,
+            "reasons": ("camera_healthy",),
+        }
+        factor = {
+            "valid": False,
+            "weight": 0.9,
+            "degradation_score": 0.1,
+            "reasons": ("pnp_geometric_verification_failed",),
+        }
+        combined = combine_visual_reliability_decisions(sensor, factor)
+        self.assertFalse(combined["factor_enabled"])
+        self.assertEqual(combined["reliability_weight"], 0.0)
+        self.assertEqual(combined["covariance_inflation"], 20.0)
+        self.assertIn("camera_healthy", combined["reasons"])
+        self.assertIn(
+            "factor:pnp_geometric_verification_failed", combined["reasons"]
+        )
 
     def test_backend_owned_native_factor_never_reapplies_map_alignment(self):
         alignment = np.eye(4)
@@ -314,6 +679,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node = object.__new__(UnifiedBackendNode)
         node.live_propagation_enabled = True
         node.live_propagation_lidar_silence_timeout_s = 0.25
+        node.live_propagation_maximum_output_age_s = 0.20
         node.live_propagation_minimum_interval_s = 0.08
         node.live_propagation_maximum_imu_age_s = 0.20
         node.backend_solver_mode = "manifold"
@@ -449,6 +815,8 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.last_native_consumed_sequence = -1
         node.pending_scan_request_lock = threading.Lock()
         node.pending_scan_requests = {}
+        node.pending_scan_request_first_seen_s = {}
+        node.scan_prediction_missing_factor_grace_s = 0.5
         node.scan_prediction_by_sequence = {}
         node.counts = {
             "scan_prediction_requests": 0,
@@ -559,6 +927,292 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         )
 
         np.testing.assert_allclose(covariance, [0.04, 0.25, 1.0])
+
+    def test_gnss_prefit_nis_uses_prediction_covariance_plus_measurement(self):
+        residual, innovation_covariance, nis = gnss_prefit_statistics(
+            predicted_position=[2.0, 0.0, 0.0],
+            predicted_position_covariance=np.eye(3) * 4.0,
+            measured_position=[0.0, 0.0, 0.0],
+            measurement_covariance=[1.0, 1.0, 1.0],
+        )
+
+        np.testing.assert_allclose(residual, [2.0, 0.0, 0.0])
+        np.testing.assert_allclose(innovation_covariance, np.eye(3) * 5.0)
+        self.assertAlmostEqual(nis, 0.8)
+        self.assertNotAlmostEqual(nis, 4.0)
+
+    def test_gnss_prefit_axis_nis_uses_marginal_xy_and_z_blocks(self):
+        xy_nis, z_nis = gnss_prefit_axis_nis(
+            residual=[2.0, 2.0, 3.0],
+            innovation_covariance=[
+                [4.0, 1.0, 0.5],
+                [1.0, 4.0, 0.2],
+                [0.5, 0.2, 9.0],
+            ],
+        )
+
+        self.assertAlmostEqual(xy_nis, 1.6)
+        self.assertAlmostEqual(z_nis, 1.0)
+
+    def test_gnss_axis_information_scale_is_full_then_robust_with_floor(self):
+        self.assertEqual(gnss_axis_information_scale(6.635, 6.635), 1.0)
+        self.assertAlmostEqual(
+            gnss_axis_information_scale(26.54, 6.635), 0.5
+        )
+        self.assertEqual(
+            gnss_axis_information_scale(1.0e12, 6.635, 0.01), 0.01
+        )
+
+    def test_gnss_prefit_gate_is_authoritative_after_scheduler_weighting(self):
+        admitted = apply_gnss_prefit_gate(
+            scheduler_decision(0.8, enabled=True, inflation=1.25),
+            prefit_xy_nis=0.8,
+            prefit_z_nis=0.2,
+        )
+        self.assertTrue(admitted["factor_enabled"])
+        self.assertAlmostEqual(admitted["reliability_weight"], 0.8)
+        self.assertAlmostEqual(admitted["covariance_inflation"], 1.25)
+        self.assertEqual(admitted["admission_reason"], "admitted_all_axes")
+        self.assertTrue(admitted["gnss_xy_admitted"])
+        self.assertTrue(admitted["gnss_z_admitted"])
+
+        z_with_xy_robust = apply_gnss_prefit_gate(
+            scheduler_decision(1.0, enabled=True, inflation=1.0),
+            prefit_xy_nis=36.840,
+            prefit_z_nis=6.635,
+        )
+        self.assertTrue(z_with_xy_robust["factor_enabled"])
+        self.assertFalse(z_with_xy_robust["gnss_xy_admitted"])
+        self.assertTrue(z_with_xy_robust["gnss_z_admitted"])
+        self.assertAlmostEqual(
+            z_with_xy_robust["gnss_xy_information_scale"], 0.5
+        )
+        self.assertEqual(z_with_xy_robust["gnss_z_information_scale"], 1.0)
+        self.assertEqual(
+            z_with_xy_robust["admission_reason"],
+            "admitted_z_with_xy_robust",
+        )
+
+        xy_with_z_robust = apply_gnss_prefit_gate(
+            scheduler_decision(1.0, enabled=True, inflation=1.0),
+            prefit_xy_nis=9.210,
+            prefit_z_nis=26.540,
+        )
+        self.assertTrue(xy_with_z_robust["factor_enabled"])
+        self.assertTrue(xy_with_z_robust["gnss_xy_admitted"])
+        self.assertFalse(xy_with_z_robust["gnss_z_admitted"])
+        self.assertEqual(xy_with_z_robust["gnss_xy_information_scale"], 1.0)
+        self.assertAlmostEqual(
+            xy_with_z_robust["gnss_z_information_scale"], 0.5
+        )
+        self.assertEqual(
+            xy_with_z_robust["admission_reason"],
+            "admitted_xy_with_z_robust",
+        )
+
+        recovery = apply_gnss_prefit_gate(
+            scheduler_decision(0.8, enabled=True, inflation=1.25),
+            prefit_xy_nis=9.211,
+            prefit_z_nis=6.636,
+        )
+        self.assertTrue(recovery["factor_enabled"])
+        self.assertTrue(recovery["gnss_recovery_floor"])
+        self.assertAlmostEqual(recovery["reliability_weight"], 0.8)
+        self.assertAlmostEqual(recovery["covariance_inflation"], 1.25)
+        self.assertEqual(
+            recovery["admission_reason"], "admitted_robust_all_axes"
+        )
+
+        scheduler_disabled = apply_gnss_prefit_gate(
+            scheduler_decision(0.8, enabled=False, inflation=20.0),
+            prefit_xy_nis=0.1,
+            prefit_z_nis=0.1,
+        )
+        self.assertFalse(scheduler_disabled["factor_enabled"])
+        self.assertEqual(
+            scheduler_disabled["admission_reason"], "scheduler_disabled"
+        )
+
+    def test_gnss_prefit_prediction_propagates_anchor_covariance(self):
+        samples = [
+            ImuSample(stamp, (0.0, 0.0, 9.81), (0.0, 0.0, 0.0))
+            for stamp in (1.0, 1.05, 1.10)
+        ]
+        measurement = preintegrate_manifold(
+            samples, 1.0, 1.10, max_gap_s=0.06
+        )
+        node = object.__new__(UnifiedBackendNode)
+        node.optimization_anchor_lock = threading.Lock()
+        node.optimization_anchor = make_optimization_anchor(
+            1.0, np.zeros(15), np.eye(15), generation=1
+        )
+
+        prediction, reason = node._gnss_prefit_prediction(1.10, measurement)
+
+        self.assertEqual(reason, "ok")
+        position, covariance = prediction
+        np.testing.assert_allclose(position, np.zeros(3), atol=1.0e-9)
+        self.assertEqual(covariance.shape, (3, 3))
+        self.assertTrue(np.all(np.isfinite(covariance)))
+        self.assertGreater(float(np.min(np.linalg.eigvalsh(covariance))), 0.0)
+
+    def test_gnss_factor_counter_counts_only_enabled_solver_records(self):
+        class Backend:
+            def __init__(self):
+                self.calls = []
+
+            def add_gnss(self, index, position, covariance, decision):
+                self.calls.append((index, position, covariance, decision))
+
+        def node_with_decision(decision):
+            node = object.__new__(UnifiedBackendNode)
+            node.projector = object()
+            node.lio_origin = np.zeros(3)
+            node.gnss_lock = threading.Lock()
+            node.gnss_buffer = deque([{
+                "stamp_s": 10.0,
+                "position_enu": np.zeros(3),
+                "covariance": [1.0, 1.0, 1.0],
+                "status": 0,
+                "temporal_jump": False,
+            }])
+            node.gnss_max_age_s = 2.0
+            node.gnss_future_tolerance_s = 0.05
+            node.gnss_xy_nis_gate = 9.210
+            node.gnss_z_nis_gate = 6.635
+            node.gnss_minimum_reliability_weight = 0.05
+            node.gnss_minimum_axis_information_scale = 0.01
+            node.backend = Backend()
+            node._decision = lambda *_args, **_kwargs: dict(decision)
+            node.counts = {
+                "gnss_stale_discarded": 0,
+                "gnss_superseded": 0,
+                "gnss_consumed": 0,
+                "gnss_factor_attempts": 0,
+                "gnss_jump_rejected": 0,
+                "gnss_prefit_covariance_unavailable": 0,
+                "gnss_prefit_invalid": 0,
+                "gnss_prefit_valid": 0,
+                "gnss_factor_records": 0,
+                "gnss_factors": 0,
+                "gnss_provisional_bootstrap_admitted": 0,
+                "gnss_disabled_scheduler": 0,
+                "gnss_rejected_nis": 0,
+                "gnss_rejected_low_weight": 0,
+                "gnss_invalid_fix_rejected": 0,
+                "gnss_xy_rejected_nis": 0,
+                "gnss_z_rejected_nis": 0,
+                "gnss_xy_admitted": 0,
+                "gnss_z_admitted": 0,
+                "gnss_xy_robust_downweighted": 0,
+                "gnss_z_robust_downweighted": 0,
+                "gnss_all_axes_inconsistent": 0,
+                "gnss_prefit_recovery_floor": 0,
+            }
+            return node
+
+        enabled = node_with_decision(
+            scheduler_decision(0.8, enabled=True, inflation=1.25)
+        )
+        enabled._gnss_factor(10.0, [2.0, 0.0, 0.0], 3, np.eye(3) * 4.0)
+        self.assertEqual(enabled.counts["gnss_factor_records"], 1)
+        self.assertEqual(enabled.counts["gnss_factors"], 1)
+        self.assertTrue(enabled.backend.calls[0][3]["factor_enabled"])
+
+        disabled = node_with_decision(
+            scheduler_decision(0.8, enabled=False, inflation=20.0)
+        )
+        disabled._gnss_factor(10.0, [2.0, 0.0, 0.0], 3, np.eye(3) * 4.0)
+        self.assertEqual(disabled.counts["gnss_factor_records"], 0)
+        self.assertEqual(disabled.counts["gnss_factors"], 0)
+        self.assertEqual(disabled.counts["gnss_disabled_scheduler"], 1)
+        self.assertFalse(disabled.backend.calls)
+
+        xy_rejected = node_with_decision(
+            scheduler_decision(1.0, enabled=True, inflation=1.0)
+        )
+        xy_rejected._gnss_factor(
+            10.0, [10.0, 0.0, 0.0], 3, np.eye(3) * 0.01
+        )
+        self.assertEqual(xy_rejected.counts["gnss_factor_records"], 1)
+        self.assertEqual(xy_rejected.counts["gnss_xy_rejected_nis"], 1)
+        self.assertEqual(xy_rejected.counts["gnss_z_admitted"], 1)
+        xy_scale = xy_rejected.backend.calls[0][3][
+            "gnss_xy_information_scale"
+        ]
+        self.assertGreaterEqual(xy_scale, 0.01)
+        self.assertLess(xy_scale, 1.0)
+        np.testing.assert_allclose(
+            xy_rejected.backend.calls[0][2],
+            [1.0 / xy_scale, 1.0 / xy_scale, 1.0],
+        )
+        self.assertEqual(
+            xy_rejected.backend.calls[0][3]["admission_reason"],
+            "admitted_z_with_xy_robust",
+        )
+
+        z_rejected = node_with_decision(
+            scheduler_decision(1.0, enabled=True, inflation=1.0)
+        )
+        z_rejected._gnss_factor(
+            10.0, [0.0, 0.0, 10.0], 3, np.eye(3) * 0.01
+        )
+        self.assertEqual(z_rejected.counts["gnss_factor_records"], 1)
+        self.assertEqual(z_rejected.counts["gnss_xy_admitted"], 1)
+        self.assertEqual(z_rejected.counts["gnss_z_rejected_nis"], 1)
+        z_scale = z_rejected.backend.calls[0][3][
+            "gnss_z_information_scale"
+        ]
+        self.assertGreaterEqual(z_scale, 0.01)
+        self.assertLess(z_scale, 1.0)
+        np.testing.assert_allclose(
+            z_rejected.backend.calls[0][2], [1.0, 1.0, 1.0 / z_scale]
+        )
+        self.assertEqual(
+            z_rejected.backend.calls[0][3]["admission_reason"],
+            "admitted_xy_with_z_robust",
+        )
+
+        recovery = node_with_decision(
+            scheduler_decision(1.0, enabled=True, inflation=1.0)
+        )
+        recovery._gnss_factor(
+            10.0, [10.0, 0.0, 10.0], 3, np.eye(3) * 0.01
+        )
+        self.assertEqual(recovery.counts["gnss_factor_records"], 1)
+        self.assertEqual(recovery.counts["gnss_rejected_nis"], 0)
+        self.assertEqual(recovery.counts["gnss_all_axes_inconsistent"], 1)
+        self.assertEqual(recovery.counts["gnss_prefit_recovery_floor"], 1)
+        recovery_decision = recovery.backend.calls[0][3]
+        self.assertLess(recovery_decision["gnss_xy_information_scale"], 1.0)
+        self.assertLess(recovery_decision["gnss_z_information_scale"], 1.0)
+        self.assertTrue(np.all(np.isfinite(recovery.backend.calls[0][2])))
+        self.assertAlmostEqual(
+            recovery_decision["reliability_weight"], 1.0
+        )
+        self.assertAlmostEqual(
+            recovery_decision["covariance_inflation"], 1.0
+        )
+
+        low_weight = node_with_decision(
+            scheduler_decision(0.04, enabled=True, inflation=20.0)
+        )
+        low_weight._gnss_factor(
+            10.0, [0.1, 0.0, 0.0], 3, np.eye(3) * 4.0
+        )
+        self.assertEqual(low_weight.counts["gnss_factor_records"], 0)
+        self.assertEqual(low_weight.counts["gnss_rejected_low_weight"], 1)
+        self.assertFalse(low_weight.backend.calls)
+
+        invalid_fix = node_with_decision(
+            scheduler_decision(1.0, enabled=True, inflation=1.0)
+        )
+        invalid_fix.gnss_buffer[0]["status"] = -1
+        invalid_fix._gnss_factor(
+            10.0, [0.0, 0.0, 0.0], 3, np.eye(3) * 4.0
+        )
+        self.assertEqual(invalid_fix.counts["gnss_invalid_fix_rejected"], 1)
+        self.assertFalse(invalid_fix.backend.calls)
 
     def test_gnss_observation_is_consumed_once(self):
         observations = [
@@ -785,6 +1439,20 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(reason, "sample_gap_exceeds_limit")
         self.assertAlmostEqual(maximum_gap, 0.06)
 
+    def test_imu_pair_timeout_requires_committed_state_without_factor(self):
+        self.assertFalse(
+            committed_state_missing_imu_factor(True, True, 10, 11)
+        )
+        self.assertTrue(
+            committed_state_missing_imu_factor(True, True, 10, 10)
+        )
+        self.assertFalse(
+            committed_state_missing_imu_factor(False, True, 10, 10)
+        )
+        self.assertFalse(
+            committed_state_missing_imu_factor(True, False, 10, 10)
+        )
+
     def test_lidar_anchor_floor_prevents_unobservable_yaw_gap(self):
         decision = scheduler_decision(0.0, enabled=False, inflation=20.0)
         protected = apply_lidar_anchor_floor(
@@ -985,6 +1653,32 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertEqual(reason, "ok")
 
+    def test_lidar_prediction_rejection_disables_only_current_factor(self):
+        admission = lidar_prediction_factor_admission(
+            {"position_m": 0.2, "yaw_rad": 0.51},
+            1.0,
+            0.5,
+            consecutive_rejections=0,
+        )
+
+        self.assertFalse(admission["factor_enabled"])
+        self.assertEqual(admission["reason"], "lidar_prediction_yaw_gate")
+        self.assertEqual(admission["consecutive_rejections"], 1)
+        self.assertFalse(admission["recovered"])
+
+    def test_lidar_prediction_gate_recovers_on_next_healthy_factor(self):
+        admission = lidar_prediction_factor_admission(
+            {"position_m": 0.2, "yaw_rad": 0.1},
+            1.0,
+            0.5,
+            consecutive_rejections=3,
+        )
+
+        self.assertTrue(admission["factor_enabled"])
+        self.assertEqual(admission["reason"], "ok")
+        self.assertEqual(admission["consecutive_rejections"], 0)
+        self.assertTrue(admission["recovered"])
+
     def test_manifold_motion_reference_uses_backend_prediction(self):
         previous = np.zeros(15)
         previous[:3] = [1.0, 2.0, 3.0]
@@ -1029,6 +1723,8 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.last_native_consumed_sequence = -1
         node.pending_scan_request_lock = threading.Lock()
         node.pending_scan_requests = {2: SimpleNamespace(scan_sequence=2)}
+        node.pending_scan_request_first_seen_s = {2: 9.9}
+        node.scan_prediction_missing_factor_grace_s = 0.5
         node.scan_prediction_by_sequence = {}
         node.counts = {
             "scan_prediction_requests": 0,
@@ -1044,6 +1740,38 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(node.counts["scan_prediction_duplicate_requests"], 1)
         self.assertEqual(node.counts["scan_prediction_deferred"], 1)
         self.assertEqual(list(node.pending_scan_requests), [2])
+
+    def test_retried_scan_request_skips_missing_predecessor_after_grace(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.frontend_scan_prediction_enabled = True
+        node.last_scan_request_arrival_s = None
+        node.last_native_consumed_sequence = 34
+        node.pending_scan_request_lock = threading.Lock()
+        request = SimpleNamespace(scan_sequence=36)
+        node.pending_scan_requests = {36: request}
+        node.pending_scan_request_first_seen_s = {36: 10.0}
+        node.scan_prediction_missing_factor_grace_s = 0.5
+        node.scan_prediction_by_sequence = {}
+        node.counts = {
+            "scan_prediction_requests": 0,
+            "scan_prediction_duplicate_requests": 0,
+            "scan_prediction_stale_requests": 0,
+            "scan_prediction_deferred": 0,
+            "scan_prediction_missing_factor_skips": 0,
+        }
+        node._now_s = lambda: 10.6
+        produced = []
+        node._produce_scan_prediction = produced.append
+
+        node._scan_request(request)
+
+        self.assertEqual(node.last_native_consumed_sequence, 35)
+        self.assertEqual(
+            node.counts["scan_prediction_missing_factor_skips"], 1
+        )
+        self.assertFalse(node.pending_scan_requests)
+        self.assertFalse(node.pending_scan_request_first_seen_s)
+        self.assertEqual(produced, [request])
 
     def test_relocalization_reset_starts_a_clean_estimator_epoch(self):
         class FakeBackend:
@@ -1149,6 +1877,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.scan_prediction_by_sequence = {13: object()}
         node.pending_scan_request_lock = threading.Lock()
         node.pending_scan_requests = {15: object()}
+        node.pending_scan_request_first_seen_s = {15: 9.0}
         node.path = SimpleNamespace(poses=[object()])
         node.last_path_sample_position = np.ones(3)
         node.last_path_sample_orientation = np.ones(3)

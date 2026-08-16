@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>uf_backend_core_cpp</name>
+  <version>0.1.0</version>
+  <description>Eigen kernels for the Ultra-Fusion fixed-lag backend.</description>
+  <maintainer email="zyc@example.com">zyc</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <build_depend>eigen3_cmake_module</build_depend>
+  <build_depend>pybind11_vendor</build_depend>
+  <build_depend>libeigen3-dev</build_depend>
+  <build_depend>pybind11-dev</build_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

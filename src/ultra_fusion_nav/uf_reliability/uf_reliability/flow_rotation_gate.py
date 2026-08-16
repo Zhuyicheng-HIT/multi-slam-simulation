@@ -182,7 +182,7 @@ def interval_mean_absolute_yaw_rate(
 
 
 class OpticalFlowRotationGate:
-    """Down-weight turns and require stable translation before flow recovery."""
+    """Down-weight uncompensated turns and recover on healthy observations."""
 
     PHASE_CODES = {
         "ACTIVE": 0.0,
@@ -261,6 +261,9 @@ class OpticalFlowRotationGate:
         if self.last_stamp_s is not None and stamp_s < self.last_stamp_s:
             self.reset()
         self.last_stamp_s = stamp_s
+        # Keep the historical translation threshold as a diagnostic so callers
+        # can inspect whether motion was observed. Zero platform motion is a
+        # valid optical-flow measurement and must not gate factor admission.
         translation_available = (
             bool(observation_healthy)
             and translation_norm_m is not None
@@ -319,31 +322,36 @@ class OpticalFlowRotationGate:
             self.stable_since_s = None
             self.ramp_since_s = None
             weight = self._turning_weight(yaw_rate_abs)
+            if not observation_healthy:
+                weight = 0.0
             return self._result(
                 weight,
                 self.phase,
                 yaw_rate_abs,
                 translation_ready,
                 (
-                    "high_fcu_yaw_rate"
-                    if weight <= 0.0 else "fcu_yaw_rate_downweight"
+                    "optical_flow_observation_unhealthy"
+                    if not observation_healthy else (
+                        "high_fcu_yaw_rate"
+                        if weight <= 0.0 else "fcu_yaw_rate_downweight"
+                    )
                 ),
             )
 
         if self.phase in {"TURNING", "YAW_RATE_UNAVAILABLE"}:
             self.phase = "RECOVERY_DWELL"
-            self.stable_since_s = stamp_s if translation_ready else None
+            self.stable_since_s = stamp_s if observation_healthy else None
             self.ramp_since_s = None
 
         if self.phase == "RECOVERY_DWELL":
-            if not translation_ready:
+            if not observation_healthy:
                 self.stable_since_s = None
                 return self._result(
                     0.0,
                     self.phase,
                     yaw_rate_abs,
                     translation_ready,
-                    "waiting_for_consistent_translation",
+                    "waiting_for_healthy_observation",
                 )
             if self.stable_since_s is None:
                 self.stable_since_s = stamp_s
@@ -360,7 +368,7 @@ class OpticalFlowRotationGate:
             self.ramp_since_s = self.stable_since_s + self.config.recovery_dwell_s
 
         if self.phase == "RECOVERING":
-            if not translation_ready:
+            if not observation_healthy:
                 self.phase = "RECOVERY_DWELL"
                 self.stable_since_s = None
                 self.ramp_since_s = None
@@ -369,7 +377,7 @@ class OpticalFlowRotationGate:
                     self.phase,
                     yaw_rate_abs,
                     translation_ready,
-                    "waiting_for_consistent_translation",
+                    "waiting_for_healthy_observation",
                 )
             progress = max(
                 0.0,
@@ -397,6 +405,14 @@ class OpticalFlowRotationGate:
                 "flow_rotation_recovery_ramp",
             )
 
+        if not observation_healthy:
+            return self._result(
+                0.0,
+                "ACTIVE",
+                yaw_rate_abs,
+                translation_ready,
+                "optical_flow_observation_unhealthy",
+            )
         return self._result(
             1.0,
             "ACTIVE",

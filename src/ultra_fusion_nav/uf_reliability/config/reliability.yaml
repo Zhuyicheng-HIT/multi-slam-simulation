@@ -31,13 +31,25 @@ reliability_monitor:
     gnss.good_satellites: 10
     gnss.good_hdop: 1.0
     gnss.maximum_hdop: 4.0
+    # Before the backend can form an innovation, fix/DOP/covariance may
+    # bootstrap GNSS conservatively. Missing Eq.23 weight is counted as fully
+    # degraded, so provisional reliability cannot exceed evidence coverage.
+    gnss.minimum_startup_evidence_coverage: 0.45
+    # Reuse the backend's latest full prefit NIS only for a short ROS-time
+    # interval; current-factor admission always uses the current NIS directly.
+    gnss.prefit_nis_timeout_s: 2.0
     imu.tau_preintegration: 5.0
     imu.accel_excitation_scale: 0.5
     imu.gyro_excitation_scale: 0.15
     imu.accel_saturation: 55.0
     imu.gyro_saturation: 10.0
+    # Eq.21 remains available as observability/factor-consistency diagnostics.
+    # Scheduler admission is health-only: low excitation and preintegration
+    # NIS do not down-weight the propagation IMU.
     imu.weights: [0.35, 0.45, 0.20]
     imu.minimum_window_samples: 20
+    # Health evidence is complete without waiting for a backend residual.
+    imu.minimum_startup_evidence_coverage: 0.55
     optical_flow.tau_translation: 0.30
     optical_flow.weights: [0.60, 0.25, 0.15]
     # When the auxiliary LIO prediction is temporarily unavailable, retain a
@@ -50,9 +62,9 @@ reliability_monitor:
     optical_flow.rotation_gate.upper_yaw_rate_radps: 0.30
     optical_flow.rotation_gate.recovery_dwell_s: 0.8
     optical_flow.rotation_gate.recovery_ramp_s: 1.5
+    # Translation thresholds are diagnostics for calibration/observability.
+    # They do not gate a healthy zero-flow hover observation or recovery.
     optical_flow.rotation_gate.minimum_translation_m: 0.01
-    # The monitor evaluates one OpticalFlowRad sample, so recovery must be
-    # rate-normalized. The backend retains its 0.01 m keyframe-interval gate.
     optical_flow.rotation_gate.minimum_translation_speed_mps: 0.08
     optical_flow.rotation_gate.recovery_max_base_score: 0.55
     optical_flow.rotation_gate.imu_max_gap_s: 0.12
@@ -62,3 +74,12 @@ reliability_monitor:
     vision.tau_reprojection_px: 3.0
     vision.weights: [0.30, 0.25, 0.25, 0.20]
     vision.minimum_features: 20
+    # Camera health remains continuous for the scheduler. Per-candidate factor
+    # evidence is published separately and must not make camera health stale.
+    vision.track_evidence_enabled: true
+    vision.factor_score_topic: /reliability/vision_factor_score
+    vision.camera_cache_size: 4
+    vision.minimum_camera_evidence_coverage: 0.75
+    vision.minimum_depth_m: 0.30
+    vision.maximum_depth_m: 6.0
+    vision.klt_weight: 0.15

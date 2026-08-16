@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -20,7 +21,11 @@ def generate_launch_description():
     )
     relocalization_config = relocalization_share + "/config/relocalization.yaml"
     use_sim_time = LaunchConfiguration("use_sim_time")
+    enable_vision = LaunchConfiguration("enable_vision")
     external_nav_output_topic = LaunchConfiguration("external_nav_output_topic")
+    publish_mavros_frame_transforms = LaunchConfiguration(
+        "publish_mavros_frame_transforms"
+    )
     relocalization_prefix = None
     if os.environ.get("UF_RELOCALIZATION_GDB", "0") == "1":
         relocalization_prefix = (
@@ -28,12 +33,24 @@ def generate_launch_description():
         )
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument("enable_vision", default_value="false"),
+        DeclareLaunchArgument("visual_factor_mode", default_value="disabled"),
+        DeclareLaunchArgument("rgbd_minimum_depth_m", default_value="0.30"),
+        DeclareLaunchArgument("rgbd_maximum_depth_m", default_value="6.0"),
         DeclareLaunchArgument(
             "external_nav_output_topic",
             default_value="/mavros/odometry/out",
             description=(
                 "ExternalNav gate output; use a non-MAVROS topic for estimator-only "
                 "validation"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "publish_mavros_frame_transforms",
+            default_value="true",
+            description=(
+                "Publish the FLU-to-FRD frame aliases required by the MAVROS "
+                "ODOMETRY plugin"
             ),
         ),
         DeclareLaunchArgument(
@@ -56,11 +73,70 @@ def generate_launch_description():
             default_value="6.0",
             description="Maximum ROS-time search budget for one relocalization request",
         ),
+        DeclareLaunchArgument(
+            "performance_profiling_enabled",
+            default_value="false",
+            description="Record bounded per-cycle backend timing and resource evidence",
+        ),
+        DeclareLaunchArgument(
+            "calibration_apply_locked_time_offset",
+            default_value="false",
+            description="Apply a locked LiDAR/IMU time offset independently",
+        ),
+        DeclareLaunchArgument(
+            "calibration_apply_locked_rotation",
+            default_value="false",
+            description="Apply a locked online rotation instead of the measured extrinsic",
+        ),
+        DeclareLaunchArgument(
+            "visual_time_calibration_apply_locked",
+            default_value="false",
+            description=(
+                "Apply a locked camera/IMU time offset; keep shadow-only by default"
+            ),
+        ),
+        Node(
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            name="camera_init_to_camera_init_ned",
+            arguments=[
+                "--x", "0", "--y", "0", "--z", "0",
+                "--roll", "3.141592653589793", "--pitch", "0",
+                "--yaw", "1.5707963267948966",
+                "--frame-id", "camera_init",
+                "--child-frame-id", "camera_init_ned",
+            ],
+            condition=IfCondition(publish_mavros_frame_transforms),
+            output="screen",
+        ),
+        Node(
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            name="body_to_body_frd",
+            arguments=[
+                "--x", "0", "--y", "0", "--z", "0",
+                "--roll", "3.141592653589793", "--pitch", "0", "--yaw", "0",
+                "--frame-id", "body",
+                "--child-frame-id", "body_frd",
+            ],
+            condition=IfCondition(publish_mavros_frame_transforms),
+            output="screen",
+        ),
         Node(
             package="uf_reliability",
             executable="reliability_monitor",
             name="reliability_monitor",
-            parameters=[reliability_config, {"use_sim_time": use_sim_time}],
+            parameters=[reliability_config, {
+                "use_sim_time": use_sim_time,
+                "vision.minimum_depth_m": ParameterValue(
+                    LaunchConfiguration("rgbd_minimum_depth_m"),
+                    value_type=float,
+                ),
+                "vision.maximum_depth_m": ParameterValue(
+                    LaunchConfiguration("rgbd_maximum_depth_m"),
+                    value_type=float,
+                ),
+            }],
             output="screen",
         ),
         Node(
@@ -74,6 +150,23 @@ def generate_launch_description():
                     "use_sim_time": use_sim_time,
                 },
             ],
+            condition=UnlessCondition(enable_vision),
+            output="screen",
+        ),
+        Node(
+            package="uf_reliability",
+            executable="reliability_scheduler",
+            name="reliability_scheduler",
+            parameters=[
+                scheduler_config,
+                {
+                    "active_modalities": [
+                        "lidar", "gnss", "imu", "optical_flow", "vision"
+                    ],
+                    "use_sim_time": use_sim_time,
+                },
+            ],
+            condition=IfCondition(enable_vision),
             output="screen",
         ),
         Node(
@@ -91,6 +184,9 @@ def generate_launch_description():
                 backend_config,
                 {
                     "use_sim_time": use_sim_time,
+                    "visual_factor_mode": LaunchConfiguration(
+                        "visual_factor_mode"
+                    ),
                     "preserve_lio_anchor": ParameterValue(
                         LaunchConfiguration("preserve_lio_anchor"),
                         value_type=bool,
@@ -101,6 +197,24 @@ def generate_launch_description():
                     ),
                     "frontend_scan_prediction_enabled": ParameterValue(
                         LaunchConfiguration("frontend_scan_prediction_enabled"),
+                        value_type=bool,
+                    ),
+                    "performance_profiling_enabled": ParameterValue(
+                        LaunchConfiguration("performance_profiling_enabled"),
+                        value_type=bool,
+                    ),
+                    "calibration_apply_locked_time_offset": ParameterValue(
+                        LaunchConfiguration(
+                            "calibration_apply_locked_time_offset"
+                        ),
+                        value_type=bool,
+                    ),
+                    "calibration_apply_locked_rotation": ParameterValue(
+                        LaunchConfiguration("calibration_apply_locked_rotation"),
+                        value_type=bool,
+                    ),
+                    "visual_time_calibration_apply_locked": ParameterValue(
+                        LaunchConfiguration("visual_time_calibration_apply_locked"),
                         value_type=bool,
                     ),
                 },
@@ -133,14 +247,22 @@ def generate_launch_description():
                     "NORMAL", "RECOVERED", "DEGRADED", "RISK",
                     "RELOCALIZING"
                 ],
-                # ReliabilityScheduler controls factor weights and covariance
-                # inside the estimator. A valid fused state must not disappear
-                # from the FCU link just because one capability is degraded.
+                # Capability loss is reported to the safety state machine and
+                # inflates covariance, but it is not an output kill switch.
+                # Timestamp, covariance and physical jump guards remain hard.
                 "require_capability_support": False,
+                "inflate_covariance_from_estimator_support": True,
+                "minimum_capability_support": 0.15,
                 "maximum_propagation_age_s": 0.65,
                 # Stop finite but divergent states before they reach EKF3.
                 "maximum_position_variance_m2": 25.0,
                 "maximum_orientation_variance_rad2": 1.0,
+                # ArduPilot consumes ODOMETRY covariance as ExternalNav
+                # measurement noise. Keep the stream continuous and let a
+                # large finite covariance weaken EKF3 fusion while the safety
+                # state machine holds. Non-finite state, stale data and jumps
+                # remain hard gate failures.
+                "stop_on_excessive_covariance": False,
                 "maximum_position_step_m": 1.0,
                 "maximum_linear_speed_mps": 10.0,
                 "maximum_orientation_step_rad": 0.5,

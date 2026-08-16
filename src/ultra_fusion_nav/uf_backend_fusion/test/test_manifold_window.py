@@ -1,8 +1,15 @@
 import unittest
 from dataclasses import replace
+import threading
+import time
 from types import MethodType
 
 import numpy as np
+
+try:
+    from uf_backend_core_cpp import state_plus_batch as cpp_state_plus_batch
+except ImportError:
+    cpp_state_plus_batch = None
 
 from uf_backend_fusion.imu_preintegration import (
     ImuSample,
@@ -20,6 +27,7 @@ from uf_backend_fusion.manifold import (
     numerical_state_jacobian,
     so3_right_jacobian_inverse,
     state_local,
+    state_plus,
 )
 from uf_backend_fusion.native_lidar import (
     NativeLidarPoseNormal,
@@ -65,6 +73,24 @@ def plane_factor(point, normal, plane_point):
 
 
 class ManifoldWindowTest(unittest.TestCase):
+    @unittest.skipIf(
+        cpp_state_plus_batch is None, "C++ backend core is not installed"
+    )
+    def test_cpp_state_plus_batch_matches_python(self):
+        generator = np.random.default_rng(20260812)
+        states = generator.normal(size=(8, STATE_SIZE))
+        states[:, 3:6] *= 0.4
+        increments = generator.normal(scale=0.02, size=(8, STATE_SIZE))
+        states[0, 4] = 0.5 * np.pi - 1.0e-8
+        expected = np.asarray([
+            state_plus(state, increment)
+            for state, increment in zip(states, increments)
+        ])
+
+        actual = cpp_state_plus_batch(states, increments)
+
+        np.testing.assert_allclose(actual, expected, atol=2.0e-12, rtol=2.0e-12)
+
     def test_marginal_covariance_uses_information_not_solver_damping(self):
         backend = ManifoldSlidingWindowBackend(max_states=2, damping=100.0)
         state = np.zeros(15)
@@ -245,7 +271,7 @@ class ManifoldWindowTest(unittest.TestCase):
             first, second, [0.05, -0.02, 0.01], covariance=0.2
         )
         backend.add_optical_flow_body(
-            first, second, [0.04, -0.03, 0.02], covariance=0.3
+            first, second, [0.04, -0.03, 0.0], covariance=0.3
         )
         backend.add_native_lidar_correspondences(
             second,
@@ -316,6 +342,30 @@ class ManifoldWindowTest(unittest.TestCase):
                 places=12,
             )
 
+    def test_optical_flow_factors_do_not_constrain_vertical_position(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        first_state = np.zeros(15)
+        first_state[3:6] = [0.15, -0.10, 0.30]
+        second_state = first_state.copy()
+        second_state[2] = 4.0
+        first = backend.add_state(first_state)
+        second = backend.add_state(second_state)
+        backend.add_optical_flow_body(
+            first, second, [0.0, 0.0, 0.0], covariance=[0.01, 0.01]
+        )
+
+        factor = backend._factors[-1]
+        residual = backend._residual(factor, backend._states)
+        hessian, gradient, _ = backend._factor_normal(
+            factor, backend._states)
+
+        self.assertEqual(factor["residual_dimension"], 2)
+        np.testing.assert_allclose(residual, np.zeros(2), atol=1.0e-12)
+        self.assertAlmostEqual(float(hessian[2, 2]), 0.0)
+        self.assertAlmostEqual(float(hessian[STATE_SIZE + 2, STATE_SIZE + 2]), 0.0)
+        self.assertAlmostEqual(float(gradient[2]), 0.0)
+        self.assertAlmostEqual(float(gradient[STATE_SIZE + 2]), 0.0)
+
     def test_analytic_imu_jacobians_match_right_local_finite_difference(self):
         samples = [
             ImuSample(
@@ -362,6 +412,51 @@ class ManifoldWindowTest(unittest.TestCase):
         np.testing.assert_allclose(residual, residual_function(states), atol=1.0e-12)
         np.testing.assert_allclose(analytic_i, numerical_i, atol=3.0e-5, rtol=3.0e-5)
         np.testing.assert_allclose(analytic_j, numerical_j, atol=3.0e-5, rtol=3.0e-5)
+
+    def test_cpp_imu_normal_matches_python_path(self):
+        measurement = stationary_measurement(duration=0.2)
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        first = np.asarray([
+            0.4, -0.2, 0.7,
+            0.12, -0.08, 0.21,
+            0.3, -0.15, 0.05,
+            0.02, -0.01, 0.03,
+            0.004, -0.006, 0.008,
+        ])
+        second = np.asarray([
+            0.47, -0.23, 0.72,
+            0.15, -0.04, 0.25,
+            0.34, -0.11, 0.02,
+            0.021, -0.012, 0.031,
+            0.005, -0.005, 0.009,
+        ])
+        previous = backend.add_state(first)
+        current = backend.add_state(second)
+        backend.add_imu_preintegrated(previous, current, measurement)
+        factor = backend._factors[-1]
+
+        backend.cpp_math_core_enabled = False
+        python_hessian, python_gradient, python_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        python_candidate_cost = backend._factor_cost(factor, backend._states)
+
+        backend.cpp_math_core_enabled = True
+        cpp_hessian, cpp_gradient, cpp_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        cpp_candidate_cost = backend._factor_cost(factor, backend._states)
+
+        np.testing.assert_allclose(
+            cpp_hessian, python_hessian, atol=1.0e-9, rtol=1.0e-9
+        )
+        np.testing.assert_allclose(
+            cpp_gradient, python_gradient, atol=1.0e-9, rtol=1.0e-9
+        )
+        self.assertAlmostEqual(cpp_cost, python_cost, places=10)
+        self.assertAlmostEqual(
+            cpp_candidate_cost, python_candidate_cost, places=10
+        )
 
     def test_stationary_imu_propagation_and_residual(self):
         measurement = stationary_measurement()
@@ -571,6 +666,30 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertGreater(cycle["factor_graph_linearization"], 0.0)
         self.assertGreater(cycle["graph_assembly"], 0.0)
         self.assertFalse(cycle["marginalization_happened"])
+
+    def test_profiler_summary_is_safe_during_worker_updates(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, profiling_enabled=True, profiling_capacity=64
+        )
+        errors = []
+
+        def writer():
+            try:
+                for index in range(300):
+                    backend._profile_stop(
+                        f"concurrent_stage_{index}", time.perf_counter_ns()
+                    )
+            except Exception as error:  # pragma: no cover - assertion below
+                errors.append(error)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        while thread.is_alive():
+            backend.profile_summary()
+        thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(backend.profile_summary()), 300)
 
     def test_transaction_profile_marks_marginalization(self):
         backend = ManifoldSlidingWindowBackend(

@@ -65,11 +65,13 @@ d435i_active_pid_owned() {
 }
 
 d435i_run_dir_owned() {
-  local run_dir=$1 project_root=$2 resolved logs_root artifacts_root
+  local run_dir=$1 project_root=$2 resolved logs_root tmp_root artifacts_root
   resolved=$(realpath -m "$run_dir")
   logs_root=$(realpath -m "$project_root/logs/d435i_visual_slam")
+  tmp_root=$(realpath -m "$project_root/logs/tmp")
   artifacts_root=$(realpath -m "$project_root/artifacts")
-  [[ "$resolved" == "$logs_root/"* || "$resolved" == "$artifacts_root/"* ]]
+  [[ "$resolved" == "$logs_root/"* || "$resolved" == "$tmp_root/"* ||
+     "$resolved" == "$artifacts_root/"* ]]
 }
 
 d435i_active_write() {

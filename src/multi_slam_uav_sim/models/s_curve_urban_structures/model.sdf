@@ -81,12 +81,12 @@
 
       <!-- North canyon: asymmetric segmented walls create corners and an alley opening. -->
       <collision name="urban_canyon_west_south">
-        <pose>-6.80 2.05 4.20 0 0 0.08</pose>
-        <geometry><box><size>0.45 2.90 8.40</size></box></geometry>
+        <pose>-6.82 2.27 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.45 2.45 8.40</size></box></geometry>
       </collision>
       <visual name="urban_canyon_west_south_visual">
-        <pose>-6.80 2.05 4.20 0 0 0.08</pose>
-        <geometry><box><size>0.45 2.90 8.40</size></box></geometry>
+        <pose>-6.82 2.27 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.45 2.45 8.40</size></box></geometry>
         <material><ambient>0.48 0.25 0.16 1</ambient><diffuse>0.66 0.34 0.20 1</diffuse></material>
       </visual>
       <collision name="urban_canyon_west_north">
@@ -98,14 +98,44 @@
         <geometry><box><size>0.45 2.70 7.60</size></box></geometry>
         <material><ambient>0.42 0.22 0.15 1</ambient><diffuse>0.60 0.30 0.18 1</diffuse></material>
       </visual>
+      <!-- The east-south canyon wall terminates before the protected central
+           corridor. A separate route-normal gateway below provides the
+           deliberate second-lobe fly-through. -->
       <collision name="urban_canyon_east_south">
-        <pose>-1.10 3.10 4.10 0 0 -0.05</pose>
-        <geometry><box><size>0.45 2.40 8.20</size></box></geometry>
+        <pose>-1.07 3.70 4.10 0 0 -0.05</pose>
+        <geometry><box><size>0.45 1.20 8.20</size></box></geometry>
       </collision>
       <visual name="urban_canyon_east_south_visual">
-        <pose>-1.10 3.10 4.10 0 0 -0.05</pose>
-        <geometry><box><size>0.45 2.40 8.20</size></box></geometry>
+        <pose>-1.07 3.70 4.10 0 0 -0.05</pose>
+        <geometry><box><size>0.45 1.20 8.20</size></box></geometry>
         <material><ambient>0.22 0.30 0.38 1</ambient><diffuse>0.30 0.42 0.54 1</diffuse></material>
+      </visual>
+      <collision name="east_canyon_gateway_south_pier">
+        <pose>2.07 -3.70 4.10 0 0 -0.724</pose>
+        <geometry><box><size>0.45 0.60 8.20</size></box></geometry>
+      </collision>
+      <visual name="east_canyon_gateway_south_pier_visual">
+        <pose>2.07 -3.70 4.10 0 0 -0.724</pose>
+        <geometry><box><size>0.45 0.60 8.20</size></box></geometry>
+        <material><ambient>0.22 0.30 0.38 1</ambient><diffuse>0.30 0.42 0.54 1</diffuse></material>
+      </visual>
+      <collision name="east_canyon_gateway_north_pier">
+        <pose>3.92 -1.60 4.10 0 0 -0.724</pose>
+        <geometry><box><size>0.45 0.60 8.20</size></box></geometry>
+      </collision>
+      <visual name="east_canyon_gateway_north_pier_visual">
+        <pose>3.92 -1.60 4.10 0 0 -0.724</pose>
+        <geometry><box><size>0.45 0.60 8.20</size></box></geometry>
+        <material><ambient>0.22 0.30 0.38 1</ambient><diffuse>0.30 0.42 0.54 1</diffuse></material>
+      </visual>
+      <collision name="east_canyon_gateway_header">
+        <pose>3.00 -2.65 7.40 0 0 -0.724</pose>
+        <geometry><box><size>0.45 3.40 1.60</size></box></geometry>
+      </collision>
+      <visual name="east_canyon_gateway_header_visual">
+        <pose>3.00 -2.65 7.40 0 0 -0.724</pose>
+        <geometry><box><size>0.45 3.40 1.60</size></box></geometry>
+        <material><ambient>0.18 0.25 0.31 1</ambient><diffuse>0.26 0.38 0.49 1</diffuse></material>
       </visual>
       <collision name="urban_canyon_east_north">
         <pose>1.50 4.75 3.60 0 0 0.12</pose>
@@ -119,21 +149,21 @@
 
       <!-- Additional facades provide long planes and non-repetitive urban corners. -->
       <collision name="south_east_facade">
-        <pose>7.20 -2.10 4.20 0 0 0.08</pose>
-        <geometry><box><size>0.50 5.50 8.40</size></box></geometry>
+        <pose>7.25 -2.75 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.50 4.20 8.40</size></box></geometry>
       </collision>
       <visual name="south_east_facade_visual">
-        <pose>7.20 -2.10 4.20 0 0 0.08</pose>
-        <geometry><box><size>0.50 5.50 8.40</size></box></geometry>
+        <pose>7.25 -2.75 4.20 0 0 0.08</pose>
+        <geometry><box><size>0.50 4.20 8.40</size></box></geometry>
         <material><ambient>0.40 0.42 0.44 1</ambient><diffuse>0.56 0.58 0.60 1</diffuse></material>
       </visual>
       <collision name="north_east_facade">
-        <pose>5.60 3.40 3.75 0 0 -0.04</pose>
-        <geometry><box><size>0.50 6.00 7.50</size></box></geometry>
+        <pose>5.61 3.65 3.25 0 0 -0.04</pose>
+        <geometry><box><size>0.50 5.50 6.50</size></box></geometry>
       </collision>
       <visual name="north_east_facade_visual">
-        <pose>5.60 3.40 3.75 0 0 -0.04</pose>
-        <geometry><box><size>0.50 6.00 7.50</size></box></geometry>
+        <pose>5.61 3.65 3.25 0 0 -0.04</pose>
+        <geometry><box><size>0.50 5.50 6.50</size></box></geometry>
         <material><ambient>0.48 0.44 0.36 1</ambient><diffuse>0.64 0.58 0.46 1</diffuse></material>
       </visual>
       <collision name="north_east_corner">
@@ -145,6 +175,142 @@
         <geometry><box><size>3.80 0.50 6.50</size></box></geometry>
         <material><ambient>0.45 0.41 0.34 1</ambient><diffuse>0.62 0.55 0.43 1</diffuse></material>
       </visual>
+
+      <!-- A second fly-through gateway closes the north canyon overhead while
+           retaining more than 2.5 m vertical clearance along the 3D S path. -->
+      <collision name="north_arcade_header">
+        <pose>-3.84 4.10 7.55 0 0 0</pose>
+        <geometry><box><size>6.00 0.55 0.50</size></box></geometry>
+      </collision>
+      <visual name="north_arcade_header_visual">
+        <pose>-3.84 4.10 7.55 0 0 0</pose>
+        <geometry><box><size>6.00 0.55 0.50</size></box></geometry>
+        <material><ambient>0.18 0.22 0.25 1</ambient><diffuse>0.30 0.38 0.43 1</diffuse></material>
+      </visual>
+
+      <!-- Sparse street furniture stays outside the protected route but gives
+           both LiDAR and the forward RGB-D camera nearby non-planar edges. -->
+      <collision name="south_visual_totem">
+        <pose>5.80 -5.80 2.20 0 0 0.08</pose>
+        <geometry><box><size>0.45 0.75 4.40</size></box></geometry>
+      </collision>
+      <visual name="visual_feature_south_totem">
+        <pose>5.80 -5.80 2.20 0 0 0.08</pose>
+        <geometry><box><size>0.45 0.75 4.40</size></box></geometry>
+        <material><ambient>0.10 0.36 0.54 1</ambient><diffuse>0.12 0.56 0.78 1</diffuse></material>
+      </visual>
+      <collision name="north_service_block">
+        <pose>3.00 6.70 2.00 0 0 -0.12</pose>
+        <geometry><box><size>1.20 0.80 4.00</size></box></geometry>
+      </collision>
+      <visual name="visual_feature_north_service_block">
+        <pose>3.00 6.70 2.00 0 0 -0.12</pose>
+        <geometry><box><size>1.20 0.80 4.00</size></box></geometry>
+        <material><ambient>0.44 0.16 0.10 1</ambient><diffuse>0.72 0.28 0.14 1</diffuse></material>
+      </visual>
+
+      <!-- A distant east facade keeps the fixed-forward D435i view inside a
+           structured urban scene at the outer edge of the large figure-eight. -->
+      <collision name="east_background_facade">
+        <pose>10.50 0 5.50 0 0 0</pose>
+        <geometry><box><size>0.40 16.00 11.00</size></box></geometry>
+      </collision>
+      <visual name="east_background_facade_visual">
+        <pose>10.50 0 5.50 0 0 0</pose>
+        <geometry><box><size>0.40 16.00 11.00</size></box></geometry>
+        <material><ambient>0.30 0.34 0.38 1</ambient><diffuse>0.42 0.48 0.54 1</diffuse></material>
+      </visual>
+      <visual name="visual_feature_east_wall_01"><pose>10.28 -5.60 3.00 0 0 0</pose><geometry><box><size>0.10 0.90 1.40</size></box></geometry><material><ambient>0.72 0.14 0.08 1</ambient><diffuse>0.92 0.22 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_east_wall_02"><pose>10.28 -3.10 7.20 0 0 0</pose><geometry><box><size>0.10 1.30 0.70</size></box></geometry><material><ambient>0.08 0.30 0.68 1</ambient><diffuse>0.10 0.44 0.90 1</diffuse></material></visual>
+      <visual name="visual_feature_east_wall_03"><pose>10.28 -0.40 4.70 0 0 0</pose><geometry><box><size>0.10 0.65 1.65</size></box></geometry><material><ambient>0.78 0.66 0.08 1</ambient><diffuse>0.94 0.82 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_east_wall_04"><pose>10.28 2.70 8.10 0 0 0</pose><geometry><box><size>0.10 1.10 1.10</size></box></geometry><material><ambient>0.12 0.52 0.26 1</ambient><diffuse>0.16 0.72 0.36 1</diffuse></material></visual>
+      <visual name="visual_feature_east_wall_05"><pose>10.28 5.70 5.80 0 0 0</pose><geometry><box><size>0.10 0.75 1.30</size></box></geometry><material><ambient>0.62 0.10 0.56 1</ambient><diffuse>0.82 0.16 0.74 1</diffuse></material></visual>
+
+      <collision name="west_background_facade">
+        <pose>-8.50 0 5.50 0 0 0</pose>
+        <geometry><box><size>0.40 12.00 11.00</size></box></geometry>
+      </collision>
+      <visual name="west_background_facade_visual">
+        <pose>-8.50 0 5.50 0 0 0</pose>
+        <geometry><box><size>0.40 12.00 11.00</size></box></geometry>
+        <material><ambient>0.36 0.30 0.28 1</ambient><diffuse>0.50 0.42 0.38 1</diffuse></material>
+      </visual>
+      <visual name="visual_feature_west_wall_01"><pose>-8.28 -4.30 4.00 0 0 0</pose><geometry><box><size>0.10 0.90 1.40</size></box></geometry><material><ambient>0.72 0.14 0.08 1</ambient><diffuse>0.92 0.22 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_west_wall_02"><pose>-8.28 -2.10 8.20 0 0 0</pose><geometry><box><size>0.10 1.20 0.70</size></box></geometry><material><ambient>0.08 0.30 0.68 1</ambient><diffuse>0.10 0.44 0.90 1</diffuse></material></visual>
+      <visual name="visual_feature_west_wall_03"><pose>-8.28 0.20 5.40 0 0 0</pose><geometry><box><size>0.10 0.70 1.60</size></box></geometry><material><ambient>0.78 0.66 0.08 1</ambient><diffuse>0.94 0.82 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_west_wall_04"><pose>-8.28 2.50 9.00 0 0 0</pose><geometry><box><size>0.10 1.00 1.10</size></box></geometry><material><ambient>0.12 0.52 0.26 1</ambient><diffuse>0.16 0.72 0.36 1</diffuse></material></visual>
+      <visual name="visual_feature_west_wall_05"><pose>-8.28 4.50 6.20 0 0 0</pose><geometry><box><size>0.10 0.80 1.30</size></box></geometry><material><ambient>0.62 0.10 0.56 1</ambient><diffuse>0.82 0.16 0.74 1</diffuse></material></visual>
+
+      <collision name="north_background_facade">
+        <pose>0 6.80 5.50 0 0 0</pose>
+        <geometry><box><size>14.00 0.40 11.00</size></box></geometry>
+      </collision>
+      <visual name="north_background_facade_visual">
+        <pose>0 6.80 5.50 0 0 0</pose>
+        <geometry><box><size>14.00 0.40 11.00</size></box></geometry>
+        <material><ambient>0.28 0.34 0.31 1</ambient><diffuse>0.38 0.48 0.43 1</diffuse></material>
+      </visual>
+      <visual name="visual_feature_north_wall_01"><pose>-5.30 6.58 4.10 0 0 0</pose><geometry><box><size>0.90 0.10 1.30</size></box></geometry><material><ambient>0.72 0.14 0.08 1</ambient><diffuse>0.92 0.22 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_north_wall_02"><pose>-2.70 6.58 8.30 0 0 0</pose><geometry><box><size>1.20 0.10 0.75</size></box></geometry><material><ambient>0.08 0.30 0.68 1</ambient><diffuse>0.10 0.44 0.90 1</diffuse></material></visual>
+      <visual name="visual_feature_north_wall_03"><pose>0.10 6.58 5.20 0 0 0</pose><geometry><box><size>0.70 0.10 1.55</size></box></geometry><material><ambient>0.78 0.66 0.08 1</ambient><diffuse>0.94 0.82 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_north_wall_04"><pose>3.10 6.58 9.10 0 0 0</pose><geometry><box><size>1.10 0.10 1.00</size></box></geometry><material><ambient>0.12 0.52 0.26 1</ambient><diffuse>0.16 0.72 0.36 1</diffuse></material></visual>
+      <visual name="visual_feature_north_wall_05"><pose>5.60 6.58 6.00 0 0 0</pose><geometry><box><size>0.75 0.10 1.35</size></box></geometry><material><ambient>0.62 0.10 0.56 1</ambient><diffuse>0.82 0.16 0.74 1</diffuse></material></visual>
+
+      <collision name="south_background_facade">
+        <pose>0 -6.80 5.50 0 0 0</pose>
+        <geometry><box><size>14.00 0.40 11.00</size></box></geometry>
+      </collision>
+      <visual name="south_background_facade_visual">
+        <pose>0 -6.80 5.50 0 0 0</pose>
+        <geometry><box><size>14.00 0.40 11.00</size></box></geometry>
+        <material><ambient>0.34 0.31 0.26 1</ambient><diffuse>0.48 0.43 0.36 1</diffuse></material>
+      </visual>
+      <visual name="visual_feature_south_wall_01"><pose>-5.20 -6.58 7.10 0 0 0</pose><geometry><box><size>0.85 0.10 1.25</size></box></geometry><material><ambient>0.72 0.14 0.08 1</ambient><diffuse>0.92 0.22 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_south_wall_02"><pose>-2.30 -6.58 4.00 0 0 0</pose><geometry><box><size>1.20 0.10 0.80</size></box></geometry><material><ambient>0.08 0.30 0.68 1</ambient><diffuse>0.10 0.44 0.90 1</diffuse></material></visual>
+      <visual name="visual_feature_south_wall_03"><pose>0.80 -6.58 8.50 0 0 0</pose><geometry><box><size>0.70 0.10 1.60</size></box></geometry><material><ambient>0.78 0.66 0.08 1</ambient><diffuse>0.94 0.82 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_south_wall_04"><pose>3.70 -6.58 5.00 0 0 0</pose><geometry><box><size>1.10 0.10 1.00</size></box></geometry><material><ambient>0.12 0.52 0.26 1</ambient><diffuse>0.16 0.72 0.36 1</diffuse></material></visual>
+      <visual name="visual_feature_south_wall_05"><pose>6.00 -6.58 9.00 0 0 0</pose><geometry><box><size>0.80 0.10 1.30</size></box></geometry><material><ambient>0.62 0.10 0.56 1</ambient><diffuse>0.82 0.16 0.74 1</diffuse></material></visual>
+
+      <visual name="visual_feature_south_arch_01"><pose>0.60 -4.86 7.52 0 0 0</pose><geometry><box><size>0.80 0.10 0.35</size></box></geometry><material><ambient>0.78 0.66 0.08 1</ambient><diffuse>0.94 0.82 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_south_arch_02"><pose>2.70 -4.86 7.52 0 0 0</pose><geometry><box><size>1.10 0.10 0.50</size></box></geometry><material><ambient>0.08 0.34 0.70 1</ambient><diffuse>0.10 0.48 0.92 1</diffuse></material></visual>
+      <visual name="visual_feature_south_arch_03"><pose>5.00 -4.86 7.52 0 0 0</pose><geometry><box><size>0.70 0.10 0.65</size></box></geometry><material><ambient>0.72 0.14 0.10 1</ambient><diffuse>0.92 0.22 0.14 1</diffuse></material></visual>
+
+      <!-- Protruding portal relief and non-repeating panels add real rendered
+           depth/color corners to otherwise uniform facades. They are visual
+           geometry only, so they do not add collision load or narrow the
+           protected flight corridor. -->
+      <visual name="visual_feature_east_arcade_left">
+        <pose>6.91 -3.48 3.20 0 0 0.08</pose>
+        <geometry><box><size>0.10 0.52 6.40</size></box></geometry>
+        <material><ambient>0.15 0.17 0.18 1</ambient><diffuse>0.24 0.27 0.29 1</diffuse></material>
+      </visual>
+      <visual name="visual_feature_east_arcade_right">
+        <pose>6.91 -0.82 3.20 0 0 0.08</pose>
+        <geometry><box><size>0.10 0.52 6.40</size></box></geometry>
+        <material><ambient>0.15 0.17 0.18 1</ambient><diffuse>0.24 0.27 0.29 1</diffuse></material>
+      </visual>
+      <visual name="visual_feature_east_arcade_header">
+        <pose>6.91 -2.15 6.15 0 0 0.08</pose>
+        <geometry><box><size>0.10 3.18 0.52</size></box></geometry>
+        <material><ambient>0.12 0.14 0.16 1</ambient><diffuse>0.20 0.24 0.27 1</diffuse></material>
+      </visual>
+
+      <visual name="visual_feature_south_panel_01"><pose>6.90 -4.25 2.10 0 0 0.08</pose><geometry><box><size>0.12 0.62 0.82</size></box></geometry><material><ambient>0.72 0.12 0.08 1</ambient><diffuse>0.92 0.20 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_south_panel_02"><pose>6.90 -4.05 4.85 0 0 0.08</pose><geometry><box><size>0.12 0.78 1.05</size></box></geometry><material><ambient>0.08 0.22 0.62 1</ambient><diffuse>0.10 0.34 0.86 1</diffuse></material></visual>
+      <visual name="visual_feature_south_panel_03"><pose>6.90 -2.80 2.35 0 0 0.08</pose><geometry><box><size>0.12 0.55 1.20</size></box></geometry><material><ambient>0.82 0.68 0.06 1</ambient><diffuse>0.96 0.82 0.10 1</diffuse></material></visual>
+      <visual name="visual_feature_south_panel_04"><pose>6.90 -1.95 4.55 0 0 0.08</pose><geometry><box><size>0.12 0.92 0.62</size></box></geometry><material><ambient>0.08 0.52 0.24 1</ambient><diffuse>0.10 0.74 0.32 1</diffuse></material></visual>
+      <visual name="visual_feature_south_panel_05"><pose>6.90 -0.20 3.65 0 0 0.08</pose><geometry><box><size>0.12 0.68 1.32</size></box></geometry><material><ambient>0.62 0.10 0.56 1</ambient><diffuse>0.82 0.16 0.74 1</diffuse></material></visual>
+
+      <visual name="visual_feature_canyon_panel_01"><pose>-1.34 2.25 2.35 0 0 -0.05</pose><geometry><box><size>0.10 0.58 1.05</size></box></geometry><material><ambient>0.78 0.72 0.10 1</ambient><diffuse>0.94 0.86 0.14 1</diffuse></material></visual>
+      <visual name="visual_feature_canyon_panel_02"><pose>-1.34 2.85 5.25 0 0 -0.05</pose><geometry><box><size>0.10 0.72 0.78</size></box></geometry><material><ambient>0.08 0.34 0.70 1</ambient><diffuse>0.10 0.46 0.92 1</diffuse></material></visual>
+      <visual name="visual_feature_canyon_panel_03"><pose>-1.34 3.55 3.75 0 0 -0.05</pose><geometry><box><size>0.10 0.48 1.34</size></box></geometry><material><ambient>0.72 0.16 0.10 1</ambient><diffuse>0.90 0.24 0.14 1</diffuse></material></visual>
+      <visual name="visual_feature_canyon_panel_04"><pose>-1.34 4.05 5.90 0 0 -0.05</pose><geometry><box><size>0.10 0.82 0.58</size></box></geometry><material><ambient>0.12 0.56 0.28 1</ambient><diffuse>0.16 0.76 0.38 1</diffuse></material></visual>
+
+      <visual name="visual_feature_north_panel_01"><pose>5.33 1.00 3.10 0 0 -0.04</pose><geometry><box><size>0.10 0.72 1.05</size></box></geometry><material><ambient>0.12 0.22 0.64 1</ambient><diffuse>0.16 0.34 0.88 1</diffuse></material></visual>
+      <visual name="visual_feature_north_panel_02"><pose>5.33 2.20 5.50 0 0 -0.04</pose><geometry><box><size>0.10 0.58 0.82</size></box></geometry><material><ambient>0.72 0.14 0.10 1</ambient><diffuse>0.92 0.22 0.14 1</diffuse></material></visual>
+      <visual name="visual_feature_north_panel_03"><pose>5.33 3.55 2.55 0 0 -0.04</pose><geometry><box><size>0.10 0.88 1.24</size></box></geometry><material><ambient>0.74 0.64 0.08 1</ambient><diffuse>0.94 0.80 0.12 1</diffuse></material></visual>
+      <visual name="visual_feature_north_panel_04"><pose>5.33 4.75 5.05 0 0 -0.04</pose><geometry><box><size>0.10 0.64 1.10</size></box></geometry><material><ambient>0.10 0.52 0.30 1</ambient><diffuse>0.14 0.72 0.40 1</diffuse></material></visual>
+      <visual name="visual_feature_north_panel_05"><pose>5.33 5.65 3.60 0 0 -0.04</pose><geometry><box><size>0.10 0.50 0.72</size></box></geometry><material><ambient>0.60 0.10 0.54 1</ambient><diffuse>0.82 0.16 0.72 1</diffuse></material></visual>
     </link>
   </model>
 </sdf>

@@ -11,7 +11,8 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
-from rclpy.executors import ExternalShutdownException
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
@@ -106,6 +107,12 @@ class LioAdapter(Node):
         self.diagnostics_period_ns = int(
             float(self.get_parameter("diagnostics_period_s").value) * 1e9
         )
+        # Native point-to-plane statistics are the scheduler's authoritative
+        # LiDAR health input. Keep them independent from the legacy temporal
+        # cloud/map callback, whose Python geometry pass can take longer than
+        # one score timeout under a loaded simulator.
+        self.native_diagnostic_group = MutuallyExclusiveCallbackGroup()
+        self.registered_cloud_group = MutuallyExclusiveCallbackGroup()
 
         self.odom_pub = self.create_publisher(Odometry, str(self.get_parameter("odom_output_topic").value), 20)
         self.path_pub = self.create_publisher(Path, str(self.get_parameter("path_output_topic").value), 10)
@@ -141,6 +148,7 @@ class LioAdapter(Node):
             str(self.get_parameter("registered_cloud_topic").value),
             self._registered,
             qos_profile_sensor_data,
+            callback_group=self.registered_cloud_group,
         )
         self.create_subscription(
             PointCloud2,
@@ -160,6 +168,7 @@ class LioAdapter(Node):
                 native_factor_topic,
                 self._native_factor,
                 qos_profile_sensor_data,
+                callback_group=self.native_diagnostic_group,
             )
             self.get_logger().info(
                 f"preferring native FAST-LIO diagnostics from {native_factor_topic}"
@@ -310,11 +319,15 @@ class LioAdapter(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = LioAdapter()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.remove_node(node)
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

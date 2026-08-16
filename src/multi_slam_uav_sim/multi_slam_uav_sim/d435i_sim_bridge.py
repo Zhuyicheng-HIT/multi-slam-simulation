@@ -34,13 +34,15 @@ class D435iSimBridge(Node):
         self.declare_parameter("publish_pointcloud", False)
         self.declare_parameter("pointcloud_hz", 10.0)
         self.declare_parameter("pointcloud_stride", 4)
-        self.declare_parameter("max_depth_m", 10.0)
+        self.declare_parameter("min_depth_m", 0.3)
+        self.declare_parameter("max_depth_m", 6.0)
         self.gz_prefix = str(self.get_parameter("gz_prefix").value).rstrip("/")
         self.ros_prefix = str(self.get_parameter("ros_prefix").value).rstrip("/")
         self.publish_hz = float(self.get_parameter("publish_hz").value)
         self.publish_pointcloud = bool(self.get_parameter("publish_pointcloud").value)
         self.pointcloud_interval = 1.0 / max(float(self.get_parameter("pointcloud_hz").value), 0.1)
         self.pointcloud_stride = max(int(self.get_parameter("pointcloud_stride").value), 1)
+        self.min_depth_m = float(self.get_parameter("min_depth_m").value)
         self.max_depth_m = float(self.get_parameter("max_depth_m").value)
 
         self.color_frame = "front_d435i_color_optical_frame"
@@ -130,7 +132,11 @@ class D435iSimBridge(Node):
             depth_m = raw.astype(np.float32) * 0.001
         else:
             raise ValueError(f"unsupported depth step {msg.step} for width {width}")
-        valid = np.isfinite(depth_m) & (depth_m >= 0.105) & (depth_m <= self.max_depth_m)
+        valid = (
+            np.isfinite(depth_m)
+            & (depth_m >= self.min_depth_m)
+            & (depth_m <= self.max_depth_m)
+        )
         depth_mm = np.zeros(depth_m.shape, dtype=np.uint16)
         depth_mm[valid] = np.rint(depth_m[valid] * 1000.0).astype(np.uint16)
         out = Image()

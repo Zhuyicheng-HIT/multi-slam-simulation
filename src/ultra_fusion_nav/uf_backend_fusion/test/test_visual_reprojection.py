@@ -7,6 +7,7 @@ from uf_backend_fusion.manifold_window import ManifoldSlidingWindowBackend
 from uf_backend_fusion.visual_reprojection import (
     VisualTrackBatch,
     validate_visual_linearization,
+    visual_pose_observability,
     visual_reprojection_residual,
     visual_reprojection_residual_jacobians,
 )
@@ -100,6 +101,65 @@ class VisualReprojectionTest(unittest.TestCase):
             backend._factor_cost(factor, backend._states), normal_cost, places=12
         )
 
+    def test_cpp_visual_normal_matches_python_with_extrinsic_and_huber(self):
+        angle = 0.18
+        rotation_body_camera = np.asarray([
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        translation_body_camera = np.asarray([0.08, -0.03, 0.04])
+        seed = VisualTrackBatch(
+            self.tracks.anchor_normalized,
+            self.tracks.anchor_normalized,
+            self.tracks.inverse_depth,
+            self.tracks.variance,
+            rotation_body_camera,
+            translation_body_camera,
+        )
+        prediction, _, _, valid = visual_reprojection_residual_jacobians(
+            self.anchor, self.current, seed
+        )
+        self.assertEqual(valid.size, seed.track_count)
+        tracks = VisualTrackBatch(
+            seed.anchor_normalized,
+            seed.current_normalized + prediction.reshape(-1, 2),
+            seed.inverse_depth,
+            seed.variance,
+            rotation_body_camera,
+            translation_body_camera,
+        )
+        wrong = self.current.copy()
+        wrong[1] += 0.08
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        previous = backend.add_state(self.anchor)
+        current = backend.add_state(wrong)
+        backend.add_visual_reprojection(previous, current, tracks)
+        factor = backend._factors[-1]
+
+        backend.cpp_math_core_enabled = False
+        python_hessian, python_gradient, python_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        python_candidate_cost = backend._factor_cost(factor, backend._states)
+
+        backend.cpp_math_core_enabled = True
+        cpp_hessian, cpp_gradient, cpp_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        cpp_candidate_cost = backend._factor_cost(factor, backend._states)
+
+        np.testing.assert_allclose(
+            cpp_hessian, python_hessian, atol=1.0e-9, rtol=1.0e-9
+        )
+        np.testing.assert_allclose(
+            cpp_gradient, python_gradient, atol=1.0e-9, rtol=1.0e-9
+        )
+        self.assertAlmostEqual(cpp_cost, python_cost, places=10)
+        self.assertAlmostEqual(
+            cpp_candidate_cost, python_candidate_cost, places=10
+        )
+
     def test_invalid_depth_and_covariance_are_rejected(self):
         with self.assertRaises(ValueError):
             VisualTrackBatch([[0.0, 0.0]], [[0.0, 0.0]], [0.0], 1.0)
@@ -113,6 +173,8 @@ class VisualReprojectionTest(unittest.TestCase):
         self.assertTrue(check.valid, check.reason)
         self.assertEqual(check.valid_track_count, len(self.tracks.inverse_depth))
         self.assertGreaterEqual(check.jacobian_rank, 3)
+        self.assertTrue(np.isfinite(check.jacobian_condition_number))
+        self.assertGreater(check.information_trace, 0.0)
         self.assertLess(check.reprojection_rmse_px, 1.0e-8)
 
     def test_linearization_check_rejects_cross_modal_innovation(self):
@@ -129,6 +191,26 @@ class VisualReprojectionTest(unittest.TestCase):
         self.assertFalse(check.valid)
         self.assertEqual(check.reason, "state_innovation_reprojection_rmse")
         self.assertGreater(check.reprojection_rmse_px, 6.0)
+
+    def test_pose_observability_rejects_rank_deficient_rgbd_geometry(self):
+        varied = np.asarray([
+            [x, y, 1.5 + 0.4 * ((column + row) % 4)]
+            for column, x in enumerate(np.linspace(-1.0, 1.0, 8))
+            for row, y in enumerate(np.linspace(-0.7, 0.7, 6))
+        ])
+        line = np.asarray([
+            [x, 0.0, 2.0] for x in np.linspace(-1.0, 1.0, 48)
+        ])
+        rank, condition = visual_pose_observability(
+            varied, np.eye(3), np.zeros(3)
+        )
+        self.assertEqual(rank, 6)
+        self.assertLess(condition, 500.0)
+        rank, condition = visual_pose_observability(
+            line, np.eye(3), np.zeros(3)
+        )
+        self.assertLess(rank, 6)
+        self.assertTrue(np.isinf(condition))
 
 
 if __name__ == "__main__":

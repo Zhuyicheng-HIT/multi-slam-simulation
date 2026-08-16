@@ -36,6 +36,8 @@ FASTLIO_BACKEND_TRAJECTORY_TOPIC=${FASTLIO_BACKEND_TRAJECTORY_TOPIC:-/fusion/uni
 FASTLIO_FRONTEND_SCAN_REQUEST_TOPIC=${FASTLIO_FRONTEND_SCAN_REQUEST_TOPIC:-/fast_lio/frontend_scan_request}
 FASTLIO_FRONTEND_SCAN_REQUEST_RETRY_S=${FASTLIO_FRONTEND_SCAN_REQUEST_RETRY_S:-0.20}
 FASTLIO_FRONTEND_SCAN_REQUEST_TIMEOUT_S=${FASTLIO_FRONTEND_SCAN_REQUEST_TIMEOUT_S:-2.0}
+START_FASTLIO_CLOUD_MAPPER=${START_FASTLIO_CLOUD_MAPPER:-1}
+START_FASTLIO_OCCUPANCY_GRID=${START_FASTLIO_OCCUPANCY_GRID:-1}
 FASTLIO_NATIVE_FACTOR_EXPORT_BOOL=false
 case "$FASTLIO_NATIVE_FACTOR_EXPORT" in
   1|true|TRUE|yes|YES) FASTLIO_NATIVE_FACTOR_EXPORT_BOOL=true ;;
@@ -61,6 +63,8 @@ FASTLIO_DIAGNOSTIC_ODOMETRY_BOOL=$(parse_bool "$FASTLIO_DIAGNOSTIC_ODOMETRY")
 FASTLIO_DIAGNOSTIC_PATH_BOOL=$(parse_bool "$FASTLIO_DIAGNOSTIC_PATH")
 FASTLIO_DIAGNOSTIC_TF_BOOL=$(parse_bool "$FASTLIO_DIAGNOSTIC_TF")
 FASTLIO_BACKEND_TRAJECTORY_FRONTEND_BOOL=$(parse_bool "$FASTLIO_BACKEND_TRAJECTORY_FRONTEND")
+START_FASTLIO_CLOUD_MAPPER_BOOL=$(parse_bool "$START_FASTLIO_CLOUD_MAPPER")
+START_FASTLIO_OCCUPANCY_GRID_BOOL=$(parse_bool "$START_FASTLIO_OCCUPANCY_GRID")
 case "$FASTLIO_MAP_INSERTION_MODE" in
   fast_lio_posterior|backend_confirmed) ;;
   *)
@@ -122,10 +126,9 @@ LIVOX_INPUT_MISSED_CHECKS=${LIVOX_INPUT_MISSED_CHECKS:-5}
 topic_publisher_count() {
   local topic=$1
   local info count
-  # Reuse the active graph daemon. A fresh --no-daemon process can complete
-  # its short discovery window before the Gazebo bridge endpoints appear,
-  # causing a false zero-publisher result and a 20 s bootstrap stall/failure.
-  info=$(timeout 5s ros2 topic info "$topic" 2>/dev/null || true)
+  # Query DDS directly.  After changing RMW implementations the ROS graph
+  # daemon can retain a stale graph and report zero publishers indefinitely.
+  info=$(timeout 5s ros2 topic info "$topic" --no-daemon 2>/dev/null || true)
   count=$(sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' <<<"$info")
   printf '%s' "${count:-0}"
 }
@@ -201,6 +204,8 @@ Outputs:
   frontend state seed: mode=$FASTLIO_STATE_SEED_MODE topic=$FASTLIO_STATE_SEED_TOPIC
   backend trajectory frontend: $FASTLIO_BACKEND_TRAJECTORY_FRONTEND
   diagnostic pose outputs: odom=$FASTLIO_DIAGNOSTIC_ODOMETRY path=$FASTLIO_DIAGNOSTIC_PATH tf=$FASTLIO_DIAGNOSTIC_TF
+  display-only cloud mapper: $START_FASTLIO_CLOUD_MAPPER_BOOL
+  display-only occupancy grid: $START_FASTLIO_OCCUPANCY_GRID_BOOL
 
 EOF
 
@@ -303,44 +308,40 @@ setsid ros2 launch fast_lio mapping.launch.py \
 fastlio_pid="$!"
 pids+=("$fastlio_pid")
 
-monitor_livox_ownership() {
-  local ownership_misses=0
-  while kill -0 "$fastlio_pid" 2>/dev/null; do
-    local lidar_count imu_count
-    lidar_count=$(topic_publisher_count /livox/lidar)
-    imu_count=$(topic_publisher_count /livox/imu)
-    if (( lidar_count != 1 || imu_count != 1 )); then
-      ownership_misses=$((ownership_misses + 1))
-      printf 'FAST-LIO input ownership check %s/%s: /livox/lidar publishers=%s, /livox/imu publishers=%s.\n' \
-        "$ownership_misses" "$LIVOX_INPUT_MISSED_CHECKS" "$lidar_count" "$imu_count" \
-        >>"$LOG_DIR/livox_mid360_bridge.log"
-      if (( ownership_misses >= LIVOX_INPUT_MISSED_CHECKS )); then
-        printf 'FAST-LIO input ownership lost continuously: expected exactly one publisher for each topic.\n' \
-          | tee -a "$LOG_DIR/livox_mid360_bridge.log" >&2
-        kill -TERM "$fastlio_pid" 2>/dev/null || true
-        return 3
-      fi
-    else
-      ownership_misses=0
-    fi
-    sleep "$LIVOX_INPUT_CHECK_PERIOD_S"
-  done
-}
-monitor_livox_ownership &
+setsid ros2 run multi_slam_uav_sim topic_ownership_guard \
+  --topic /livox/lidar \
+  --topic /livox/imu \
+  --expected-publishers 1 \
+  --startup-grace-s 10.0 \
+  --check-period-s "$LIVOX_INPUT_CHECK_PERIOD_S" \
+  --missing-limit "$LIVOX_INPUT_MISSED_CHECKS" \
+  --duplicate-limit 2 \
+  --terminate-pgid "$fastlio_pid" \
+  >>"$LOG_DIR/livox_mid360_bridge.log" 2>&1 &
 pids+=("$!")
 
 sleep 3
 
-setsid ros2 run mid360_reliable_mapper fastlio_cloud_mapper_node --ros-args \
-  -p use_sim_time:="$USE_SIM_TIME" \
-  --params-file "$PKG_SHARE/config/sim_fastlio_reliable_mapping_params.yaml" \
-  >"$LOG_DIR/fastlio_cloud_mapper.log" 2>&1 &
-pids+=("$!")
+if [[ "$START_FASTLIO_CLOUD_MAPPER_BOOL" == "true" ]]; then
+  setsid ros2 run mid360_reliable_mapper fastlio_cloud_mapper_node --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
+    --params-file "$PKG_SHARE/config/sim_fastlio_reliable_mapping_params.yaml" \
+    >"$LOG_DIR/fastlio_cloud_mapper.log" 2>&1 &
+  pids+=("$!")
+else
+  printf 'FAST-LIO display-only cloud mapper disabled.\n' \
+    >"$LOG_DIR/fastlio_cloud_mapper.log"
+fi
 
-setsid ros2 run mid360_reliable_mapper pointcloud_occupancy_grid_node --ros-args \
-  -p use_sim_time:="$USE_SIM_TIME" \
-  --params-file "$PKG_SHARE/config/sim_fastlio_reliable_mapping_params.yaml" \
-  >"$LOG_DIR/fastlio_occupancy_grid.log" 2>&1 &
-pids+=("$!")
+if [[ "$START_FASTLIO_OCCUPANCY_GRID_BOOL" == "true" ]]; then
+  setsid ros2 run mid360_reliable_mapper pointcloud_occupancy_grid_node --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
+    --params-file "$PKG_SHARE/config/sim_fastlio_reliable_mapping_params.yaml" \
+    >"$LOG_DIR/fastlio_occupancy_grid.log" 2>&1 &
+  pids+=("$!")
+else
+  printf 'FAST-LIO display-only occupancy grid disabled.\n' \
+    >"$LOG_DIR/fastlio_occupancy_grid.log"
+fi
 
 wait

@@ -34,6 +34,21 @@ def capability_support_allowed(support, required, minimum_support):
     return all(float(support.get(name, 0.0)) >= minimum_support for name in required)
 
 
+def capability_covariance_scale(
+    estimator_support, minimum_support, maximum_scale, enabled=True
+):
+    """Inflate uncertainty without turning capability loss into an outage."""
+    if not enabled:
+        return 1.0
+    support = float(estimator_support)
+    if not math.isfinite(support):
+        support = 0.0
+    return min(
+        max(1.0, float(maximum_scale)),
+        1.0 / max(float(minimum_support), support),
+    )
+
+
 def fusion_epoch_advances(applied, candidate_counter, current_counter):
     return bool(applied) and int(candidate_counter) > int(current_counter)
 
@@ -43,6 +58,7 @@ def odometry_state_guard_reason(
     previous_message=None,
     maximum_position_variance_m2=25.0,
     maximum_orientation_variance_rad2=1.0,
+    stop_on_excessive_covariance=True,
     maximum_position_step_m=1.0,
     maximum_linear_speed_mps=10.0,
     maximum_orientation_step_rad=0.5,
@@ -53,10 +69,11 @@ def odometry_state_guard_reason(
         float(message.pose.covariance[index])
         for index in (0, 7, 14, 21, 28, 35)
     ]
-    if max(pose_diagonal[:3]) > float(maximum_position_variance_m2):
-        return "position_covariance_exceeds_limit"
-    if max(pose_diagonal[3:]) > float(maximum_orientation_variance_rad2):
-        return "orientation_covariance_exceeds_limit"
+    if stop_on_excessive_covariance:
+        if max(pose_diagonal[:3]) > float(maximum_position_variance_m2):
+            return "position_covariance_exceeds_limit"
+        if max(pose_diagonal[3:]) > float(maximum_orientation_variance_rad2):
+            return "orientation_covariance_exceeds_limit"
     if previous_message is None:
         return "ok"
 
@@ -223,6 +240,7 @@ class ExternalNavGate(Node):
         self.declare_parameter("maximum_covariance_scale", 5.0)
         self.declare_parameter("maximum_position_variance_m2", 25.0)
         self.declare_parameter("maximum_orientation_variance_rad2", 1.0)
+        self.declare_parameter("stop_on_excessive_covariance", True)
         self.declare_parameter("maximum_position_step_m", 1.0)
         self.declare_parameter("maximum_linear_speed_mps", 10.0)
         self.declare_parameter("maximum_orientation_step_rad", 0.5)
@@ -234,6 +252,9 @@ class ExternalNavGate(Node):
         self.declare_parameter("scheduler_timeout_s", 0.5)
         self.declare_parameter("allowed_scheduler_states", ["NORMAL", "RECOVERED"])
         self.declare_parameter("require_capability_support", False)
+        self.declare_parameter(
+            "inflate_covariance_from_estimator_support", False
+        )
         self.declare_parameter("required_capabilities", [""])
         self.declare_parameter("minimum_capability_support", 0.15)
 
@@ -259,6 +280,9 @@ class ExternalNavGate(Node):
         )
         self.maximum_orientation_variance = float(
             self.get_parameter("maximum_orientation_variance_rad2").value
+        )
+        self.stop_on_excessive_covariance = bool(
+            self.get_parameter("stop_on_excessive_covariance").value
         )
         self.maximum_position_step = float(
             self.get_parameter("maximum_position_step_m").value
@@ -287,6 +311,11 @@ class ExternalNavGate(Node):
         self.require_capability_support = bool(
             self.get_parameter("require_capability_support").value
         )
+        self.inflate_covariance_from_estimator_support = bool(
+            self.get_parameter(
+                "inflate_covariance_from_estimator_support"
+            ).value
+        )
         self.required_capabilities = tuple(
             str(name).strip()
             for name in self.get_parameter("required_capabilities").value
@@ -302,6 +331,7 @@ class ExternalNavGate(Node):
         self.accepted_inputs = 0
         self.rejected_inputs = 0
         self.rejection_reasons = Counter()
+        self.degraded_covariance_inputs = 0
         self.published = 0
         self.latest_source = None
         self.last_arrival = None
@@ -339,7 +369,11 @@ class ExternalNavGate(Node):
             self._fusion_epoch,
             self.fusion_epoch_qos,
         )
-        if self.require_scheduler_health or self.require_capability_support:
+        if (
+            self.require_scheduler_health
+            or self.require_capability_support
+            or self.inflate_covariance_from_estimator_support
+        ):
             self.create_subscription(
                 SchedulerState,
                 str(self.get_parameter("scheduler_topic").value),
@@ -463,6 +497,7 @@ class ExternalNavGate(Node):
             self.latest_source,
             self.maximum_position_variance,
             self.maximum_orientation_variance,
+            self.stop_on_excessive_covariance,
             self.maximum_position_step,
             self.maximum_linear_speed,
             self.maximum_orientation_step,
@@ -476,6 +511,15 @@ class ExternalNavGate(Node):
         self.arrivals.append(now)
         reason = self._validate_input(msg)
         if reason == "ok":
+            pose_diagonal = [
+                float(msg.pose.covariance[index])
+                for index in (0, 7, 14, 21, 28, 35)
+            ]
+            if (
+                max(pose_diagonal[:3]) > self.maximum_position_variance
+                or max(pose_diagonal[3:]) > self.maximum_orientation_variance
+            ):
+                self.degraded_covariance_inputs += 1
             self.latest_source = copy.deepcopy(msg)
             quaternion = self.latest_source.pose.pose.orientation
             normalized = _normalize_quaternion(
@@ -511,10 +555,12 @@ class ExternalNavGate(Node):
         ):
             self.last_reason = "fusion_source_stale"
             return
-        covariance_scale = min(
+        covariance_scale = capability_covariance_scale(
+            self.last_estimator_support,
+            self.minimum_capability_support,
             self.maximum_covariance_scale,
-            1.0 / max(self.minimum_capability_support, self.last_estimator_support),
-        ) if self.require_capability_support else 1.0
+            self.inflate_covariance_from_estimator_support,
+        )
         output = propagate_odometry(
             self.latest_source,
             now_ros_s,
@@ -573,6 +619,10 @@ class ExternalNavGate(Node):
             self._value("accepted_inputs", self.accepted_inputs),
             self._value("rejected_inputs", self.rejected_inputs),
             self._value(
+                "degraded_covariance_inputs",
+                self.degraded_covariance_inputs,
+            ),
+            self._value(
                 "rejection_reasons",
                 ",".join(
                     f"{name}:{count}"
@@ -628,6 +678,10 @@ def main(args=None):
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        # launch may invalidate the shared context before this executor wakes.
+        if rclpy.ok():
+            raise
     finally:
         node.destroy_node()
         if rclpy.ok():

@@ -37,11 +37,18 @@ def load_backend(source_root):
     }
 
 
-def build_graph(api, state_count=8, lidar_points=256):
+def build_graph(
+    api,
+    state_count=8,
+    lidar_points=256,
+    visual_tracks=48,
+    cpp_math_core_enabled=True,
+):
     backend = api["Backend"](
         max_states=state_count,
         max_iterations=2,
         lm_max_trials=4,
+        cpp_math_core_enabled=cpp_math_core_enabled,
     )
     states = []
     for index in range(state_count):
@@ -67,8 +74,10 @@ def build_graph(api, state_count=8, lidar_points=256):
     normals = rng.normal(size=(lidar_points, 3))
     normals /= np.linalg.norm(normals, axis=1, keepdims=True)
 
-    anchors = rng.uniform([-0.35, -0.25], [0.35, 0.25], size=(48, 2))
-    inverse_depth = 1.0 / rng.uniform(1.5, 5.0, size=48)
+    anchors = rng.uniform(
+        [-0.35, -0.25], [0.35, 0.25], size=(visual_tracks, 2)
+    )
+    inverse_depth = 1.0 / rng.uniform(1.5, 5.0, size=visual_tracks)
     for index in range(1, state_count):
         backend.add_imu_preintegrated(index - 1, index, imu)
         backend.add_gnss(
@@ -136,15 +145,37 @@ def main():
     parser.add_argument("--linearizations", type=int, default=30)
     parser.add_argument("--cost-evaluations", type=int, default=100)
     parser.add_argument("--optimizations", type=int, default=5)
+    parser.add_argument("--states", type=int, default=8)
+    parser.add_argument("--lidar-points", type=int, default=256)
+    parser.add_argument("--visual-tracks", type=int, default=48)
+    parser.add_argument(
+        "--cpp-math-core", choices=("on", "off"), default="on"
+    )
     args = parser.parse_args()
 
     api = load_backend(args.source_root)
-    backend = build_graph(api)
+    cpp_enabled = args.cpp_math_core == "on"
+    build = lambda: build_graph(
+        api,
+        state_count=args.states,
+        lidar_points=args.lidar_points,
+        visual_tracks=args.visual_tracks,
+        cpp_math_core_enabled=cpp_enabled,
+    )
+    backend = build()
+    if cpp_enabled and not backend.cpp_math_core_enabled:
+        raise RuntimeError(
+            "C++ math core was requested but the extension is unavailable"
+        )
     backend._normal()
     result = {
         "source_root": str(Path(args.source_root).resolve()),
+        "cpp_math_core_requested": cpp_enabled,
+        "cpp_math_core_active": backend.cpp_math_core_enabled,
         "states": backend.state_count,
         "factors": backend.factor_count,
+        "lidar_points_per_factor": args.lidar_points,
+        "visual_tracks_per_factor": args.visual_tracks,
         "linearization_mean_ms": elapsed_ms(
             backend._normal, args.linearizations
         ),
@@ -152,7 +183,7 @@ def main():
             backend._cost, args.cost_evaluations
         ) if hasattr(backend, "_cost") else None,
         "optimization_mean_ms": elapsed_ms(
-            lambda: build_graph(api).optimize(), args.optimizations
+            lambda: build().optimize(), args.optimizations
         ),
     }
     print(json.dumps(result, indent=2, sort_keys=True))

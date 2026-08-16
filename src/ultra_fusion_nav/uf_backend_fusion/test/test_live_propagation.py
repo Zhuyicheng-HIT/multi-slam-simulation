@@ -9,6 +9,7 @@ from uf_backend_fusion.imu_preintegration import (
     preintegrate_manifold,
 )
 from uf_backend_fusion.live_propagation import (
+    auxiliary_keyframe_admission,
     backend_process_covariance,
     backend_state_transition,
     live_propagation_admission,
@@ -41,6 +42,38 @@ def measurement_with_covariance(covariance):
 
 
 class LivePropagationTest(unittest.TestCase):
+    def test_auxiliary_keyframe_requires_native_outage_and_fresh_imu(self):
+        arguments = dict(
+            now_s=10.0,
+            latest_imu_stamp_s=9.98,
+            last_state_stamp_s=9.70,
+            latest_native_arrival_s=9.50,
+            lidar_silence_timeout_s=0.35,
+            minimum_state_interval_s=0.20,
+            maximum_imu_age_s=0.20,
+        )
+        self.assertEqual(
+            auxiliary_keyframe_admission(**arguments), (True, "ready")
+        )
+        self.assertEqual(
+            auxiliary_keyframe_admission(
+                **{**arguments, "latest_native_arrival_s": 9.80}
+            ),
+            (False, "lidar_recent"),
+        )
+        self.assertEqual(
+            auxiliary_keyframe_admission(
+                **{**arguments, "latest_imu_stamp_s": 9.75}
+            ),
+            (False, "imu_stale"),
+        )
+        self.assertEqual(
+            auxiliary_keyframe_admission(
+                **{**arguments, "last_state_stamp_s": 9.85}
+            ),
+            (False, "imu_not_advanced"),
+        )
+
     def test_admission_requires_lidar_silence_and_monotonic_output(self):
         arguments = dict(
             now_s=10.0,
@@ -50,6 +83,7 @@ class LivePropagationTest(unittest.TestCase):
             last_output_stamp_s=9.80,
             latest_lidar_activity_s=9.60,
             lidar_silence_timeout_s=0.25,
+            maximum_output_age_s=0.20,
             minimum_output_interval_s=0.08,
             maximum_imu_age_s=0.20,
         )
@@ -61,6 +95,16 @@ class LivePropagationTest(unittest.TestCase):
                 **{**arguments, "latest_lidar_activity_s": 9.90}
             ),
             (False, "lidar_recent"),
+        )
+        self.assertEqual(
+            live_propagation_admission(
+                **{
+                    **arguments,
+                    "last_output_stamp_s": 9.70,
+                    "latest_lidar_activity_s": 9.90,
+                }
+            ),
+            (True, "ready"),
         )
         self.assertEqual(
             live_propagation_admission(

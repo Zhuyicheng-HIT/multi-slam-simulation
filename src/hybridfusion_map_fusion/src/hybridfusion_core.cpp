@@ -1049,6 +1049,8 @@ void write_result_artifacts(
   }
 
   const auto xyz_rpy = transform_xyz_rpy(result.transform_lidar_to_visual);
+  Eigen::Quaterniond quaternion(result.transform_lidar_to_visual.rotation());
+  quaternion.normalize();
   std::ofstream transform_file(directory / "transform.yaml");
   transform_file << std::setprecision(12)
                  << "transform_lidar_to_visual:\n"
@@ -1057,6 +1059,16 @@ void write_result_artifacts(
                  << "  xyz_rpy_rad: [";
   for (std::size_t index = 0; index < xyz_rpy.size(); ++index) {
     transform_file << (index == 0 ? "" : ", ") << xyz_rpy[index];
+  }
+  transform_file << "]\n  quaternion_xyzw: ["
+                 << quaternion.x() << ", " << quaternion.y() << ", "
+                 << quaternion.z() << ", " << quaternion.w() << "]\n"
+                 << "  matrix_row_major: [";
+  for (int row = 0; row < 4; ++row) {
+    for (int column = 0; column < 4; ++column) {
+      transform_file << (row == 0 && column == 0 ? "" : ", ")
+                     << result.transform_lidar_to_visual.matrix()(row, column);
+    }
   }
   transform_file << "]\n  published_as_tf: false\n";
 
@@ -1105,7 +1117,12 @@ void write_result_artifacts(
   for (std::size_t index = 0; index < xyz_rpy.size(); ++index) {
     json << (index == 0 ? "" : ", ") << finite_json(xyz_rpy[index]);
   }
-  json << "]\n}\n";
+  json << "],\n"
+       << "  \"transform_lidar_to_visual_quaternion_xyzw\": ["
+       << finite_json(quaternion.x()) << ", "
+       << finite_json(quaternion.y()) << ", "
+       << finite_json(quaternion.z()) << ", "
+       << finite_json(quaternion.w()) << "]\n}\n";
 }
 
 }  // namespace hybridfusion_map_fusion

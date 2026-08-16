@@ -94,8 +94,8 @@ class SharedMappingNode(Node):
             "minimum_visual_reliability": 0.35,
             "pose_tolerance_s": 0.08,
             "depth_scale": 0.001,
-            "minimum_depth_m": 0.2,
-            "maximum_depth_m": 12.0,
+            "minimum_depth_m": 0.30,
+            "maximum_depth_m": 6.0,
             "rgbd_pixel_stride": 4,
             "publish_period_s": 2.0,
             "performance_profiling_enabled": False,
@@ -105,7 +105,7 @@ class SharedMappingNode(Node):
                 -1.0, 0.0, 0.0,
                 0.0, -1.0, 0.0,
             ],
-            "translation_body_camera_m": [0.30, 0.0, 0.02],
+            "translation_body_camera_m": [0.20, 0.0, 0.02],
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)

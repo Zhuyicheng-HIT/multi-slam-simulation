@@ -80,8 +80,8 @@ hybridfusion_rgbd_map_exporter:
     min_keyframe_translation_m: 0.20
     min_keyframe_rotation_deg: 7.5
     min_keyframe_period_s: 0.75
-    depth_min_m: 0.25
-    depth_max_m: 12.0
+    depth_min_m: 0.30
+    depth_max_m: 6.0
     pixel_stride: 3
     max_points_per_keyframe: 45000
     map_voxel_leaf_m: 0.06

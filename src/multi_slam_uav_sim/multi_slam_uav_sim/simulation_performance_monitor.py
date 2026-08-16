@@ -207,6 +207,13 @@ class TopicWindow:
         }
 
 
+def topic_rate_for_gate(topic_name, summary):
+    """Use simulated source time for intentional low-rate GNSS sampling."""
+    if topic_name == "gnss":
+        return float(summary["source_stamp_rate_hz"])
+    return float(summary["rate_hz"])
+
+
 BACKEND_TIMING_KEYS = frozenset({
     "backend_solve_ms",
     "backend_solve_mean_ms",
@@ -243,7 +250,9 @@ class SimulationPerformanceMonitor(Node):
         self.declare_parameter("output_path", "")
         self.declare_parameter("minimum_live_rtf", 0.80)
         self.declare_parameter("minimum_flow_rate_hz", 10.0)
-        self.declare_parameter("minimum_gnss_rate_hz", 4.0)
+        # The companion estimator intentionally receives realistic 2-3 Hz GNSS.
+        # ArduPilot/MAVROS retain their independent native stream rate.
+        self.declare_parameter("minimum_gnss_rate_hz", 2.0)
         self.declare_parameter("minimum_external_nav_rate_hz", 10.0)
         self.declare_parameter("flow_truth_assistance", False)
         self.declare_parameter("fusion_topic", "/fusion/gps_flow/odom")
@@ -603,8 +612,12 @@ class SimulationPerformanceMonitor(Node):
             real_delta = rtf_clock[-1][2] - rtf_clock[0][2]
             if sim_delta >= 0.0 and real_delta > 0.0:
                 rtf_median = sim_delta / real_delta
+        rate_gate_values = {
+            name: topic_rate_for_gate(name, topic_report[name])
+            for name in self.minimum_rates
+        }
         rates_ok = all(
-            topic_report[name]["rate_hz"] >= minimum
+            rate_gate_values[name] >= minimum
             for name, minimum in self.minimum_rates.items()
         )
         flow_ratio = topic_report["raw_flow"]["source_to_arrival_rate_ratio"]
@@ -698,6 +711,8 @@ class SimulationPerformanceMonitor(Node):
                 "flow_truth_assistance_enabled": self.flow_truth_assistance,
                 "minimum_live_rtf": self.minimum_live_rtf,
                 "minimum_rates_hz": self.minimum_rates,
+                "rate_gate_values_hz": rate_gate_values,
+                "gnss_rate_gate_clock": "message_header_sim_time",
                 "flow_source_arrival_ratio_valid": flow_source_rate_valid,
                 "flow_integration_arrival_ratio_valid": flow_integration_valid,
                 "algorithm_accuracy_still_requires_truth_ATE_RPE": True,
@@ -768,6 +783,11 @@ class SimulationPerformanceMonitor(Node):
                 report["optical_flow_timing"]["integration_to_arrival_ratio"]),
             self._value("gnss_rate_hz", f"{report['topics']['gnss']['rate_hz']:.3f}"),
             self._value(
+                "gnss_source_rate_hz",
+                f"{report['topics']['gnss']['source_stamp_rate_hz']:.3f}",
+            ),
+            self._value("gnss_rate_gate_clock", "message_header_sim_time"),
+            self._value(
                 "external_nav_rate_hz",
                 f"{report['topics']['external_nav']['rate_hz']:.3f}"),
         ]
@@ -780,7 +800,8 @@ class SimulationPerformanceMonitor(Node):
             f"rtf={report['simulation']['real_time_factor_median']:.3f} "
             f"cpu_p95={report['compute']['system_cpu_utilization_percent_p95']:.1f}% "
             f"flow={report['topics']['raw_flow']['rate_hz']:.2f}Hz "
-            f"gnss={report['topics']['gnss']['rate_hz']:.2f}Hz "
+            f"gnss_wall={report['topics']['gnss']['rate_hz']:.2f}Hz "
+            f"gnss_sim={report['topics']['gnss']['source_stamp_rate_hz']:.2f}Hz "
             f"external_nav={report['topics']['external_nav']['rate_hz']:.2f}Hz "
             f"wait_bottleneck={report['bottleneck_wait_stage_by_p95']} "
             f"compute_bottleneck={report['bottleneck_compute_stage_by_mean']} "

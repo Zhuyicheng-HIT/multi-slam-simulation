@@ -36,6 +36,15 @@ gnss_metadata_relay:
   ros__parameters:
     input_topic: /mavros/gpsstatus/gps1/raw
     output_topic: /sensors/gnss/raw
+    fix_input_topic: /sensors/gnss/fix_unthrottled
+    fix_output_topic: /sensors/gnss/fix
+    # Companion-estimator rate only. MAVROS and ArduPilot retain their native
+    # GPS stream rates for FCU navigation, arming and flight control.
+    output_rate_hz: 2.5
+    # Existing simulation bags show P99=26 ms and max=51 ms nearest fix/raw
+    # stamp separation. Raw metadata outside this window is omitted; the fix
+    # itself is never blocked.
+    association_tolerance_s: 0.06
 
 pointcloud_body_filter:
   ros__parameters:

@@ -1,7 +1,8 @@
 import unittest
 
 from uf_reliability.scoring import (
-    augment_lidar_score, gnss_integrity_quality, gnss_score, imu_score, lidar_score,
+    augment_lidar_score, gnss_integrity_quality, gnss_score,
+    imu_health_admission, imu_score, lidar_score,
     lidar_factor_score, lidar_innovation_score, lidar_map_score,
     apm_optical_flow_compensated_los, optical_flow_displacement_frd,
     optical_flow_lever_arm_displacement_flu,
@@ -118,6 +119,59 @@ class ScoringTest(unittest.TestCase):
     def test_imu_saturation_increases(self):
         self.assertLess(imu_score(1.0, 0.1, False)[0], 0.1)
         self.assertGreater(imu_score(0.0, 10.0, True)[0], 0.9)
+
+    def test_imu_health_admits_low_excitation_and_large_nis(self):
+        paper_result = imu_score(0.0, 50.0, False)
+        self.assertGreater(paper_result[0], 0.7)
+
+        score, evidence, reasons = imu_health_admission(paper_result)
+
+        self.assertEqual(score, 0.0)
+        self.assertEqual(evidence["imu_health_admission_score"], 0.0)
+        self.assertEqual(evidence["paper_score_eq21"], paper_result[0])
+        self.assertEqual(
+            evidence["imu_observability_degradation_diagnostic"], 1.0
+        )
+        self.assertEqual(
+            evidence["imu_factor_consistency_degradation_diagnostic"], 1.0
+        )
+        self.assertIn(
+            "diagnostic_only:low_excitation_observability_eq21", reasons
+        )
+        self.assertIn(
+            "diagnostic_only:large_preintegration_residual_eq21", reasons
+        )
+
+    def test_imu_health_rejects_saturation_and_invalid_data_path(self):
+        saturated = imu_health_admission(
+            imu_score(1.0, 0.1, True),
+        )
+        nonfinite = imu_health_admission(
+            imu_score(1.0, 0.1, False), sample_finite=False,
+        )
+        invalid_stream = imu_health_admission(
+            imu_score(1.0, 0.1, False),
+            stream_valid=False,
+            timestamp_valid=False,
+        )
+
+        self.assertEqual(saturated[0], 1.0)
+        self.assertIn("imu_saturation_health_gate", saturated[2])
+        self.assertEqual(nonfinite[0], 1.0)
+        self.assertIn("imu_nonfinite_sample_health_gate", nonfinite[2])
+        self.assertEqual(invalid_stream[0], 1.0)
+        self.assertIn("imu_stream_outage_health_gate", invalid_stream[2])
+        self.assertIn("imu_timestamp_health_gate", invalid_stream[2])
+
+    def test_imu_health_marks_unimplemented_noise_bias_gates(self):
+        score, evidence, reasons = imu_health_admission(
+            imu_score(1.0, 0.1, False)
+        )
+        self.assertEqual(score, 0.0)
+        self.assertEqual(evidence["imu_noise_anomaly_check_available"], 0.0)
+        self.assertEqual(evidence["imu_bias_anomaly_check_available"], 0.0)
+        self.assertIn("imu_noise_health_gate_unavailable", reasons)
+        self.assertIn("imu_bias_health_gate_unavailable", reasons)
 
     def test_optical_flow_low_quality_increases(self):
         good = optical_flow_score(0.10, 0.11, 220, 3.0)[0]

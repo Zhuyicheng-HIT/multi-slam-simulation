@@ -8,7 +8,7 @@ Gazebo camera, flow-module IMU, and flow-module pose use simulation source time 
 |---|---|---|---|---|
 | LiDAR | `/sim/mid360/points_raw` | `/sensors/lidar/points` | `sensor_msgs/PointCloud2` | `mid360_link` |
 | FCU IMU | `/mavros/imu/data_raw` via `/livox/imu` | `/sensors/imu` | `sensor_msgs/Imu` | `base_link` |
-| GNSS/BDS-compatible fix | `/uav/global_fix` | `/sensors/gnss/fix` | `sensor_msgs/NavSatFix` | antenna/body frame supplied by MAVROS bridge |
+| GNSS/BDS-compatible fix | `/uav/global_fix` | `/sensors/gnss/fix` | `sensor_msgs/NavSatFix` | companion-side default 2.5 Hz, source header stamp preserved; fresh `/sensors/gnss/raw` metadata is paired when available but never blocks a fix |
 | Optical flow | `/sim/optical_flow/rad_native` -> MicoLink -> `/sim/optical_flow/rad` | `/sensors/optical_flow/rad` | `mavros_msgs/OpticalFlowRad` | `mtf01_flow_frd` |
 | RGB-D color | `/front/d435i/color/image_raw` | `/sensors/rgbd/color` | `sensor_msgs/Image` | D435i color optical frame |
 | RGB-D aligned depth | `/front/d435i/aligned_depth_to_color/image_raw` | `/sensors/rgbd/depth` | `sensor_msgs/Image` | D435i color optical frame |
