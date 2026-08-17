@@ -57,7 +57,6 @@ def analyze(run_dir, threshold_m):
     enriched = []
     for sample in samples:
         trace = _nearest_trace(traces, trace_stamps, sample["stamp_s"])
-        gauge = trace.get("z_gauge", {})
         gnss = trace.get("gnss_prefit", {})
         lidar = trace.get("lidar_observability", {})
         lidar_degradation = lidar.get("combined_degradation_xyz", [math.nan] * 3)
@@ -65,14 +64,8 @@ def analyze(run_dir, threshold_m):
         added_factors = trace.get("factor_counts_added", {})
         enriched.append({
             **sample,
-            "gauge_offset_m": _optional_float(gauge.get("offset_m")),
-            "gauge_target_m": _optional_float(gauge.get("target_offset_m")),
-            "gauge_reason": str(gauge.get("reason", "missing")),
             "gnss_z_nis": _optional_float(gnss.get("z_nis")),
             "gnss_z_admitted": bool(gnss.get("z_admitted", False)),
-            "gnss_z_routed_to_gauge": bool(
-                gnss.get("z_routed_to_gauge", False)
-            ),
             "lidar_z_degradation": _optional_float(lidar_degradation[2]),
             "lidar_z_support": _optional_float(
                 lidar.get("isotropic_information_support_xyz", [math.nan] * 3)[2]
@@ -80,22 +73,6 @@ def analyze(run_dir, threshold_m):
             "gnss_active_factors": int(active_factors.get("gnss", 0)),
             "gnss_added_factors": int(added_factors.get("gnss", 0)),
         })
-
-    gauge_jumps = []
-    previous = None
-    for trace in traces:
-        gauge = trace.get("z_gauge", {})
-        offset = _optional_float(gauge.get("offset_m"))
-        if math.isfinite(offset) and previous is not None and abs(offset - previous) > 0.20:
-            gauge_jumps.append({
-                "stamp_s": trace["stamp_s"],
-                "previous_offset_m": previous,
-                "offset_m": offset,
-                "target_offset_m": gauge.get("target_offset_m"),
-                "reason": gauge.get("reason"),
-            })
-        if math.isfinite(offset):
-            previous = offset
 
     worst = sorted(enriched, key=lambda row: abs(row["error_z_m"]), reverse=True)[:20]
     result = {
@@ -111,7 +88,6 @@ def analyze(run_dir, threshold_m):
             "max_m": float(max(abs(row["error_z_m"]) for row in enriched)),
         },
         "exceedance_intervals": _error_intervals(enriched, threshold_m),
-        "gauge_jumps_over_0_20_m": gauge_jumps,
         "worst_samples": worst,
         "periodic_samples": [
             min(enriched, key=lambda row: abs(row["stamp_s"] - stamp))

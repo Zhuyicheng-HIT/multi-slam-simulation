@@ -87,11 +87,6 @@ VISUAL_CANDIDATE_QUALITY_ENABLED=${VISUAL_CANDIDATE_QUALITY_ENABLED:-1}
 VISUAL_PENDING_ENABLED=${VISUAL_PENDING_ENABLED:-1}
 VISUAL_REQUIRE_TIME_LOCK=${VISUAL_REQUIRE_TIME_LOCK:-0}
 PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-0}
-Z_GAUGE_ENABLED=${Z_GAUGE_ENABLED:-0}
-Z_GAUGE_GLOBAL_FRAME=${Z_GAUGE_GLOBAL_FRAME:-fusion_map}
-Z_GAUGE_TARGET_HISTORY_SIZE=${Z_GAUGE_TARGET_HISTORY_SIZE:-1}
-Z_GAUGE_UPDATE_TIME_CONSTANT_S=${Z_GAUGE_UPDATE_TIME_CONSTANT_S:-0.60}
-Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS=${Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS:-1.0}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 case "$VISUAL_CANDIDATE_QUALITY_ENABLED" in
@@ -113,11 +108,6 @@ case "$PERFORMANCE_PROFILING_ENABLED" in
   0) PERFORMANCE_PROFILING_ENABLED_BOOL=false ;;
   1) PERFORMANCE_PROFILING_ENABLED_BOOL=true ;;
   *) printf 'PERFORMANCE_PROFILING_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
-esac
-case "$Z_GAUGE_ENABLED" in
-  0) Z_GAUGE_ENABLED_BOOL=false ;;
-  1) Z_GAUGE_ENABLED_BOOL=true ;;
-  *) printf 'Z_GAUGE_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 if [[ ! "$BACKEND_NUMERIC_THREADS" =~ ^[1-9][0-9]*$ ]]; then
   printf 'BACKEND_NUMERIC_THREADS must be a positive integer.\n' >&2
@@ -157,11 +147,6 @@ printf 'visual_require_time_lock=%s\n' "$VISUAL_REQUIRE_TIME_LOCK" \
   >>"$RUN_DIR/visual_ablation_mode.env"
 printf 'sim_rgbd_depth_range_m=%s..%s\n' \
   "$SIM_RGBD_MIN_DEPTH_M" "$SIM_RGBD_MAX_DEPTH_M" \
-  >>"$RUN_DIR/visual_ablation_mode.env"
-printf 'z_gauge=%s history=%s tau_s=%s max_rate_mps=%s\n' \
-  "$Z_GAUGE_ENABLED_BOOL" "$Z_GAUGE_TARGET_HISTORY_SIZE" \
-  "$Z_GAUGE_UPDATE_TIME_CONSTANT_S" \
-  "$Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS" \
   >>"$RUN_DIR/visual_ablation_mode.env"
 STARTUP_TRACE="$RUN_DIR/startup_chain.tsv"
 printf 'stage\twall_utc\telapsed_wall_s\n' >"$STARTUP_TRACE"
@@ -384,12 +369,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   external_nav_enabled:="$EXTERNAL_NAV_ENABLED_BOOL" \
   performance_profiling_enabled:="$PERFORMANCE_PROFILING_ENABLED_BOOL" \
   performance_trace_path:="$RUN_DIR/backend_cycle_trace.jsonl" \
-  z_gauge_enabled:="$Z_GAUGE_ENABLED_BOOL" \
-  z_gauge_global_frame:="$Z_GAUGE_GLOBAL_FRAME" \
   barometer_topic:="${BAROMETER_TOPIC:-/sim/barometer/pressure}" \
-  z_gauge_target_history_size:="$Z_GAUGE_TARGET_HISTORY_SIZE" \
-  z_gauge_update_time_constant_s:="$Z_GAUGE_UPDATE_TIME_CONSTANT_S" \
-  z_gauge_maximum_correction_rate_mps:="$Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS" \
   "${backend_prefix_launch_args[@]}" \
   backend_numeric_threads:="$BACKEND_NUMERIC_THREADS" \
   shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \

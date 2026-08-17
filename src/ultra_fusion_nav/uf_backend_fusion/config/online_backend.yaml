@@ -48,10 +48,11 @@ unified_backend_fusion:
     # Stable four-source behavior is unchanged unless the dedicated visual
     # launch overrides this with paper_reprojection.
     visual_factor_mode: disabled
-    # Sparse metric depth complements the 2-D reprojection rows. It is added
-    # only after the corresponding visual batch passes D_V, PnP and backend
-    # prefit gates; a missing depth batch never rejects the visual factor.
-    rgbd_depth_factor_enabled: true
+    # Experimental alternative representation of one D435i observation batch.
+    # If enabled and accepted it replaces, rather than supplements, the
+    # reprojection factor for that batch. The verified default remains the
+    # paper-style reprojection representation.
+    rgbd_depth_factor_enabled: false
     rgbd_depth_factor_tolerance_s: 0.010
     rgbd_depth_factor_minimum_tracks: 12
     # Information is normalized to a 20-track equivalent, so retaining more
@@ -224,7 +225,7 @@ unified_backend_fusion:
     # Raw FCU static pressure is a last-resort local relative-Z constraint.
     # A fresh datum is fitted from the two seconds immediately before each
     # activation and destroyed at recovery; it is never a global altitude.
-    barometer_fallback_enabled: true
+    barometer_fallback_enabled: false
     barometer_baseline_window_s: 2.0
     barometer_minimum_baseline_samples: 8
     barometer_minimum_baseline_span_s: 0.8
@@ -238,26 +239,6 @@ unified_backend_fusion:
     # Z source is available, start a local pressure segment even when the
     # LiDAR Hessian has not yet declared Z weak.
     barometer_activate_on_gnss_z_inconsistency: true
-    # Experimental dual-frame Z gauge. The FAST-LIO map remains locally
-    # consistent in camera_init; when enabled, /fusion/unified/odom is
-    # expressed in fusion_map and a dynamic fusion_map->camera_init transform
-    # carries the bounded GNSS-derived height correction. Pressure never
-    # initializes or updates this global datum.
-    z_gauge_enabled: false
-    z_gauge_global_frame: fusion_map
-    z_gauge_initialization_samples: 3
-    z_gauge_initialization_max_spread_m: 0.30
-    z_gauge_target_history_size: 1
-    z_gauge_update_time_constant_s: 0.60
-    z_gauge_maximum_correction_rate_mps: 1.0
-    z_gauge_maximum_correction_step_m: 0.30
-    z_gauge_minimum_variance_m2: 0.04
-    z_gauge_maximum_variance_m2: 25.0
-    # Keep the datum fixed; let GNSS-Z enter the window only when LiDAR-Z is weak.
-    z_gauge_weak_axis_factor_handoff_enabled: true
-    # Once the global gauge is initialized, GNSS Z is routed to fusion_map and
-    # no longer moves the camera_init local map a second time.
-    z_gauge_local_z_suppression_variance_m2: 1.0e12
     # Keep optical flow in the body frame and relinearize its map projection
     # against the previous window state. A valid gyro-compensated exposure is
     # retained through yaw; residual and scheduler gates remain authoritative.

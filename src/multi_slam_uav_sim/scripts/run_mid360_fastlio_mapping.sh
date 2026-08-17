@@ -23,8 +23,7 @@ FASTLIO_DIAGNOSTIC_PATH=${FASTLIO_DIAGNOSTIC_PATH:-0}
 FASTLIO_DIAGNOSTIC_TF=${FASTLIO_DIAGNOSTIC_TF:-0}
 FASTLIO_MAP_INSERTION_MODE=${FASTLIO_MAP_INSERTION_MODE:-fast_lio_posterior}
 FASTLIO_BACKEND_STATE_TOPIC=${FASTLIO_BACKEND_STATE_TOPIC:-/fusion/unified/map_pose}
-# Keep FAST-LIO's scan-request handshake in camera_init. The final unified
-# odometry can instead be expressed in fusion_map once the Z gauge is active.
+# Keep FAST-LIO's scan-request handshake and unified output in camera_init.
 FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC=${FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC:-/fusion/unified/frontend_activation_odom}
 FASTLIO_STATE_SEED_MODE=${FASTLIO_STATE_SEED_MODE:-disabled}
 FASTLIO_STATE_SEED_TOPIC=${FASTLIO_STATE_SEED_TOPIC:-/fusion/unified/frontend_state_seed}

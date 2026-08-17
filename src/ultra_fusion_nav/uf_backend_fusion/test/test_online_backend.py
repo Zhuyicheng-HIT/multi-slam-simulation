@@ -23,6 +23,7 @@ from uf_backend_fusion.native_lidar import (
 )
 from uf_backend_fusion.online_backend import (
     GarbageCollectionProfiler,
+    add_visual_observation_once,
     attach_frontend_map_commit_eligibility,
     axis_map_protection,
     axis_observability_latch,
@@ -50,7 +51,6 @@ from uf_backend_fusion.online_backend import (
     gnss_prefit_axis_nis,
     gnss_prefit_statistics,
     time_compensate_gnss_observation,
-    route_gnss_z_to_global_gauge,
     gnss_temporal_jump_rejected,
     imu_interval_covered,
     imu_interval_status,
@@ -794,6 +794,30 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             visual_batch_information_scale(0, 20)
 
+    def test_one_d435_batch_adds_exactly_one_factor_representation(self):
+        class Backend:
+            def __init__(self):
+                self.reprojection_calls = 0
+
+            def add_visual_reprojection(self, *_args, **_kwargs):
+                self.reprojection_calls += 1
+
+        backend = Backend()
+        rgbd_calls = []
+        representation = add_visual_observation_once(
+            backend, 0, 1, (), {},
+            lambda: rgbd_calls.append("rgbd") or True,
+        )
+        self.assertEqual(representation, "rgbd_depth")
+        self.assertEqual(rgbd_calls, ["rgbd"])
+        self.assertEqual(backend.reprojection_calls, 0)
+
+        representation = add_visual_observation_once(
+            backend, 0, 1, (), {}, lambda: False,
+        )
+        self.assertEqual(representation, "paper_reprojection")
+        self.assertEqual(backend.reprojection_calls, 1)
+
     def test_visual_factor_decision_uses_conservative_intersection(self):
         sensor = {
             "factor_enabled": True,
@@ -1461,104 +1485,6 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             observation_prediction - measured,
         )
 
-    def test_gnss_z_is_routed_only_after_global_gauge_initializes(self):
-        unchanged, routed = route_gnss_z_to_global_gauge(
-            [0.2, 0.3, 0.4],
-            gauge_enabled=True,
-            gauge_initialized=False,
-            local_z_suppression_variance_m2=1.0e12,
-        )
-        np.testing.assert_allclose(unchanged, [0.2, 0.3, 0.4])
-        self.assertFalse(routed)
-
-        routed_covariance, routed = route_gnss_z_to_global_gauge(
-            [0.2, 0.3, 0.4],
-            gauge_enabled=True,
-            gauge_initialized=True,
-            local_z_suppression_variance_m2=1.0e12,
-        )
-        np.testing.assert_allclose(
-            routed_covariance, [0.2, 0.3, 1.0e12]
-        )
-        self.assertTrue(routed)
-
-    def test_gnss_z_enters_window_when_lidar_z_is_weak(self):
-        covariance, routed = route_gnss_z_to_global_gauge(
-            [0.2, 0.3, 0.4],
-            gauge_enabled=True,
-            gauge_initialized=True,
-            weak_axis_factor_handoff_enabled=True,
-            lidar_z_weak=True,
-            local_z_suppression_variance_m2=1.0e12,
-        )
-        np.testing.assert_allclose(covariance, [0.2, 0.3, 0.4])
-        self.assertFalse(routed)
-
-        strong_covariance, routed = route_gnss_z_to_global_gauge(
-            [0.2, 0.3, 0.4],
-            gauge_enabled=True,
-            gauge_initialized=True,
-            weak_axis_factor_handoff_enabled=True,
-            lidar_z_weak=False,
-            local_z_suppression_variance_m2=1.0e12,
-        )
-        np.testing.assert_allclose(
-            strong_covariance, [0.2, 0.3, 1.0e12]
-        )
-        self.assertTrue(routed)
-
-    def test_pending_z_gauge_uses_committed_state_at_observation_time(self):
-        node = object.__new__(UnifiedBackendNode)
-        node.pending_z_gauge_observation = {
-            "stamp_s": 9.8,
-            "global_z_m": 12.5,
-            "innovation_variance_m2": 0.4,
-            "source_healthy": True,
-        }
-        node.gnss_future_tolerance_s = 0.05
-        node.gnss_max_age_s = 2.0
-        calls = []
-        node._update_z_gauge_from_gnss = (
-            lambda *args: calls.append(args) or "updated"
-        )
-        state = np.zeros(15, dtype=float)
-        state[2] = 10.0
-        state[8] = 2.0
-
-        result = node._commit_pending_z_gauge(10.0, state)
-
-        self.assertEqual(result, "updated")
-        self.assertIsNone(node.pending_z_gauge_observation)
-        self.assertEqual(len(calls), 1)
-        self.assertAlmostEqual(calls[0][0], 9.8)
-        self.assertAlmostEqual(calls[0][1], 9.6)
-        self.assertAlmostEqual(calls[0][2], 12.5)
-        self.assertAlmostEqual(calls[0][3], 0.4)
-        self.assertTrue(calls[0][4])
-
-    def test_pending_z_gauge_rejects_state_outside_measurement_window(self):
-        node = object.__new__(UnifiedBackendNode)
-        node.pending_z_gauge_observation = {
-            "stamp_s": 5.0,
-            "global_z_m": 12.5,
-            "innovation_variance_m2": 0.4,
-            "source_healthy": True,
-        }
-        node.gnss_future_tolerance_s = 0.05
-        node.gnss_max_age_s = 2.0
-        node.last_z_gauge_reason = "not_attempted"
-        node._update_z_gauge_from_gnss = lambda *_args: self.fail(
-            "out-of-window observation must not update the gauge"
-        )
-
-        result = node._commit_pending_z_gauge(10.0, np.zeros(15))
-
-        self.assertIsNone(result)
-        self.assertIsNone(node.pending_z_gauge_observation)
-        self.assertEqual(
-            node.last_z_gauge_reason, "measurement_time_outside_state"
-        )
-
     def test_gnss_factor_counter_counts_only_enabled_solver_records(self):
         class Backend:
             def __init__(self):
@@ -1585,8 +1511,6 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             node.gnss_z_nis_gate = 6.635
             node.gnss_minimum_reliability_weight = 0.05
             node.gnss_minimum_axis_information_scale = 0.01
-            node.z_gauge_enabled = False
-            node.z_gauge_local_z_suppression_variance_m2 = 1.0e12
             node.backend = Backend()
             node._decision = lambda *_args, **_kwargs: dict(decision)
             node.last_gnss_time_compensation_age_s = 0.0
@@ -1615,7 +1539,6 @@ class OnlineBackendHelpersTest(unittest.TestCase):
                 "gnss_z_admitted": 0,
                 "gnss_xy_robust_downweighted": 0,
                 "gnss_z_robust_downweighted": 0,
-                "gnss_z_routed_to_gauge": 0,
                 "gnss_all_axes_inconsistent": 0,
                 "gnss_prefit_recovery_floor": 0,
             }

@@ -33,11 +33,6 @@ VISUAL_PENDING_ENABLED=${VISUAL_PENDING_ENABLED:-true}
 VISUAL_REQUIRE_TIME_LOCK=${VISUAL_REQUIRE_TIME_LOCK:-false}
 RGBD_DEPTH_HEALTHY_LIDAR_STRIDE=${RGBD_DEPTH_HEALTHY_LIDAR_STRIDE:-1}
 AXIS_INFORMATION_HANDOFF_ENABLED=${AXIS_INFORMATION_HANDOFF_ENABLED:-false}
-Z_GAUGE_ENABLED=${Z_GAUGE_ENABLED:-false}
-Z_GAUGE_TARGET_HISTORY_SIZE=${Z_GAUGE_TARGET_HISTORY_SIZE:-1}
-Z_GAUGE_UPDATE_TIME_CONSTANT_S=${Z_GAUGE_UPDATE_TIME_CONSTANT_S:-0.60}
-Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS=${Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS:-1.0}
-Z_GAUGE_MAXIMUM_CORRECTION_STEP_M=${Z_GAUGE_MAXIMUM_CORRECTION_STEP_M:-0.30}
 BACKEND_RELIABILITY_MODE=${BACKEND_RELIABILITY_MODE:-dynamic}
 FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
 FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
@@ -79,24 +74,6 @@ if [[ "$AXIS_INFORMATION_HANDOFF_ENABLED" != true && \
   printf 'AXIS_INFORMATION_HANDOFF_ENABLED must be true or false.\n' >&2
   exit 2
 fi
-if [[ "$Z_GAUGE_ENABLED" != true && "$Z_GAUGE_ENABLED" != false ]]; then
-  printf 'Z_GAUGE_ENABLED must be true or false.\n' >&2
-  exit 2
-fi
-if ! [[ "$Z_GAUGE_TARGET_HISTORY_SIZE" =~ ^[1-9][0-9]*$ ]]; then
-  printf 'Z_GAUGE_TARGET_HISTORY_SIZE must be a positive integer.\n' >&2
-  exit 2
-fi
-for value in \
-  "$Z_GAUGE_UPDATE_TIME_CONSTANT_S" \
-  "$Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS" \
-  "$Z_GAUGE_MAXIMUM_CORRECTION_STEP_M"; do
-  if ! python3 -c 'import sys; raise SystemExit(not float(sys.argv[1]) > 0.0)' \
-      "$value"; then
-    printf 'Z gauge tuning values must be positive.\n' >&2
-    exit 2
-  fi
-done
 if [[ "$VISUAL_REQUIRE_TIME_LOCK" != true && \
       "$VISUAL_REQUIRE_TIME_LOCK" != false ]]; then
   printf 'VISUAL_REQUIRE_TIME_LOCK must be true or false.\n' >&2
@@ -332,11 +309,6 @@ backend_command=(
   -p visual_factor_score_topic:="$backend_visual_factor_score_topic"
   -p rgbd_depth_healthy_lidar_stride:="$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE"
   -p axis_information_handoff_enabled:="$AXIS_INFORMATION_HANDOFF_ENABLED"
-  -p z_gauge_enabled:="$Z_GAUGE_ENABLED"
-  -p z_gauge_target_history_size:="$Z_GAUGE_TARGET_HISTORY_SIZE"
-  -p z_gauge_update_time_constant_s:="$Z_GAUGE_UPDATE_TIME_CONSTANT_S"
-  -p z_gauge_maximum_correction_rate_mps:="$Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS"
-  -p z_gauge_maximum_correction_step_m:="$Z_GAUGE_MAXIMUM_CORRECTION_STEP_M"
   -p reliability_mode:="$BACKEND_RELIABILITY_MODE"
   -p fixed_lidar_weight:="$FIXED_LIDAR_WEIGHT"
   -p fixed_gnss_weight:="$FIXED_GNSS_WEIGHT"

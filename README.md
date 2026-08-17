@@ -118,6 +118,15 @@ cuf_ws && bash tools/run_figure8_ui_demo.sh
 拥有的 Gazebo、RViz、SITL、MAVROS 和算法子进程。航线控制不读取 Gazebo 真值，
 真值只用于评估。
 
+### 5.0.2 统一滑窗的数据所有权底线
+
+同一传感器、同一时间窗的观测只能进入统一滑窗一次。可以对不同轴采用不同
+权重或协方差，但不得把同一批数据同时包装成多个因子重复约束状态。当前 D435i
+每批数据只选择重投影或实验性深度几何中的一种，MID360 只选择原始点面或凝聚
+Hessian 中的一种，GNSS 的 XYZ 作为一条可分轴加权的位置因子。动态 Z gauge
+已经删除，不再在滑窗之外第二次修正 GNSS 高度。当前基线、实验开关和历史失败
+证据见 [`core_algorithm_baseline_20260817.md`](src/ultra_fusion_nav/docs/core_algorithm_baseline_20260817.md)。
+
 ### 5.1 基础 Gazebo + FAST-LIO 可视化
 
 打开第 1 个 Ubuntu 终端，启动 Gazebo、APM、MAVROS2、D435i、MID360 和光流：

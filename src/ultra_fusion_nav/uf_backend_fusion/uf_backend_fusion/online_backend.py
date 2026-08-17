@@ -38,8 +38,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from sensor_msgs.msg import FluidPressure, Imu, NavSatFix, NavSatStatus
-from geometry_msgs.msg import PoseStamped, TransformStamped
-from tf2_ros import TransformBroadcaster
+from geometry_msgs.msg import PoseStamped
 from uf_interfaces.msg import (
     FusionEpoch,
     LidarCalibrationMotion,
@@ -110,7 +109,6 @@ from .native_lidar import (
     with_yaw_reference,
 )
 from .window import SlidingWindowBackend
-from .z_gauge import LocalToGlobalZGauge
 from uf_reliability.scoring import (
     optical_flow_displacement_frd,
     optical_flow_lever_arm_displacement_flu,
@@ -1086,6 +1084,23 @@ def visual_batch_information_scale(track_count, reference_tracks):
     return max(1.0, track_count / reference_tracks)
 
 
+def add_visual_observation_once(
+    backend,
+    previous_index,
+    current_index,
+    tracks,
+    decision,
+    add_rgbd_depth,
+):
+    """Insert exactly one factor representation for one D435i batch."""
+    if bool(add_rgbd_depth()):
+        return "rgbd_depth"
+    backend.add_visual_reprojection(
+        previous_index, current_index, tracks, decision=decision
+    )
+    return "paper_reprojection"
+
+
 def apply_flow_rotation_gate(decision, gate_result):
     """Apply the low-latency FCU rotation gate after scheduler weighting."""
     gated = copy.deepcopy(decision)
@@ -1294,38 +1309,6 @@ def time_compensate_gnss_observation(
         measurement_variance + transport_variance,
         predicted_delta,
     )
-
-
-def route_gnss_z_to_global_gauge(
-    solver_covariance,
-    *,
-    gauge_enabled,
-    gauge_initialized,
-    weak_axis_factor_handoff_enabled=False,
-    lidar_z_weak=False,
-    local_z_suppression_variance_m2,
-):
-    """Route GNSS-Z to either the global gauge or the weak local Z axis."""
-    covariance = np.asarray(solver_covariance, dtype=float).copy()
-    suppression_variance = float(local_z_suppression_variance_m2)
-    if (
-        covariance.shape != (3,)
-        or np.any(~np.isfinite(covariance))
-        or np.any(covariance <= 0.0)
-        or not math.isfinite(suppression_variance)
-        or suppression_variance <= 0.0
-    ):
-        raise ValueError("GNSS gauge routing covariance is invalid")
-    routed = bool(
-        gauge_enabled
-        and gauge_initialized
-        and not (
-            bool(weak_axis_factor_handoff_enabled) and bool(lidar_z_weak)
-        )
-    )
-    if routed:
-        covariance[2] = max(covariance[2], suppression_variance)
-    return covariance, routed
 
 
 def gnss_covariance_diagonal(
@@ -2608,7 +2591,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter(
             "axis_map_protection_gnss_disagreement_m", 0.20
         )
-        self.declare_parameter("barometer_fallback_enabled", True)
+        self.declare_parameter("barometer_fallback_enabled", False)
         self.declare_parameter("barometer_baseline_window_s", 2.0)
         self.declare_parameter("barometer_minimum_baseline_samples", 8)
         self.declare_parameter("barometer_minimum_baseline_span_s", 0.8)
@@ -2622,22 +2605,6 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("barometer_minimum_information_scale", 0.05)
         self.declare_parameter(
             "barometer_activate_on_gnss_z_inconsistency", True
-        )
-        self.declare_parameter("z_gauge_enabled", False)
-        self.declare_parameter("z_gauge_global_frame", "fusion_map")
-        self.declare_parameter("z_gauge_initialization_samples", 3)
-        self.declare_parameter("z_gauge_initialization_max_spread_m", 0.30)
-        self.declare_parameter("z_gauge_target_history_size", 1)
-        self.declare_parameter("z_gauge_update_time_constant_s", 0.60)
-        self.declare_parameter("z_gauge_maximum_correction_rate_mps", 1.0)
-        self.declare_parameter("z_gauge_maximum_correction_step_m", 0.30)
-        self.declare_parameter("z_gauge_minimum_variance_m2", 0.04)
-        self.declare_parameter("z_gauge_maximum_variance_m2", 25.0)
-        self.declare_parameter(
-            "z_gauge_weak_axis_factor_handoff_enabled", True
-        )
-        self.declare_parameter(
-            "z_gauge_local_z_suppression_variance_m2", 1.0e12
         )
         self.declare_parameter("optical_flow_yaw_coupling_enabled", True)
         self.declare_parameter("flow_rotation_lower_yaw_rate_radps", 0.08)
@@ -2735,7 +2702,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter(
             "rgbd_geometry_tracks_topic", "/vision/rgbd_geometry_tracks"
         )
-        self.declare_parameter("rgbd_depth_factor_enabled", True)
+        self.declare_parameter("rgbd_depth_factor_enabled", False)
         self.declare_parameter("rgbd_depth_factor_tolerance_s", 0.010)
         self.declare_parameter("rgbd_depth_factor_minimum_tracks", 12)
         self.declare_parameter("rgbd_depth_factor_maximum_tracks", 32)
@@ -2896,36 +2863,6 @@ class UnifiedBackendNode(Node):
 
         self.map_frame = str(self.get_parameter("map_frame").value)
         self.body_frame = str(self.get_parameter("body_frame").value)
-        self.z_gauge_enabled = bool(
-            self.get_parameter("z_gauge_enabled").value
-        )
-        self.z_gauge_weak_axis_factor_handoff_enabled = bool(
-            self.get_parameter(
-                "z_gauge_weak_axis_factor_handoff_enabled"
-            ).value
-        )
-        self.z_gauge_global_frame = str(
-            self.get_parameter("z_gauge_global_frame").value
-        )
-        self.z_gauge_local_z_suppression_variance_m2 = float(
-            self.get_parameter(
-                "z_gauge_local_z_suppression_variance_m2"
-            ).value
-        )
-        if (
-            self.z_gauge_enabled
-            and (
-                not self.z_gauge_global_frame
-                or self.z_gauge_global_frame == self.map_frame
-                or not math.isfinite(
-                    self.z_gauge_local_z_suppression_variance_m2
-                )
-                or self.z_gauge_local_z_suppression_variance_m2 <= 0.0
-            )
-        ):
-            raise ValueError(
-                "enabled Z gauge requires a distinct global map frame"
-            )
         self.frontend_map_pose_topic = str(
             self.get_parameter("frontend_map_pose_topic").value
         )
@@ -3164,25 +3101,6 @@ class UnifiedBackendNode(Node):
             maximum_relative_height_m=float(self.get_parameter(
                 "barometer_maximum_relative_height_m").value),
         )
-        self.z_gauge = LocalToGlobalZGauge(
-            initialization_samples=int(self.get_parameter(
-                "z_gauge_initialization_samples").value),
-            initialization_max_spread_m=float(self.get_parameter(
-                "z_gauge_initialization_max_spread_m").value),
-            target_history_size=int(self.get_parameter(
-                "z_gauge_target_history_size").value),
-            update_time_constant_s=float(self.get_parameter(
-                "z_gauge_update_time_constant_s").value),
-            maximum_correction_rate_mps=float(self.get_parameter(
-                "z_gauge_maximum_correction_rate_mps").value),
-            maximum_correction_step_m=float(self.get_parameter(
-                "z_gauge_maximum_correction_step_m").value),
-            minimum_variance_m2=float(self.get_parameter(
-                "z_gauge_minimum_variance_m2").value),
-            maximum_variance_m2=float(self.get_parameter(
-                "z_gauge_maximum_variance_m2").value),
-        )
-        self.z_gauge_lock = threading.Lock()
         self.optical_flow_yaw_coupling_enabled = bool(
             self.get_parameter("optical_flow_yaw_coupling_enabled").value)
         self.flow_rotation_allow_compensated = bool(
@@ -4028,7 +3946,6 @@ class UnifiedBackendNode(Node):
             "gnss_z_admitted": 0,
             "gnss_xy_robust_downweighted": 0,
             "gnss_z_robust_downweighted": 0,
-            "gnss_z_routed_to_gauge": 0,
             "gnss_all_axes_inconsistent": 0,
             "gnss_prefit_recovery_floor": 0,
             "gnss_prefit_valid": 0,
@@ -4045,9 +3962,6 @@ class UnifiedBackendNode(Node):
             "barometer_factors": 0,
             "barometer_segments_started": 0,
             "barometer_segments_ended": 0,
-            "z_gauge_initializations": 0,
-            "z_gauge_updates": 0,
-            "z_gauge_held": 0,
             "flow_received": 0,
             "flow_factor_attempts": 0, "flow_factors": 0,
             "flow_clock_mismatch": 0,
@@ -4239,7 +4153,6 @@ class UnifiedBackendNode(Node):
         self.last_gnss_prefit_z_nis = -1.0
         self.last_gnss_xy_admitted = False
         self.last_gnss_z_admitted = False
-        self.last_gnss_z_routed_to_gauge = False
         self.last_gnss_xy_information_scale = 0.0
         self.last_gnss_z_information_scale = 0.0
         self.last_gnss_prefit_residual_norm_m = -1.0
@@ -4260,11 +4173,6 @@ class UnifiedBackendNode(Node):
         self.last_barometer_prefit_residual_m = -1.0
         self.last_barometer_information_scale = 0.0
         self.last_barometer_measurement_height_m = math.nan
-        self.last_z_gauge_correction_m = 0.0
-        self.last_z_gauge_target_offset_m = math.nan
-        self.last_z_gauge_raw_target_offset_m = math.nan
-        self.last_z_gauge_reason = "disabled"
-        self.pending_z_gauge_observation = None
         self.last_imu_residual_error = "none"
         self.last_exception = "none"
         self.last_flow_reason = "unavailable"
@@ -4376,16 +4284,13 @@ class UnifiedBackendNode(Node):
         self.frontend_map_eligibility_capacity = max(32, 4 * self.window_size)
         self.last_relocalization_reset_stats = {}
 
-        self.z_gauge_tf_broadcaster = (
-            TransformBroadcaster(self) if self.z_gauge_enabled else None
-        )
         self.odom_pub = self.create_publisher(
             Odometry, str(self.get_parameter("output_topic").value), 20)
         self.frontend_map_pose_pub = self.create_publisher(
             Odometry, self.frontend_map_pose_topic, 20)
         # The LiDAR frontend needs a current local pose to start its next
         # request. This must not share the delayed map-write stream or the
-        # optional global Z-gauge output.
+        # unified output stream.
         self.frontend_activation_pose_pub = self.create_publisher(
             Odometry, self.frontend_activation_pose_topic, 20)
         self.path_pub = self.create_publisher(
@@ -4861,9 +4766,6 @@ class UnifiedBackendNode(Node):
                 )
                 self.counts["rgbd_depth_rejected_prefit"] += 1
                 return False
-            self.backend.add_rgbd_depth(
-                previous_index, current_index, batch, decision=decision
-            )
             effective_weight = (
                 float(decision.get("reliability_weight", 0.0))
                 / max(1.0, float(decision.get("covariance_inflation", 1.0)))
@@ -4889,6 +4791,9 @@ class UnifiedBackendNode(Node):
             self.last_rgbd_depth_stamp_s = (
                 stamp_seconds(visual_message.header.stamp)
                 + visual_time_offset_s
+            )
+            self.backend.add_rgbd_depth(
+                previous_index, current_index, batch, decision=decision
             )
         except (ValueError, FloatingPointError) as error:
             self.last_rgbd_depth_reason = f"invalid_batch:{error}"
@@ -5258,20 +5163,28 @@ class UnifiedBackendNode(Node):
                     self.last_visual_reason = initialization.reason
                     self.counts["visual_initialization_waits"] += 1
                     return False
-            self.backend.add_visual_reprojection(
-                previous_index, current_index, tracks, decision=decision,
-            )
-            self._add_rgbd_depth_factor(
-                message,
+            factor_representation = add_visual_observation_once(
+                self.backend,
                 previous_index,
                 current_index,
+                tracks,
                 decision,
+                lambda: self._add_rgbd_depth_factor(
+                    message,
+                    previous_index,
+                    current_index,
+                    decision,
+                ),
             )
         except (ValueError, FloatingPointError) as error:
             self.last_visual_reason = f"invalid_track_batch:{error}"
             self.counts["visual_rejected_tracks"] += 1
             return False
-        self.last_visual_reason = "accepted_paper_reprojection"
+        self.last_visual_reason = (
+            "accepted_rgbd_depth"
+            if factor_representation == "rgbd_depth"
+            else "accepted_paper_reprojection"
+        )
         self.counts["visual_factors"] += 1
         return True
 
@@ -5964,13 +5877,6 @@ class UnifiedBackendNode(Node):
             self.last_barometer_prefit_residual_m = -1.0
             self.last_barometer_information_scale = 0.0
             self.last_barometer_measurement_height_m = math.nan
-        if hasattr(self, "z_gauge"):
-            with self.z_gauge_lock:
-                self.z_gauge.reset("relocalization_reset")
-            self.last_z_gauge_correction_m = 0.0
-            self.last_z_gauge_target_offset_m = math.nan
-            self.last_z_gauge_raw_target_offset_m = math.nan
-            self.last_z_gauge_reason = "relocalization_reset"
         if hasattr(self, "last_axis_reliability"):
             self.last_axis_reliability.fill(0.0)
             self.last_axis_degradation.fill(1.0)
@@ -6225,79 +6131,6 @@ class UnifiedBackendNode(Node):
         )
         self.last_axis_supporting_sources = (
             summary.supporting_sources_xyz
-        )
-
-    def _update_z_gauge_from_gnss(
-        self,
-        stamp_s,
-        local_z_m,
-        global_z_m,
-        innovation_variance_m2,
-        source_healthy,
-    ):
-        if not bool(getattr(self, "z_gauge_enabled", False)):
-            self.last_z_gauge_reason = "disabled"
-            return None
-        with self.z_gauge_lock:
-            was_initialized = self.z_gauge.initialized
-            lidar_z_weak = bool(getattr(
-                self,
-                "lidar_axis_observability_latched",
-                np.zeros(3, dtype=bool),
-            )[2])
-            update = self.z_gauge.update(
-                stamp_s,
-                local_z_m,
-                global_z_m,
-                innovation_variance_m2,
-                source_healthy=source_healthy,
-                lidar_z_weak=bool(
-                    lidar_z_weak
-                    and not getattr(
-                        self, "z_gauge_weak_axis_factor_handoff_enabled", False
-                    )
-                ),
-            )
-        if update.initialized and not was_initialized:
-            self.counts["z_gauge_initializations"] += 1
-        if update.active and abs(update.correction_m) > 0.0:
-            self.counts["z_gauge_updates"] += 1
-        else:
-            self.counts["z_gauge_held"] += 1
-        self.last_z_gauge_correction_m = float(update.correction_m)
-        self.last_z_gauge_target_offset_m = float(
-            update.target_offset_m
-        )
-        self.last_z_gauge_raw_target_offset_m = float(
-            update.raw_target_offset_m
-        )
-        self.last_z_gauge_reason = str(update.reason)
-        return update
-
-    def _commit_pending_z_gauge(self, state_stamp_s, optimized_state):
-        pending = self.pending_z_gauge_observation
-        self.pending_z_gauge_observation = None
-        if pending is None:
-            return None
-        state = np.asarray(optimized_state, dtype=float)
-        if state.shape != (15,) or np.any(~np.isfinite(state)):
-            self.last_z_gauge_reason = "optimized_state_unavailable"
-            return None
-        age_s = float(state_stamp_s) - float(pending["stamp_s"])
-        if (
-            not math.isfinite(age_s)
-            or age_s < -self.gnss_future_tolerance_s
-            or age_s > self.gnss_max_age_s
-        ):
-            self.last_z_gauge_reason = "measurement_time_outside_state"
-            return None
-        local_z_at_measurement = float(state[2] - state[8] * age_s)
-        return self._update_z_gauge_from_gnss(
-            pending["stamp_s"],
-            local_z_at_measurement,
-            pending["global_z_m"],
-            pending["innovation_variance_m2"],
-            pending["source_healthy"],
         )
 
     def _score_is_fresh(self, modality, now):
@@ -7120,9 +6953,6 @@ class UnifiedBackendNode(Node):
                 "z_nis": float(self.last_gnss_prefit_z_nis),
                 "xy_admitted": bool(self.last_gnss_xy_admitted),
                 "z_admitted": bool(self.last_gnss_z_admitted),
-                "z_routed_to_gauge": bool(
-                    self.last_gnss_z_routed_to_gauge
-                ),
                 "xy_information_scale": float(
                     self.last_gnss_xy_information_scale
                 ),
@@ -7169,27 +6999,6 @@ class UnifiedBackendNode(Node):
                     list(values)
                     for values in self.last_axis_supporting_sources
                 ],
-            },
-            "z_gauge": {
-                "enabled": bool(self.z_gauge_enabled),
-                "initialized": bool(self.z_gauge.initialized),
-                "active": bool(self.z_gauge.active),
-                "offset_m": float(self.z_gauge.offset_m),
-                "variance_m2": float(self.z_gauge.variance_m2),
-                "last_correction_m": float(
-                    self.last_z_gauge_correction_m
-                ),
-                "target_offset_m": (
-                    float(self.last_z_gauge_target_offset_m)
-                    if math.isfinite(self.last_z_gauge_target_offset_m)
-                    else None
-                ),
-                "raw_target_offset_m": (
-                    float(self.last_z_gauge_raw_target_offset_m)
-                    if math.isfinite(self.last_z_gauge_raw_target_offset_m)
-                    else None
-                ),
-                "reason": str(self.last_z_gauge_reason),
             },
         }
         self.performance_cycle_trace.append(trace)
@@ -7271,7 +7080,6 @@ class UnifiedBackendNode(Node):
         if observation is None:
             return
         self.counts["gnss_factor_attempts"] += 1
-        self.last_gnss_z_routed_to_gauge = False
         gnss_position = np.asarray(self.lio_origin) + np.asarray(
             observation["position_enu"], dtype=float)
         covariance = np.asarray(observation["covariance"], dtype=float)
@@ -7357,35 +7165,6 @@ class UnifiedBackendNode(Node):
                     solver_covariance - covariance
                 )
                 self.last_gnss_time_compensation_reason = "applied"
-        source_healthy = bool(
-            scheduler_factor_decision.get("factor_enabled", False)
-            and float(
-                scheduler_factor_decision.get("reliability_weight", 0.0)
-            ) >= self.gnss_minimum_reliability_weight
-        )
-        gauge_initialized = False
-        if self.z_gauge_enabled:
-            self.pending_z_gauge_observation = {
-                "stamp_s": float(observation["stamp_s"]),
-                "global_z_m": float(gnss_position[2]),
-                "innovation_variance_m2": float(
-                    prefit_position_covariance[2, 2] + covariance[2]
-                ),
-                "source_healthy": source_healthy,
-            }
-            with self.z_gauge_lock:
-                gauge_initialized = bool(self.z_gauge.initialized)
-        if self.z_gauge_enabled and gauge_initialized:
-            with self.z_gauge_lock:
-                prefit_position[2] = self.z_gauge.global_z(
-                    prefit_position[2]
-                )
-                solver_gnss_position[2] = self.z_gauge.local_z(
-                    gnss_position[2]
-                ) + temporal_delta[2]
-                prefit_position_covariance[2, 2] += (
-                    self.z_gauge.variance_m2
-                )
         try:
             innovation, innovation_covariance, prefit_nis = gnss_prefit_statistics(
                 prefit_position,
@@ -7467,38 +7246,6 @@ class UnifiedBackendNode(Node):
             self.counts["gnss_prefit_recovery_floor"] += 1
         solver_covariance[:2] /= decision["gnss_xy_information_scale"]
         solver_covariance[2] /= decision["gnss_z_information_scale"]
-        try:
-            solver_covariance, z_routed_to_gauge = (
-                route_gnss_z_to_global_gauge(
-                    solver_covariance,
-                    gauge_enabled=self.z_gauge_enabled,
-                    gauge_initialized=gauge_initialized,
-                    weak_axis_factor_handoff_enabled=(
-                        getattr(
-                            self,
-                            "z_gauge_weak_axis_factor_handoff_enabled",
-                            False,
-                        )
-                    ),
-                    lidar_z_weak=bool(getattr(
-                        self,
-                        "lidar_axis_observability_latched",
-                        np.zeros(3, dtype=bool),
-                    )[2]),
-                    local_z_suppression_variance_m2=(
-                        self.z_gauge_local_z_suppression_variance_m2
-                    ),
-                )
-            )
-        except ValueError as error:
-            self.counts["gnss_prefit_invalid"] += 1
-            self.last_gnss_admission_reason = (
-                f"gauge_routing_invalid:{error}"
-            )
-            return
-        self.last_gnss_z_routed_to_gauge = z_routed_to_gauge
-        if z_routed_to_gauge:
-            self.counts["gnss_z_routed_to_gauge"] += 1
         self.backend.add_gnss(
             index,
             solver_gnss_position,
@@ -8413,7 +8160,6 @@ class UnifiedBackendNode(Node):
 
     def _process_lio(self, msg, native_factor):
         started = time.perf_counter_ns()
-        self.pending_z_gauge_observation = None
         stamp = stamp_seconds(msg.header.stamp)
         if stamp <= 0.0:
             self.last_reason = "missing_lio_timestamp"
@@ -9426,7 +9172,6 @@ class UnifiedBackendNode(Node):
                     )
                     return
             commit_started = time.perf_counter_ns()
-            self._commit_pending_z_gauge(stamp, estimate)
             publish_started = time.perf_counter_ns()
             self._publish(
                 msg.header,
@@ -9836,30 +9581,6 @@ class UnifiedBackendNode(Node):
         output.twist.covariance[35] = 1.0e6
         return output
 
-    def _globalize_z_odometry(self, local_output):
-        """Express local-map odometry in the explicit global gauge frame."""
-        if not bool(getattr(self, "z_gauge_enabled", False)):
-            return local_output
-        output = copy.deepcopy(local_output)
-        output.header.frame_id = self.z_gauge_global_frame
-        with self.z_gauge_lock:
-            initialized = bool(self.z_gauge.initialized)
-            offset_m = (
-                float(self.z_gauge.offset_m) if initialized else 0.0
-            )
-            variance_m2 = (
-                float(self.z_gauge.variance_m2) if initialized else 0.0
-            )
-        output.pose.pose.position.z += offset_m
-        output.pose.covariance[14] += variance_m2
-        transform = TransformStamped()
-        transform.header = copy.deepcopy(output.header)
-        transform.child_frame_id = self.map_frame
-        transform.transform.translation.z = offset_m
-        transform.transform.rotation.w = 1.0
-        self.z_gauge_tf_broadcaster.sendTransform(transform)
-        return output
-
     def _publish_unified_odom(self, output, source):
         output_stamp_s = stamp_seconds(output.header.stamp)
         if output_stamp_s <= 0.0:
@@ -9912,9 +9633,7 @@ class UnifiedBackendNode(Node):
             return True
 
     def _publish_live_odom(self, header, state, state_covariance):
-        output = self._globalize_z_odometry(
-            self._build_odometry(header, state, state_covariance)
-        )
+        output = self._build_odometry(header, state, state_covariance)
         return self._publish_unified_odom(output, "imu_propagated")
 
     def _publish(
@@ -9932,7 +9651,7 @@ class UnifiedBackendNode(Node):
             local_output = self._build_odometry(
                 header, state, state_covariance
             )
-            output = self._globalize_z_odometry(local_output)
+            output = local_output
             self._commit_optimization_anchor(
                 output_stamp_s, state, state_covariance
             )
@@ -10687,14 +10406,6 @@ class UnifiedBackendNode(Node):
             self._key("gnss_xy_admitted", self.last_gnss_xy_admitted),
             self._key("gnss_z_admitted", self.last_gnss_z_admitted),
             self._key(
-                "gnss_z_routed_to_gauge",
-                self.last_gnss_z_routed_to_gauge,
-            ),
-            self._key(
-                "gnss_z_routed_to_gauge_count",
-                self.counts["gnss_z_routed_to_gauge"],
-            ),
-            self._key(
                 "gnss_xy_information_scale",
                 f"{self.last_gnss_xy_information_scale:.9g}",
             ),
@@ -11060,19 +10771,6 @@ class UnifiedBackendNode(Node):
                 "barometer_measurement_height_m",
                 f"{self.last_barometer_measurement_height_m:.9g}",
             ),
-            self._key("z_gauge_enabled", self.z_gauge_enabled),
-            self._key("z_gauge_initialized", self.z_gauge.initialized),
-            self._key("z_gauge_active", self.z_gauge.active),
-            self._key("z_gauge_global_frame", self.z_gauge_global_frame),
-            self._key("z_gauge_offset_m", f"{self.z_gauge.offset_m:.9g}"),
-            self._key(
-                "z_gauge_variance_m2", f"{self.z_gauge.variance_m2:.9g}"
-            ),
-            self._key(
-                "z_gauge_last_correction_m",
-                f"{self.last_z_gauge_correction_m:.9g}",
-            ),
-            self._key("z_gauge_reason", self.last_z_gauge_reason),
             self._key(
                 "native_lidar_stamp_error_ms",
                 f"{self.last_native_stamp_error_ms:.9g}",

@@ -62,17 +62,8 @@ def generate_launch_description():
         DeclareLaunchArgument("performance_trace_path", default_value=""),
         DeclareLaunchArgument("backend_process_prefix", default_value=""),
         DeclareLaunchArgument("backend_numeric_threads", default_value="1"),
-        DeclareLaunchArgument("z_gauge_enabled", default_value="false"),
-        DeclareLaunchArgument("z_gauge_global_frame", default_value="fusion_map"),
         DeclareLaunchArgument(
             "barometer_topic", default_value="/sim/barometer/pressure"
-        ),
-        DeclareLaunchArgument("z_gauge_target_history_size", default_value="1"),
-        DeclareLaunchArgument(
-            "z_gauge_update_time_constant_s", default_value="0.60"
-        ),
-        DeclareLaunchArgument(
-            "z_gauge_maximum_correction_rate_mps", default_value="1.0"
         ),
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
         DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
@@ -174,20 +165,7 @@ def generate_launch_description():
             "rgbd_maximum_depth_m": LaunchConfiguration(
                 "rgbd_maximum_depth_m"
             ),
-            "z_gauge_enabled": LaunchConfiguration("z_gauge_enabled"),
-            "z_gauge_global_frame": LaunchConfiguration(
-                "z_gauge_global_frame"
-            ),
             "barometer_topic": LaunchConfiguration("barometer_topic"),
-            "z_gauge_target_history_size": LaunchConfiguration(
-                "z_gauge_target_history_size"
-            ),
-            "z_gauge_update_time_constant_s": LaunchConfiguration(
-                "z_gauge_update_time_constant_s"
-            ),
-            "z_gauge_maximum_correction_rate_mps": LaunchConfiguration(
-                "z_gauge_maximum_correction_rate_mps"
-            ),
         }),
         include("uf_shared_mapping", "shared_mapping.launch.py", {
             "enabled": LaunchConfiguration("shared_mapping_enabled"),

@@ -60,17 +60,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "visual_initialization_require_time_lock", default_value="false"
         ),
-        DeclareLaunchArgument("z_gauge_enabled", default_value="false"),
-        DeclareLaunchArgument("z_gauge_global_frame", default_value="fusion_map"),
         DeclareLaunchArgument(
             "barometer_topic", default_value="/mavros/imu/static_pressure"
-        ),
-        DeclareLaunchArgument("z_gauge_target_history_size", default_value="1"),
-        DeclareLaunchArgument(
-            "z_gauge_update_time_constant_s", default_value="0.60"
-        ),
-        DeclareLaunchArgument(
-            "z_gauge_maximum_correction_rate_mps", default_value="1.0"
         ),
         Node(
             package="uf_visual_frontend", executable="rgbd_feature_frontend",
@@ -161,27 +152,7 @@ def generate_launch_description():
                 "visual_initialization_require_time_lock": LaunchConfiguration(
                     "visual_initialization_require_time_lock"
                 ),
-                "z_gauge_enabled": ParameterValue(
-                    LaunchConfiguration("z_gauge_enabled"), value_type=bool
-                ),
-                "z_gauge_global_frame": LaunchConfiguration(
-                    "z_gauge_global_frame"
-                ),
                 "barometer_topic": LaunchConfiguration("barometer_topic"),
-                "z_gauge_target_history_size": ParameterValue(
-                    LaunchConfiguration("z_gauge_target_history_size"),
-                    value_type=int,
-                ),
-                "z_gauge_update_time_constant_s": ParameterValue(
-                    LaunchConfiguration("z_gauge_update_time_constant_s"),
-                    value_type=float,
-                ),
-                "z_gauge_maximum_correction_rate_mps": ParameterValue(
-                    LaunchConfiguration(
-                        "z_gauge_maximum_correction_rate_mps"
-                    ),
-                    value_type=float,
-                ),
                 # Paper mode requires the Stage3 native-factor contract. Keep
                 # this explicit so a stale FAST-LIO overlay cannot silently
                 # fall back to paired /Odometry poses.
@@ -201,11 +172,7 @@ def generate_launch_description():
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "input_topic": "/fusion/unified/odom",
                 "output_topic": LaunchConfiguration("external_nav_output_topic"),
-                "expected_map_frame": ParameterValue(PythonExpression([
-                    "'", LaunchConfiguration("z_gauge_global_frame"),
-                    "' if '", LaunchConfiguration("z_gauge_enabled"),
-                    "' == 'true' else 'camera_init'",
-                ]), value_type=str),
+                "expected_map_frame": "camera_init",
                 "expected_body_frame": "body",
                 "maximum_input_age_s": 0.65,
                 "minimum_rate_hz": 4.0,
