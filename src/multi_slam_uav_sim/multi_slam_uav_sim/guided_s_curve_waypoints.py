@@ -41,8 +41,12 @@ from .s_curve_path import (
 
 
 class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
-    def __init__(self):
-        super().__init__(node_name="guided_s_curve_waypoints")
+    def __init__(
+        self,
+        node_name="guided_s_curve_waypoints",
+        enforce_figure8_constraints=True,
+    ):
+        super().__init__(node_name=node_name)
         self.declare_parameter("longitudinal_span", 9.0)
         self.declare_parameter("lateral_amplitude", 1.5)
         self.declare_parameter("vertical_amplitude", 4.5)
@@ -292,11 +296,15 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             readiness_qos,
         )
 
-        if self.pass_count != 1:
-            raise ValueError("the large figure-eight route must run exactly once")
-        if self.takeoff_alt < self.minimum_clearance_alt:
-            raise ValueError(
-                "takeoff_alt is below minimum_clearance_alt")
+        if enforce_figure8_constraints:
+            if self.pass_count != 1:
+                raise ValueError(
+                    "the large figure-eight route must run exactly once"
+                )
+            if self.takeoff_alt < self.minimum_clearance_alt:
+                raise ValueError(
+                    "takeoff_alt is below minimum_clearance_alt"
+                )
 
     def _scheduler_cb(self, msg):
         self.latest_scheduler = msg

@@ -60,6 +60,7 @@ setup(
             "guided_flight = multi_slam_uav_sim.guided_flight:main",
             "guided_rectangle_waypoints = multi_slam_uav_sim.guided_rectangle_waypoints:main",
             "guided_s_curve_waypoints = multi_slam_uav_sim.guided_s_curve_waypoints:main",
+            "guided_truth_rectangle_waypoints = multi_slam_uav_sim.guided_truth_rectangle_waypoints:main",
             "guided_vertical_profile = multi_slam_uav_sim.guided_vertical_profile:main",
             "livox_mid360_bridge = multi_slam_uav_sim.livox_mid360_bridge:main",
             "flow_gazebo_accuracy = multi_slam_uav_sim.flow_gazebo_accuracy:main",

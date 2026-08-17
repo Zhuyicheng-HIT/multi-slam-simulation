@@ -105,6 +105,7 @@ def evaluate_validation(
     require_visual_factors=False,
     require_automatic_loop_closure=False,
     mission_profile="rectangle",
+    expected_route_feedback="unified_backend",
     expected_waypoints=4,
     minimum_matched_samples=300,
     minimum_motion_samples=50,
@@ -231,13 +232,14 @@ def evaluate_validation(
             "figure_eight_plan_present": plan_match is not None,
             "figure_eight_nontrivial_distance": planned_distance_m >= 35.0,
             "figure_eight_low_altitude_contract": low_altitude_ratio >= 0.50,
-            "figure_eight_uses_unified_feedback": (
+            "figure_eight_uses_requested_feedback": (
                 "large figure-eight single traversal:" in route_log
-                and "feedback=unified_backend" in route_log
+                and f"feedback={expected_route_feedback}" in route_log
             ),
             "figure_eight_route_completed": (
-                "closed-loop return convergence" in route_log
+                "large figure-eight single traversal: points=" in route_log
                 and checkpoint_indices.issuperset(range(1, 20))
+                and "LAND completed and FCU disarm confirmed." in route_log
             ),
         })
         figure_eight_observed = {
@@ -405,6 +407,7 @@ def evaluate_validation(
                 require_automatic_loop_closure
             ),
             "mission_profile": str(mission_profile),
+            "expected_route_feedback": str(expected_route_feedback),
             "expected_waypoints": int(expected_waypoints),
             "minimum_matched_samples": int(minimum_matched_samples),
             "minimum_motion_samples": int(minimum_motion_samples),
@@ -438,6 +441,11 @@ def main():
         "--mission-profile", choices=("rectangle", "calibration", "figure_eight"),
         default="rectangle",
     )
+    parser.add_argument(
+        "--expected-route-feedback",
+        choices=("fcu_local", "unified_backend", "gazebo_truth"),
+        default="unified_backend",
+    )
     parser.add_argument("--minimum-matched-samples", type=int, default=300)
     parser.add_argument("--minimum-motion-samples", type=int, default=50)
     parser.add_argument("--minimum-sim-duration", type=float, default=120.0)
@@ -457,6 +465,7 @@ def main():
             require_visual_factors=args.require_visual_factors,
             require_automatic_loop_closure=args.require_automatic_loop_closure,
             mission_profile=args.mission_profile,
+            expected_route_feedback=args.expected_route_feedback,
             expected_waypoints=args.expected_waypoints,
             minimum_matched_samples=args.minimum_matched_samples,
             minimum_motion_samples=args.minimum_motion_samples,

@@ -58,6 +58,13 @@ VALIDATION_START_FASTLIO_OCCUPANCY_GRID=${VALIDATION_START_FASTLIO_OCCUPANCY_GRI
 VALIDATION_LOCALIZATION_SAFETY_ENABLED=${VALIDATION_LOCALIZATION_SAFETY_ENABLED:-true}
 VALIDATION_RECORD_REPLAY_BAG=${VALIDATION_RECORD_REPLAY_BAG:-true}
 VALIDATION_RECORD_RAW_LIDAR=${VALIDATION_RECORD_RAW_LIDAR:-false}
+if [[ -z "${VALIDATION_ROUTE_FEEDBACK_SOURCE:-}" ]]; then
+  if [[ "$VALIDATION_ROUTE" == "rectangle" ]]; then
+    VALIDATION_ROUTE_FEEDBACK_SOURCE=fcu_local
+  else
+    VALIDATION_ROUTE_FEEDBACK_SOURCE=unified_backend
+  fi
+fi
 VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED=${VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED:-false}
@@ -289,6 +296,7 @@ case "$VALIDATION_MID360_SIM_BRIDGE_MODE" in
     ;;
 esac
 wait_rate /mavros/imu/data_raw 20.0 40
+wait_rate /sim/barometer/pressure 5.0 40
 
 if [[ "$validation_enable_vision_arg" == "true" ]]; then
   setsid ros2 run d435i_rgbd_bridge_cpp d435i_rgbd_bridge --ros-args \
@@ -483,6 +491,8 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /sensors/gnss/fix \
       /sensors/gnss/raw \
       /sensors/optical_flow/rad \
+      /sim/barometer/pressure \
+      /mavros/imu/static_pressure \
       /reliability/scheduler_state \
       /reliability/lidar_score \
       /reliability/imu_score \
@@ -532,7 +542,8 @@ case "$VALIDATION_ROUTE" in
     exit 2
     ;;
 esac
-env LOCALIZATION_SAFETY_ENABLED="$VALIDATION_LOCALIZATION_SAFETY_ENABLED" \
+env ROUTE_FEEDBACK_SOURCE="$VALIDATION_ROUTE_FEEDBACK_SOURCE" \
+  LOCALIZATION_SAFETY_ENABLED="$VALIDATION_LOCALIZATION_SAFETY_ENABLED" \
   POST_TAKEOFF_HOLD_TIME="$VALIDATION_POST_TAKEOFF_HOLD_TIME" \
   FINAL_HOLD_TIME="$VALIDATION_FINAL_HOLD_TIME" \
   CALIBRATION_ONLY="$validation_calibration_only_arg" \
@@ -606,6 +617,7 @@ validation_gate_args=(
   --sitl-log "$LOG_DIR/sim/sitl.log"
   --output "$LOG_DIR/validation_acceptance.json"
   --minimum-sim-duration "$METRICS_DURATION"
+  --expected-route-feedback "$VALIDATION_ROUTE_FEEDBACK_SOURCE"
 )
 case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   1|true|TRUE|yes|YES) validation_gate_args+=(--require-external-nav) ;;

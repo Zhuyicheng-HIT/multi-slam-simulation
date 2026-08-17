@@ -26,6 +26,37 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn('-p route_feedback_source:="$ROUTE_FEEDBACK_SOURCE"', runner)
         self.assertIn('-p gazebo_truth_odom_topic:="$GAZEBO_TRUTH_ODOM_TOPIC"', runner)
 
+    def test_rectangle_runner_selects_truth_adapter(self):
+        runner = (
+            SIM_ROOT / "scripts" / "run_rectangle_state_machine.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("guided_truth_rectangle_waypoints", runner)
+        self.assertIn('-p route_feedback_source:=gazebo_truth', runner)
+        self.assertIn('-p gazebo_truth_odom_topic:="$GAZEBO_TRUTH_ODOM_TOPIC"', runner)
+
+    def test_validation_bag_records_barometer(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("wait_rate /sim/barometer/pressure 5.0 40", runner)
+        self.assertIn("/sim/barometer/pressure", runner)
+        self.assertIn("/mavros/imu/static_pressure", runner)
+
+    def test_validation_passes_requested_feedback_to_checker(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '--expected-route-feedback "$VALIDATION_ROUTE_FEEDBACK_SOURCE"',
+            runner,
+        )
+
+        checker = (
+            REPO_ROOT / "tools" / "check_unified_validation_result.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("figure_eight_uses_requested_feedback", checker)
+        self.assertNotIn("figure_eight_uses_unified_feedback", checker)
+
     def test_truth_subscription_is_confined_to_route_controller(self):
         route = (
             SIM_ROOT
