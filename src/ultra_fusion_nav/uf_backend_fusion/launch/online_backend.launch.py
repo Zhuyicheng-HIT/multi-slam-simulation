@@ -4,7 +4,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -37,6 +37,28 @@ def generate_launch_description():
         DeclareLaunchArgument("visual_factor_mode", default_value="disabled"),
         DeclareLaunchArgument("rgbd_minimum_depth_m", default_value="0.30"),
         DeclareLaunchArgument("rgbd_maximum_depth_m", default_value="6.0"),
+        DeclareLaunchArgument("rgbd_depth_factor_enabled", default_value="true"),
+        DeclareLaunchArgument(
+            "rgbd_depth_healthy_lidar_stride",
+            default_value="1",
+            description=(
+                "Keep every quality-gated RGB-D depth batch; values above one "
+                "are retained only for controlled ablation"
+            ),
+        ),
+        DeclareLaunchArgument("reliability_mode", default_value="dynamic"),
+        DeclareLaunchArgument("fixed_lidar_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_gnss_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_imu_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_optical_flow_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_vision_weight", default_value="1.0"),
+        DeclareLaunchArgument(
+            "frontend_map_commit_delay_states",
+            default_value="7",
+            description=(
+                "Fixed-lag states retained before an irreversible LiDAR map write"
+            ),
+        ),
         DeclareLaunchArgument(
             "external_nav_output_topic",
             default_value="/mavros/odometry/out",
@@ -95,6 +117,18 @@ def generate_launch_description():
                 "Apply a locked camera/IMU time offset; keep shadow-only by default"
             ),
         ),
+        DeclareLaunchArgument("z_gauge_enabled", default_value="false"),
+        DeclareLaunchArgument(
+            "barometer_topic", default_value="/mavros/imu/static_pressure"
+        ),
+        DeclareLaunchArgument("z_gauge_global_frame", default_value="fusion_map"),
+        DeclareLaunchArgument("z_gauge_target_history_size", default_value="1"),
+        DeclareLaunchArgument(
+            "z_gauge_update_time_constant_s", default_value="0.60"
+        ),
+        DeclareLaunchArgument(
+            "z_gauge_maximum_correction_rate_mps", default_value="1.0"
+        ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
@@ -107,6 +141,26 @@ def generate_launch_description():
                 "--child-frame-id", "camera_init_ned",
             ],
             condition=IfCondition(publish_mavros_frame_transforms),
+            output="screen",
+        ),
+        Node(
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            name="fusion_map_to_fusion_map_ned",
+            arguments=[
+                "--x", "0", "--y", "0", "--z", "0",
+                "--roll", "3.141592653589793", "--pitch", "0",
+                "--yaw", "1.5707963267948966",
+                "--frame-id", LaunchConfiguration("z_gauge_global_frame"),
+                "--child-frame-id", PythonExpression([
+                    "'", LaunchConfiguration("z_gauge_global_frame"),
+                    "' + '_ned'",
+                ]),
+            ],
+            condition=IfCondition(PythonExpression([
+                "'", publish_mavros_frame_transforms, "' == 'true' and '",
+                LaunchConfiguration("z_gauge_enabled"), "' == 'true'",
+            ])),
             output="screen",
         ),
         Node(
@@ -187,6 +241,35 @@ def generate_launch_description():
                     "visual_factor_mode": LaunchConfiguration(
                         "visual_factor_mode"
                     ),
+                    "rgbd_depth_factor_enabled": ParameterValue(
+                        LaunchConfiguration("rgbd_depth_factor_enabled"),
+                        value_type=bool,
+                    ),
+                    "rgbd_depth_healthy_lidar_stride": ParameterValue(
+                        LaunchConfiguration("rgbd_depth_healthy_lidar_stride"),
+                        value_type=int,
+                    ),
+                    "reliability_mode": LaunchConfiguration("reliability_mode"),
+                    "fixed_lidar_weight": ParameterValue(
+                        LaunchConfiguration("fixed_lidar_weight"), value_type=float
+                    ),
+                    "fixed_gnss_weight": ParameterValue(
+                        LaunchConfiguration("fixed_gnss_weight"), value_type=float
+                    ),
+                    "fixed_imu_weight": ParameterValue(
+                        LaunchConfiguration("fixed_imu_weight"), value_type=float
+                    ),
+                    "fixed_optical_flow_weight": ParameterValue(
+                        LaunchConfiguration("fixed_optical_flow_weight"),
+                        value_type=float,
+                    ),
+                    "fixed_vision_weight": ParameterValue(
+                        LaunchConfiguration("fixed_vision_weight"), value_type=float
+                    ),
+                    "frontend_map_commit_delay_states": ParameterValue(
+                        LaunchConfiguration("frontend_map_commit_delay_states"),
+                        value_type=int,
+                    ),
                     "preserve_lio_anchor": ParameterValue(
                         LaunchConfiguration("preserve_lio_anchor"),
                         value_type=bool,
@@ -217,6 +300,27 @@ def generate_launch_description():
                         LaunchConfiguration("visual_time_calibration_apply_locked"),
                         value_type=bool,
                     ),
+                    "z_gauge_enabled": ParameterValue(
+                        LaunchConfiguration("z_gauge_enabled"), value_type=bool
+                    ),
+                    "z_gauge_global_frame": LaunchConfiguration(
+                        "z_gauge_global_frame"
+                    ),
+                    "z_gauge_target_history_size": ParameterValue(
+                        LaunchConfiguration("z_gauge_target_history_size"),
+                        value_type=int,
+                    ),
+                    "z_gauge_update_time_constant_s": ParameterValue(
+                        LaunchConfiguration("z_gauge_update_time_constant_s"),
+                        value_type=float,
+                    ),
+                    "z_gauge_maximum_correction_rate_mps": ParameterValue(
+                        LaunchConfiguration(
+                            "z_gauge_maximum_correction_rate_mps"
+                        ),
+                        value_type=float,
+                    ),
+                    "barometer_topic": LaunchConfiguration("barometer_topic"),
                 },
             ],
             output="screen",
@@ -231,7 +335,11 @@ def generate_launch_description():
                 "output_topic": external_nav_output_topic,
                 # Match the native FAST-LIO factor contract. This gate validates
                 # frames but does not perform a coordinate transformation.
-                "expected_map_frame": "camera_init",
+                "expected_map_frame": ParameterValue(PythonExpression([
+                    "'", LaunchConfiguration("z_gauge_global_frame"),
+                    "' if '", LaunchConfiguration("z_gauge_enabled"),
+                    "' == 'true' else 'camera_init'",
+                ]), value_type=str),
                 "expected_body_frame": "body",
                 # Bound the real backend's measured 0.53 s worst-case gap.
                 # Covariance grows during propagation; longer loss still stops.

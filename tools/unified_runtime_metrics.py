@@ -836,7 +836,11 @@ class Metrics(Node):
         self.covariance_sources = Counter()
         self.backend_diagnostic_messages = 0
         self.relocalization_states = Counter()
+        self.relocalization_reasons = Counter()
+        self.relocalization_timeline = []
         self.relocalization_successes = 0
+        self.automatic_loop_searches = 0
+        self.automatic_loop_successes = 0
         self.fusion_epoch_events = []
         self.calibration_motion_stats = CalibrationMotionStats()
         self.calibration_timeline = []
@@ -894,11 +898,21 @@ class Metrics(Node):
             self.sensor_contract,
             10,
         )
-        self.create_subscription(String, "/mission/phase", self.mission_phase_event, 10)
-        self.create_subscription(SchedulerState, "/reliability/scheduler_state", self.scheduler, 20)
-        self.create_subscription(DiagnosticArray, "/external_nav/diagnostics", self.diagnostics, 10)
-        self.create_subscription(DiagnosticArray, "/fusion/unified/diagnostics", self.diagnostics, 10)
-        self.create_subscription(RelocalizationResult, "/relocalization/result", self.relocalization, 10)
+        self.create_subscription(
+            String, "/mission/phase", self.mission_phase_event, 10
+        )
+        self.create_subscription(
+            SchedulerState, "/reliability/scheduler_state", self.scheduler, 20
+        )
+        self.create_subscription(
+            DiagnosticArray, "/external_nav/diagnostics", self.diagnostics, 10
+        )
+        self.create_subscription(
+            DiagnosticArray, "/fusion/unified/diagnostics", self.diagnostics, 10
+        )
+        self.create_subscription(
+            RelocalizationResult, "/relocalization/result", self.relocalization, 10
+        )
         epoch_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
@@ -1170,7 +1184,26 @@ class Metrics(Node):
 
     def relocalization(self, message):
         self.relocalization_states[message.state_name] += 1
+        reason = str(message.reason)
+        self.relocalization_reasons[reason] += 1
+        message_stamp_ns = stamp_ns(message)
+        self.relocalization_timeline.append({
+            "stamp_s": message_stamp_ns * 1.0e-9,
+            "mission_phase": self.mission_phase,
+            "state": str(message.state_name),
+            "reason": reason,
+            "accepted": bool(message.accepted),
+            "transaction_id": int(message.transaction_id),
+            "candidate_id": int(message.candidate_id),
+        })
         self.relocalization_successes += int(message.accepted)
+        self.automatic_loop_searches += int(
+            reason == "automatic_loop_searching_historical_keyframes"
+        )
+        self.automatic_loop_successes += int(
+            bool(message.accepted)
+            and reason.startswith("automatic_loop_candidate_accepted")
+        )
 
     def fusion_epoch(self, message):
         event_stamp_ns = stamp_ns(message)
@@ -1259,9 +1292,17 @@ class Metrics(Node):
                 self.scheduler_clock_domain_examples
             ),
             "graph_contract_violations": self.graph_contract_violations,
-            "factor_enabled_ratio": {name: self.enabled[name] / count for name, count in self.samples.items() if count},
-            "capability_support_mean": {name: self.capability_sum[name] / count for name, count in self.capability_count.items() if count},
-            "estimator_support_mean": sum(self.support) / len(self.support) if self.support else None,
+            "factor_enabled_ratio": {
+                name: self.enabled[name] / count
+                for name, count in self.samples.items() if count
+            },
+            "capability_support_mean": {
+                name: self.capability_sum[name] / count
+                for name, count in self.capability_count.items() if count
+            },
+            "estimator_support_mean": (
+                sum(self.support) / len(self.support) if self.support else None
+            ),
             "estimator_support_min": min(self.support) if self.support else None,
             "externalnav_diagnostic_reasons": dict(self.reasons),
             "externalnav_gate_latest": self.externalnav_gate_latest,
@@ -1282,7 +1323,11 @@ class Metrics(Node):
             ),
             "covariance_sources": dict(self.covariance_sources),
             "relocalization_states": dict(self.relocalization_states),
+            "relocalization_reasons": dict(self.relocalization_reasons),
+            "relocalization_timeline": self.relocalization_timeline,
             "relocalization_successes": self.relocalization_successes,
+            "automatic_loop_searches": self.automatic_loop_searches,
+            "automatic_loop_successes": self.automatic_loop_successes,
             "fusion_epoch_events": self.fusion_epoch_events,
             "fusion_epoch_continuity": epoch_continuity,
             "fusion_epoch_applied": sum(

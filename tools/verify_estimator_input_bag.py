@@ -23,6 +23,7 @@ VISUAL_TOPICS = (
     "/reliability/vision_score",
 )
 VISUAL_FACTOR_SCORE_TOPIC = "/reliability/vision_factor_score"
+RGBD_GEOMETRY_TOPIC = "/vision/rgbd_geometry_tracks"
 
 
 def topic_counts(metadata):
@@ -40,6 +41,7 @@ def build_report(
     metadata,
     require_visual=False,
     require_visual_factor_score=False,
+    require_rgbd_geometry=False,
     require_frontend_scan_request=False,
 ):
     counts = topic_counts(metadata)
@@ -48,6 +50,8 @@ def build_report(
         required.extend(VISUAL_TOPICS)
     if require_visual_factor_score:
         required.append(VISUAL_FACTOR_SCORE_TOPIC)
+    if require_rgbd_geometry:
+        required.append(RGBD_GEOMETRY_TOPIC)
     if require_frontend_scan_request:
         required.append(FRONTEND_SCAN_REQUEST_TOPIC)
     missing = [topic for topic in required if counts.get(topic, 0) <= 0]
@@ -68,6 +72,7 @@ def build_report(
         "visual_factor_score_count": counts.get(
             VISUAL_FACTOR_SCORE_TOPIC, 0
         ),
+        "rgbd_geometry_count": counts.get(RGBD_GEOMETRY_TOPIC, 0),
     }
 
 
@@ -94,6 +99,14 @@ def main():
             "the sensor-level /reliability/vision_score contract."
         ),
     )
+    parser.add_argument(
+        "--require-rgbd-geometry",
+        action="store_true",
+        help=(
+            "Require timestamped RGB-D depth geometry used by the sparse "
+            "metric depth factor."
+        ),
+    )
     args = parser.parse_args()
 
     bag = Path(args.bag)
@@ -106,6 +119,7 @@ def main():
         metadata,
         require_visual=args.require_visual,
         require_visual_factor_score=args.require_visual_factor_score,
+        require_rgbd_geometry=args.require_rgbd_geometry,
         require_frontend_scan_request=args.require_frontend_scan_request,
     )
     report["bag"] = str(bag)

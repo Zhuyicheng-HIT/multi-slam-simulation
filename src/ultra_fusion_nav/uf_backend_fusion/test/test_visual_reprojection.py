@@ -5,7 +5,9 @@ import numpy as np
 from uf_backend_fusion.manifold import STATE_SIZE, state_plus
 from uf_backend_fusion.manifold_window import ManifoldSlidingWindowBackend
 from uf_backend_fusion.visual_reprojection import (
+    RgbdDepthTrackBatch,
     VisualTrackBatch,
+    rgbd_depth_residual_jacobians,
     validate_visual_linearization,
     visual_pose_observability,
     visual_reprojection_residual,
@@ -85,6 +87,121 @@ class VisualReprojectionTest(unittest.TestCase):
         rmse, dimension = backend.latest_factor_rmse("visual_reprojection")
         self.assertEqual(dimension, 8)
         self.assertLess(rmse, before / np.sqrt(8.0) * 0.1)
+
+    def test_rgbd_depth_completes_metric_line_of_sight_constraint(self):
+        anchor_pixels = np.asarray([
+            [-0.2, -0.1], [0.1, -0.15], [0.2, 0.2], [-0.1, 0.25]
+        ])
+        anchor_depth = np.asarray([2.0, 2.5, 3.0, 2.2])
+        seed = RgbdDepthTrackBatch(
+            anchor_pixels, anchor_depth, anchor_depth, np.full(4, 0.01 ** 2)
+        )
+        predicted, _, _, valid = rgbd_depth_residual_jacobians(
+            self.anchor, self.current, seed
+        )
+        self.assertEqual(valid.size, 4)
+        tracks = RgbdDepthTrackBatch(
+            anchor_pixels,
+            anchor_depth,
+            anchor_depth + predicted,
+            np.full(4, 0.01 ** 2),
+        )
+        residual, anchor_jacobian, current_jacobian, _ = (
+            rgbd_depth_residual_jacobians(self.anchor, self.current, tracks)
+        )
+        np.testing.assert_allclose(residual, 0.0, atol=1.0e-12)
+
+        epsilon = 1.0e-7
+        for state_index, analytic in enumerate(
+                (anchor_jacobian, current_jacobian)):
+            numeric = np.zeros_like(analytic)
+            for column in range(6):
+                delta = np.zeros(STATE_SIZE)
+                delta[column] = epsilon
+                plus = [self.anchor.copy(), self.current.copy()]
+                minus = [self.anchor.copy(), self.current.copy()]
+                plus[state_index] = state_plus(plus[state_index], delta)
+                minus[state_index] = state_plus(minus[state_index], -delta)
+                numeric[:, column] = (
+                    rgbd_depth_residual_jacobians(*plus, tracks)[0]
+                    - rgbd_depth_residual_jacobians(*minus, tracks)[0]
+                ) / (2.0 * epsilon)
+            np.testing.assert_allclose(
+                analytic[:, :6], numeric[:, :6], atol=2.0e-5
+            )
+
+        backend = ManifoldSlidingWindowBackend(max_states=2, max_iterations=8)
+        previous = backend.add_state(self.anchor)
+        wrong = self.current.copy()
+        wrong[2] += 0.08
+        current = backend.add_state(wrong)
+        backend.add_prior(previous, self.anchor, covariance=1.0e-8)
+        backend.add_rgbd_depth(previous, current, tracks)
+        before = np.linalg.norm(
+            rgbd_depth_residual_jacobians(self.anchor, wrong, tracks)[0]
+        )
+        backend.optimize()
+        after = np.linalg.norm(rgbd_depth_residual_jacobians(
+            backend.state(previous), backend.state(current), tracks
+        )[0])
+        self.assertLess(after, before * 0.1)
+
+    def test_cpp_rgbd_depth_normal_matches_python_with_extrinsic_and_huber(self):
+        angle = 0.13
+        rotation_body_camera = np.asarray([
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        translation_body_camera = np.asarray([0.08, -0.03, 0.04])
+        anchor_pixels = np.asarray([
+            [-0.2, -0.1], [0.1, -0.15], [0.2, 0.2], [-0.1, 0.25]
+        ])
+        anchor_depth = np.asarray([2.0, 2.5, 3.0, 2.2])
+        seed = RgbdDepthTrackBatch(
+            anchor_pixels,
+            anchor_depth,
+            anchor_depth,
+            np.full(4, 0.01 ** 2),
+            rotation_body_camera,
+            translation_body_camera,
+        )
+        prediction = rgbd_depth_residual_jacobians(
+            self.anchor, self.current, seed
+        )[0]
+        tracks = RgbdDepthTrackBatch(
+            anchor_pixels,
+            anchor_depth,
+            anchor_depth + prediction + np.asarray([0.0, 0.0, 0.06, 0.0]),
+            np.full(4, 0.01 ** 2),
+            rotation_body_camera,
+            translation_body_camera,
+        )
+        wrong = self.current.copy()
+        wrong[2] += 0.08
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        previous = backend.add_state(self.anchor)
+        current = backend.add_state(wrong)
+        backend.add_rgbd_depth(previous, current, tracks)
+        factor = backend._factors[-1]
+
+        backend.cpp_math_core_enabled = False
+        python_hessian, python_gradient, python_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        python_candidate_cost = backend._factor_cost(factor, backend._states)
+
+        backend.cpp_math_core_enabled = True
+        cpp_hessian, cpp_gradient, cpp_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        cpp_candidate_cost = backend._factor_cost(factor, backend._states)
+        np.testing.assert_allclose(cpp_hessian, python_hessian, atol=1.0e-8)
+        np.testing.assert_allclose(cpp_gradient, python_gradient, atol=1.0e-9)
+        self.assertAlmostEqual(cpp_cost, python_cost, places=10)
+        self.assertAlmostEqual(
+            cpp_candidate_cost, python_candidate_cost, places=10
+        )
 
     def test_cost_only_path_matches_visual_robust_linearization(self):
         backend = ManifoldSlidingWindowBackend(max_states=4)

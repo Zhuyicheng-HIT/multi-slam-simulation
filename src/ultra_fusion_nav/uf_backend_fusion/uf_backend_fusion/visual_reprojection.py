@@ -77,6 +77,62 @@ class VisualTrackBatch:
 
 
 @dataclass(frozen=True)
+class RgbdDepthTrackBatch:
+    """Matched metric depth pairs that complement 2-D reprojection."""
+
+    anchor_normalized: np.ndarray
+    anchor_depth_m: np.ndarray
+    current_depth_m: np.ndarray
+    variance_m2: np.ndarray
+    rotation_body_camera: np.ndarray = None
+    translation_body_camera: np.ndarray = None
+
+    def __post_init__(self):
+        anchor = np.asarray(self.anchor_normalized, dtype=float)
+        anchor_depth = np.asarray(self.anchor_depth_m, dtype=float).reshape(-1)
+        current_depth = np.asarray(self.current_depth_m, dtype=float).reshape(-1)
+        variance = np.asarray(self.variance_m2, dtype=float).reshape(-1)
+        count = anchor.shape[0] if anchor.ndim == 2 else 0
+        rotation = (
+            np.eye(3) if self.rotation_body_camera is None
+            else np.asarray(self.rotation_body_camera, dtype=float)
+        )
+        translation = (
+            np.zeros(3) if self.translation_body_camera is None
+            else np.asarray(self.translation_body_camera, dtype=float)
+        )
+        if (
+            anchor.shape != (count, 2) or count == 0
+            or anchor_depth.shape != (count,)
+            or current_depth.shape != (count,)
+            or variance.shape != (count,)
+            or rotation.shape != (3, 3) or translation.shape != (3,)
+            or np.any(~np.isfinite(anchor))
+            or np.any(~np.isfinite(anchor_depth))
+            or np.any(~np.isfinite(current_depth))
+            or np.any(~np.isfinite(variance))
+            or np.any(anchor_depth <= 0.0)
+            or np.any(current_depth <= 0.0)
+            or np.any(variance <= 0.0)
+            or np.any(~np.isfinite(rotation))
+            or np.any(~np.isfinite(translation))
+        ):
+            raise ValueError("RGB-D depth tracks must be finite and positive")
+        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1.0e-6):
+            raise ValueError("camera extrinsic rotation must be orthonormal")
+        object.__setattr__(self, "anchor_normalized", anchor)
+        object.__setattr__(self, "anchor_depth_m", anchor_depth)
+        object.__setattr__(self, "current_depth_m", current_depth)
+        object.__setattr__(self, "variance_m2", variance)
+        object.__setattr__(self, "rotation_body_camera", rotation)
+        object.__setattr__(self, "translation_body_camera", translation)
+
+    @property
+    def track_count(self):
+        return int(self.anchor_depth_m.size)
+
+
+@dataclass(frozen=True)
 class VisualLinearizationCheck:
     """Pre-solve consistency of one measured track batch and two states."""
 
@@ -265,6 +321,87 @@ def visual_reprojection_residual(anchor_state, current_state, tracks):
     return visual_reprojection_residual_jacobians(
         anchor_state, current_state, tracks
     )[0]
+
+
+def rgbd_depth_residual_jacobians(
+        anchor_state, current_state, tracks, minimum_depth=1.0e-4):
+    """Return line-of-sight metric-depth residuals and pose Jacobians.
+
+    Reprojection already contributes the two angular image rows.  This adds
+    only predicted camera Z minus the measured current depth, completing a
+    sparse 3-D RGB-D observation without double-counting pixel coordinates.
+    """
+    if not isinstance(tracks, RgbdDepthTrackBatch):
+        raise ValueError("RGB-D depth factor has the wrong track type")
+    anchor_state = np.asarray(anchor_state, dtype=float)
+    current_state = np.asarray(current_state, dtype=float)
+    if anchor_state.shape != (STATE_SIZE,) or current_state.shape != (STATE_SIZE,):
+        raise ValueError("RGB-D depth factor requires two 15-state vectors")
+    rotation_anchor = rpy_to_rotation_matrix(anchor_state[3:6])
+    rotation_current = rpy_to_rotation_matrix(current_state[3:6])
+    rotation_body_camera = tracks.rotation_body_camera
+    translation_body_camera = tracks.translation_body_camera
+    bearings = np.column_stack((
+        tracks.anchor_normalized,
+        np.ones(tracks.track_count, dtype=float),
+    ))
+    point_camera_anchor = bearings * tracks.anchor_depth_m[:, None]
+    point_body_anchor = (
+        point_camera_anchor @ rotation_body_camera.T
+        + translation_body_camera
+    )
+    point_world = point_body_anchor @ rotation_anchor.T + anchor_state[:3]
+    point_body_current = (
+        point_world - current_state[:3]
+    ) @ rotation_current
+    point_camera_current = (
+        point_body_current - translation_body_camera
+    ) @ rotation_body_camera
+    valid = (
+        np.isfinite(point_camera_current).all(axis=1)
+        & (point_camera_current[:, 2] > minimum_depth)
+    )
+    valid_indices = np.flatnonzero(valid)
+    if valid_indices.size == 0:
+        return (
+            np.empty(0), np.empty((0, STATE_SIZE)),
+            np.empty((0, STATE_SIZE)), np.empty(0, dtype=int),
+        )
+
+    def skew_batch(points):
+        matrices = np.zeros((points.shape[0], 3, 3), dtype=float)
+        matrices[:, 0, 1] = -points[:, 2]
+        matrices[:, 0, 2] = points[:, 1]
+        matrices[:, 1, 0] = points[:, 2]
+        matrices[:, 1, 2] = -points[:, 0]
+        matrices[:, 2, 0] = -points[:, 1]
+        matrices[:, 2, 1] = points[:, 0]
+        return matrices
+
+    body_to_camera = rotation_body_camera.T
+    current_to_camera = body_to_camera @ rotation_current.T
+    anchor_rotation = np.einsum(
+        "ij,njk->nik",
+        -current_to_camera @ rotation_anchor,
+        skew_batch(point_body_anchor[valid]),
+        optimize=True,
+    )
+    current_rotation = np.einsum(
+        "ij,njk->nik",
+        body_to_camera,
+        skew_batch(point_body_current[valid]),
+        optimize=True,
+    )
+    anchor_jacobian = np.zeros((valid_indices.size, STATE_SIZE), dtype=float)
+    current_jacobian = np.zeros_like(anchor_jacobian)
+    anchor_jacobian[:, :3] = current_to_camera[2]
+    anchor_jacobian[:, 3:6] = anchor_rotation[:, 2, :]
+    current_jacobian[:, :3] = -current_to_camera[2]
+    current_jacobian[:, 3:6] = current_rotation[:, 2, :]
+    residual = (
+        point_camera_current[valid, 2] - tracks.current_depth_m[valid]
+    )
+    return residual, anchor_jacobian, current_jacobian, valid_indices
 
 
 def validate_visual_linearization(

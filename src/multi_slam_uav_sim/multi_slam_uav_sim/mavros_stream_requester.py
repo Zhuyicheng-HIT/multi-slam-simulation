@@ -16,6 +16,7 @@ class MavrosStreamRequester(Node):
         self.declare_parameter("position_rate_hz", 20.0)
         self.declare_parameter("imu_rate_hz", 100.0)
         self.declare_parameter("gps_rate_hz", 10.0)
+        self.declare_parameter("barometer_rate_hz", 10.0)
         self.declare_parameter("attitude_rate_hz", 30.0)
         self.declare_parameter("timeout_s", 30.0)
         self.declare_parameter("response_wait_s", 3.0)
@@ -82,6 +83,10 @@ class MavrosStreamRequester(Node):
         intervals = [
             (105, float(self.get_parameter("imu_rate_hz").value)),    # HIGHRES_IMU
             (24, float(self.get_parameter("gps_rate_hz").value)),     # GPS_RAW_INT
+            # Primary ArduPilot SCALED_PRESSURE stream consumed by MAVROS
+            # IMUPlugin as /mavros/imu/static_pressure. Keep one instance so
+            # SCALED_PRESSURE2/3 cannot create duplicate header stamps.
+            (29, float(self.get_parameter("barometer_rate_hz").value)),  # SCALED_PRESSURE
             (30, float(self.get_parameter("attitude_rate_hz").value)),  # ATTITUDE
             (31, float(self.get_parameter("attitude_rate_hz").value)),  # ATTITUDE_QUATERNION
             (32, float(self.get_parameter("position_rate_hz").value)),  # LOCAL_POSITION_NED

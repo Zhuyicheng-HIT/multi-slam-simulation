@@ -45,14 +45,31 @@ esac
 VALIDATION_MID360_SIM_BRIDGE_MODE=${VALIDATION_MID360_SIM_BRIDGE_MODE:-direct_livox}
 VALIDATION_PRESERVE_LIO_ANCHOR=${VALIDATION_PRESERVE_LIO_ANCHOR:-false}
 VALIDATION_PERFORMANCE_PROFILING=${VALIDATION_PERFORMANCE_PROFILING:-true}
+VALIDATION_RELIABILITY_MODE=${VALIDATION_RELIABILITY_MODE:-dynamic}
+case "$VALIDATION_RELIABILITY_MODE" in
+  dynamic|fixed) ;;
+  *)
+    printf 'VALIDATION_RELIABILITY_MODE must be dynamic or fixed.\n' >&2
+    exit 2
+    ;;
+esac
 VALIDATION_START_FASTLIO_CLOUD_MAPPER=${VALIDATION_START_FASTLIO_CLOUD_MAPPER:-0}
 VALIDATION_START_FASTLIO_OCCUPANCY_GRID=${VALIDATION_START_FASTLIO_OCCUPANCY_GRID:-0}
 VALIDATION_LOCALIZATION_SAFETY_ENABLED=${VALIDATION_LOCALIZATION_SAFETY_ENABLED:-true}
 VALIDATION_RECORD_REPLAY_BAG=${VALIDATION_RECORD_REPLAY_BAG:-true}
+VALIDATION_RECORD_RAW_LIDAR=${VALIDATION_RECORD_RAW_LIDAR:-false}
 VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED=${VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED:-false}
 VALIDATION_ENABLE_VISION=${VALIDATION_ENABLE_VISION:-0}
+VALIDATION_VISUAL_KEYFRAME_PROFILE=${VALIDATION_VISUAL_KEYFRAME_PROFILE:-balanced}
+case "$VALIDATION_VISUAL_KEYFRAME_PROFILE" in
+  conservative|balanced_light|balanced|balanced_plus|dense|custom) ;;
+  *)
+    printf 'VALIDATION_VISUAL_KEYFRAME_PROFILE is unsupported.\n' >&2
+    exit 2
+    ;;
+esac
 case "${VALIDATION_ENABLE_VISION,,}" in
   1|true|yes|on)
     validation_enable_vision_arg=true
@@ -68,6 +85,7 @@ case "${VALIDATION_ENABLE_VISION,,}" in
     ;;
 esac
 VALIDATION_REQUIRE_VISUAL_FACTORS=${VALIDATION_REQUIRE_VISUAL_FACTORS:-$VALIDATION_ENABLE_VISION}
+VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE=${VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE:-false}
 case "${VALIDATION_REQUIRE_VISUAL_FACTORS,,}" in
   1|true|yes|on) validation_require_visual_factors=true ;;
   0|false|no|off) validation_require_visual_factors=false ;;
@@ -148,6 +166,15 @@ case "$FASTLIO_BACKEND_TRAJECTORY_FRONTEND" in
 esac
 mkdir -p "$LOG_DIR"
 printf 'Validation ROS domain: %s\n' "$ROS_DOMAIN_ID"
+printf 'Validation reliability: mode=%s lidar=%s imu=%s gnss=%s flow=%s vision=%s\n' \
+  "$VALIDATION_RELIABILITY_MODE" \
+  "${FIXED_LIDAR_WEIGHT:-1.0}" \
+  "${FIXED_IMU_WEIGHT:-1.0}" \
+  "${FIXED_GNSS_WEIGHT:-1.0}" \
+  "${FIXED_OPTICAL_FLOW_WEIGHT:-1.0}" \
+  "${FIXED_VISION_WEIGHT:-1.0}"
+printf 'Validation visual cadence: profile=%s\n' \
+  "$VALIDATION_VISUAL_KEYFRAME_PROFILE"
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
 if ! ros2 pkg prefix "$RMW_IMPLEMENTATION" >/dev/null 2>&1; then
@@ -283,6 +310,7 @@ if [[ "$validation_enable_vision_arg" == "true" ]]; then
     use_sim_time:=true \
     enabled:=true \
     start_fusion_stack:=false \
+    visual_keyframe_profile:="$VALIDATION_VISUAL_KEYFRAME_PROFILE" \
     rgbd_minimum_depth_m:="$VALIDATION_RGBD_MINIMUM_DEPTH_M" \
     rgbd_maximum_depth_m:="$VALIDATION_RGBD_MAXIMUM_DEPTH_M" \
     >"$LOG_DIR/visual_frontend.log" 2>&1 &
@@ -301,7 +329,7 @@ setsid env LIDAR_WS="$LIDAR_WS" RVIZ=0 FASTLIO_INPUT_MODE=livox \
   FASTLIO_DIAGNOSTIC_TF=0 \
   FASTLIO_MAP_INSERTION_MODE="${FASTLIO_MAP_INSERTION_MODE:-backend_confirmed}" \
   FASTLIO_BACKEND_STATE_TOPIC=/fusion/unified/map_pose \
-  FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC=/fusion/unified/odom \
+  FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC=/fusion/unified/frontend_activation_odom \
   START_FASTLIO_CLOUD_MAPPER="$VALIDATION_START_FASTLIO_CLOUD_MAPPER" \
   START_FASTLIO_OCCUPANCY_GRID="$VALIDATION_START_FASTLIO_OCCUPANCY_GRID" \
   START_LIVOX_POINTCLOUD_BRIDGE="$fastlio_pointcloud_bridge" \
@@ -322,6 +350,7 @@ setsid env ENABLE_VISION="$validation_enable_vision_arg" \
   RELOCALIZATION_SEARCH_TIMEOUT_S="$VALIDATION_RELOCALIZATION_SEARCH_TIMEOUT_S" \
   EXTERNAL_NAV_OUTPUT_TOPIC="$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
   PERFORMANCE_PROFILING_ENABLED="$VALIDATION_PERFORMANCE_PROFILING" \
+  RELIABILITY_MODE="$VALIDATION_RELIABILITY_MODE" \
   VISUAL_TIME_CALIBRATION_APPLY_LOCKED="${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}" \
   LOG_DIR="$LOG_DIR/unified" \
   bash "$REPO_ROOT/tools/run_unified_backend_stack.sh" \
@@ -433,6 +462,15 @@ esac
 replay_bag_pid=""
 case "$VALIDATION_RECORD_REPLAY_BAG" in
   1|true|TRUE|yes|YES)
+    raw_lidar_record_topic=()
+    case "$VALIDATION_RECORD_RAW_LIDAR" in
+      1|true|TRUE|yes|YES) raw_lidar_record_topic+=(/livox/lidar) ;;
+      0|false|FALSE|no|NO) ;;
+      *)
+        printf 'VALIDATION_RECORD_RAW_LIDAR must be true/false or 1/0.\n' >&2
+        exit 2
+        ;;
+    esac
     setsid ros2 bag record --use-sim-time \
       --compression-mode file --compression-format zstd \
       --compression-threads 1 \
@@ -440,6 +478,7 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /clock \
       /fast_lio/frontend_scan_request \
       /fast_lio/native_lidar_factor \
+      "${raw_lidar_record_topic[@]}" \
       /sensors/imu \
       /sensors/gnss/fix \
       /sensors/gnss/raw \
@@ -452,10 +491,16 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /reliability/vision_score \
       /reliability/vision_factor_score \
       /vision/feature_tracks \
+      /vision/rgbd_geometry_tracks \
       /fusion/unified/visual_timing \
       /calibration/lidar_relative_motion \
       /fusion/unified/odom \
+      /fusion/unified/map_pose \
+      /lio/odom \
       /fusion/unified/diagnostics \
+      /fusion/unified/epoch \
+      /relocalization/result \
+      /relocalization/ready \
       "$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
       /external_nav/diagnostics \
       /sim/mid360/ground_truth_odom \
@@ -577,6 +622,14 @@ esac
 if [[ "$validation_require_visual_factors" == "true" ]]; then
   validation_gate_args+=(--require-visual-factors)
 fi
+case "${VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE,,}" in
+  1|true|yes|on) validation_gate_args+=(--require-automatic-loop-closure) ;;
+  0|false|no|off) ;;
+  *)
+    printf 'VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 if [[ "$VALIDATION_ROUTE" == "rectangle" ]]; then
   python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
     "${validation_gate_args[@]}"
@@ -587,8 +640,14 @@ then
     "${validation_gate_args[@]}" \
     --mission-profile calibration \
     --expected-waypoints 0
+elif [[ "$VALIDATION_ROUTE" == "s_curve" ]]; then
+  python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
+    "${validation_gate_args[@]}" \
+    --mission-profile figure_eight \
+    --expected-waypoints 0
 else
-  printf 'Strict validation gate is currently defined for the rectangle route only.\n' >&2
+  printf 'Strict validation gate has no profile for VALIDATION_ROUTE=%s.\n' \
+    "$VALIDATION_ROUTE" >&2
   exit 2
 fi
 printf 'validation_complete: %s\n' "$LOG_DIR"

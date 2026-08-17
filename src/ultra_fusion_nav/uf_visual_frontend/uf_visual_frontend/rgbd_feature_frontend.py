@@ -12,7 +12,12 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
-from uf_interfaces.msg import VisualFeatureTrack, VisualFeatureTracks
+from uf_interfaces.msg import (
+    RgbdGeometryTrack,
+    RgbdGeometryTracks,
+    VisualFeatureTrack,
+    VisualFeatureTracks,
+)
 
 from .feature_tracker import RgbdFeatureTracker, grid_uniformity
 
@@ -138,6 +143,18 @@ def inverse_depth_variance(depth_m, robust_depth_sigma_m, relative_sigma_ratio):
     return max(1.0e-10, (depth_sigma / (depth * depth)) ** 2)
 
 
+def depth_variance(depth_m, robust_depth_sigma_m, relative_sigma_ratio):
+    """Return the same robust uncertainty model in metric depth units."""
+    depth = float(depth_m)
+    if not math.isfinite(depth) or depth <= 0.0:
+        return math.inf
+    relative_sigma = max(0.0, float(relative_sigma_ratio)) * depth
+    measured_sigma = float(robust_depth_sigma_m)
+    if not math.isfinite(measured_sigma) or measured_sigma < 0.0:
+        measured_sigma = 0.0
+    return max(1.0e-8, max(relative_sigma, measured_sigma) ** 2)
+
+
 def stamp_ns(stamp):
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
@@ -150,6 +167,7 @@ class ExactRgbdFeatureFrontend(Node):
             "depth_topic": "/sensors/rgbd/depth",
             "camera_info_topic": "/sensors/rgbd/camera_info",
             "tracks_topic": "/vision/feature_tracks",
+            "geometry_tracks_topic": "/vision/rgbd_geometry_tracks",
             "max_features": 240,
             "minimum_distance_px": 12.0,
             "forward_backward_threshold_px": 1.0,
@@ -236,6 +254,8 @@ class ExactRgbdFeatureFrontend(Node):
             "quality_valid_candidates": 0,
             "quality_rejected_candidates": 0,
             "published_candidates": 0,
+            "geometry_batches_published": 0,
+            "geometry_tracks_published": 0,
         }
         self.quality_reasons = {}
         self.last_quality = CandidateQuality(
@@ -245,6 +265,11 @@ class ExactRgbdFeatureFrontend(Node):
         self.last_frontend_latency_s = math.inf
         self.publisher = self.create_publisher(
             VisualFeatureTracks, self.get_parameter("tracks_topic").value, 20
+        )
+        self.geometry_publisher = self.create_publisher(
+            RgbdGeometryTracks,
+            self.get_parameter("geometry_tracks_topic").value,
+            20,
         )
         self.diagnostic_publisher = self.create_publisher(
             DiagnosticArray,
@@ -423,6 +448,48 @@ class ExactRgbdFeatureFrontend(Node):
             message.pnp_inlier_count = int(
                 np.count_nonzero(result.geometric_inlier)
             )
+        geometry = RgbdGeometryTracks()
+        geometry.header = color.header
+        if self.previous_header is not None:
+            geometry.previous_stamp = self.previous_header.stamp
+            geometry.previous_frame_id = self.previous_header.frame_id
+        geometry.source_feature_count = len(message.tracks)
+        geometry.spatial_distribution = message.spatial_distribution
+        sigma_ratio = float(self.get_parameter(
+            "inverse_depth_sigma_ratio").value)
+        for index, feature_track in enumerate(message.tracks):
+            if not (
+                feature_track.geometric_inlier
+                and feature_track.depth_valid
+                and bool(result.current_depth_valid[index])
+                and feature_track.track_age >= 2
+            ):
+                continue
+            track = RgbdGeometryTrack()
+            track.feature_id = feature_track.feature_id
+            track.previous_x = feature_track.previous_x
+            track.previous_y = feature_track.previous_y
+            track.previous_depth_m = feature_track.depth_m
+            track.previous_depth_variance_m2 = depth_variance(
+                result.depth_m[index], result.depth_sigma_m[index], sigma_ratio
+            )
+            track.current_x = feature_track.current_x
+            track.current_y = feature_track.current_y
+            track.current_depth_m = float(result.current_depth_m[index])
+            track.current_depth_variance_m2 = depth_variance(
+                result.current_depth_m[index],
+                result.current_depth_sigma_m[index],
+                sigma_ratio,
+            )
+            track.track_age = feature_track.track_age
+            track.grid_cell = feature_track.grid_cell
+            geometry.tracks.append(track)
+        if geometry.tracks:
+            # Publish first so the backend normally has depth evidence when the
+            # corresponding feature candidate reaches its pending queue.
+            self.geometry_publisher.publish(geometry)
+            self.counts["geometry_batches_published"] += 1
+            self.counts["geometry_tracks_published"] += len(geometry.tracks)
         self.publisher.publish(message)
         self.counts["published_candidates"] += 1
         now_s = self.get_clock().now().nanoseconds * 1.0e-9

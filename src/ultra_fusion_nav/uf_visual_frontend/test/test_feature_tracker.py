@@ -9,6 +9,7 @@ from uf_visual_frontend.feature_tracker import (
 )
 from uf_visual_frontend.rgbd_feature_frontend import (
     CADENCE_PERIOD_S,
+    depth_variance,
     inverse_depth_variance,
     visual_candidate_quality,
 )
@@ -124,6 +125,23 @@ def test_per_track_depth_sigma_propagates_to_inverse_depth_variance():
     assert noisy > nominal
 
 
+def test_current_depth_and_metric_variance_are_preserved_per_track():
+    tracker = RgbdFeatureTracker(max_features=120, fb_threshold_px=0.5)
+    camera = np.asarray(
+        [[250.0, 0.0, 160.0], [0.0, 250.0, 120.0], [0.0, 0.0, 1.0]])
+    previous_depth = np.full((240, 320), 2000, np.uint16)
+    current_depth = np.full((240, 320), 2100, np.uint16)
+    assert tracker.process(synthetic_image(), previous_depth, camera) is None
+    result = tracker.process(synthetic_image(2), current_depth, camera)
+
+    assert np.all(result.current_depth_valid)
+    np.testing.assert_allclose(result.current_depth_m, 2.1, atol=1.0e-6)
+    assert depth_variance(2.0, 0.005, 0.015) > 0.0
+    assert depth_variance(2.0, 0.20, 0.015) > depth_variance(
+        2.0, 0.005, 0.015
+    )
+
+
 def test_pnp_observability_rejects_rank_deficient_geometry_without_motion_gate():
     varied = np.asarray([
         [x, y, 1.5 + 0.4 * ((column + row) % 4)]
@@ -197,6 +215,9 @@ class FeatureTrackerUnittest(unittest.TestCase):
 
     def test_inverse_depth_variance(self):
         test_per_track_depth_sigma_propagates_to_inverse_depth_variance()
+
+    def test_current_depth_geometry(self):
+        test_current_depth_and_metric_variance_are_preserved_per_track()
 
     def test_pnp_observability(self):
         test_pnp_observability_rejects_rank_deficient_geometry_without_motion_gate()

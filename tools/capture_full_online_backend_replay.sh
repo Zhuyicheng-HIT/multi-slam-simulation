@@ -96,8 +96,10 @@ setsid ros2 bag record --storage sqlite3 --output "$BAG_DIR" \
   /sensors/imu \
   /sensors/gnss/fix \
   /sensors/gnss/raw \
+  /mavros/imu/static_pressure \
   /sensors/optical_flow/rad \
   /vision/feature_tracks \
+  /vision/rgbd_geometry_tracks \
   /reliability/scheduler_state \
   /reliability/lidar_score \
   /reliability/imu_score \
@@ -220,7 +222,11 @@ verify_args=(
   --output "$RUN_DIR/bag_contract.json"
 )
 if [[ "$REQUIRE_VISUAL_BAG" == 1 ]]; then
-  verify_args+=(--require-visual --require-visual-factor-score)
+  verify_args+=(
+    --require-visual
+    --require-visual-factor-score
+    --require-rgbd-geometry
+  )
 fi
 set +e
 "${verify_args[@]}" \

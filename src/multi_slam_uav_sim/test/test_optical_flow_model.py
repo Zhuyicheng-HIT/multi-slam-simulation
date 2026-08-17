@@ -11,6 +11,7 @@ from multi_slam_uav_sim.optical_flow_model import (
     integrate_gyro,
     integrate_preferred_gyro,
     pixel_flow_to_radians,
+    rate_limit_ready,
     ros_flu_gyro_to_sensor_frd,
     scale_mavlink_translation,
     sensor_velocity_frd,
@@ -23,12 +24,29 @@ from multi_slam_uav_sim.optical_flow_model import (
 
 
 class OpticalFlowModelTest(unittest.TestCase):
-    def test_accumulated_flow_waits_for_observable_displacement(self):
-        self.assertFalse(
+    def test_rate_limiter_selects_every_second_nominal_30hz_frame_for_15hz(self):
+        period = 1.0 / 15.0
+        self.assertFalse(rate_limit_ready(0.033, period))
+        self.assertTrue(rate_limit_ready(0.066, period))
+        self.assertFalse(rate_limit_ready(float("nan"), period))
+
+    def test_periodic_flow_does_not_require_observable_displacement(self):
+        self.assertTrue(
             should_publish_accumulated_flow(0.3, 0.2, 180, 0.10, 0.75, 0.25, True)
         )
         self.assertTrue(
             should_publish_accumulated_flow(0.8, 0.1, 180, 0.10, 0.75, 0.25, True)
+        )
+        self.assertTrue(
+            should_publish_accumulated_flow(0.0, 0.0, 0, 0.10, 0.75, 0.25, True)
+        )
+
+    def test_accumulation_mode_still_waits_for_motion_or_timeout(self):
+        self.assertFalse(
+            should_publish_accumulated_flow(0.3, 0.2, 180, 0.10, 0.75, 0.25, False)
+        )
+        self.assertTrue(
+            should_publish_accumulated_flow(0.8, 0.1, 180, 0.10, 0.75, 0.25, False)
         )
 
     def test_accumulated_flow_releases_expired_window_with_exact_timing(self):

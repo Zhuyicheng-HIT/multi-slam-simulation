@@ -240,7 +240,10 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p gazebo_range_topic:=/flow/range
     -p gazebo_imu_topic:=/flow/imu
     -p imu_topic:=/mavros/imu/data_raw
-    -p max_rate_hz:=30.0
+    # The MTF companion path is consumed by a 10 Hz LiDAR-triggered backend.
+    # A deterministic 15 Hz stream preserves fresh zero-motion observations
+    # without spending CPU on frames the estimator cannot consume.
+    -p max_rate_hz:=${FLOW_RATE_HZ:-15.0}
     -p angular_scale:=1.0
     # The camera intrinsics define the metric scale. Keep an explicit override
     # for A/B tests, but do not hide geometry errors behind an empirical gain.
@@ -272,7 +275,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p range_topic:=/sim/optical_flow/range \
     -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
     -p imu_topic:=/mavros/imu/data_raw \
-    -p nominal_rate_hz:=30.0 \
+    -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
     -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
     -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
     >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
@@ -390,7 +393,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     fi
     sleep 1
   done
-  printf 'Requesting ArduPilot telemetry streams for MAVROS pose/IMU/GPS topics...\n'
+  printf 'Requesting ArduPilot telemetry streams for MAVROS pose/IMU/GPS/barometer topics...\n'
   : >"$LOG_DIR/mavros_stream_requester.log"
   mavros_imu_ready=0
   for stream_attempt in 1 2; do
@@ -404,6 +407,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
       -p position_rate_hz:=20.0 \
       -p imu_rate_hz:=100.0 \
       -p gps_rate_hz:=10.0 \
+      -p barometer_rate_hz:=10.0 \
       >>"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
     if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
         --topic /mavros/imu/data_raw --timeout 15 \
@@ -423,6 +427,24 @@ setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
   -p use_sim_time:="$USE_SIM_TIME" \
   -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
 pids+=("$!")
+
+if [[ "${ENABLE_SIM_BAROMETER:-1}" == "1" ]]; then
+  BARO_REFERENCE_ALTITUDE_M=${BARO_REFERENCE_ALTITUDE_M:-584.0}
+  setsid ros2 run multi_slam_uav_sim gz_barometer_sim --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
+    -p world_name:="$WORLD_NAME" \
+    -p model_name:=apm_iris \
+    -p link_name:=front_d435i_link \
+    -p sensor_name:=barometer \
+    -p publish_sim_topic:=true \
+    -p publish_ros_topic:=false \
+    -p reference_altitude_m:="$BARO_REFERENCE_ALTITUDE_M" \
+    >"$LOG_DIR/gz_barometer_sim.log" 2>&1 &
+  pids+=("$!")
+  printf 'Gazebo barometer simulation: enabled (/sim/barometer/pressure)\n'
+else
+  printf 'Gazebo barometer simulation: disabled\n'
+fi
 
 if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
   setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \

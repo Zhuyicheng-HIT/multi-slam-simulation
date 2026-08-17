@@ -8,6 +8,8 @@ from uf_backend_fusion.native_lidar import (
     EXPECTED_POSE_STATE_ORDER,
     NativeFactorBuffer,
     lidar_pose_observability,
+    lidar_reliability_layers,
+    lidar_vertical_observability,
     native_factor_from_message,
     point_plane_residual_jacobian,
     quaternion_xyzw_to_rpy,
@@ -98,6 +100,130 @@ class NativeLidarConversionTest(unittest.TestCase):
         self.assertEqual(observability.rotation_rank, 1)
         self.assertTrue(math.isinf(observability.condition_number))
         self.assertEqual(len(observability.weakest_direction), 6)
+
+    def test_vertical_observability_exposes_plane_support_and_pose_coupling(self):
+        message = make_message()
+        hessian = np.zeros((12, 12), dtype=float)
+        hessian[2, 2] = 10.0
+        hessian[4, 4] = 10.0
+        hessian[2, 4] = hessian[4, 2] = 9.0
+        hessian[0, 0] = 4.0
+        hessian[1, 1] = 6.0
+        hessian[3, 3] = 2.0
+        hessian[5, 5] = 3.0
+        message.state_hessian = hessian.ravel().tolist()
+        message.plane_normals_xyz = [
+            0.0, 0.0, 1.0,
+            0.0, 0.6, 0.8,
+            1.0, 0.0, 0.0,
+        ]
+        message.lidar_points_xyz = [
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ]
+        message.plane_points_xyz = [
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ]
+        factor = native_factor_from_message(message)
+
+        vertical = lidar_vertical_observability(factor)
+
+        self.assertAlmostEqual(vertical.raw_information, 10_000.0)
+        self.assertAlmostEqual(vertical.profile_information, 1_900.0)
+        self.assertAlmostEqual(vertical.coupling_retention_ratio, 0.19)
+        self.assertAlmostEqual(vertical.normal_z_energy_fraction, 0.5)
+        self.assertAlmostEqual(vertical.horizontal_plane_fraction, 2.0 / 3.0)
+
+        layers = lidar_reliability_layers(
+            factor,
+            vertical,
+            position_innovation_m=0.1,
+            yaw_innovation_rad=0.05,
+            position_innovation_scale_m=1.0,
+            yaw_innovation_scale_rad=0.5,
+        )
+        self.assertEqual(layers.health_degradation, 0.0)
+        self.assertAlmostEqual(layers.consistency_degradation, 0.1)
+        self.assertTrue(all(
+            0.0 <= value <= 1.0
+            for value in layers.isotropic_information_support_xyz
+        ))
+        self.assertTrue(all(
+            combined >= observable
+            for combined, observable in zip(
+                layers.combined_degradation_xyz,
+                layers.observability_degradation_xyz,
+            )
+        ))
+        np.testing.assert_allclose(
+            vertical.axis_raw_information, [4000.0, 6000.0, 10000.0]
+        )
+        np.testing.assert_allclose(
+            vertical.axis_profile_information, [4000.0, 6000.0, 1900.0]
+        )
+        np.testing.assert_allclose(
+            vertical.axis_coupling_retention_ratio, [1.0, 1.0, 0.19]
+        )
+        np.testing.assert_allclose(
+            vertical.axis_relative_support,
+            [2.0 / 3.0, 1.0, 1900.0 / 6000.0],
+        )
+        np.testing.assert_allclose(
+            np.asarray(vertical.translation_profile_information).reshape(3, 3),
+            np.diag([4000.0, 6000.0, 1900.0]),
+        )
+        np.testing.assert_allclose(
+            vertical.translation_normalized_eigenvalues,
+            [1900.0 / 6000.0, 2.0 / 3.0, 1.0],
+        )
+        np.testing.assert_allclose(
+            vertical.weakest_translation_direction, [0.0, 0.0, 1.0]
+        )
+
+    def test_facade_only_geometry_reports_weak_map_z_without_disabling_xy(self):
+        message = make_message()
+        hessian = np.zeros((12, 12), dtype=float)
+        hessian[:6, :6] = np.diag([100.0, 80.0, 0.10, 5.0, 5.0, 5.0])
+        message.state_hessian = hessian.ravel().tolist()
+        message.plane_normals_xyz = [
+            1.0, 0.0, 0.0,
+            0.8, 0.6, 0.0,
+            0.0, 1.0, 0.0,
+        ]
+        message.lidar_points_xyz = [
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            1.0, 1.0, 0.0,
+        ]
+        message.plane_points_xyz = list(message.lidar_points_xyz)
+
+        factor = native_factor_from_message(message)
+        directional = lidar_vertical_observability(factor)
+
+        np.testing.assert_allclose(
+            directional.axis_profile_information,
+            [100000.0, 80000.0, 100.0],
+        )
+        np.testing.assert_allclose(
+            directional.axis_relative_support, [1.0, 0.8, 0.001]
+        )
+        np.testing.assert_allclose(
+            directional.translation_normalized_eigenvalues,
+            [0.001, 0.8, 1.0],
+        )
+        np.testing.assert_allclose(
+            directional.weakest_translation_direction, [0.0, 0.0, 1.0]
+        )
+        self.assertEqual(directional.horizontal_plane_fraction, 0.0)
+        layers = lidar_reliability_layers(factor, directional)
+        self.assertAlmostEqual(layers.observability_degradation_xyz[2], 0.9)
+        self.assertLess(
+            layers.observability_degradation_xyz[0],
+            layers.observability_degradation_xyz[2],
+        )
 
     def test_trigger_only_frame_is_valid_without_a_lidar_factor(self):
         msg = make_message(10.125)

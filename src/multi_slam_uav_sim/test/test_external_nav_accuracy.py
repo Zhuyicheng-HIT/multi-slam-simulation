@@ -96,6 +96,7 @@ class ExternalNavAccuracyTest(unittest.TestCase):
         self.assertAlmostEqual(summary["rate_hz"], 10.0)
         self.assertAlmostEqual(summary["source_stamp_rate_hz"], 20.0)
         self.assertAlmostEqual(summary["source_to_arrival_rate_ratio"], 2.0)
+        self.assertAlmostEqual(summary["source_interval_median_ms"], 50.0)
         self.assertAlmostEqual(summary["arrival_interval_median_ms"], 100.0)
 
     def test_gnss_rate_gate_uses_sim_source_time_under_low_rtf(self):
@@ -108,8 +109,7 @@ class ExternalNavAccuracyTest(unittest.TestCase):
         self.assertAlmostEqual(summary["rate_hz"], 1.0)
         self.assertAlmostEqual(summary["source_stamp_rate_hz"], 2.5)
         self.assertAlmostEqual(topic_rate_for_gate("gnss", summary), 2.5)
-        self.assertAlmostEqual(
-            topic_rate_for_gate("external_nav", summary), 1.0)
+        self.assertAlmostEqual(topic_rate_for_gate("external_nav", summary), 2.5)
 
     def test_rigid_alignment_recovers_rotation_without_hiding_scale(self):
         estimate = np.asarray([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])

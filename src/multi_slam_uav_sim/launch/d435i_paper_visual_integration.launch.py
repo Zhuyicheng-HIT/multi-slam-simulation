@@ -42,6 +42,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "visual_initialization_require_time_lock", default_value="false"
         ),
+        DeclareLaunchArgument("external_nav_enabled", default_value="true"),
         DeclareLaunchArgument(
             "visual_factor_mode", default_value="paper_reprojection"
         ),
@@ -61,6 +62,18 @@ def generate_launch_description():
         DeclareLaunchArgument("performance_trace_path", default_value=""),
         DeclareLaunchArgument("backend_process_prefix", default_value=""),
         DeclareLaunchArgument("backend_numeric_threads", default_value="1"),
+        DeclareLaunchArgument("z_gauge_enabled", default_value="false"),
+        DeclareLaunchArgument("z_gauge_global_frame", default_value="fusion_map"),
+        DeclareLaunchArgument(
+            "barometer_topic", default_value="/sim/barometer/pressure"
+        ),
+        DeclareLaunchArgument("z_gauge_target_history_size", default_value="1"),
+        DeclareLaunchArgument(
+            "z_gauge_update_time_constant_s", default_value="0.60"
+        ),
+        DeclareLaunchArgument(
+            "z_gauge_maximum_correction_rate_mps", default_value="1.0"
+        ),
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
         DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
         DeclareLaunchArgument(
@@ -152,11 +165,28 @@ def generate_launch_description():
             "visual_initialization_require_time_lock": LaunchConfiguration(
                 "visual_initialization_require_time_lock"
             ),
+            "external_nav_enabled": LaunchConfiguration(
+                "external_nav_enabled"
+            ),
             "rgbd_minimum_depth_m": LaunchConfiguration(
                 "rgbd_minimum_depth_m"
             ),
             "rgbd_maximum_depth_m": LaunchConfiguration(
                 "rgbd_maximum_depth_m"
+            ),
+            "z_gauge_enabled": LaunchConfiguration("z_gauge_enabled"),
+            "z_gauge_global_frame": LaunchConfiguration(
+                "z_gauge_global_frame"
+            ),
+            "barometer_topic": LaunchConfiguration("barometer_topic"),
+            "z_gauge_target_history_size": LaunchConfiguration(
+                "z_gauge_target_history_size"
+            ),
+            "z_gauge_update_time_constant_s": LaunchConfiguration(
+                "z_gauge_update_time_constant_s"
+            ),
+            "z_gauge_maximum_correction_rate_mps": LaunchConfiguration(
+                "z_gauge_maximum_correction_rate_mps"
             ),
         }),
         include("uf_shared_mapping", "shared_mapping.launch.py", {

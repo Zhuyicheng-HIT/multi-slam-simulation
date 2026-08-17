@@ -16,6 +16,9 @@ class TrackResult:
     depth_m: np.ndarray
     depth_sigma_m: np.ndarray
     depth_valid: np.ndarray
+    current_depth_m: np.ndarray
+    current_depth_sigma_m: np.ndarray
+    current_depth_valid: np.ndarray
     geometric_inlier: np.ndarray
     reprojection_error: np.ndarray
     rotation: object
@@ -275,6 +278,9 @@ class RgbdFeatureTracker:
                 pnp_information_rank, pnp_condition_number = pnp_observability(
                     points3d[local], rotation, translation
                 )
+        current_depth_m, current_depth_valid, current_depth_sigma_m = (
+            self._sample_depth(depth, current)
+        )
         result = TrackResult(
             previous,
             current,
@@ -284,6 +290,9 @@ class RgbdFeatureTracker:
             depth_m,
             depth_sigma_m,
             depth_valid,
+            current_depth_m,
+            current_depth_sigma_m,
+            current_depth_valid,
             geometric,
             reprojection,
             rotation,
@@ -291,7 +300,6 @@ class RgbdFeatureTracker:
             pnp_inlier_ratio,
             pnp_information_rank,
             pnp_condition_number)
-        _, current_depth_valid, _ = self._sample_depth(depth, current)
         retained = current[current_depth_valid]
         retained_ids = ids[current_depth_valid]
         retained_ages = ages[current_depth_valid]

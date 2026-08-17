@@ -5,6 +5,7 @@ unified_backend_fusion:
     gnss_topic: /sensors/gnss/fix
     flow_topic: /sensors/optical_flow/rad
     visual_tracks_topic: /vision/feature_tracks
+    rgbd_geometry_tracks_topic: /vision/rgbd_geometry_tracks
     imu_topic: /sensors/imu
     scheduler_topic: /reliability/scheduler_state
     relocalization_result_topic: /relocalization/result
@@ -13,11 +14,17 @@ unified_backend_fusion:
     # FAST-LIO may insert a scan into its static map only from this gated
     # stream. Final odometry remains continuous even when map writes pause.
     frontend_map_pose_topic: /fusion/unified/map_pose
+    # The FAST-LIO request handshake uses current local camera_init -> body
+    # states. It is separate from delayed map writes and global Z output.
+    frontend_activation_pose_topic: /fusion/unified/frontend_activation_odom
     # RISK can mean optional GNSS/flow loss while LiDAR remains healthy. Map
     # admission still requires LiDAR-specific quality and covariance gates.
     frontend_map_commit_allowed_health_states: [NORMAL, DEGRADED, RISK, RECOVERED]
     frontend_map_max_position_variance_m2: 4.0
     frontend_map_max_orientation_variance_rad2: 0.25
+    # Insert a scan only when its state is about to leave the 8-state window.
+    # Odom remains current; only irreversible KD-tree map writes are delayed.
+    frontend_map_commit_delay_states: 7
     path_topic: /fusion/unified/path
     diagnostic_topic: /fusion/unified/diagnostics
     # These names are part of the FAST-LIO factor contract. Use an explicit TF
@@ -34,10 +41,29 @@ unified_backend_fusion:
     cpp_math_core_required: true
     # Native LiDAR/scan handshakes and FCU IMU ingress use separate mutually
     # exclusive callback groups. Numeric kernels remain single-threaded.
-    executor_threads: 2
+    executor_threads: 3
+    # At 100 Hz this retains 0.32 s, enough for several LiDAR windows while
+    # dropping stale DDS backlog before it can become navigation latency.
+    flow_qos_depth: 32
     # Stable four-source behavior is unchanged unless the dedicated visual
     # launch overrides this with paper_reprojection.
     visual_factor_mode: disabled
+    # Sparse metric depth complements the 2-D reprojection rows. It is added
+    # only after the corresponding visual batch passes D_V, PnP and backend
+    # prefit gates; a missing depth batch never rejects the visual factor.
+    rgbd_depth_factor_enabled: true
+    rgbd_depth_factor_tolerance_s: 0.010
+    rgbd_depth_factor_minimum_tracks: 12
+    # Information is normalized to a 20-track equivalent, so retaining more
+    # than 32 spatially distributed tracks adds compute but no batch weight.
+    rgbd_depth_factor_maximum_tracks: 32
+    rgbd_depth_factor_maximum_rmse_m: 0.20
+    rgbd_depth_factor_information_scale: 0.25
+    # LiDAR remains the geometric skeleton, but every quality-gated RGB-D
+    # depth batch is currently retained. A scalar LiDAR health result cannot
+    # prove that the map-Z direction is observable in a facade-only scene.
+    rgbd_depth_healthy_lidar_profile_information: 8000.0
+    rgbd_depth_healthy_lidar_stride: 1
     visual_time_offset_s: 0.0
     # Camera-to-IMU offset is estimated from RGB-D PnP angular speed and the
     # FCU gyro. The configured value remains active until a stable estimate is
@@ -110,7 +136,12 @@ unified_backend_fusion:
     # Hardware deployments must replace these values with measured calibration.
     visual_rotation_body_camera: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
     visual_translation_body_camera_m: [0.20, 0.0, 0.02]
-    nonlinear_max_iterations: 4
+    # Routine tracking must finish before the next 10 Hz LiDAR keyframe.
+    # Initialization and relocalization retain extra nonlinear headroom.
+    nonlinear_max_iterations: 2
+    nonlinear_initialization_max_iterations: 4
+    nonlinear_recovery_max_iterations: 4
+    nonlinear_reintegration_max_iterations: 1
     nonlinear_damping: 1.0e-6
     nonlinear_convergence_threshold: 1.0e-5
     # Huber threshold is expressed in point-plane residual standard deviations.
@@ -145,6 +176,15 @@ unified_backend_fusion:
     minimum_flow_quality: 20
     minimum_flow_distance_m: 0.08
     maximum_flow_distance_m: 12.0
+    # MTF-01P factory contract. The 10 cm base term retains the validated
+    # optical-flow/model uncertainty; ranging contributes 4 cm through 2 m
+    # and 2% above 2 m without creating a vertical factor.
+    flow_base_displacement_sigma_m: 0.10
+    flow_range_near_limit_m: 2.0
+    flow_range_near_sigma_m: 0.04
+    flow_range_far_relative_sigma: 0.02
+    flow_maximum_speed_at_1m_mps: 7.0
+    flow_speed_gate_margin: 1.10
     gnss_default_variance_m2: 4.0
     gnss_jump_gate_m: 20.0
     gnss_jump_speed_mps: 15.0
@@ -157,6 +197,67 @@ unified_backend_fusion:
     # continuous GNSS axis completely. Invalid fixes and temporal jumps remain
     # hard gates before this recovery floor is applied.
     gnss_minimum_axis_information_scale: 0.01
+    # Directional handoff diagnostics compare weak LiDAR translation axes with
+    # fresh GNSS/RGB-D information. Raw point-plane rows are never rescaled:
+    # direct per-axis residual modification breaks map/state consistency.
+    axis_information_handoff_enabled: false
+    # Frozen figure-eight evidence separated X/Y (>=0.45) from weak Z
+    # (median about 0.31). Hysteresis therefore hands off only the weak axis.
+    axis_handoff_enter_support: 0.35
+    axis_handoff_exit_support: 0.45
+    axis_handoff_minimum_lidar_information_scale: 0.000001
+    axis_handoff_maximum_lidar_to_alternative_ratio: 1.0
+    # GNSS is 5 Hz and accepted RGB-D depth is about 5 Hz versus 10 Hz LiDAR.
+    axis_handoff_gnss_rate_ratio: 0.50
+    axis_handoff_rgbd_rate_ratio: 0.50
+    axis_handoff_rgbd_freshness_s: 0.60
+    axis_handoff_rgbd_minimum_support: 0.25
+    # A weak axis plus a fresh independent disagreement pauses only the
+    # irreversible map write for that scan. Odom and every raw factor remain
+    # active. Delayed map publication reuses the admission result belonging to
+    # the same source stamp instead of the current frame's result.
+    # The current front-end commits whole scans. Rejecting one scan because a
+    # single axis is weak starves all three map axes, so protection stays off
+    # until the front-end has an axis-aware commit transform.
+    axis_map_protection_enabled: false
+    axis_map_protection_gnss_disagreement_m: 0.20
+    # Raw FCU static pressure is a last-resort local relative-Z constraint.
+    # A fresh datum is fitted from the two seconds immediately before each
+    # activation and destroyed at recovery; it is never a global altitude.
+    barometer_fallback_enabled: true
+    barometer_baseline_window_s: 2.0
+    barometer_minimum_baseline_samples: 8
+    barometer_minimum_baseline_span_s: 0.8
+    barometer_maximum_sample_age_s: 0.5
+    barometer_scale_height_m: 8434.5
+    barometer_default_height_variance_m2: 0.25
+    barometer_maximum_relative_height_m: 30.0
+    barometer_prefit_nis_gate: 9.0
+    barometer_minimum_information_scale: 0.05
+    # If fresh GNSS Z is rejected by its own innovation gate while no other
+    # Z source is available, start a local pressure segment even when the
+    # LiDAR Hessian has not yet declared Z weak.
+    barometer_activate_on_gnss_z_inconsistency: true
+    # Experimental dual-frame Z gauge. The FAST-LIO map remains locally
+    # consistent in camera_init; when enabled, /fusion/unified/odom is
+    # expressed in fusion_map and a dynamic fusion_map->camera_init transform
+    # carries the bounded GNSS-derived height correction. Pressure never
+    # initializes or updates this global datum.
+    z_gauge_enabled: false
+    z_gauge_global_frame: fusion_map
+    z_gauge_initialization_samples: 3
+    z_gauge_initialization_max_spread_m: 0.30
+    z_gauge_target_history_size: 1
+    z_gauge_update_time_constant_s: 0.60
+    z_gauge_maximum_correction_rate_mps: 1.0
+    z_gauge_maximum_correction_step_m: 0.30
+    z_gauge_minimum_variance_m2: 0.04
+    z_gauge_maximum_variance_m2: 25.0
+    # Keep the datum fixed; let GNSS-Z enter the window only when LiDAR-Z is weak.
+    z_gauge_weak_axis_factor_handoff_enabled: true
+    # Once the global gauge is initialized, GNSS Z is routed to fusion_map and
+    # no longer moves the camera_init local map a second time.
+    z_gauge_local_z_suppression_variance_m2: 1.0e12
     # Keep optical flow in the body frame and relinearize its map projection
     # against the previous window state. A valid gyro-compensated exposure is
     # retained through yaw; residual and scheduler gates remain authoritative.
@@ -228,7 +329,10 @@ unified_backend_fusion:
     # Solver damping is never folded into the prior itself.
     marginal_rank_tolerance: 1.0e-9
     marginal_covariance_update_period_s: 1.0
+    # Keep time-offset estimation online, but never estimate installation
+    # extrinsics. The fixed fast-calib/measured transform is authoritative.
     online_calibration_enabled: true
+    calibration_estimate_rotation: false
     calibration_motion_topic: /calibration/lidar_relative_motion
     # Shadow-only until the locked bundle is also applied to scan timing,
     # deskew, and the front-end extrinsic while preserving world LiDAR pose.
@@ -292,11 +396,16 @@ unified_backend_fusion:
     # Commit one keyframe only after the optimized state, cost and information
     # matrix pass the integrity gate. Failed updates restore the full window.
     transactional_update_enabled: true
-    # Do not let a FAST-LIO local-map jump enter the shared window. A rejected
-    # frame latches the backend until an accepted relocalization resets it.
+    # Reject transient FAST-LIO local-map jumps. If the mismatch persists while
+    # the sensor, raw correspondences and 6-DoF geometry remain healthy, admit
+    # only a weak recovery factor. Recovery observations never update the map
+    # or online calibration.
     lidar_prediction_gate_enabled: true
     lidar_prediction_gate_max_position_m: 1.0
     lidar_prediction_gate_max_yaw_rad: 0.50
+    lidar_prediction_gate_recovery_after_rejections: 3
+    lidar_prediction_recovery_weight: 0.20
+    lidar_prediction_recovery_inflation: 5.0
     optimization_max_translation_correction_m: 1.0
     optimization_max_rotation_correction_rad: 0.50
     optimization_max_velocity_correction_mps: 5.0

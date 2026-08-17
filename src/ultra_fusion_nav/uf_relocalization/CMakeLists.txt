@@ -25,6 +25,13 @@ target_include_directories(active_relocalization_policy PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(automatic_loop_closure_policy src/automatic_loop_closure_policy.cpp)
+target_compile_features(automatic_loop_closure_policy PUBLIC cxx_std_17)
+target_include_directories(automatic_loop_closure_policy PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(registration_core src/registration_core.cpp)
 target_compile_features(registration_core PUBLIC cxx_std_17)
 target_include_directories(registration_core PUBLIC
@@ -78,7 +85,7 @@ target_include_directories(relocalization_node PRIVATE
 )
 target_link_libraries(relocalization_node
   registration_core keyframe_database descriptor_core multi_frame_consistency_gate
-  keyframe_synchronization
+  keyframe_synchronization automatic_loop_closure_policy
   Eigen3::Eigen ${PCL_LIBRARIES}
 )
 ament_target_dependencies(relocalization_node
@@ -101,7 +108,8 @@ ament_target_dependencies(lidar_calibration_motion_node
 )
 target_compile_definitions(lidar_calibration_motion_node PRIVATE ${PCL_DEFINITIONS})
 
-install(TARGETS active_relocalization_policy registration_core keyframe_database descriptor_core
+install(TARGETS active_relocalization_policy automatic_loop_closure_policy
+  registration_core keyframe_database descriptor_core
   multi_frame_consistency_gate keyframe_synchronization
   EXPORT export_registration_core
   ARCHIVE DESTINATION lib
@@ -120,6 +128,10 @@ if(BUILD_TESTING)
     test_active_relocalization_policy test/test_active_relocalization_policy.cpp)
   target_link_libraries(
     test_active_relocalization_policy active_relocalization_policy)
+  ament_add_gtest(
+    test_automatic_loop_closure_policy test/test_automatic_loop_closure_policy.cpp)
+  target_link_libraries(
+    test_automatic_loop_closure_policy automatic_loop_closure_policy)
   ament_add_gtest(test_registration_core test/test_registration_core.cpp)
   target_link_libraries(test_registration_core registration_core)
   ament_add_gtest(

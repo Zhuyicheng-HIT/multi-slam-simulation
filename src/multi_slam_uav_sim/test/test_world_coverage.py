@@ -17,7 +17,11 @@ LANDMARKS = (
 URBAN_STRUCTURES = (
     PACKAGE_ROOT / "models" / "s_curve_urban_structures" / "model.sdf"
 )
+URBAN_TEXTURES = URBAN_STRUCTURES.parent / "materials" / "textures"
 AIRCRAFT_MODEL = PACKAGE_ROOT / "models" / "iris_apm_rgbd" / "model.sdf"
+D435I_DOWNWARD_MODEL = (
+    PACKAGE_ROOT / "models" / "d435i_downward_rgbd" / "model.sdf"
+)
 S_CURVE_CONTROLLER = (
     PACKAGE_ROOT / "multi_slam_uav_sim" / "guided_s_curve_waypoints.py"
 )
@@ -145,6 +149,22 @@ def test_optical_flow_camera_and_range_point_downward():
         # Gazebo sensors look along local +X. R_y(+pi/2) maps it to body -Z.
         forward_body_z = -math.sin(pose[4])
         assert forward_body_z < -0.999999
+
+
+def test_rgbd_cameras_run_at_fifteen_hz_without_throttling_optical_flow():
+    aircraft = ET.parse(AIRCRAFT_MODEL).getroot()
+    sensors = {
+        sensor.get("name"): sensor
+        for sensor in aircraft.findall(".//sensor")
+    }
+    assert float(sensors["front_d435i_rgbd"].findtext("update_rate")) == 15.0
+    assert float(sensors["optical_flow_mono_down"].findtext("update_rate")) == 30.0
+    assert float(sensors["optical_flow_range"].findtext("update_rate")) == 30.0
+
+    downward = ET.parse(D435I_DOWNWARD_MODEL).getroot()
+    rgbd = downward.find(".//sensor[@name='d435i_rgbd_down']")
+    assert rgbd is not None
+    assert float(rgbd.findtext("update_rate")) == 15.0
 
 
 def test_companion_sensor_payloads_are_dynamically_negligible():
@@ -276,9 +296,43 @@ def test_urban_structures_are_loaded_and_replace_the_pillar_forest():
         "west_background_facade",
         "north_background_facade",
         "south_background_facade",
+        "east_wall_relief_01",
+        "west_wall_relief_03",
+        "north_wall_relief_05",
+        "south_wall_relief_01",
     }
     assert required <= collision_names
-    assert len(collision_names) >= 24
+    assert len(collision_names) >= 36
+
+    albedo_maps = {
+        element.text
+        for element in urban_root.findall(".//albedo_map")
+    }
+    expected_textures = {
+        "materials/textures/facade_a_v2.png",
+        "materials/textures/facade_b_v2.png",
+        "materials/textures/tunnel_v1.png",
+        "materials/textures/canyon_v1.png",
+    }
+    assert expected_textures <= albedo_maps
+    for relative_path in expected_textures:
+        texture = URBAN_STRUCTURES.parent / relative_path
+        assert texture.is_file()
+        assert texture.stat().st_size > 100_000
+
+    textured_visuals = {
+        visual.get("name"): visual.findtext("material/pbr/metal/albedo_map")
+        for visual in urban_root.findall(".//visual")
+    }
+    assert textured_visuals["short_tunnel_left_wall_visual"] == (
+        "materials/textures/tunnel_v1.png"
+    )
+    assert textured_visuals["urban_canyon_east_south_visual"] == (
+        "materials/textures/canyon_v1.png"
+    )
+    assert textured_visuals["south_east_facade_visual"] == (
+        "materials/textures/facade_a_v2.png"
+    )
 
 
 def test_forward_visual_geometry_covers_the_figure_eight_at_simulation_range():
@@ -513,3 +567,5 @@ def test_stable_unified_launch_exports_native_factors_without_scan_handshake():
     assert "FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0" in frontend
     assert "FRONTEND_SCAN_PREDICTION_ENABLED:-false" in backend
     assert "FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0" in validation
+    assert "VALIDATION_RELIABILITY_MODE:-dynamic" in validation
+    assert 'RELIABILITY_MODE="$VALIDATION_RELIABILITY_MODE"' in validation

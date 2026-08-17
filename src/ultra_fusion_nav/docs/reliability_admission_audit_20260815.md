@@ -9,7 +9,8 @@ the sliding-window state, or the map representation:
 - Optical-flow non-zero translation is no longer a sensor-health requirement.
 - IMU admission is health-only; low excitation and preintegration NIS remain
   diagnostics and factor-consistency evidence.
-- The companion-computer GNSS stream is latest-sample throttled to 2.5 Hz.
+- The companion-computer GNSS stream is latest-sample throttled to 5 Hz to
+  match the measured target receiver link.
 - Fixed measured extrinsics remain authoritative. Online extrinsic calibration
   stays optional; online time calibration remains shadow-only.
 
@@ -62,12 +63,13 @@ sources. Each factor still has its own consistency gate.
 ## GNSS Algorithm Rate
 
 The FCU/MAVROS source remains untouched. The sensor pipeline publishes the
-newest `NavSatFix` and matching `GPSRAW` metadata to the estimator at 2.5 Hz,
+newest `NavSatFix` and matching `GPSRAW` metadata to the estimator at 5 Hz,
 preserving source timestamps and dropping superseded samples rather than
 replaying a FIFO backlog. A missing metadata match does not suppress a valid
 fix; diagnostics report paired and unpaired counts.
 
-Measured source-stamp output rate in the short simulation was 2.499-2.500 Hz.
+The updated target source-stamp rate is 5 Hz and requires a fresh short-run
+measurement; older 2.499-2.500 Hz runs are retained as historical baselines.
 
 ## Verification
 

@@ -53,6 +53,7 @@ setup(
             "fcu_mavlink_flow_receiver = multi_slam_uav_sim.fcu_mavlink_flow_receiver:main",
             "flight_state_bridge = multi_slam_uav_sim.flight_state_bridge:main",
             "gazebo_clock_bridge = multi_slam_uav_sim.gazebo_clock_bridge:main",
+            "gz_barometer_sim = multi_slam_uav_sim.gz_barometer_sim:main",
             "gazebo_optical_flow_to_mavros = multi_slam_uav_sim.gazebo_optical_flow_to_mavros:main",
             "gz_mid360_pointcloud_bridge = multi_slam_uav_sim.gz_mid360_pointcloud_bridge:main",
             "gz_rgbd_latest_bridge = multi_slam_uav_sim.gz_rgbd_latest_bridge:main",

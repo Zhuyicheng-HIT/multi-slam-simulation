@@ -475,6 +475,50 @@ class SpatiotemporalCalibrationTest(unittest.TestCase):
             0.03,
         )
 
+    def test_fixed_extrinsic_mode_never_updates_rotation(self):
+        extrinsic = so3_exp(np.asarray([0.25, -0.18, 0.31]))
+        calibrator = OnlineSpatiotemporalCalibrator(
+            minimum_pairs=3,
+            time_offset_range_s=0.0,
+            minimum_correlation=0.2,
+            minimum_correlation_margin=0.0,
+            minimum_time_accumulated_rotation_rad=0.01,
+            estimate_rotation=False,
+            lock_count=1,
+        )
+        calibrator.set_initial_rotation(extrinsic)
+        imu_samples = []
+        increments = (
+            np.asarray([0.08, 0.00, 0.02]),
+            np.asarray([0.00, -0.07, 0.03]),
+            np.asarray([0.04, 0.05, 0.00]),
+        )
+        for index, increment in enumerate(increments):
+            start_s = index * 0.1
+            end_s = start_s + 0.1
+            body_rate = extrinsic @ increment / 0.1
+            imu_samples.extend((
+                ImuSample(
+                    start_s, (0.0, 0.0, 0.0), tuple(body_rate)
+                ),
+                ImuSample(
+                    end_s, (0.0, 0.0, 0.0), tuple(body_rate)
+                ),
+            ))
+            update = calibrator.update(
+                LidarMotionSample(
+                    start_s, end_s, so3_exp(increment), weight=1.0
+                ),
+                imu_samples,
+            )
+
+        self.assertTrue(calibrator.rotation_locked)
+        self.assertTrue(calibrator.initial_rotation_set)
+        self.assertEqual(update.rotation_residual_rad, -1.0)
+        np.testing.assert_allclose(
+            update.lidar_to_body_rotation, extrinsic, atol=1.0e-12
+        )
+
     def test_yaw_only_motion_does_not_claim_rotation_observability(self):
         calibrator = OnlineSpatiotemporalCalibrator(
             minimum_pairs=4,

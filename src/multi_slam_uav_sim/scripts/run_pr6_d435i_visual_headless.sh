@@ -48,6 +48,7 @@ esac
 PR6_START_RTABMAP=${PR6_START_RTABMAP:-1}
 VISUAL_BRIDGE_ENABLED=${VISUAL_BRIDGE_ENABLED:-1}
 VISUAL_FRONTEND_ENABLED=${VISUAL_FRONTEND_ENABLED:-1}
+EXTERNAL_NAV_ENABLED=${EXTERNAL_NAV_ENABLED:-1}
 NATIVE_LIDAR_WAIT_S=${NATIVE_LIDAR_WAIT_S:-240}
 EXTERNAL_NAV_WAIT_S=${EXTERNAL_NAV_WAIT_S:-120}
 case "$PR6_START_RTABMAP" in
@@ -65,6 +66,11 @@ case "$VISUAL_FRONTEND_ENABLED" in
   1) VISUAL_FRONTEND_ENABLED_BOOL=true ;;
   *) printf 'VISUAL_FRONTEND_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
+case "$EXTERNAL_NAV_ENABLED" in
+  0) EXTERNAL_NAV_ENABLED_BOOL=false ;;
+  1) EXTERNAL_NAV_ENABLED_BOOL=true ;;
+  *) printf 'EXTERNAL_NAV_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
 SIM_RGBD_MIN_DEPTH_M=${SIM_RGBD_MIN_DEPTH_M:-0.30}
 SIM_RGBD_MAX_DEPTH_M=${SIM_RGBD_MAX_DEPTH_M:-10.0}
@@ -81,6 +87,11 @@ VISUAL_CANDIDATE_QUALITY_ENABLED=${VISUAL_CANDIDATE_QUALITY_ENABLED:-1}
 VISUAL_PENDING_ENABLED=${VISUAL_PENDING_ENABLED:-1}
 VISUAL_REQUIRE_TIME_LOCK=${VISUAL_REQUIRE_TIME_LOCK:-0}
 PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-0}
+Z_GAUGE_ENABLED=${Z_GAUGE_ENABLED:-0}
+Z_GAUGE_GLOBAL_FRAME=${Z_GAUGE_GLOBAL_FRAME:-fusion_map}
+Z_GAUGE_TARGET_HISTORY_SIZE=${Z_GAUGE_TARGET_HISTORY_SIZE:-1}
+Z_GAUGE_UPDATE_TIME_CONSTANT_S=${Z_GAUGE_UPDATE_TIME_CONSTANT_S:-0.60}
+Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS=${Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS:-1.0}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 case "$VISUAL_CANDIDATE_QUALITY_ENABLED" in
@@ -102,6 +113,11 @@ case "$PERFORMANCE_PROFILING_ENABLED" in
   0) PERFORMANCE_PROFILING_ENABLED_BOOL=false ;;
   1) PERFORMANCE_PROFILING_ENABLED_BOOL=true ;;
   *) printf 'PERFORMANCE_PROFILING_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$Z_GAUGE_ENABLED" in
+  0) Z_GAUGE_ENABLED_BOOL=false ;;
+  1) Z_GAUGE_ENABLED_BOOL=true ;;
+  *) printf 'Z_GAUGE_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 if [[ ! "$BACKEND_NUMERIC_THREADS" =~ ^[1-9][0-9]*$ ]]; then
   printf 'BACKEND_NUMERIC_THREADS must be a positive integer.\n' >&2
@@ -132,6 +148,8 @@ printf 'visual_factor_mode=%s\nvisual_keyframe_profile=%s\n' \
 printf 'rtabmap_enabled=%s\nonline_mapping_mode=%s\n' \
   "$PR6_START_RTABMAP" "$ONLINE_MAPPING_MODE" \
   >>"$RUN_DIR/visual_ablation_mode.env"
+printf 'external_nav_enabled=%s\n' "$EXTERNAL_NAV_ENABLED" \
+  >>"$RUN_DIR/visual_ablation_mode.env"
 printf 'backend_cpuset=%s\nbackend_numeric_threads=%s\n' \
   "${BACKEND_CPUSET:-normal}" "$BACKEND_NUMERIC_THREADS" \
   >>"$RUN_DIR/visual_ablation_mode.env"
@@ -139,6 +157,11 @@ printf 'visual_require_time_lock=%s\n' "$VISUAL_REQUIRE_TIME_LOCK" \
   >>"$RUN_DIR/visual_ablation_mode.env"
 printf 'sim_rgbd_depth_range_m=%s..%s\n' \
   "$SIM_RGBD_MIN_DEPTH_M" "$SIM_RGBD_MAX_DEPTH_M" \
+  >>"$RUN_DIR/visual_ablation_mode.env"
+printf 'z_gauge=%s history=%s tau_s=%s max_rate_mps=%s\n' \
+  "$Z_GAUGE_ENABLED_BOOL" "$Z_GAUGE_TARGET_HISTORY_SIZE" \
+  "$Z_GAUGE_UPDATE_TIME_CONSTANT_S" \
+  "$Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS" \
   >>"$RUN_DIR/visual_ablation_mode.env"
 STARTUP_TRACE="$RUN_DIR/startup_chain.tsv"
 printf 'stage\twall_utc\telapsed_wall_s\n' >"$STARTUP_TRACE"
@@ -358,8 +381,15 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   rgbd_minimum_depth_m:="$SIM_RGBD_MIN_DEPTH_M" \
   rgbd_maximum_depth_m:="$SIM_RGBD_MAX_DEPTH_M" \
   visual_initialization_require_time_lock:="$VISUAL_REQUIRE_TIME_LOCK_BOOL" \
+  external_nav_enabled:="$EXTERNAL_NAV_ENABLED_BOOL" \
   performance_profiling_enabled:="$PERFORMANCE_PROFILING_ENABLED_BOOL" \
   performance_trace_path:="$RUN_DIR/backend_cycle_trace.jsonl" \
+  z_gauge_enabled:="$Z_GAUGE_ENABLED_BOOL" \
+  z_gauge_global_frame:="$Z_GAUGE_GLOBAL_FRAME" \
+  barometer_topic:="${BAROMETER_TOPIC:-/sim/barometer/pressure}" \
+  z_gauge_target_history_size:="$Z_GAUGE_TARGET_HISTORY_SIZE" \
+  z_gauge_update_time_constant_s:="$Z_GAUGE_UPDATE_TIME_CONSTANT_S" \
+  z_gauge_maximum_correction_rate_mps:="$Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS" \
   "${backend_prefix_launch_args[@]}" \
   backend_numeric_threads:="$BACKEND_NUMERIC_THREADS" \
   shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
@@ -428,10 +458,12 @@ setsid python3 "$WS_ROOT/src/ultra_fusion_nav/scripts/record_lio_trajectory.py" 
   --output-dir "$RUN_DIR/trajectory" \
   >"$RUN_DIR/trajectory_recorder.log" 2>&1 &
 record_pid trajectory_recorder "$!"
-setsid timeout 20s ros2 topic echo /external_nav/diagnostics \
-  --no-daemon --spin-time 10.0 --once --full-length \
-  >"$RUN_DIR/external_nav_first_diagnostics.yaml" 2>&1 &
-record_pid external_nav_diagnostics "$!"
+if [[ "$EXTERNAL_NAV_ENABLED" == 1 ]]; then
+  setsid timeout 20s ros2 topic echo /external_nav/diagnostics \
+    --no-daemon --spin-time 10.0 --once --full-length \
+    >"$RUN_DIR/external_nav_first_diagnostics.yaml" 2>&1 &
+  record_pid external_nav_diagnostics "$!"
+fi
 setsid ros2 run multi_slam_uav_sim simulation_performance_monitor --ros-args \
   -p use_sim_time:=true \
   -p output_path:="$RUN_DIR/simulation_performance.json" \
@@ -479,17 +511,21 @@ if [[ "$PR6_START_RTABMAP" == 1 ]]; then
   wait_for_publisher /rtabmap/odom 120
 fi
 wait_for_publisher /reliability/scheduler_state 45
-if ! wait_for_topic /fusion/runtime_external_nav "$EXTERNAL_NAV_WAIT_S"; then
-  timeout 10s ros2 topic echo /external_nav/diagnostics \
-    --no-daemon --spin-time 7.0 --once --full-length \
-    >"$RUN_DIR/startup_failure_external_nav_diagnostics.yaml" 2>&1 || true
-  timeout 10s ros2 topic echo /reliability/scheduler_state \
-    --no-daemon --spin-time 7.0 --once --full-length \
-    >"$RUN_DIR/startup_failure_scheduler_state.yaml" 2>&1 || true
-  printf 'ExternalNav gate did not become usable.\n' >&2
-  exit 7
+if [[ "$EXTERNAL_NAV_ENABLED" == 1 ]]; then
+  if ! wait_for_topic /fusion/runtime_external_nav "$EXTERNAL_NAV_WAIT_S"; then
+    timeout 10s ros2 topic echo /external_nav/diagnostics \
+      --no-daemon --spin-time 7.0 --once --full-length \
+      >"$RUN_DIR/startup_failure_external_nav_diagnostics.yaml" 2>&1 || true
+    timeout 10s ros2 topic echo /reliability/scheduler_state \
+      --no-daemon --spin-time 7.0 --once --full-length \
+      >"$RUN_DIR/startup_failure_scheduler_state.yaml" 2>&1 || true
+    printf 'ExternalNav gate did not become usable.\n' >&2
+    exit 7
+  fi
+  trace_stage external_nav_gate_open
+else
+  trace_stage external_nav_gate_disabled
 fi
-trace_stage external_nav_gate_open
 if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
   # At startup the shared map is intentionally empty. Under software-rendered
   # simulation load, waiting for a serialized empty PointCloud2 can race the

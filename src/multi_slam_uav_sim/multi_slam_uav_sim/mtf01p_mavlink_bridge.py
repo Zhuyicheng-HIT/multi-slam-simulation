@@ -49,13 +49,15 @@ class Mtf01pMavlinkBridge(Node):
             "source_system": 200,
             "source_component": 88,
             "frame_id": "mtf01_flow_sensor",
+            # Physical MTF-01P contract.  The simulation launcher overrides
+            # this with its camera-limited cadence; TCP/serial stays 100 Hz.
             "nominal_rate_hz": 100.0,
             "maximum_imu_gap_s": 0.12,
             "maximum_imu_wait_wall_s": 0.25,
             "align_sim_imu_clock": True,
             "range_min_m": 0.02,
-            "range_max_m": 8.0,
-            "range_fov_rad": math.radians(6.0),
+            "range_max_m": 12.0,
+            "range_fov_rad": math.radians(1.5),
             "restamp_output": False,
             "report_path": "",
         }
@@ -453,6 +455,25 @@ class Mtf01pMavlinkBridge(Node):
                 json.dumps(
                     {
                         "mode": self.mode,
+                        "nominal_rate_hz": self.nominal_rate_hz,
+                        "range_contract": {
+                            "min_m_600lux": 0.02,
+                            "min_m_70klux": 0.01,
+                            "max_m_600lux": 12.0,
+                            "max_m_70klux": 8.0,
+                            "range_fov_deg": 1.5,
+                            "flow_fov_deg": 42.0,
+                            "flow_min_working_m": 0.08,
+                            "flow_max_speed_mps_at_1m": 7.0,
+                            "environment_min_lux": 60.0,
+                            "range_accuracy_m_through_2m": 0.04,
+                            "range_accuracy_relative_above_2m": 0.02,
+                            "range_wavelength_nm": 808.0,
+                            "serial_baud": 115200,
+                            "serial_logic_v": 3.3,
+                            "supply_v": 5.0,
+                            "average_current_ma": 100.0,
+                        },
                         "counts": self.counts,
                         "imu_time_offset_s": offset_p05,
                         "imu_time_offset_p50_s": offset_p50,

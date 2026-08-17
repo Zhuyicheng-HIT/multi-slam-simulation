@@ -743,7 +743,7 @@
       <sensor name="front_d435i_rgbd" type="rgbd_camera">
         <!-- The Gazebo sensor wakes when its transport topics have subscribers. -->
         <always_on>0</always_on>
-        <update_rate>30</update_rate>
+        <update_rate>15</update_rate>
         <visualize>false</visualize>
         <topic>/front/d435i/gz</topic>
         <camera>
@@ -774,6 +774,23 @@
             <z><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></z>
           </linear_acceleration>
         </imu>
+      </sensor>
+      <!-- Gazebo-native barometer. The ROS bridge converts this noisy sensor
+           stream to the same FluidPressure interface used by MAVROS. -->
+      <sensor name="barometer" type="air_pressure">
+        <always_on>1</always_on>
+        <update_rate>20</update_rate>
+        <visualize>false</visualize>
+        <topic>air_pressure</topic>
+        <air_pressure>
+          <reference_altitude>584.0</reference_altitude>
+          <pressure>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>2.0</stddev>
+            </noise>
+          </pressure>
+        </air_pressure>
       </sensor>
     </link>
     <joint name="front_d435i_mount_joint" type="fixed">

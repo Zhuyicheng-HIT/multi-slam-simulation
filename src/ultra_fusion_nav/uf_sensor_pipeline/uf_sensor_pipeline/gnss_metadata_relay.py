@@ -71,11 +71,11 @@ class GnssMetadataRelay(Node):
             "fix_input_topic", "/sensors/gnss/fix_unthrottled"
         )
         self.declare_parameter("fix_output_topic", "/sensors/gnss/fix")
-        self.declare_parameter("output_rate_hz", 2.5)
+        self.declare_parameter("output_rate_hz", 5.0)
         self.declare_parameter("association_tolerance_s", 0.06)
         output_rate_hz = float(self.get_parameter("output_rate_hz").value)
-        if not math.isfinite(output_rate_hz) or not 2.0 <= output_rate_hz <= 3.0:
-            raise ValueError("output_rate_hz must be within the realistic 2-3 Hz range")
+        if not math.isfinite(output_rate_hz) or not 1.0 <= output_rate_hz <= 10.0:
+            raise ValueError("output_rate_hz must be within the supported 1-10 Hz range")
         self.buffer = LatestGnssPairBuffer(
             float(self.get_parameter("association_tolerance_s").value)
         )

@@ -7,8 +7,14 @@ from types import MethodType
 import numpy as np
 
 try:
-    from uf_backend_core_cpp import state_plus_batch as cpp_state_plus_batch
+    from uf_backend_core_cpp import (
+        imu_preintegrated_graph_normal as cpp_imu_preintegrated_graph_normal,
+        lidar_point_plane_graph_normal as cpp_lidar_point_plane_graph_normal,
+        state_plus_batch as cpp_state_plus_batch,
+    )
 except ImportError:
+    cpp_imu_preintegrated_graph_normal = None
+    cpp_lidar_point_plane_graph_normal = None
     cpp_state_plus_batch = None
 
 from uf_backend_fusion.imu_preintegration import (
@@ -168,6 +174,62 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertLess(abs(robust.state(0)[0]), 0.2)
         self.assertGreater(least_squares.state(0)[0], 4.0)
 
+    @unittest.skipIf(
+        cpp_lidar_point_plane_graph_normal is None,
+        "batched C++ LiDAR backend core is not installed",
+    )
+    def test_cpp_batched_lidar_graph_matches_scalar_cpp_factors(self):
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        first = backend.add_state(np.asarray([
+            0.1, -0.2, 0.3, 0.02, -0.03, 0.04,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]))
+        second = backend.add_state(np.asarray([
+            0.2, -0.1, 0.4, -0.01, 0.05, -0.02,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]))
+        backend.add_native_lidar_correspondences(
+            first, plane_factor([1, 0, 0], [1, 0, 0], [0.8, 0, 0])
+        )
+        backend.add_native_lidar_correspondences(
+            second, plane_factor([0, 1, 0], [0, 1, 0], [0, 1.2, 0])
+        )
+
+        batched_hessian, batched_gradient, batched_cost = backend._normal()
+        scalar_hessian = np.zeros_like(batched_hessian)
+        scalar_gradient = np.zeros_like(batched_gradient)
+        scalar_cost = 0.0
+        for factor in backend._factors:
+            _, _, factor_cost = backend._factor_normal(
+                factor,
+                backend._states,
+                scalar_hessian,
+                scalar_gradient,
+            )
+            scalar_cost += factor_cost
+
+        np.testing.assert_allclose(
+            batched_hessian, scalar_hessian, atol=1.0e-12, rtol=1.0e-12
+        )
+        np.testing.assert_allclose(
+            batched_gradient, scalar_gradient, atol=1.0e-12, rtol=1.0e-12
+        )
+        self.assertAlmostEqual(batched_cost, scalar_cost, places=12)
+
+    def test_barometer_factor_constrains_only_vertical_position(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        state = np.zeros(15)
+        state[:3] = [3.0, -2.0, 5.0]
+        backend.add_state(state)
+        backend.add_barometer_local_z(0, 4.0, 0.25)
+
+        hessian, gradient, _ = backend._normal()
+
+        self.assertEqual(hessian[2, 2], 4.0)
+        self.assertEqual(gradient[2], 4.0)
+        self.assertEqual(hessian[0, 0], 0.0)
+        self.assertEqual(hessian[1, 1], 0.0)
+
     def test_lm_rejection_does_not_commit_candidate_state(self):
         backend = ManifoldSlidingWindowBackend(max_states=2, lm_max_trials=6)
         backend.add_state(np.zeros(15))
@@ -215,6 +277,20 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertEqual(normal_calls, 2)
         self.assertEqual(cost_calls, 3)
         self.assertEqual(backend.last_rejected_steps, 4)
+
+    def test_optimize_accepts_a_per_cycle_iteration_budget(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, max_iterations=4, lm_max_trials=2
+        )
+        index = backend.add_state(np.zeros(15))
+        backend.add_gnss(index, [1.0, 0.0, 0.0], covariance=0.2)
+
+        backend.optimize(max_iterations=1)
+
+        self.assertEqual(backend.last_iteration_budget, 1)
+        self.assertLessEqual(backend.last_iterations, 1)
+        with self.assertRaises(ValueError):
+            backend.optimize(max_iterations=0)
 
     def test_cost_only_and_shared_normal_accumulation_are_equivalent(self):
         measurement = stationary_measurement(duration=0.1)
@@ -457,6 +533,48 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertAlmostEqual(
             cpp_candidate_cost, python_candidate_cost, places=10
         )
+
+    @unittest.skipIf(
+        cpp_imu_preintegrated_graph_normal is None,
+        "batched C++ IMU backend core is not installed",
+    )
+    def test_cpp_batched_imu_graph_matches_scalar_cpp_factors(self):
+        measurement = stationary_measurement(duration=0.1)
+        backend = ManifoldSlidingWindowBackend(max_states=4)
+        first = backend.add_state(np.zeros(STATE_SIZE))
+        second_state = propagate_state(
+            backend.state(first), measurement, backend.gravity
+        )
+        second_state[0] += 0.02
+        second = backend.add_state(second_state)
+        third_state = propagate_state(
+            backend.state(second), measurement, backend.gravity
+        )
+        third_state[1] -= 0.015
+        third = backend.add_state(third_state)
+        backend.add_imu_preintegrated(first, second, measurement)
+        backend.add_imu_preintegrated(second, third, measurement)
+
+        batched_hessian, batched_gradient, batched_cost = backend._normal()
+        scalar_hessian = np.zeros_like(batched_hessian)
+        scalar_gradient = np.zeros_like(batched_gradient)
+        scalar_cost = 0.0
+        for factor in backend._factors:
+            _, _, factor_cost = backend._factor_normal(
+                factor,
+                backend._states,
+                scalar_hessian,
+                scalar_gradient,
+            )
+            scalar_cost += factor_cost
+
+        np.testing.assert_allclose(
+            batched_hessian, scalar_hessian, atol=1.0e-10, rtol=1.0e-10
+        )
+        np.testing.assert_allclose(
+            batched_gradient, scalar_gradient, atol=1.0e-10, rtol=1.0e-10
+        )
+        self.assertAlmostEqual(batched_cost, scalar_cost, places=11)
 
     def test_stationary_imu_propagation_and_residual(self):
         measurement = stationary_measurement()

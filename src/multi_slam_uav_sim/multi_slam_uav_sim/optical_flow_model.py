@@ -40,13 +40,44 @@ def should_publish_accumulated_flow(
     max_integration_s,
     publish_low_quality,
 ):
-    """Release a reference-frame measurement once it is observable or old."""
+    """Release a periodic sample, retaining accumulation as an opt-in mode.
+
+    A physical optical-flow sensor keeps reporting when the measured motion is
+    zero or its quality is low.  ``publish_low_quality`` therefore selects that
+    periodic stream semantics; quality controls factor admission downstream.
+    """
     if not math.isfinite(float(integration_s)) or integration_s <= 0.0:
         return False
+    if publish_low_quality:
+        return True
     displacement_px = math.hypot(float(dx_px), float(dy_px))
     observable = int(quality) > 0 and displacement_px >= float(min_displacement_px)
     expired = integration_s >= float(max_integration_s)
-    return observable or (expired and (int(quality) > 0 or publish_low_quality))
+    return observable or (expired and int(quality) > 0)
+
+
+def rate_limit_ready(elapsed_s, minimum_period_s, tolerance_ratio=0.98):
+    """Accept the nearest discrete camera frame to a requested sensor rate.
+
+    Gazebo's nominal 30 Hz camera currently advances by 33 ms, so two frames
+    span 66 ms rather than exactly 1/15 s.  A strict comparison would select
+    every third frame and silently turn a requested 15 Hz sensor into 10 Hz.
+    The small tolerance keeps the nearest frame without allowing one-frame
+    (30 Hz) publication.
+    """
+    elapsed = float(elapsed_s)
+    period = float(minimum_period_s)
+    tolerance = float(tolerance_ratio)
+    if (
+        not math.isfinite(elapsed)
+        or not math.isfinite(period)
+        or not math.isfinite(tolerance)
+        or elapsed < 0.0
+        or period <= 0.0
+        or not 0.0 < tolerance <= 1.0
+    ):
+        return False
+    return elapsed >= period * tolerance
 
 
 def gazebo_downward_image_flow_to_mavlink(dx_px, dy_px, fx_px, fy_px):

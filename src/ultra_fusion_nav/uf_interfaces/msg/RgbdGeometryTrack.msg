@@ -1,0 +1,11 @@
+uint32 feature_id
+float32 previous_x
+float32 previous_y
+float32 previous_depth_m
+float32 previous_depth_variance_m2
+float32 current_x
+float32 current_y
+float32 current_depth_m
+float32 current_depth_variance_m2
+uint16 track_age
+uint16 grid_cell

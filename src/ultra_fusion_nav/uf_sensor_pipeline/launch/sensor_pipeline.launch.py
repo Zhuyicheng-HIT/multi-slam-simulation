@@ -202,8 +202,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "gnss_algorithm_rate_hz",
-            default_value="2.5",
-            description="Paired fix/raw rate exposed to the companion estimator (2-3 Hz)",
+            default_value="5.0",
+            description="Paired fix/raw rate exposed to the companion estimator (5 Hz)",
         ),
         DeclareLaunchArgument(
             "d435_color_input_topic",

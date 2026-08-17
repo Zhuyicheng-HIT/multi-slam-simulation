@@ -29,13 +29,34 @@ case "$VISUAL_FACTOR_MODE" in
 esac
 RGBD_MINIMUM_DEPTH_M=${RGBD_MINIMUM_DEPTH_M:-0.30}
 RGBD_MAXIMUM_DEPTH_M=${RGBD_MAXIMUM_DEPTH_M:-6.0}
+RGBD_DEPTH_FACTOR_ENABLED=${RGBD_DEPTH_FACTOR_ENABLED:-true}
+RGBD_DEPTH_HEALTHY_LIDAR_STRIDE=${RGBD_DEPTH_HEALTHY_LIDAR_STRIDE:-1}
 PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-false}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-false}
+RELIABILITY_MODE=${RELIABILITY_MODE:-dynamic}
+FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
+FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
+FIXED_IMU_WEIGHT=${FIXED_IMU_WEIGHT:-1.0}
+FIXED_OPTICAL_FLOW_WEIGHT=${FIXED_OPTICAL_FLOW_WEIGHT:-1.0}
+FIXED_VISION_WEIGHT=${FIXED_VISION_WEIGHT:-1.0}
+FRONTEND_MAP_COMMIT_DELAY_STATES=${FRONTEND_MAP_COMMIT_DELAY_STATES:-7}
 CALIBRATION_APPLY_LOCKED_TIME_OFFSET=${CALIBRATION_APPLY_LOCKED_TIME_OFFSET:-false}
 CALIBRATION_APPLY_LOCKED_ROTATION=${CALIBRATION_APPLY_LOCKED_ROTATION:-false}
 VISUAL_TIME_CALIBRATION_APPLY_LOCKED=${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}
+Z_GAUGE_ENABLED=${Z_GAUGE_ENABLED:-false}
+Z_GAUGE_GLOBAL_FRAME=${Z_GAUGE_GLOBAL_FRAME:-fusion_map}
+Z_GAUGE_TARGET_HISTORY_SIZE=${Z_GAUGE_TARGET_HISTORY_SIZE:-1}
+Z_GAUGE_UPDATE_TIME_CONSTANT_S=${Z_GAUGE_UPDATE_TIME_CONSTANT_S:-0.60}
+Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS=${Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS:-1.0}
 USE_SIM_TIME=${USE_SIM_TIME:-true}
+OPTICAL_FLOW_INPUT_TOPIC=${OPTICAL_FLOW_INPUT_TOPIC:-/sim/optical_flow/rad}
+if [[ -z "${BAROMETER_TOPIC+x}" ]]; then
+  case "${USE_SIM_TIME,,}" in
+    1|true|yes|on) BAROMETER_TOPIC=/sim/barometer/pressure ;;
+    *) BAROMETER_TOPIC=/mavros/imu/static_pressure ;;
+  esac
+fi
 FRONTEND_STATE_SEED_ENABLED=${FRONTEND_STATE_SEED_ENABLED:-false}
 # The unified backend owns the trajectory by default.  Keep the legacy
 # FAST-LIO-local trajectory available only as an explicit compatibility mode.
@@ -80,6 +101,14 @@ case "${FRONTEND_SCAN_PREDICTION_ENABLED,,}" in
     exit 2
     ;;
 esac
+case "${Z_GAUGE_ENABLED,,}" in
+  1|true|yes|on) Z_GAUGE_ENABLED_ARG=true ;;
+  0|false|no|off) Z_GAUGE_ENABLED_ARG=false ;;
+  *)
+    printf 'Z_GAUGE_ENABLED must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 if [[ "$FRONTEND_STATE_SEED_ENABLED_ARG" == "true" ]] &&
    ! ros2 interface show fast_lio/msg/BackendStateSeed >/dev/null 2>&1; then
   printf 'Patched FAST-LIO BackendStateSeed interface is unavailable.\n' >&2
@@ -106,6 +135,7 @@ trap cleanup EXIT INT TERM
 setsid ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
   use_sim_time:="$USE_SIM_TIME" \
   enable_vision:="$ENABLE_VISION_ARG" \
+  optical_flow_input_topic:="$OPTICAL_FLOW_INPUT_TOPIC" \
   >"$LOG_DIR/sensor_pipeline.log" 2>&1 &
 pids+=("$!")
 
@@ -125,13 +155,28 @@ setsid env \
   visual_factor_mode:="$VISUAL_FACTOR_MODE" \
   rgbd_minimum_depth_m:="$RGBD_MINIMUM_DEPTH_M" \
   rgbd_maximum_depth_m:="$RGBD_MAXIMUM_DEPTH_M" \
+  rgbd_depth_factor_enabled:="$RGBD_DEPTH_FACTOR_ENABLED" \
+  rgbd_depth_healthy_lidar_stride:="$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" \
   preserve_lio_anchor:="$PRESERVE_LIO_ANCHOR" \
   frontend_state_seed_enabled:="$FRONTEND_STATE_SEED_ENABLED_ARG" \
   frontend_scan_prediction_enabled:="$FRONTEND_SCAN_PREDICTION_ENABLED_ARG" \
   performance_profiling_enabled:="$PERFORMANCE_PROFILING_ENABLED" \
+  reliability_mode:="$RELIABILITY_MODE" \
+  fixed_lidar_weight:="$FIXED_LIDAR_WEIGHT" \
+  fixed_gnss_weight:="$FIXED_GNSS_WEIGHT" \
+  fixed_imu_weight:="$FIXED_IMU_WEIGHT" \
+  fixed_optical_flow_weight:="$FIXED_OPTICAL_FLOW_WEIGHT" \
+  fixed_vision_weight:="$FIXED_VISION_WEIGHT" \
+  frontend_map_commit_delay_states:="$FRONTEND_MAP_COMMIT_DELAY_STATES" \
   calibration_apply_locked_time_offset:="$CALIBRATION_APPLY_LOCKED_TIME_OFFSET" \
   calibration_apply_locked_rotation:="$CALIBRATION_APPLY_LOCKED_ROTATION" \
   visual_time_calibration_apply_locked:="$VISUAL_TIME_CALIBRATION_APPLY_LOCKED" \
+  z_gauge_enabled:="$Z_GAUGE_ENABLED_ARG" \
+  z_gauge_global_frame:="$Z_GAUGE_GLOBAL_FRAME" \
+  z_gauge_target_history_size:="$Z_GAUGE_TARGET_HISTORY_SIZE" \
+  z_gauge_update_time_constant_s:="$Z_GAUGE_UPDATE_TIME_CONSTANT_S" \
+  z_gauge_maximum_correction_rate_mps:="$Z_GAUGE_MAXIMUM_CORRECTION_RATE_MPS" \
+  barometer_topic:="$BAROMETER_TOPIC" \
   external_nav_output_topic:="$EXTERNAL_NAV_OUTPUT_TOPIC" \
   publish_mavros_frame_transforms:="$PUBLISH_MAVROS_FRAME_TRANSFORMS" \
   relocalization_search_timeout_s:="$RELOCALIZATION_SEARCH_TIMEOUT_S" \

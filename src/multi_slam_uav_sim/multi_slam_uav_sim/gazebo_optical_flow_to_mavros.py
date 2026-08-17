@@ -26,6 +26,7 @@ from multi_slam_uav_sim.optical_flow_model import (
     gazebo_downward_image_flow_to_mavlink,
     integrate_preferred_gyro,
     pixel_flow_to_radians,
+    rate_limit_ready,
     ros_flu_gyro_to_sensor_frd,
     scale_mavlink_translation,
     sensor_displacement_frd,
@@ -580,7 +581,7 @@ class GazeboOpticalFlowToMavros(Node):
             self.prev_gray = None
             self.prev_time = None
             self.last_publish_time = stamp_seconds - self.min_period
-        if stamp_seconds - self.last_publish_time < self.min_period:
+        if not rate_limit_ready(stamp_seconds - self.last_publish_time, self.min_period):
             return
         try:
             gray = self._gray_small(msg)
