@@ -56,8 +56,8 @@ false-dynamic ratio. C/U are static-map contamination and unknown ratio.
 
 | Scenario | Temporal P/R/F1 | v1 P/R/F1 | v2 P/R/F1 | v2 SPR/FDR | v2 C/U | v2 P95/P99 ms |
 |---|---:|---:|---:|---:|---:|---:|
-| static fast turn | 0.00/100.00/0.00% | 100.00/100.00/100.00% | 100.00/100.00/100.00% | 100.00/0.00% | 0.00/6.87% | 1.620/1.785 |
-| new area in FoV | 0.00/100.00/0.00% | 100.00/100.00/100.00% | 100.00/100.00/100.00% | 100.00/0.00% | 0.00/7.23% | 1.433/1.512 |
+| static fast turn | N/A | N/A | N/A | 100.00/0.00% | 0.00/6.87% | 1.620/1.785 |
+| new area in FoV | N/A | N/A | N/A | 100.00/0.00% | 0.00/7.23% | 1.433/1.512 |
 | person crossing | 94.64/3.48/6.71% | 100.00/100.00/100.00% | 100.00/100.00/100.00% | 100.00/0.00% | 0.00/5.93% | 1.312/1.605 |
 | stationary then moving | 0.00/0.00/100.00% | 100.00/88.64/93.98% | 100.00/88.64/93.98% | 100.00/0.00% | 9.69/6.16% | 1.277/1.401 |
 | multiple people crossing | 97.66/3.97/7.63% | 100.00/100.00/100.00% | 100.00/100.00/100.00% | 100.00/0.00% | 0.00/5.78% | 1.354/1.641 |
@@ -75,8 +75,10 @@ false-dynamic ratio. C/U are static-map contamination and unknown ratio.
 | non-rigid motion | 96.30/3.90/7.49% | 100.00/100.00/100.00% | 100.00/100.00/100.00% | 100.00/0.00% | 0.00/5.89% | 1.305/1.563 |
 | far sparse target | 92.68/6.14/11.52% | 100.00/0.00/0.00% | 100.00/0.00/0.00% | 100.00/0.00% | 0.00/7.23% | 1.394/1.514 |
 
-The pure-static scenarios contain no positive class; their dynamic recall is a
-vacuous evaluator value and F1 is not used for decisions.
+The pure-static scenarios contain no positive class, so dynamic P/R/F1 are N/A
+and excluded from macro dynamic averages. Their false-dynamic ratio and static
+preservation remain part of the pooled static metrics. This presentation
+correction does not alter any classification or hide a regression.
 
 Representative v2 per-scenario CPU/state figures from final run 1:
 

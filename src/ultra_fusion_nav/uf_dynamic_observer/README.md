@@ -1,9 +1,9 @@
 # UF dynamic observer
 
-This ROS 2 Humble package is an opt-in, side-channel prototype for class-agnostic
-dynamic-point removal. It does **not** remap, republish, or modify the FAST-LIO
-input. The current five-source backend and one-observation-one-factor contract
-therefore remain unchanged.
+This ROS 2 Humble package contains an opt-in, side-channel class-agnostic
+dynamic observer and a separate, default-off Clean Scan Gateway candidate. The
+original `/livox/lidar`, production FAST-LIO, five-source backend, ExternalNav,
+and one-observation-one-factor contract remain unchanged.
 
 ## Data contract
 
@@ -34,6 +34,42 @@ Outputs are in the configured world frame:
 - `/dynamic_observer/latency_diagnostics`
 
 No TF is published. Truth labels are never subscribed by the node.
+
+## Clean Scan Gateway candidate
+
+The gateway publishes a new namespaced Livox `CustomMsg`; it never republishes
+or remaps `/livox/lidar`. STATIC and UNKNOWN points are retained and only
+DYNAMIC_CONFIRMED points are removed. Every retained point preserves its
+coordinates, `offset_time`, `line`, `tag`, and reflectivity; the message keeps
+its `header`, `timebase`, `lidar_id`, and reserved fields.
+
+The state handoff is one-way and causal:
+
+```text
+raw scan i -> gateway -> Clean FAST-LIO -> posterior i
+                  ^                |
+                  +-- posterior i-1+
+                  +-- IMU <= each point time
+```
+
+The bounded queue waits for the most recent completed Clean FAST-LIO posterior
+strictly preceding the scan. It never reads Raw FAST-LIO, unified pose, the
+current scan posterior, or future IMU. Missing/stale state, IMU coverage
+failure, timestamp regression, queue overflow, latency, malformed
+classification, or internal exception produces an exact raw passthrough and an
+explicit degraded/fail-open diagnostic. Gateway failure cannot drop a scan or
+emit an empty frame.
+
+The launch remains disabled by default:
+
+```bash
+ros2 launch uf_dynamic_observer clean_gateway.launch.py
+ros2 launch uf_dynamic_observer clean_gateway.launch.py enabled:=true
+```
+
+The enabled form is only for an independently namespaced Clean FAST-LIO A/B.
+It does not authorize production LiDAR cutover. See
+`docs/DYN_INTEGRATION_005_CLEAN_GATEWAY.md` for the frozen replay and gate.
 
 ## Algorithm scope
 

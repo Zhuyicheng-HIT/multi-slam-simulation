@@ -15,6 +15,9 @@ struct CausalPose
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond orientation{Eigen::Quaterniond::Identity()};
+  bool has_calibrated_bias{false};
+  Eigen::Vector3d accel_bias{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d gyro_bias{Eigen::Vector3d::Zero()};
 };
 
 struct CausalImuSample
