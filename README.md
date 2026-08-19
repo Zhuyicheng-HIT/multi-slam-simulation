@@ -192,7 +192,20 @@ cd "$HOME/projects/multi-slam-simulation"
 bash tools/run_fastlio_mapping.sh
 ```
 
-长 S 航线是统一后端的严格闭环评测，不再允许只启动 FAST-LIO 后用
+要飞保守的长 S 航线，只替换第 2 个终端的命令，其他终端不变：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+bash tools/run_s_curve_state_machine.sh
+```
+
+以上三终端流程用于基础 Gazebo、FAST-LIO 和 RViz 可视化，以及保守航线演示。
+它不等同于统一后端的严格闭环评测；需要验证统一后端、因子计数和 ExternalNav
+时，请使用后面的专用入口。
+
+### 5.1.1 统一后端严格长 S（算法评测）
+
+统一后端严格闭环评测不允许只启动 FAST-LIO 后用
 MAVROS/FCU local position 代替融合定位。命令名保持不变，但启动顺序调整为：
 
 1. 第 1 个终端运行 `run_sim_with_flow.sh`；
