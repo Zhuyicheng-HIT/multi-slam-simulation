@@ -19,6 +19,22 @@ bash tools/apply_fast_lio_native_factor_patch.sh
 The script refuses a different commit or a dirty checkout. It never commits
 external source into this repository.
 
+The final patch also adds a disabled-by-default, read-only previous-posterior
+export for the Clean Scan Gateway. The message contains FAST-LIO's completed
+pose, velocity, calibrated IMU biases, timestamp, scan sequence, and reset
+counter. It is published only after one scan is complete and can therefore be
+consumed only by a later clean scan. Enable it on a separately namespaced Clean
+FAST-LIO instance with:
+
+```bash
+--ros-args \
+  -p previous_state_export.enable:=true \
+  -p previous_state_export.topic:=/clean_fast_lio/previous_state
+```
+
+This is a one-way diagnostic export. It neither reads clean-gateway state nor
+changes the FAST-LIO LiDAR subscription.
+
 The patch series also carries the backend-owned deskew trajectory frontend.
 Its state inputs are deliberately separated:
 

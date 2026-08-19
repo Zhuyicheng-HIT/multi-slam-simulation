@@ -1,0 +1,70 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3ccad30..27b04e6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -64,0 +65 @@ find_package(rosidl_default_generators REQUIRED)
++find_package(uf_dynamic_interfaces REQUIRED)
+@@ -78,0 +80 @@ set(dependencies
++  uf_dynamic_interfaces
+diff --git a/package.xml b/package.xml
+index 3d0e56f..c02bea9 100644
+--- a/package.xml
++++ b/package.xml
+@@ -31,0 +32 @@
++  <depend>uf_dynamic_interfaces</depend>
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index 68eb77f..723d789 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -72,0 +73 @@
++#include "uf_dynamic_interfaces/msg/previous_fast_lio_state.hpp"
+@@ -113,0 +115,3 @@ int native_factor_max_correspondences = 400;
++bool previous_state_export_en = false;
++string previous_state_export_topic = "/fast_lio/previous_state";
++std::uint64_t previous_state_sequence = 0U;
+@@ -1435,0 +1440,3 @@ public:
++        this->declare_parameter<bool>("previous_state_export.enable", false);
++        this->declare_parameter<string>(
++            "previous_state_export.topic", "/fast_lio/previous_state");
+@@ -1510,0 +1518,5 @@ public:
++        this->get_parameter_or<bool>(
++            "previous_state_export.enable", previous_state_export_en, false);
++        this->get_parameter_or<string>(
++            "previous_state_export.topic", previous_state_export_topic,
++            "/fast_lio/previous_state");
+@@ -1747,0 +1760,7 @@ public:
++        if (previous_state_export_en)
++        {
++            pub_previous_state_ = this->create_publisher<
++                uf_dynamic_interfaces::msg::PreviousFastLioState>(
++                previous_state_export_topic,
++                rclcpp::QoS(rclcpp::KeepLast(8)).reliable());
++        }
+@@ -2106,0 +2126 @@ private:
++            publish_previous_state(lidar_end_time, state_point);
+@@ -2193,0 +2214,22 @@ private:
++    void publish_previous_state(double stamp, const state_ikfom &state)
++    {
++        if (!previous_state_export_en || !pub_previous_state_ || stamp <= 0.0)
++            return;
++        uf_dynamic_interfaces::msg::PreviousFastLioState message;
++        message.header.stamp = get_ros_time(stamp);
++        message.header.frame_id = "camera_init";
++        message.map_frame = "camera_init";
++        message.body_frame = "body";
++        message.scan_sequence = previous_state_sequence++;
++        message.reset_counter = native_factor_reset_counter;
++        message.valid = true;
++        message.position = {state.pos(0), state.pos(1), state.pos(2)};
++        message.orientation_xyzw = {
++            state.rot.coeffs()[0], state.rot.coeffs()[1],
++            state.rot.coeffs()[2], state.rot.coeffs()[3]};
++        message.velocity_map = {state.vel(0), state.vel(1), state.vel(2)};
++        message.accel_bias = {state.ba(0), state.ba(1), state.ba(2)};
++        message.gyro_bias = {state.bg(0), state.bg(1), state.bg(2)};
++        pub_previous_state_->publish(message);
++    }
++
+@@ -2513,0 +2556,2 @@ private:
++    rclcpp::Publisher<uf_dynamic_interfaces::msg::PreviousFastLioState>::SharedPtr
++        pub_previous_state_;

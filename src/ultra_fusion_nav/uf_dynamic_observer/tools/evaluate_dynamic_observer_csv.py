@@ -60,24 +60,50 @@ def evaluate(path):
 
     dynamic_total = counts["tp"] + counts["fn"]
     static_total = counts["tn"] + counts["fp"]
-    precision = ratio(counts["tp"], counts["tp"] + counts["fp"], 1.0)
-    recall = ratio(counts["tp"], dynamic_total, 1.0)
+    dynamic_applicable = dynamic_total > 0
+    precision = (
+        ratio(counts["tp"], counts["tp"] + counts["fp"])
+        if dynamic_applicable
+        else None
+    )
+    recall = ratio(counts["tp"], dynamic_total) if dynamic_applicable else None
+    dynamic_f1 = (
+        ratio(2.0 * precision * recall, precision + recall)
+        if dynamic_applicable
+        else None
+    )
     result = {
+        "dynamic_metrics_applicable": dynamic_applicable,
         "dynamic_precision": precision,
         "dynamic_recall": recall,
-        "dynamic_f1": ratio(2.0 * precision * recall, precision + recall, 1.0),
-        "static_preservation_rate": ratio(counts["tn"], static_total, 1.0),
-        "false_dynamic_ratio": ratio(counts["fp"], static_total),
-        "static_map_contamination": ratio(
-            counts["dynamic_as_static"], dynamic_total
+        "dynamic_f1": dynamic_f1,
+        "static_preservation_rate": (
+            ratio(counts["tn"], static_total) if static_total else None
         ),
-        "map_completeness": ratio(counts["static_confirmed"], static_total),
+        "false_dynamic_ratio": (
+            ratio(counts["fp"], static_total) if static_total else None
+        ),
+        "static_map_contamination": (
+            ratio(counts["dynamic_as_static"], dynamic_total)
+            if dynamic_applicable
+            else None
+        ),
+        "map_completeness": (
+            ratio(counts["static_confirmed"], static_total)
+            if static_total
+            else None
+        ),
         "latency_p50_ms": percentile(latencies, 0.50),
         "latency_p95_ms": percentile(latencies, 0.95),
         "latency_mean_ms": statistics.fmean(latencies) if latencies else None,
         "counts": counts,
         "contract": {
             "truth_is_evaluator_only": True,
+            "dynamic_aggregation": {
+                "micro": "sum TP/FP/FN over dynamic-bearing inputs",
+                "macro": "unweighted mean over scenarios with dynamic positives",
+                "pure_static_dynamic_metrics": "N/A and excluded from macro",
+            },
             "required_columns": ["truth_label", "predicted_label"],
             "optional_columns": ["latency_ms", "scan_id", "point_id"],
         },
