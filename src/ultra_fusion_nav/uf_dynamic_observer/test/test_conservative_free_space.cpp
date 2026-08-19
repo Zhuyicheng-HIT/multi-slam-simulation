@@ -1,4 +1,5 @@
 #include "uf_dynamic_observer/conservative_free_space.hpp"
+#include "uf_dynamic_observer/causal_imu_deskew.hpp"
 
 #include <gtest/gtest.h>
 
@@ -21,6 +22,26 @@ FilterConfig test_config()
   config.endpoint_guard_voxels = 0;
   config.dynamic_growth_voxels = 0;
   config.ray_stride = 1;
+  return config;
+}
+
+VisibilityFilterConfig visibility_test_config()
+{
+  VisibilityFilterConfig config;
+  config.voxel_size_m = 0.5;
+  config.min_range_m = 0.1;
+  config.max_range_m = 20.0;
+  config.free_confirmations = 2U;
+  config.static_confirmations = 2U;
+  config.occupied_recovery = 20U;
+  config.endpoint_guard_voxels = 0;
+  config.dynamic_growth_voxels = 0;
+  config.ray_stride = 1;
+  config.dynamic_hold_scans = 4U;
+  config.vacated_hold_scans = 3U;
+  config.dynamic_track_radius_voxels = 1;
+  config.vacated_surface_radius_voxels = 1;
+  config.min_static_neighbor_voxels = 0U;
   return config;
 }
 
@@ -83,6 +104,181 @@ TEST(TemporalBaseline, PreservesExistingWarmWindowContract)
   EXPECT_EQ(filter.process(repeated, origin).points.front().label, PointLabel::kStatic);
   const auto novel = filter.process({{3.0, 2.0, 0.0, 1.0F}}, origin);
   EXPECT_EQ(novel.points.front().label, PointLabel::kDynamic);
+}
+
+TEST(VisibilityAwareObserver, MissingRayDoesNotTurnOcclusionIntoFreeSpace)
+{
+  VisibilityAwareDynamicObserver filter(visibility_test_config());
+  const Point origin{0.0, 0.0, 0.0, 0.0F};
+  const std::vector<Point> wall{{4.0, 0.0, 0.0, 1.0F}};
+  filter.process(wall, origin);
+  filter.process(wall, origin);
+  ASSERT_EQ(filter.process(wall, origin).points.front().label, PointLabel::kStatic);
+  filter.process({}, origin);
+  filter.process({}, origin);
+  EXPECT_EQ(filter.process(wall, origin).points.front().label, PointLabel::kStatic);
+}
+
+TEST(VisibilityAwareObserver, ConfirmedFreeContradictionAndStoppedTargetRemainDynamic)
+{
+  VisibilityAwareDynamicObserver filter(visibility_test_config());
+  const Point origin{0.0, 0.0, 0.0, 0.0F};
+  const std::vector<Point> background{{8.0, 0.0, 0.0, 1.0F}};
+  filter.process(background, origin);
+  filter.process(background, origin);
+  const std::vector<Point> target{{4.0, 0.0, 0.0, 1.0F}};
+  EXPECT_EQ(filter.process(target, origin).points.front().label, PointLabel::kDynamic);
+  EXPECT_EQ(filter.process(target, origin).points.front().label, PointLabel::kDynamic);
+  EXPECT_EQ(filter.process(target, origin).points.front().label, PointLabel::kDynamic);
+}
+
+TEST(VisibilityAwareObserver, MeasuredVacatedSurfaceSupportsArticulatedMotion)
+{
+  VisibilityAwareDynamicObserver filter(visibility_test_config());
+  const Point origin{0.0, 0.0, 0.0, 0.0F};
+  const std::vector<Point> closed_surface{{4.0, 0.0, 0.0, 1.0F}};
+  filter.process(closed_surface, origin);
+  filter.process(closed_surface, origin);
+  filter.process(closed_surface, origin);
+  // This measured ray, unlike an absent return, confirms that the old surface
+  // cell has been vacated.
+  filter.process({{8.0, 0.0, 0.0, 1.0F}}, origin);
+  const auto moved_surface = filter.process({{4.0, 0.5, 0.0, 1.0F}}, origin);
+  ASSERT_EQ(moved_surface.points.size(), 1U);
+  EXPECT_EQ(moved_surface.points.front().label, PointLabel::kDynamic);
+}
+
+TEST(VisibilityAwareObserver, NewFieldOfViewStructureIsUnknownBeforeStatic)
+{
+  VisibilityAwareDynamicObserver filter(visibility_test_config());
+  const Point origin{0.0, 0.0, 0.0, 0.0F};
+  const std::vector<Point> new_wall{{4.0, 2.0, 0.0, 1.0F}};
+  EXPECT_EQ(filter.process(new_wall, origin).points.front().label, PointLabel::kUnknown);
+  EXPECT_EQ(filter.process(new_wall, origin).points.front().label, PointLabel::kUnknown);
+  EXPECT_EQ(filter.process(new_wall, origin).points.front().label, PointLabel::kStatic);
+}
+
+TEST(VisibilityAwareObserver, SparseUnknownReturnIsNotAbsorbedIntoStaticMap)
+{
+  auto config = visibility_test_config();
+  config.far_range_m = 5.0;
+  config.far_static_confirmations = 10U;
+  VisibilityAwareDynamicObserver filter(config);
+  const Point origin{0.0, 0.0, 0.0, 0.0F};
+  const std::vector<Point> isolated{{8.0, 2.0, 1.0, 1.0F}};
+  for (int scan = 0; scan < 8; ++scan) {
+    EXPECT_EQ(filter.process(isolated, origin).points.front().label, PointLabel::kUnknown);
+  }
+  const std::vector<Point> surface{
+    {4.0, 0.0, 0.0, 1.0F}, {4.0, 0.5, 0.0, 1.0F}, {4.0, 0.0, 0.5, 1.0F}};
+  filter.process(surface, origin);
+  filter.process(surface, origin);
+  const auto confirmed = filter.process(surface, origin);
+  EXPECT_EQ(confirmed.points.front().label, PointLabel::kStatic);
+}
+
+TEST(CausalImuDeskew, RejectsPoseAnchorFromTheFuture)
+{
+  CausalPose anchor;
+  anchor.stamp_ns = 20000000;
+  std::vector<CausalImuSample> imu{
+    {0, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {10000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {20000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}}};
+  const auto result = CausalImuDeskew().propagate(anchor, imu, {10000000});
+  EXPECT_FALSE(result.valid);
+  EXPECT_EQ(result.reason, "future_pose_anchor");
+}
+
+TEST(CausalImuDeskew, UsesLivoxNanosecondOffsetsWithoutFuturePose)
+{
+  CausalPose anchor;
+  anchor.stamp_ns = 0;
+  anchor.velocity = {1.0, 0.0, 0.0};
+  std::vector<CausalImuSample> imu;
+  for (std::int64_t stamp = 0; stamp <= 100000000; stamp += 10000000) {
+    imu.push_back({stamp, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}});
+  }
+  const auto result = CausalImuDeskew().propagate(
+    anchor, imu, {0, 50000000, 100000000});
+  ASSERT_TRUE(result.valid) << result.reason;
+  ASSERT_EQ(result.poses.size(), 3U);
+  EXPECT_NEAR(result.poses[1].position.x(), 0.05, 1.0e-9);
+  EXPECT_NEAR(result.poses[2].position.x(), 0.10, 1.0e-9);
+  EXPECT_NEAR(result.poses[2].position.z(), 0.0, 1.0e-9);
+  EXPECT_LE(result.latest_imu_consumed_ns, result.poses.back().stamp_ns);
+}
+
+TEST(CausalImuDeskew, AllowsBoundedTerminalZeroOrderHold)
+{
+  CausalPose anchor;
+  anchor.stamp_ns = 0;
+  std::vector<CausalImuSample> imu;
+  for (std::int64_t stamp = 0; stamp <= 90000000; stamp += 10000000) {
+    imu.push_back({stamp, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}});
+  }
+  CausalDeskewConfig config;
+  config.max_imu_gap_s = 0.015;
+  const auto result = CausalImuDeskew(config).propagate(anchor, imu, {100000000});
+  ASSERT_TRUE(result.valid) << result.reason;
+  EXPECT_EQ(result.reason, "ok");
+  EXPECT_EQ(result.latest_imu_consumed_ns, 90000000);
+  EXPECT_NEAR(result.max_observed_imu_gap_s, 0.010, 1.0e-12);
+}
+
+TEST(CausalImuDeskew, RejectsTerminalHoldBeyondConfiguredGap)
+{
+  CausalPose anchor;
+  anchor.stamp_ns = 0;
+  const std::vector<CausalImuSample> imu{
+    {0, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {10000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {20000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}}};
+  CausalDeskewConfig config;
+  config.max_imu_gap_s = 0.015;
+  const auto result = CausalImuDeskew(config).propagate(anchor, imu, {40000000});
+  EXPECT_FALSE(result.valid);
+  EXPECT_EQ(result.reason, "terminal_imu_gap_exceeded");
+}
+
+TEST(CausalImuDeskew, RejectsFutureImuRatherThanUsingIt)
+{
+  CausalPose anchor;
+  anchor.stamp_ns = 0;
+  const std::vector<CausalImuSample> imu{
+    {0, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {10000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {20000000, {100.0, 0.0, 0.0}, {0.0, 0.0, 10.0}}};
+  const auto result = CausalImuDeskew().propagate(anchor, imu, {10000000});
+  EXPECT_FALSE(result.valid);
+  EXPECT_EQ(result.reason, "future_imu_sample");
+}
+
+TEST(CausalImuDeskew, RejectsTimestampRegression)
+{
+  CausalPose anchor;
+  anchor.stamp_ns = 0;
+  const std::vector<CausalImuSample> imu{
+    {0, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {10000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {9000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}}};
+  const auto result = CausalImuDeskew().propagate(anchor, imu, {10000000});
+  EXPECT_FALSE(result.valid);
+  EXPECT_EQ(result.reason, "imu_invalid_or_unsorted");
+}
+
+TEST(CausalImuDeskew, RejectsMissingImuCoverageAndLargeGap)
+{
+  CausalPose anchor;
+  anchor.stamp_ns = 0;
+  CausalDeskewConfig config;
+  config.max_imu_gap_s = 0.015;
+  const std::vector<CausalImuSample> imu{
+    {0, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}},
+    {20000000, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}}};
+  const auto result = CausalImuDeskew(config).propagate(anchor, imu, {20000000});
+  EXPECT_FALSE(result.valid);
+  EXPECT_EQ(result.reason, "imu_gap_exceeded");
 }
 
 }  // namespace

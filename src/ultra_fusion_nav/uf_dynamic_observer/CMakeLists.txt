@@ -16,11 +16,14 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
-add_library(dynamic_observer_core src/conservative_free_space.cpp)
+add_library(dynamic_observer_core
+  src/causal_imu_deskew.cpp
+  src/conservative_free_space.cpp)
 target_compile_features(dynamic_observer_core PUBLIC cxx_std_17)
 target_include_directories(dynamic_observer_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
+target_link_libraries(dynamic_observer_core PUBLIC Eigen3::Eigen)
 
 add_executable(dynamic_observer_node src/dynamic_observer_node.cpp)
 target_compile_features(dynamic_observer_node PUBLIC cxx_std_17)

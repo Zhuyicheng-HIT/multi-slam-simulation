@@ -3,13 +3,23 @@ dynamic_static_map_observer:
     # Safety contract: observer is opt-in and never remaps /livox/lidar.
     enabled: false
     input_mode: livox_custom
+    filter.implementation: visibility_v2
     livox_topic: /livox/lidar
     pointcloud_topic: /sim/mid360/points_raw
-    pose_topic: /fusion/unified/odom
+    # Causal mode anchors at the previous FAST-LIO posterior, then propagates
+    # raw IMU to each Livox offset_time. It never consumes current/future
+    # /fusion/unified/odom, so a future clean-scan gateway cannot form a loop.
+    pose_topic: /Odometry
+    imu_topic: /livox/imu
+    deskew.mode: causal_fastlio_imu
+    deskew.max_imu_gap_s: 0.025
+    deskew.max_prediction_horizon_s: 0.20
+    deskew.gravity_world: [0.0, 0.0, -9.80665]
+    deskew.accel_bias: [0.0, 0.0, 0.0]
+    deskew.gyro_bias: [0.0, 0.0, 0.0]
     world_frame: map
     max_pending_scans: 8
     max_pose_wait_ms: 250.0
-    max_pose_gap_s: 0.15
 
     # T_body_lidar. Replace with the audited MID360-to-body calibration.
     extrinsic.body_from_lidar_translation: [0.0, 0.0, 0.0]
@@ -23,5 +33,15 @@ dynamic_static_map_observer:
     filter.occupied_recovery: 20
     filter.endpoint_guard_voxels: 1
     filter.dynamic_growth_voxels: 1
-    filter.ray_stride: 4
+    filter.ray_stride: 1
     filter.max_voxels: 1500000
+    filter.dynamic_confirmations: 1
+    filter.dynamic_hold_scans: 12
+    filter.vacated_hold_scans: 8
+    filter.static_vacate_confirmations: 1
+    filter.dynamic_track_radius_voxels: 1
+    filter.vacated_surface_radius_voxels: 1
+    filter.static_support_radius_voxels: 1
+    filter.min_static_neighbor_voxels: 0
+    filter.far_range_m: 15.0
+    filter.far_static_confirmations: 12

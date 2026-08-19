@@ -13,15 +13,16 @@ Default input is the exact Livox protocol topic already consumed by FAST-LIO:
 /livox/lidar (livox_ros_driver2/CustomMsg) ----+----> FAST-LIO (unchanged)
                                                |
                                                +----> uf_dynamic_observer
-/fusion/unified/odom --------------------------+
+previous /Odometry ----------------------------+
+/livox/imu ------------------------------------+
 ```
 
-The observer waits in a bounded queue for bracketing committed poses, applies
-the per-point `offset_time`, and transforms each point with `T_world_body *
-T_body_lidar`. This is deliberately delayed and suitable for observer A/B only.
-It is **not** yet the future pre-FAST-LIO deskew contract: that path must use the
-same causal IMU prediction trajectory as FAST-LIO and must not depend on a pose
-that already consumed the scan.
+The observer waits in a bounded queue, selects the latest FAST-LIO posterior no
+newer than scan start, and propagates raw IMU to every Livox nanosecond
+`offset_time`. A bounded terminal zero-order hold is permitted only inside the
+configured IMU gap. Future pose/IMU samples, timestamp regressions, and larger
+gaps are rejected. No unified pose is consumed, so the contract does not form a
+future unified-backend feedback cycle.
 
 Outputs are in the configured world frame:
 
@@ -38,9 +39,11 @@ No TF is published. Truth labels are never subscribed by the node.
 
 The clean-room prototype borrows the conservative visibility principle shared by
 FreeDOM and DUFOMap: a point is a strong dynamic candidate only when it enters a
-voxel that was repeatedly observed as free before the current scan. Endpoint
-guards, delayed free confirmation, unknown-space output, bounded neighborhood
-growth, and slow occupied recovery protect static structure and pose drift.
+voxel that was repeatedly observed as free before the current scan. It also
+tracks measured vacated surfaces, occlusion-safe static evidence, bounded
+dynamic hold, and range-adaptive static dwell. Endpoint guards, unknown-space
+output, bounded neighborhood growth, and slow occupied recovery protect static
+structure and pose drift.
 
 It is not a verbatim port of FreeDOM. In particular, MID360 angular inpainting /
 raycast enhancement remains disabled until a measured non-repetitive scan-pattern
@@ -76,8 +79,13 @@ Before hardware use, set the audited MID360 `T_body_lidar` in `observer.yaml`.
 ros2 run uf_dynamic_observer dynamic_observer_benchmark /tmp/dynamic_observer.json
 ```
 
-The benchmark runs all ten scenarios three times, compares the conservative
-observer to the existing `TemporalVoxelFilter` contract, and reports detection,
-static protection, map contamination/completeness, P50/P95 latency, and peak RSS.
+The benchmark runs 18 low-altitude scenarios with three deterministic seeds and
+two repeats per seed. It compares TemporalVoxelFilter, frozen observer v1, and
+visibility-aware observer v2, reporting per-scenario detection, static
+protection, contamination/completeness, unknown ratio, P50/P95/P99 latency,
+thread CPU, and filter memory.
 ATE/RPE/residual deltas are exactly zero by construction because neither branch
 is connected to FAST-LIO; they are not claims about closed-loop improvement.
+
+See `docs/DYNAMIC_OBSERVER_V2_VALIDATION.md` and
+`docs/DYNAMIC_OBSERVER_V2_ARCHITECTURE.md` for the final matrix and gate.

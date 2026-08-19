@@ -1,4 +1,4 @@
-schema: uf_dynamic_scenarios_v1
+schema: uf_dynamic_scenarios_v2
 detector_truth_access: forbidden
 truth_usage: evaluator_only
 baseline: uf_lio_adapter.TemporalVoxelFilter
@@ -17,6 +17,15 @@ metrics:
   - memory_mib
   - latency_p50_ms
   - latency_p95_ms
+  - latency_p99_ms
+  - unknown_ratio
+  - failure_mode
+reproducibility:
+  seeds: [101, 202, 303]
+  repeats_per_seed: 2
+  frames_per_run: 40
+  low_altitude_near_constant_height: true
+  detector_missing_ray_implies_free: false
 scenarios:
   - id: static_fast_turn
     dynamic_entities: []
@@ -37,9 +46,32 @@ scenarios:
     dynamic_entities: [slow_object]
   - id: moving_box_or_vehicle
     dynamic_entities: [box_or_vehicle]
-  - id: opening_door
+  - id: opening_closing_door
     dynamic_entities: [door]
     protects: [articulated_static_structure]
   - id: large_dynamic_occlusion
     dynamic_entities: [large_occluder]
     protects: [background_reappearance]
+  - id: radial_approach_departure
+    dynamic_entities: [radial_target]
+    protects: [low_transverse_parallax]
+  - id: moving_then_stops
+    dynamic_entities: [stopped_recent_dynamic]
+    protects: [temporal_dynamic_hold]
+  - id: co_moving_target
+    dynamic_entities: [co_moving_target]
+    protects: [near_zero_relative_velocity]
+  - id: occlusion_appear_disappear
+    dynamic_entities: [intermittently_visible_target]
+    protects: [occlusion, reappearance]
+  - id: near_wall_motion
+    dynamic_entities: [wall_adjacent_target]
+    protects: [static_wall]
+  - id: vertical_target_motion
+    dynamic_entities: [vertical_target]
+    protects: [near_constant_uav_altitude]
+  - id: nonrigid_motion
+    dynamic_entities: [articulated_nonrigid_target]
+  - id: far_sparse_target
+    dynamic_entities: [far_sparse_target]
+    protects: [unknown_space, conservative_observability]
