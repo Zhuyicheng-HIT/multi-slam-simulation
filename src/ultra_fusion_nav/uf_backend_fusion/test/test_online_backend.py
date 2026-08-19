@@ -23,6 +23,7 @@ from uf_backend_fusion.native_lidar import (
 )
 from uf_backend_fusion.online_backend import (
     GarbageCollectionProfiler,
+    StationaryImuInitialization,
     add_visual_observation_once,
     attach_frontend_map_commit_eligibility,
     axis_map_protection,
@@ -58,6 +59,7 @@ from uf_backend_fusion.online_backend import (
     imu_samples_for_interval,
     imu_samples_covering_interval,
     estimate_stationary_imu_bias,
+    initialize_relocalization_state,
     enqueue_latest,
     reanchor_imu_samples,
     delayed_frontend_map_commit_candidate,
@@ -99,6 +101,93 @@ from uf_reliability.flow_rotation_gate import FlowRotationGateResult
 
 
 class OnlineBackendHelpersTest(unittest.TestCase):
+    def test_relocalization_initialization_preserves_frozen_policy(self):
+        current = np.asarray([
+            1.0, 2.0, 3.0, 0.1, -0.2, 0.3,
+            1.0, 0.5, -0.2,
+            0.01, 0.02, 0.03, 0.001, 0.002, 0.003,
+        ])
+        correction = np.eye(4)
+        correction[:3, :3] = rpy_to_rotation_matrix([0.0, 0.0, 0.2])
+        correction[:3, 3] = [5.0, -1.0, 0.5]
+
+        recovered, stats = initialize_relocalization_state(
+            current, correction
+        )
+
+        np.testing.assert_allclose(
+            recovered[:6],
+            matrix_to_pose_vector(
+                correction @ pose_vector_to_matrix(current[:6])
+            ),
+        )
+        np.testing.assert_allclose(
+            recovered[6:9], correction[:3, :3] @ current[6:9]
+        )
+        np.testing.assert_allclose(recovered[9:15], current[9:15])
+        self.assertEqual(stats["velocity_policy_applied"], "rotate")
+        self.assertEqual(stats["bias_policy_applied"], "preserve")
+
+    def test_relocalization_stationary_policy_zeroes_velocity_and_reseeds_bias(self):
+        current = np.zeros(15)
+        current[6:9] = [0.05, -0.02, 0.01]
+        current[9:15] = 1.0
+        stationary = StationaryImuInitialization(
+            True,
+            "ok",
+            (0.1, 0.2, 0.3),
+            (0.01, 0.02, 0.03),
+            100,
+            1.0,
+            9.81,
+            0.02,
+            0.01,
+            0.002,
+        )
+
+        recovered, stats = initialize_relocalization_state(
+            current,
+            np.eye(4),
+            velocity_policy="stationary_zero",
+            bias_policy="stationary_imu",
+            stationary_imu=stationary,
+            maximum_stationary_speed_mps=0.35,
+        )
+
+        np.testing.assert_allclose(recovered[6:9], 0.0)
+        np.testing.assert_allclose(recovered[9:12], [0.1, 0.2, 0.3])
+        np.testing.assert_allclose(recovered[12:15], [0.01, 0.02, 0.03])
+        self.assertTrue(stats["stationary_observation_valid"])
+        self.assertEqual(stats["velocity_policy_applied"], "stationary_zero")
+        self.assertEqual(stats["bias_policy_applied"], "stationary_imu")
+
+    def test_relocalization_stationary_policy_falls_back_when_speed_is_high(self):
+        current = np.zeros(15)
+        current[6] = 0.5
+        current[9:15] = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]
+        stationary = StationaryImuInitialization(
+            True, "ok", (4.0, 5.0, 6.0), (0.4, 0.5, 0.6),
+            100, 1.0, 9.81, 0.02, 0.01, 0.002,
+        )
+
+        recovered, stats = initialize_relocalization_state(
+            current,
+            np.eye(4),
+            velocity_policy="stationary_zero",
+            bias_policy="stationary_imu",
+            stationary_imu=stationary,
+            maximum_stationary_speed_mps=0.35,
+        )
+
+        np.testing.assert_allclose(recovered[6:15], current[6:15])
+        self.assertFalse(stats["stationary_observation_valid"])
+        self.assertEqual(
+            stats["stationary_observation_reason"],
+            "estimated_speed_exceeds_limit",
+        )
+        self.assertEqual(stats["velocity_policy_applied"], "rotate")
+        self.assertEqual(stats["bias_policy_applied"], "preserve")
+
     def test_nonlinear_iteration_budget_preserves_recovery_headroom(self):
         self.assertEqual(
             select_nonlinear_iteration_budget(2, 4, 5, state_count=20), 2

@@ -444,6 +444,78 @@ class StationaryImuInitialization:
     gyro_residual_rms_radps: float
 
 
+def initialize_relocalization_state(
+    current_state,
+    epoch_correction,
+    *,
+    velocity_policy="rotate",
+    bias_policy="preserve",
+    stationary_imu=None,
+    maximum_stationary_speed_mps=0.35,
+):
+    """Build a new-epoch state without trusting unobservable reset fields."""
+    current = np.asarray(current_state, dtype=float)
+    correction = np.asarray(epoch_correction, dtype=float)
+    if current.shape != (15,) or np.any(~np.isfinite(current)):
+        raise ValueError("relocalization state must be a finite 15-vector")
+    if correction.shape != (4, 4) or np.any(~np.isfinite(correction)):
+        raise ValueError("epoch correction must be a finite 4x4 matrix")
+    velocity_policy = str(velocity_policy)
+    bias_policy = str(bias_policy)
+    if velocity_policy not in ("rotate", "stationary_zero"):
+        raise ValueError("unknown relocalization velocity policy")
+    if bias_policy not in ("preserve", "stationary_imu"):
+        raise ValueError("unknown relocalization bias policy")
+    maximum_stationary_speed_mps = float(maximum_stationary_speed_mps)
+    if (
+        not math.isfinite(maximum_stationary_speed_mps)
+        or maximum_stationary_speed_mps <= 0.0
+    ):
+        raise ValueError("stationary speed limit must be finite and positive")
+
+    recovered = current.copy()
+    corrected_pose = correction @ pose_vector_to_matrix(current[:6])
+    recovered[:6] = matrix_to_pose_vector(corrected_pose)
+    rotated_velocity = correction[:3, :3] @ current[6:9]
+    recovered[6:9] = rotated_velocity
+
+    stationary_valid = bool(
+        stationary_imu is not None
+        and stationary_imu.valid
+        and np.linalg.norm(rotated_velocity) <= maximum_stationary_speed_mps
+    )
+    velocity_applied = "rotate"
+    if velocity_policy == "stationary_zero" and stationary_valid:
+        recovered[6:9] = 0.0
+        velocity_applied = "stationary_zero"
+
+    bias_applied = "preserve"
+    if bias_policy == "stationary_imu" and stationary_valid:
+        recovered[9:12] = np.asarray(stationary_imu.accel_bias, dtype=float)
+        recovered[12:15] = np.asarray(stationary_imu.gyro_bias, dtype=float)
+        bias_applied = "stationary_imu"
+
+    stationary_reason = "not_requested"
+    if velocity_policy == "stationary_zero" or bias_policy == "stationary_imu":
+        if stationary_imu is None:
+            stationary_reason = "missing_stationary_observation"
+        elif not stationary_imu.valid:
+            stationary_reason = str(stationary_imu.reason)
+        elif np.linalg.norm(rotated_velocity) > maximum_stationary_speed_mps:
+            stationary_reason = "estimated_speed_exceeds_limit"
+        else:
+            stationary_reason = "ok"
+    return recovered, {
+        "velocity_policy_requested": velocity_policy,
+        "velocity_policy_applied": velocity_applied,
+        "bias_policy_requested": bias_policy,
+        "bias_policy_applied": bias_applied,
+        "stationary_observation_valid": stationary_valid,
+        "stationary_observation_reason": stationary_reason,
+        "pre_reset_speed_mps": float(np.linalg.norm(rotated_velocity)),
+    }
+
+
 @dataclass(frozen=True)
 class OptimizationIntegrity:
     valid: bool
@@ -2878,6 +2950,11 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("path_minimum_translation_m", 0.05)
         self.declare_parameter("path_minimum_rotation_rad", 0.02)
         self.declare_parameter("relocalization_enabled", True)
+        self.declare_parameter("relocalization_velocity_policy", "rotate")
+        self.declare_parameter("relocalization_bias_policy", "preserve")
+        self.declare_parameter(
+            "relocalization_stationary_maximum_speed_mps", 0.35
+        )
         self.declare_parameter("transactional_update_enabled", True)
         self.declare_parameter("lidar_prediction_gate_enabled", True)
         self.declare_parameter("lidar_prediction_gate_max_position_m", 1.0)
@@ -3769,6 +3846,30 @@ class UnifiedBackendNode(Node):
         self.relocalization_enabled = bool(
             self.get_parameter("relocalization_enabled").value
         )
+        self.relocalization_velocity_policy = str(
+            self.get_parameter("relocalization_velocity_policy").value
+        )
+        self.relocalization_bias_policy = str(
+            self.get_parameter("relocalization_bias_policy").value
+        )
+        self.relocalization_stationary_maximum_speed_mps = float(
+            self.get_parameter(
+                "relocalization_stationary_maximum_speed_mps"
+            ).value
+        )
+        if self.relocalization_velocity_policy not in (
+            "rotate", "stationary_zero"
+        ):
+            raise ValueError("unknown relocalization velocity policy")
+        if self.relocalization_bias_policy not in (
+            "preserve", "stationary_imu"
+        ):
+            raise ValueError("unknown relocalization bias policy")
+        if (
+            not math.isfinite(self.relocalization_stationary_maximum_speed_mps)
+            or self.relocalization_stationary_maximum_speed_mps <= 0.0
+        ):
+            raise ValueError("invalid relocalization stationary speed limit")
         self.relocalization_pending_timeout_s = max(0.2, float(
             self.get_parameter("relocalization_pending_timeout_s").value), )
         self.relocalization_future_wait_timeout_s = max(
@@ -4297,6 +4398,8 @@ class UnifiedBackendNode(Node):
             "relocalization_rejections": 0,
             "relocalization_expired": 0,
             "relocalization_epoch_factor_drops": 0,
+            "relocalization_stationary_initialization_accepted": 0,
+            "relocalization_stationary_initialization_rejected": 0,
             "marginal_covariance_updates": 0,
             "marginal_covariance_errors": 0,
             "marginal_covariance_reuses": 0,
@@ -6194,11 +6297,54 @@ class UnifiedBackendNode(Node):
                 ~np.isfinite(previous_alignment)):
             raise ValueError("current map alignment is invalid")
         epoch_correction = alignment @ np.linalg.inv(previous_alignment)
-        corrected_pose = epoch_correction @ pose_vector_to_matrix(
-            current_state[:6])
-        recovered = current_state.copy()
-        recovered[:6] = matrix_to_pose_vector(corrected_pose)
-        recovered[6:9] = epoch_correction[:3, :3] @ current_state[6:9]
+        velocity_policy = str(getattr(
+            self, "relocalization_velocity_policy", "rotate"
+        ))
+        bias_policy = str(getattr(
+            self, "relocalization_bias_policy", "preserve"
+        ))
+        stationary_initialization = None
+        if (
+            velocity_policy == "stationary_zero"
+            or bias_policy == "stationary_imu"
+        ):
+            corrected_orientation = matrix_to_pose_vector(
+                epoch_correction @ pose_vector_to_matrix(current_state[:6])
+            )[3:6]
+            stationary_initialization = estimate_stationary_imu_bias(
+                self._imu_snapshot(),
+                corrected_orientation,
+                anchor_stamp,
+                window_s=self.imu_startup_window_s,
+                minimum_samples=self.imu_startup_minimum_samples,
+                minimum_span_s=self.imu_startup_minimum_span_s,
+                maximum_mean_gyro_radps=(
+                    self.imu_startup_maximum_mean_gyro_radps
+                ),
+                maximum_gyro_residual_rms_radps=(
+                    self.imu_startup_maximum_gyro_residual_rms_radps
+                ),
+                gravity_tolerance_mps2=(
+                    self.imu_startup_gravity_tolerance_mps2
+                ),
+                maximum_accel_residual_rms_mps2=(
+                    self.imu_startup_maximum_accel_residual_rms_mps2
+                ),
+            )
+        recovered, initialization_stats = initialize_relocalization_state(
+            current_state,
+            epoch_correction,
+            velocity_policy=velocity_policy,
+            bias_policy=bias_policy,
+            stationary_imu=stationary_initialization,
+            maximum_stationary_speed_mps=(
+                float(getattr(
+                    self,
+                    "relocalization_stationary_maximum_speed_mps",
+                    0.35,
+                ))
+            ),
+        )
         prior_variance = np.ones(15, dtype=float) * 1.0
         if covariance.size >= 36 and np.all(np.isfinite(covariance[:36])):
             prior_variance[:3] = np.maximum(
@@ -6255,7 +6401,19 @@ class UnifiedBackendNode(Node):
             "correction_rotation_rad": float(np.linalg.norm(
                 matrix_to_pose_vector(epoch_correction)[3:6]
             )),
+            **initialization_stats,
         })
+        if initialization_stats["stationary_observation_valid"]:
+            self.counts[
+                "relocalization_stationary_initialization_accepted"
+            ] += 1
+        elif (
+            velocity_policy == "stationary_zero"
+            or bias_policy == "stationary_imu"
+        ):
+            self.counts[
+                "relocalization_stationary_initialization_rejected"
+            ] += 1
         self.native_lidar_prediction_gate_latched = False
         self.counts["relocalization_resets"] += 1
         with self.state_publication_lock:
@@ -11311,6 +11469,44 @@ class UnifiedBackendNode(Node):
                 "frontend_state_seed_enabled", self.frontend_state_seed_enabled
             ),
             self._key("state_reset_counter", self.state_reset_counter),
+            self._key(
+                "relocalization_velocity_policy",
+                self.relocalization_velocity_policy,
+            ),
+            self._key(
+                "relocalization_bias_policy", self.relocalization_bias_policy
+            ),
+            self._key(
+                "relocalization_velocity_policy_requested",
+                self.last_relocalization_reset_stats.get(
+                    "velocity_policy_requested",
+                    self.relocalization_velocity_policy,
+                ),
+            ),
+            self._key(
+                "relocalization_velocity_policy_applied",
+                self.last_relocalization_reset_stats.get(
+                    "velocity_policy_applied", "not_run"
+                ),
+            ),
+            self._key(
+                "relocalization_bias_policy_requested",
+                self.last_relocalization_reset_stats.get(
+                    "bias_policy_requested", self.relocalization_bias_policy
+                ),
+            ),
+            self._key(
+                "relocalization_bias_policy_applied",
+                self.last_relocalization_reset_stats.get(
+                    "bias_policy_applied", "not_run"
+                ),
+            ),
+            self._key(
+                "relocalization_stationary_reason",
+                self.last_relocalization_reset_stats.get(
+                    "stationary_observation_reason", "not_run"
+                ),
+            ),
             self._key("last_imu_reason", self.last_imu_reason),
             self._key("calibration_reason", self.last_calibration_update.reason),
             self._key(

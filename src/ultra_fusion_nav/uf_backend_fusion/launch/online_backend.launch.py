@@ -121,6 +121,21 @@ def generate_launch_description():
             description="Maximum ROS-time search budget for one relocalization request",
         ),
         DeclareLaunchArgument(
+            "relocalization_velocity_policy",
+            default_value="rotate",
+            description="New-epoch velocity policy: rotate or stationary_zero",
+        ),
+        DeclareLaunchArgument(
+            "relocalization_bias_policy",
+            default_value="preserve",
+            description="New-epoch IMU bias policy: preserve or stationary_imu",
+        ),
+        DeclareLaunchArgument(
+            "relocalization_stationary_maximum_speed_mps",
+            default_value="0.35",
+            description="Maximum pre-reset speed for stationary initialization",
+        ),
+        DeclareLaunchArgument(
             "performance_profiling_enabled",
             default_value="false",
             description="Record bounded per-cycle backend timing and resource evidence",
@@ -306,6 +321,18 @@ def generate_launch_description():
                     "performance_profiling_enabled": ParameterValue(
                         LaunchConfiguration("performance_profiling_enabled"),
                         value_type=bool,
+                    ),
+                    "relocalization_velocity_policy": LaunchConfiguration(
+                        "relocalization_velocity_policy"
+                    ),
+                    "relocalization_bias_policy": LaunchConfiguration(
+                        "relocalization_bias_policy"
+                    ),
+                    "relocalization_stationary_maximum_speed_mps": ParameterValue(
+                        LaunchConfiguration(
+                            "relocalization_stationary_maximum_speed_mps"
+                        ),
+                        value_type=float,
                     ),
                     "calibration_apply_locked_time_offset": ParameterValue(
                         LaunchConfiguration(
