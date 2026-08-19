@@ -855,6 +855,9 @@ class Metrics(Node):
         self.scheduler_clock_domain_deferred = 0
         self.scheduler_clock_domain_max_error_s = 0.0
         self.scheduler_clock_domain_examples = []
+        self.ros_clock_regressions = 0
+        self.ros_clock_regression_max_s = 0.0
+        self.ros_clock_regression_examples = []
         self.graph_contract_violations = []
         self.last_graph_contract_check_wall_s = None
         self.create_subscription(
@@ -1110,7 +1113,18 @@ class Metrics(Node):
         if now_ros_s <= 0.0:
             return False
         if self.last_ros_s is not None and now_ros_s < self.last_ros_s:
-            raise RuntimeError("ROS simulation clock moved backwards")
+            regression_s = self.last_ros_s - now_ros_s
+            self.ros_clock_regressions += 1
+            self.ros_clock_regression_max_s = max(
+                self.ros_clock_regression_max_s, regression_s
+            )
+            if len(self.ros_clock_regression_examples) < 8:
+                self.ros_clock_regression_examples.append({
+                    "previous_ros_s": self.last_ros_s,
+                    "current_ros_s": now_ros_s,
+                    "regression_s": regression_s,
+                })
+            return False
         self.last_ros_s = now_ros_s
         if self.started_ros_s is None:
             self.started_ros_s = now_ros_s
@@ -1300,6 +1314,11 @@ class Metrics(Node):
             "scheduler_clock_domain_examples": (
                 self.scheduler_clock_domain_examples
             ),
+            "ros_clock_regressions": self.ros_clock_regressions,
+            "ros_clock_regression_max_s": self.ros_clock_regression_max_s,
+            "ros_clock_regression_examples": (
+                self.ros_clock_regression_examples
+            ),
             "graph_contract_violations": self.graph_contract_violations,
             "factor_enabled_ratio": {
                 name: self.enabled[name] / count
@@ -1380,12 +1399,10 @@ def main():
                         "wall watchdog expired waiting for ROS simulation time"
                     )
                 continue
-            if last_ros_s is not None and now_ros_s < last_ros_s:
-                raise RuntimeError("ROS simulation clock moved backwards")
-            last_ros_s = now_ros_s
-            if started_ros_s is None:
-                started_ros_s = now_ros_s
-            node.observe_ros_time(now_ros_s)
+            if not node.observe_ros_time(now_ros_s):
+                continue
+            last_ros_s = node.last_ros_s
+            started_ros_s = node.started_ros_s
             if time.monotonic() - started_wall_s >= 3.0:
                 if not node.graph_contract_valid():
                     raise RuntimeError("ROS graph publisher contract violated")

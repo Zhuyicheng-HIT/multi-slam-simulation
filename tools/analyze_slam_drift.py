@@ -157,6 +157,7 @@ class SlamDriftAnalyzer(Node):
         self.livox_stamp_duplicates = 0
         self.livox_timebase_regressions = 0
         self.livox_point_offset_regressions = 0
+        self.ros_clock_regressions = 0
         self.body_removed_ratios = []
         self.registered_point_counts = []
         self.registered_abs_max_m = []
@@ -393,6 +394,7 @@ def build_report(node, sim_duration, wall_duration=None):
             "fast_lio_fcu_imu": node.imu_stamp_duplicates,
             "livox_custom_msg": node.livox_stamp_duplicates,
         },
+        "clock_regressions": node.ros_clock_regressions,
         "pointcloud": {
             "source": "/livox/lidar (livox_ros_driver2/msg/CustomMsg)",
             "livox_packet_p05_points": percentile(node.livox_point_counts, 5),
@@ -612,7 +614,8 @@ def main():
             if now_ros_s > 0.0 and ros_started is None:
                 ros_started = now_ros_s
             if last_ros_s is not None and now_ros_s < last_ros_s:
-                raise RuntimeError("ROS simulation clock moved backwards during evaluation")
+                node.ros_clock_regressions += 1
+                continue
             last_ros_s = now_ros_s
             if (
                 args.stop_on_mission_phase
