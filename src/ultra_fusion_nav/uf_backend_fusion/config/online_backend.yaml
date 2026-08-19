@@ -415,6 +415,11 @@ unified_backend_fusion:
     # node stores quality-gated static keyframes and waits for a request; it
     # never fires merely because one optional sensor is degraded.
     relocalization_enabled: true
+    # Frozen behavior transports velocity into the new map frame and preserves
+    # learned biases. Experiments may request stationary-gated alternatives.
+    relocalization_velocity_policy: rotate
+    relocalization_bias_policy: preserve
+    relocalization_stationary_maximum_speed_mps: 0.35
     relocalization_pending_timeout_s: 2.0
     # Registration runs outside the estimator callback and may finish after
     # the query state has left the short optimization window. Accept a bounded
