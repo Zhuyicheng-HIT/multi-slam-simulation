@@ -14,6 +14,16 @@ bash tools/run_frozen_low_figure8_validation.sh
 The frozen profile uses the low indoor world, a 2.2 m nominal takeoff, RGB-D
 direct factors, a 10 m simulation depth limit, and directional LiDAR axis
 handoff. It keeps online time calibration in shadow/diagnostic mode.
+The low-altitude route contract is the frozen 29 m traversal with at least
+14 route checkpoints. FAST-LIO drift is still recorded as a diagnostic, but it
+is not a fatal acceptance gate for this profile because FAST-LIO does not own
+the final estimator pose.
+Mission observers, including runtime, drift, and reliability recorders, stop
+on `/mission/phase=landed` by default, which is published only after the route
+node confirms landing and FCU disarm. Replay bag recording is then interrupted during validation
+teardown so the baseline does not spend wall time or disk on idle post-landing
+data. Set `VALIDATION_STOP_OBSERVERS_ON_LANDING=false` only when a fixed
+duration post-flight recording is explicitly needed.
 
 The following experimental paths are retained but not invoked by this entry
 point: Range-Facet, barometer fallback, and active relocalization triggers.

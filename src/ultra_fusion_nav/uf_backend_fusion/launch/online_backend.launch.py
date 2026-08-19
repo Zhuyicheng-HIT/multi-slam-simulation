@@ -1,4 +1,5 @@
 import os
+from typing import List
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -26,6 +27,13 @@ def generate_launch_description():
     publish_mavros_frame_transforms = LaunchConfiguration(
         "publish_mavros_frame_transforms"
     )
+    active_modalities = ParameterValue(
+        LaunchConfiguration("active_modalities"), value_type=List[str]
+    )
+    active_modalities_with_vision = ParameterValue(
+        LaunchConfiguration("active_modalities_with_vision"),
+        value_type=List[str],
+    )
     relocalization_prefix = None
     if os.environ.get("UF_RELOCALIZATION_GDB", "0") == "1":
         relocalization_prefix = (
@@ -34,6 +42,16 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
+        DeclareLaunchArgument(
+            "active_modalities",
+            default_value="[lidar, gnss, imu, optical_flow]",
+            description="Modalities scheduled when vision is disabled",
+        ),
+        DeclareLaunchArgument(
+            "active_modalities_with_vision",
+            default_value="[lidar, gnss, imu, optical_flow, vision]",
+            description="Modalities scheduled when vision is enabled",
+        ),
         DeclareLaunchArgument("visual_factor_mode", default_value="disabled"),
         DeclareLaunchArgument("rgbd_minimum_depth_m", default_value="0.30"),
         DeclareLaunchArgument("rgbd_maximum_depth_m", default_value="6.0"),
@@ -191,7 +209,7 @@ def generate_launch_description():
             parameters=[
                 scheduler_config,
                 {
-                    "active_modalities": ["lidar", "gnss", "imu", "optical_flow"],
+                    "active_modalities": active_modalities,
                     "use_sim_time": use_sim_time,
                 },
             ],
@@ -205,9 +223,7 @@ def generate_launch_description():
             parameters=[
                 scheduler_config,
                 {
-                    "active_modalities": [
-                        "lidar", "gnss", "imu", "optical_flow", "vision"
-                    ],
+                    "active_modalities": active_modalities_with_vision,
                     "use_sim_time": use_sim_time,
                 },
             ],

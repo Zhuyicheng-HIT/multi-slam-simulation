@@ -1098,12 +1098,14 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             if not self.state.armed:
                 self.get_logger().info(
                     "LAND completed and FCU disarm confirmed.")
+                self._publish_mission_phase("landed")
                 return
             deadline = time.monotonic() + self.land_disarm_timeout_s
             while rclpy.ok() and time.monotonic() < deadline:
                 if not self.state.armed:
                     self.get_logger().info(
                         "LAND completed and FCU disarm confirmed.")
+                    self._publish_mission_phase("landed")
                     return
                 rclpy.spin_once(self, timeout_sec=0.1)
                 self._log_status("landing descent")

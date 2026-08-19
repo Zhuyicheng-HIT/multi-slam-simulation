@@ -758,6 +758,7 @@ class GuidedRectangleWaypoints(Node):
                         self.get_logger().info(
                             "LAND completed and FCU disarm confirmed."
                         )
+                        self._publish_mission_phase("landed")
                         break
                 else:
                     raise RuntimeError(

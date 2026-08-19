@@ -1057,6 +1057,15 @@ class Metrics(Node):
             "phase": phase,
         })
 
+    def has_mission_phase(self, phase):
+        wanted = str(phase).strip()
+        if not wanted:
+            return False
+        return any(
+            str(event.get("phase", "")).strip() == wanted
+            for event in self.mission_phase_timeline
+        )
+
     @staticmethod
     def _endpoint_identity(endpoint):
         return {
@@ -1341,6 +1350,14 @@ def main():
     parser.add_argument("--duration", type=float, default=125.0)
     parser.add_argument("--output", required=True)
     parser.add_argument("--wall-timeout", type=float, default=0.0)
+    parser.add_argument(
+        "--stop-on-mission-phase",
+        default="",
+        help=(
+            "Finish after this /mission/phase is observed. This keeps mission "
+            "validators from recording idle post-landing data."
+        ),
+    )
     args = parser.parse_args(remove_ros_args(args=sys.argv)[1:])
     rclpy.init()
     node = Metrics()
@@ -1376,6 +1393,14 @@ def main():
                 raise RuntimeError(
                     "scheduler state arrived from a different ROS clock domain"
                 )
+            if (
+                args.stop_on_mission_phase
+                and node.has_mission_phase(args.stop_on_mission_phase)
+            ):
+                termination_reason = (
+                    f"mission_phase:{args.stop_on_mission_phase}"
+                )
+                break
             if now_ros_s - started_ros_s >= args.duration:
                 break
             if time.monotonic() - started_wall_s >= wall_timeout:
@@ -1391,6 +1416,8 @@ def main():
         pending_error = error
     finally:
         report = node.report(last_ros_s)
+        report["requested_duration_s"] = float(args.duration)
+        report["stop_on_mission_phase"] = str(args.stop_on_mission_phase)
         report["termination_reason"] = termination_reason
         with open(args.output, "w", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, sort_keys=True)

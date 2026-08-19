@@ -54,6 +54,11 @@ CALIBRATION_APPLY_LOCKED_ROTATION=${CALIBRATION_APPLY_LOCKED_ROTATION:-false}
 VISUAL_TIME_CALIBRATION_APPLY_LOCKED=${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}
 USE_SIM_TIME=${USE_SIM_TIME:-true}
 OPTICAL_FLOW_INPUT_TOPIC=${OPTICAL_FLOW_INPUT_TOPIC:-/sim/optical_flow/rad}
+SENSOR_PIPELINE_CONFIG=${SENSOR_PIPELINE_CONFIG:-$REPO_ROOT/src/ultra_fusion_nav/uf_sensor_pipeline/config/sim_sensor_config.yaml}
+GNSS_INPUT_TOPIC=${GNSS_INPUT_TOPIC:-/mavros/global_position/raw/fix}
+GNSS_RAW_INPUT_TOPIC=${GNSS_RAW_INPUT_TOPIC:-/mavros/gpsstatus/gps1/raw}
+GNSS_ALGORITHM_RATE_HZ=${GNSS_ALGORITHM_RATE_HZ:-5.0}
+ACTIVE_MODALITIES=${ACTIVE_MODALITIES:-[lidar,imu,gnss,optical_flow]}
 if [[ -z "${BAROMETER_TOPIC+x}" ]]; then
   case "${USE_SIM_TIME,,}" in
     1|true|yes|on) BAROMETER_TOPIC=/sim/barometer/pressure ;;
@@ -144,9 +149,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 setsid ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
+  config:="$SENSOR_PIPELINE_CONFIG" \
   use_sim_time:="$USE_SIM_TIME" \
   enable_vision:="$ENABLE_VISION_ARG" \
+  active_modalities:="$ACTIVE_MODALITIES" \
   optical_flow_input_topic:="$OPTICAL_FLOW_INPUT_TOPIC" \
+  gnss_input_topic:="$GNSS_INPUT_TOPIC" \
+  gnss_raw_input_topic:="$GNSS_RAW_INPUT_TOPIC" \
+  gnss_algorithm_rate_hz:="$GNSS_ALGORITHM_RATE_HZ" \
   >"$LOG_DIR/sensor_pipeline.log" 2>&1 &
 pids+=("$!")
 
@@ -163,6 +173,7 @@ setsid env \
   ros2 launch uf_backend_fusion online_backend.launch.py \
   use_sim_time:="$USE_SIM_TIME" \
   enable_vision:="$ENABLE_VISION_ARG" \
+  active_modalities:="$ACTIVE_MODALITIES" \
   visual_factor_mode:="$VISUAL_FACTOR_MODE" \
   rgbd_minimum_depth_m:="$RGBD_MINIMUM_DEPTH_M" \
   rgbd_maximum_depth_m:="$RGBD_MAXIMUM_DEPTH_M" \

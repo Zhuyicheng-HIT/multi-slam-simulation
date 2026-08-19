@@ -65,6 +65,35 @@ VALIDATION_START_FASTLIO_OCCUPANCY_GRID=${VALIDATION_START_FASTLIO_OCCUPANCY_GRI
 VALIDATION_LOCALIZATION_SAFETY_ENABLED=${VALIDATION_LOCALIZATION_SAFETY_ENABLED:-true}
 VALIDATION_RECORD_REPLAY_BAG=${VALIDATION_RECORD_REPLAY_BAG:-true}
 VALIDATION_RECORD_RAW_LIDAR=${VALIDATION_RECORD_RAW_LIDAR:-false}
+VALIDATION_REQUIRE_FASTLIO_DRIFT=${VALIDATION_REQUIRE_FASTLIO_DRIFT:-true}
+VALIDATION_STOP_OBSERVERS_ON_LANDING=${VALIDATION_STOP_OBSERVERS_ON_LANDING:-true}
+case "${VALIDATION_REQUIRE_FASTLIO_DRIFT,,}" in
+  1|true|yes|on) validation_require_fastlio_drift=true ;;
+  0|false|no|off) validation_require_fastlio_drift=false ;;
+  *)
+    printf 'VALIDATION_REQUIRE_FASTLIO_DRIFT must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
+case "${VALIDATION_STOP_OBSERVERS_ON_LANDING,,}" in
+  1|true|yes|on) validation_stop_observers_on_landing=true ;;
+  0|false|no|off) validation_stop_observers_on_landing=false ;;
+  *)
+    printf 'VALIDATION_STOP_OBSERVERS_ON_LANDING must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
+if [[ -z "${VALIDATION_MINIMUM_SIM_DURATION:-}" ]]; then
+  if [[ "$validation_stop_observers_on_landing" == "true" ]]; then
+    VALIDATION_MINIMUM_SIM_DURATION=120
+  else
+    VALIDATION_MINIMUM_SIM_DURATION="$METRICS_DURATION"
+  fi
+fi
+if [[ ! "$VALIDATION_MINIMUM_SIM_DURATION" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  printf 'VALIDATION_MINIMUM_SIM_DURATION must be non-negative.\n' >&2
+  exit 2
+fi
 if [[ -z "${VALIDATION_ROUTE_FEEDBACK_SOURCE:-}" ]]; then
   if [[ "$VALIDATION_ROUTE" == "rectangle" ]]; then
     VALIDATION_ROUTE_FEEDBACK_SOURCE=fcu_local
@@ -78,6 +107,16 @@ VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED=${VALIDATION_REQUIRE_TIME_CALIBRATIO
 VALIDATION_ENABLE_VISION=${VALIDATION_ENABLE_VISION:-0}
 VALIDATION_VISUAL_KEYFRAME_PROFILE=${VALIDATION_VISUAL_KEYFRAME_PROFILE:-balanced}
 VALIDATION_VISUAL_FACTOR_MODE=${VALIDATION_VISUAL_FACTOR_MODE:-paper_reprojection}
+VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M=${VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M:-35.0}
+VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS=${VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS:-19}
+if [[ ! "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  printf 'VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M must be non-negative.\n' >&2
+  exit 2
+fi
+if [[ ! "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS" =~ ^[0-9]+$ ]]; then
+  printf 'VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS must be a non-negative integer.\n' >&2
+  exit 2
+fi
 case "$VALIDATION_VISUAL_FACTOR_MODE" in
   paper_reprojection|rgbd_direct) ;;
   *)
@@ -203,6 +242,14 @@ printf 'Validation Z recovery: lidar_axis_handoff=%s gnss_reanchor=%s barometer=
   "$VALIDATION_BAROMETER_FALLBACK_ENABLED"
 printf 'Validation GNSS Z recovery information scale: %s\n' \
   "$VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE"
+printf 'Validation FAST-LIO drift gate: required=%s\n' \
+  "$validation_require_fastlio_drift"
+printf 'Validation observer stop: on_landing=%s minimum_sim_duration=%s\n' \
+  "$validation_stop_observers_on_landing" \
+  "$VALIDATION_MINIMUM_SIM_DURATION"
+printf 'Validation figure-eight gates: minimum_distance_m=%s minimum_checkpoints=%s\n' \
+  "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M" \
+  "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS"
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
 if ! ros2 pkg prefix "$RMW_IMPLEMENTATION" >/dev/null 2>&1; then
@@ -443,8 +490,14 @@ setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   >"$LOG_DIR/unified_accuracy.log" 2>&1 &
 pids+=("$!")
 
+observer_stop_args=()
+if [[ "$validation_stop_observers_on_landing" == "true" ]]; then
+  observer_stop_args+=(--stop-on-mission-phase landed)
+fi
+
 python3 "$REPO_ROOT/tools/unified_runtime_metrics.py" --duration "$METRICS_DURATION" \
   --output "$LOG_DIR/unified_runtime_metrics.json" \
+  "${observer_stop_args[@]}" \
   --ros-args -p use_sim_time:=true \
   -p external_nav_topic:="$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
   >"$LOG_DIR/unified_runtime_metrics.log" 2>&1 &
@@ -489,6 +542,7 @@ case "${ENABLE_RELIABILITY_RECORD:-0}" in
     setsid bash "$REPO_ROOT/tools/run_reliability_score_recorder.sh" \
       --duration "$METRICS_DURATION" \
       --output "$LOG_DIR/reliability_scores.csv" \
+      "${observer_stop_args[@]}" \
       --allow-missing \
       >"$LOG_DIR/reliability_scores.log" 2>&1 &
     reliability_pid=$!
@@ -589,6 +643,7 @@ pids+=("$route_pid")
 drift_status=0
 python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
   --output "$LOG_DIR/slam_drift.json" \
+  "${observer_stop_args[@]}" \
   --ros-args -p use_sim_time:=true \
   >"$LOG_DIR/slam_drift.log" 2>&1 || drift_status=$?
 metrics_status=0
@@ -613,10 +668,19 @@ if (( route_status != 0 )); then
     "$VALIDATION_ROUTE" "$route_status" >&2
   exit "$route_status"
 fi
-if (( drift_status != 0 || metrics_status != 0 )); then
-  printf 'metric_collection_failed: drift=%d runtime=%d\n' \
-    "$drift_status" "$metrics_status" >&2
+if (( metrics_status != 0 )); then
+  printf 'metric_collection_failed: runtime=%d\n' \
+    "$metrics_status" >&2
   exit 3
+fi
+if (( drift_status != 0 )); then
+  if [[ "$validation_require_fastlio_drift" == "true" ]]; then
+    printf 'metric_collection_failed: drift=%d runtime=%d\n' \
+      "$drift_status" "$metrics_status" >&2
+    exit 3
+  fi
+  printf 'fastlio_drift_diagnostic_failed_nonfatal: status %d\n' \
+    "$drift_status" >&2
 fi
 if [[ -n "$reliability_pid" ]] && (( reliability_status != 0 )); then
   printf 'reliability_collection_failed: status %d\n' \
@@ -647,8 +711,10 @@ validation_gate_args=(
   --mavros-log "$LOG_DIR/sim/mavros.log"
   --sitl-log "$LOG_DIR/sim/sitl.log"
   --output "$LOG_DIR/validation_acceptance.json"
-  --minimum-sim-duration "$METRICS_DURATION"
+  --minimum-sim-duration "$VALIDATION_MINIMUM_SIM_DURATION"
   --expected-route-feedback "$VALIDATION_ROUTE_FEEDBACK_SOURCE"
+  --minimum-figure-eight-distance "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M"
+  --minimum-figure-eight-checkpoints "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS"
 )
 case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   1|true|TRUE|yes|YES) validation_gate_args+=(--require-external-nav) ;;

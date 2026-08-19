@@ -110,6 +110,8 @@ def evaluate_validation(
     minimum_matched_samples=300,
     minimum_motion_samples=50,
     minimum_sim_duration_s=120.0,
+    minimum_figure_eight_distance_m=35.0,
+    minimum_figure_eight_checkpoints=19,
 ):
     causal = accuracy.get("causal_ate", {})
     three_d = causal.get("three_dimensional", {})
@@ -172,6 +174,11 @@ def evaluate_validation(
             and waypoint_totals == {int(expected_waypoints)}
         )
     )
+    runtime_termination = str(runtime.get("termination_reason", ""))
+    runtime_completed = (
+        runtime_termination == "duration_complete"
+        or runtime_termination == "mission_phase:landed"
+    )
 
     gates = {
         "accuracy_acceptance_passed": bool(_nested(accuracy, "acceptance", "passed")),
@@ -188,7 +195,7 @@ def evaluate_validation(
         "horizontal_rmse_below_0_20_m": horizontal_rmse_m < 0.20,
         "vertical_rmse_below_0_20_m": vertical_rmse_m < 0.20,
         "runtime_completed_requested_duration": (
-            runtime.get("termination_reason") == "duration_complete"
+            runtime_completed
             and sim_duration_s >= float(minimum_sim_duration_s)
         ),
         "runtime_graph_contract_clean": _empty_violation(
@@ -228,9 +235,28 @@ def evaluate_validation(
             _number(plan_match.group(2), "figure_eight.low_altitude_percent") / 100.0
             if plan_match else 0.0
         )
+        minimum_figure_eight_distance_m = _number(
+            minimum_figure_eight_distance_m,
+            "minimum_figure_eight_distance_m",
+        )
+        minimum_figure_eight_checkpoints = int(
+            _integer(
+                minimum_figure_eight_checkpoints,
+                "minimum_figure_eight_checkpoints",
+            )
+        )
+        if minimum_figure_eight_checkpoints < 0:
+            raise ValueError(
+                "minimum_figure_eight_checkpoints must be non-negative"
+            )
+        expected_checkpoint_indices = set(
+            range(1, minimum_figure_eight_checkpoints + 1)
+        )
         gates.update({
             "figure_eight_plan_present": plan_match is not None,
-            "figure_eight_nontrivial_distance": planned_distance_m >= 35.0,
+            "figure_eight_nontrivial_distance": (
+                planned_distance_m >= minimum_figure_eight_distance_m
+            ),
             "figure_eight_low_altitude_contract": low_altitude_ratio >= 0.50,
             "figure_eight_uses_requested_feedback": (
                 "large figure-eight single traversal:" in route_log
@@ -238,7 +264,7 @@ def evaluate_validation(
             ),
             "figure_eight_route_completed": (
                 "large figure-eight single traversal: points=" in route_log
-                and checkpoint_indices.issuperset(range(1, 20))
+                and checkpoint_indices.issuperset(expected_checkpoint_indices)
                 and "LAND completed and FCU disarm confirmed." in route_log
             ),
         })
@@ -246,6 +272,8 @@ def evaluate_validation(
             "planned_distance_m": planned_distance_m,
             "low_altitude_ratio": low_altitude_ratio,
             "checkpoint_indices": sorted(checkpoint_indices),
+            "minimum_distance_m": minimum_figure_eight_distance_m,
+            "minimum_checkpoints": minimum_figure_eight_checkpoints,
         }
 
     unified_gates, unified_observed = _stream_gates(
@@ -377,6 +405,7 @@ def evaluate_validation(
         "matched_samples": matched_samples,
         "motion_samples": motion_samples,
         "sim_duration_s": sim_duration_s,
+        "runtime_termination_reason": runtime_termination,
         "causal_3d_rmse_m": rmse_m,
         "causal_3d_p95_m": p95_m,
         "causal_3d_max_m": max_m,
@@ -412,6 +441,12 @@ def evaluate_validation(
             "minimum_matched_samples": int(minimum_matched_samples),
             "minimum_motion_samples": int(minimum_motion_samples),
             "minimum_sim_duration_s": float(minimum_sim_duration_s),
+            "minimum_figure_eight_distance_m": float(
+                minimum_figure_eight_distance_m
+            ),
+            "minimum_figure_eight_checkpoints": int(
+                minimum_figure_eight_checkpoints
+            ),
         },
         "observed": observed,
         "gates": gates,
@@ -449,6 +484,18 @@ def main():
     parser.add_argument("--minimum-matched-samples", type=int, default=300)
     parser.add_argument("--minimum-motion-samples", type=int, default=50)
     parser.add_argument("--minimum-sim-duration", type=float, default=120.0)
+    parser.add_argument(
+        "--minimum-figure-eight-distance",
+        type=float,
+        default=35.0,
+        help="Minimum planned route distance for figure-eight validation.",
+    )
+    parser.add_argument(
+        "--minimum-figure-eight-checkpoints",
+        type=int,
+        default=19,
+        help="Minimum consecutive route checkpoints for figure-eight validation.",
+    )
     args = parser.parse_args()
 
     try:
@@ -470,6 +517,8 @@ def main():
             minimum_matched_samples=args.minimum_matched_samples,
             minimum_motion_samples=args.minimum_motion_samples,
             minimum_sim_duration_s=args.minimum_sim_duration,
+            minimum_figure_eight_distance_m=args.minimum_figure_eight_distance,
+            minimum_figure_eight_checkpoints=args.minimum_figure_eight_checkpoints,
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         report = {

@@ -8,6 +8,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from std_msgs.msg import String
 from uf_interfaces.msg import ReliabilityScore
 
 
@@ -24,6 +25,8 @@ class ScoreRecorder(Node):
         self.first_source_stamp_s = None
         self.invalid_header_stamp_counts = {modality: 0 for modality in MODALITIES}
         self.rows = []
+        self.mission_phase = "unreported"
+        self.mission_phase_timeline = []
         for modality in MODALITIES:
             self.create_subscription(
                 ReliabilityScore,
@@ -31,6 +34,23 @@ class ScoreRecorder(Node):
                 lambda msg, key=modality: self._score(key, msg),
                 20,
             )
+        self.create_subscription(String, "/mission/phase", self._phase, 10)
+
+    def _phase(self, msg):
+        phase = str(msg.data).strip() or "unreported"
+        if phase == self.mission_phase:
+            return
+        self.mission_phase = phase
+        self.mission_phase_timeline.append({
+            "ros_time_s": self.get_clock().now().nanoseconds * 1.0e-9,
+            "phase": phase,
+        })
+
+    def has_mission_phase(self, phase):
+        wanted = str(phase).strip()
+        return bool(wanted) and any(
+            event["phase"] == wanted for event in self.mission_phase_timeline
+        )
 
     def _score(self, modality, msg):
         stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1.0e-9
@@ -66,7 +86,9 @@ class ScoreRecorder(Node):
         })
 
 
-def record_for_ros_duration(node, duration_s, wall_timeout_s):
+def record_for_ros_duration(
+    node, duration_s, wall_timeout_s, stop_on_mission_phase=""
+):
     wall_started = time.monotonic()
     last_progress_wall = wall_started
     ros_started_ns = None
@@ -89,15 +111,21 @@ def record_for_ros_duration(node, duration_s, wall_timeout_s):
             if ros_started_ns is not None else 0.0
         )
         elapsed_wall_s = now_wall - wall_started
+        if node.has_mission_phase(stop_on_mission_phase):
+            return (
+                elapsed_ros_s,
+                elapsed_wall_s,
+                f"mission_phase:{stop_on_mission_phase}",
+            )
         if elapsed_ros_s >= duration_s:
-            return elapsed_ros_s, elapsed_wall_s
+            return elapsed_ros_s, elapsed_wall_s, "duration_complete"
         stalled_wall_s = now_wall - last_progress_wall
         if stalled_wall_s >= wall_timeout_s:
             raise RuntimeError(
                 f"ROS clock stalled for {stalled_wall_s:.1f}s "
                 f"after advancing {elapsed_ros_s:.1f}s"
             )
-    return elapsed_ros_s, time.monotonic() - wall_started
+    return elapsed_ros_s, time.monotonic() - wall_started, "ros_shutdown"
 
 
 def main():
@@ -115,6 +143,14 @@ def main():
         action="store_true",
         help="return success when a deliberately disabled modality has no rows",
     )
+    parser.add_argument(
+        "--stop-on-mission-phase",
+        default="",
+        help=(
+            "finish after this /mission/phase is observed; use 'landed' to "
+            "avoid recording idle post-flight samples"
+        ),
+    )
     args = parser.parse_args()
     rclpy.init()
     node = ScoreRecorder()
@@ -122,8 +158,11 @@ def main():
         args.wall_timeout if args.wall_timeout > 0.0
         else max(args.duration * 10.0, args.duration + 60.0)
     )
-    duration_ros_s, duration_wall_s = record_for_ros_duration(
-        node, args.duration, wall_timeout_s
+    duration_ros_s, duration_wall_s, termination_reason = record_for_ros_duration(
+        node,
+        args.duration,
+        wall_timeout_s,
+        stop_on_mission_phase=args.stop_on_mission_phase,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +189,9 @@ def main():
         "duration_ros_s": duration_ros_s,
         "duration_wall_s": duration_wall_s,
         "wall_stall_timeout_s": wall_timeout_s,
+        "stop_on_mission_phase": args.stop_on_mission_phase,
+        "termination_reason": termination_reason,
+        "mission_phase_timeline": node.mission_phase_timeline,
     }, indent=2))
     node.destroy_node()
     rclpy.shutdown()
