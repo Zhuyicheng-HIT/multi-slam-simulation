@@ -1,4 +1,5 @@
 #include "uf_dynamic_observer/conservative_free_space.hpp"
+#include "uf_dynamic_observer/causal_imu_deskew.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
@@ -6,6 +7,7 @@
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -62,17 +64,21 @@ public:
   {
     const bool enabled = declare_parameter<bool>("enabled", false);
     input_mode_ = declare_parameter<std::string>("input_mode", "livox_custom");
+    filter_implementation_ = declare_parameter<std::string>(
+      "filter.implementation", "visibility_v2");
+    deskew_mode_ = declare_parameter<std::string>(
+      "deskew.mode", "causal_fastlio_imu");
     world_frame_ = declare_parameter<std::string>("world_frame", "map");
-    const auto pose_topic = declare_parameter<std::string>("pose_topic", "/fusion/unified/odom");
+    const auto pose_topic = declare_parameter<std::string>("pose_topic", "/Odometry");
+    const auto imu_topic = declare_parameter<std::string>("imu_topic", "/livox/imu");
     const auto livox_topic = declare_parameter<std::string>("livox_topic", "/livox/lidar");
     const auto pointcloud_topic =
       declare_parameter<std::string>("pointcloud_topic", "/sim/mid360/points_raw");
     max_pending_scans_ = static_cast<std::size_t>(
       std::max<std::int64_t>(1, declare_parameter<int>("max_pending_scans", 8)));
     max_pose_wait_ms_ = declare_parameter<double>("max_pose_wait_ms", 250.0);
-    max_pose_gap_s_ = declare_parameter<double>("max_pose_gap_s", 0.15);
 
-    FilterConfig config;
+    VisibilityFilterConfig config;
     config.voxel_size_m = declare_parameter<double>("filter.voxel_size_m", 0.25);
     config.min_range_m = declare_parameter<double>("filter.min_range_m", 0.5);
     config.max_range_m = declare_parameter<double>("filter.max_range_m", 35.0);
@@ -92,7 +98,54 @@ public:
       1, declare_parameter<int>("filter.ray_stride", 4)));
     config.max_voxels = static_cast<std::size_t>(
       std::max<std::int64_t>(1000, declare_parameter<int>("filter.max_voxels", 1500000)));
-    observer_ = std::make_unique<ConservativeFreeSpaceObserver>(config);
+    config.dynamic_confirmations = static_cast<std::uint16_t>(
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.dynamic_confirmations", 1)));
+    config.dynamic_hold_scans = static_cast<std::uint16_t>(
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.dynamic_hold_scans", 12)));
+    config.vacated_hold_scans = static_cast<std::uint16_t>(
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.vacated_hold_scans", 8)));
+    config.static_vacate_confirmations = static_cast<std::uint16_t>(
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.static_vacate_confirmations", 1)));
+    config.dynamic_track_radius_voxels = static_cast<int>(std::max<std::int64_t>(
+      0, declare_parameter<int>("filter.dynamic_track_radius_voxels", 1)));
+    config.vacated_surface_radius_voxels = static_cast<int>(std::max<std::int64_t>(
+      0, declare_parameter<int>("filter.vacated_surface_radius_voxels", 1)));
+    config.static_support_radius_voxels = static_cast<int>(std::max<std::int64_t>(
+      0, declare_parameter<int>("filter.static_support_radius_voxels", 1)));
+    config.min_static_neighbor_voxels = static_cast<std::size_t>(std::max<std::int64_t>(
+      0, declare_parameter<int>("filter.min_static_neighbor_voxels", 0)));
+    config.far_range_m = declare_parameter<double>("filter.far_range_m", 15.0);
+    config.far_static_confirmations = static_cast<std::uint16_t>(
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 12)));
+    if (filter_implementation_ == "visibility_v2") {
+      visibility_observer_ = std::make_unique<VisibilityAwareDynamicObserver>(config);
+    } else if (filter_implementation_ == "conservative_v1") {
+      observer_v1_ = std::make_unique<ConservativeFreeSpaceObserver>(config);
+    } else {
+      throw std::invalid_argument("filter.implementation must be visibility_v2 or conservative_v1");
+    }
+
+    CausalDeskewConfig deskew_config;
+    deskew_config.max_imu_gap_s = declare_parameter<double>("deskew.max_imu_gap_s", 0.025);
+    deskew_max_imu_gap_s_ = deskew_config.max_imu_gap_s;
+    deskew_config.max_prediction_horizon_s = declare_parameter<double>(
+      "deskew.max_prediction_horizon_s", 0.20);
+    const auto gravity = declare_parameter<std::vector<double>>(
+      "deskew.gravity_world", {0.0, 0.0, -9.80665});
+    const auto accel_bias = declare_parameter<std::vector<double>>(
+      "deskew.accel_bias", {0.0, 0.0, 0.0});
+    const auto gyro_bias = declare_parameter<std::vector<double>>(
+      "deskew.gyro_bias", {0.0, 0.0, 0.0});
+    if (gravity.size() != 3U || accel_bias.size() != 3U || gyro_bias.size() != 3U) {
+      throw std::invalid_argument("deskew vector parameters must contain 3 values");
+    }
+    deskew_config.gravity_world = {gravity[0], gravity[1], gravity[2]};
+    deskew_config.accel_bias = {accel_bias[0], accel_bias[1], accel_bias[2]};
+    deskew_config.gyro_bias = {gyro_bias[0], gyro_bias[1], gyro_bias[2]};
+    causal_deskew_ = std::make_unique<CausalImuDeskew>(deskew_config);
+    if (deskew_mode_ != "causal_fastlio_imu") {
+      throw std::invalid_argument("deskew.mode must be causal_fastlio_imu");
+    }
 
     const auto translation = declare_parameter<std::vector<double>>(
       "extrinsic.body_from_lidar_translation", {0.0, 0.0, 0.0});
@@ -137,6 +190,9 @@ public:
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       pose_topic, sensor_qos,
       [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {on_odometry(*message);});
+    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+      imu_topic, sensor_qos,
+      [this](sensor_msgs::msg::Imu::ConstSharedPtr message) {on_imu(*message);});
     if (input_mode_ == "livox_custom") {
       livox_sub_ = create_subscription<livox_ros_driver2::msg::CustomMsg>(
         livox_topic, sensor_qos,
@@ -151,8 +207,8 @@ public:
     drain_timer_ = create_wall_timer(std::chrono::milliseconds(5), [this]() {drain_pending();});
     RCLCPP_INFO(
       get_logger(),
-      "Observer enabled in %s mode. Outputs are side-channel only; FAST-LIO ownership is unchanged.",
-      input_mode_.c_str());
+      "Observer enabled: input=%s filter=%s deskew=%s. Outputs are side-channel only.",
+      input_mode_.c_str(), filter_implementation_.c_str(), deskew_mode_.c_str());
   }
 
 private:
@@ -161,6 +217,7 @@ private:
     std::int64_t stamp_ns{0};
     Eigen::Vector3d translation{Eigen::Vector3d::Zero()};
     Eigen::Quaterniond rotation{Eigen::Quaterniond::Identity()};
+    Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
   };
 
   struct RawPoint
@@ -195,9 +252,37 @@ private:
     if (!poses_.empty() && sample.stamp_ns <= poses_.back().stamp_ns) {
       return;
     }
+    if (!poses_.empty()) {
+      const double dt = static_cast<double>(sample.stamp_ns - poses_.back().stamp_ns) * 1.0e-9;
+      if (dt > 1.0e-6) {
+        sample.velocity = (sample.translation - poses_.back().translation) / dt;
+      }
+    }
     poses_.push_back(sample);
     while (poses_.size() > 1000U) {
       poses_.pop_front();
+    }
+  }
+
+  void on_imu(const sensor_msgs::msg::Imu & message)
+  {
+    CausalImuSample sample;
+    sample.stamp_ns = stamp_ns(message.header.stamp);
+    sample.linear_acceleration = {
+      message.linear_acceleration.x, message.linear_acceleration.y,
+      message.linear_acceleration.z};
+    sample.angular_velocity = {
+      message.angular_velocity.x, message.angular_velocity.y,
+      message.angular_velocity.z};
+    if (sample.stamp_ns <= 0 || !sample.linear_acceleration.allFinite() ||
+      !sample.angular_velocity.allFinite() ||
+      (!imu_.empty() && sample.stamp_ns <= imu_.back().stamp_ns))
+    {
+      return;
+    }
+    imu_.push_back(sample);
+    while (imu_.size() > 4000U) {
+      imu_.pop_front();
     }
   }
 
@@ -261,47 +346,6 @@ private:
     pending_.push_back(std::move(scan));
   }
 
-  std::optional<PoseSample> pose_at(std::int64_t query_ns) const
-  {
-    if (poses_.size() < 2U || query_ns < poses_.front().stamp_ns ||
-      query_ns > poses_.back().stamp_ns)
-    {
-      return std::nullopt;
-    }
-    auto right = std::lower_bound(
-      poses_.begin(), poses_.end(), query_ns,
-      [](const PoseSample & sample, std::int64_t stamp) {return sample.stamp_ns < stamp;});
-    if (right == poses_.end()) {
-      return std::nullopt;
-    }
-    if (right->stamp_ns == query_ns) {
-      return *right;
-    }
-    if (right == poses_.begin()) {
-      return std::nullopt;
-    }
-    const auto left = std::prev(right);
-    const double span_s = static_cast<double>(right->stamp_ns - left->stamp_ns) * 1.0e-9;
-    if (!(span_s > 0.0) || span_s > max_pose_gap_s_) {
-      return std::nullopt;
-    }
-    const double ratio = static_cast<double>(query_ns - left->stamp_ns) /
-      static_cast<double>(right->stamp_ns - left->stamp_ns);
-    PoseSample output;
-    output.stamp_ns = query_ns;
-    output.translation = left->translation + ratio * (right->translation - left->translation);
-    output.rotation = left->rotation.slerp(ratio, right->rotation).normalized();
-    return output;
-  }
-
-  static Eigen::Isometry3d transform(const PoseSample & pose)
-  {
-    Eigen::Isometry3d output = Eigen::Isometry3d::Identity();
-    output.linear() = pose.rotation.toRotationMatrix();
-    output.translation() = pose.translation;
-    return output;
-  }
-
   void drain_pending()
   {
     while (!pending_.empty()) {
@@ -309,54 +353,122 @@ private:
       const double residence_ms =
         std::chrono::duration<double, std::milli>(now - pending_.front().arrival).count();
       const bool expired = residence_ms > max_pose_wait_ms_;
-      if (poses_.empty() || poses_.back().stamp_ns < pending_.front().end_ns) {
+      const std::int64_t terminal_gap_ns = static_cast<std::int64_t>(
+        deskew_max_imu_gap_s_ * 1.0e9);
+      const bool inputs_ready = !poses_.empty() && !imu_.empty() &&
+        imu_.back().stamp_ns + terminal_gap_ns >= pending_.front().end_ns;
+      if (!inputs_ready) {
         if (!expired) {
           return;
         }
         ++pose_timeout_count_;
+        last_deskew_reason_ = "causal_inputs_timeout";
         pending_.pop_front();
         continue;
       }
-      auto start_pose = pose_at(pending_.front().start_ns);
-      auto end_pose = pose_at(pending_.front().end_ns);
-      if (!start_pose || !end_pose) {
+      auto anchor = std::upper_bound(
+        poses_.begin(), poses_.end(), pending_.front().start_ns,
+        [](std::int64_t stamp, const PoseSample & sample) {return stamp < sample.stamp_ns;});
+      if (anchor == poses_.begin()) {
         if (!expired) {
           return;
         }
         ++pose_timeout_count_;
+        last_deskew_reason_ = "causal_anchor_missing";
         pending_.pop_front();
         continue;
       }
+      --anchor;
       PendingScan scan = std::move(pending_.front());
       pending_.pop_front();
-      process_scan(scan, *start_pose, *end_pose, residence_ms);
+      if (!process_scan_causal(scan, *anchor, residence_ms)) {
+        ++deskew_reject_count_;
+      }
     }
   }
 
-  void process_scan(
-    const PendingScan & scan, const PoseSample & start_pose, const PoseSample & end_pose,
-    double queue_residence_ms)
+  bool process_scan_causal(
+    const PendingScan & scan, const PoseSample & anchor, double queue_residence_ms)
   {
+    std::vector<std::pair<std::int64_t, std::size_t>> ordered_queries;
+    ordered_queries.reserve(scan.points.size());
+    for (std::size_t index = 0U; index < scan.points.size(); ++index) {
+      ordered_queries.emplace_back(
+        scan.start_ns + static_cast<std::int64_t>(scan.points[index].offset_ns), index);
+    }
+    std::sort(ordered_queries.begin(), ordered_queries.end());
+    std::vector<std::int64_t> query_stamps;
+    query_stamps.reserve(ordered_queries.size());
+    for (const auto & query : ordered_queries) {
+      query_stamps.push_back(query.first);
+    }
+    std::vector<CausalImuSample> imu_samples;
+    imu_samples.reserve(imu_.size());
+    for (const auto & sample : imu_) {
+      if (sample.stamp_ns <= anchor.stamp_ns || sample.stamp_ns <= scan.end_ns) {
+        imu_samples.push_back(sample);
+      }
+      if (sample.stamp_ns > scan.end_ns) {
+        break;
+      }
+    }
+    CausalPose causal_anchor;
+    causal_anchor.stamp_ns = anchor.stamp_ns;
+    causal_anchor.position = anchor.translation;
+    causal_anchor.velocity = anchor.velocity;
+    causal_anchor.orientation = anchor.rotation;
+    const auto trajectory = causal_deskew_->propagate(
+      causal_anchor, imu_samples, query_stamps);
+    last_deskew_reason_ = trajectory.reason;
+    last_anchor_age_ms_ = static_cast<double>(scan.start_ns - anchor.stamp_ns) * 1.0e-6;
+    last_imu_gap_ms_ = trajectory.max_observed_imu_gap_s * 1000.0;
+    if (!trajectory.valid || trajectory.poses.size() != ordered_queries.size()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Causal deskew rejected scan: reason=%s anchor_age_ms=%.3f imu_samples=%zu "
+        "query_count=%zu max_imu_gap_ms=%.3f",
+        trajectory.reason.c_str(), last_anchor_age_ms_, imu_samples.size(), query_stamps.size(),
+        last_imu_gap_ms_);
+      return false;
+    }
+
     const auto wall_start = std::chrono::steady_clock::now();
     std::vector<Point> world_points;
     world_points.reserve(scan.points.size());
-    const double duration_ns = static_cast<double>(std::max<std::int64_t>(1, scan.end_ns - scan.start_ns));
-    for (const auto & raw : scan.points) {
-      const double ratio = std::clamp(static_cast<double>(raw.offset_ns) / duration_ns, 0.0, 1.0);
-      PoseSample interpolated;
-      interpolated.translation =
-        start_pose.translation + ratio * (end_pose.translation - start_pose.translation);
-      interpolated.rotation = start_pose.rotation.slerp(ratio, end_pose.rotation).normalized();
-      const Eigen::Isometry3d world_from_lidar = transform(interpolated) * body_from_lidar_;
+    for (std::size_t ordered_index = 0U; ordered_index < ordered_queries.size(); ++ordered_index) {
+      const auto & raw = scan.points[ordered_queries[ordered_index].second];
+      const auto & pose = trajectory.poses[ordered_index];
+      Eigen::Isometry3d world_from_body = Eigen::Isometry3d::Identity();
+      world_from_body.linear() = pose.orientation.toRotationMatrix();
+      world_from_body.translation() = pose.position;
       const Eigen::Vector3d source(raw.point.x, raw.point.y, raw.point.z);
-      const Eigen::Vector3d target = world_from_lidar * source;
+      const Eigen::Vector3d target = world_from_body * body_from_lidar_ * source;
       world_points.push_back({target.x(), target.y(), target.z(), raw.point.intensity});
     }
-    const Eigen::Vector3d origin_vector = (transform(start_pose) * body_from_lidar_).translation();
+    Eigen::Isometry3d world_from_body = Eigen::Isometry3d::Identity();
+    world_from_body.linear() = trajectory.poses.front().orientation.toRotationMatrix();
+    world_from_body.translation() = trajectory.poses.front().position;
+    const Eigen::Vector3d origin_vector = (world_from_body * body_from_lidar_).translation();
     const Point origin{origin_vector.x(), origin_vector.y(), origin_vector.z(), 0.0F};
-    const auto result = observer_->process(world_points, origin);
+    const auto result = run_filter(world_points, origin);
     const double processing_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - wall_start).count();
+    publish_result(scan, result, processing_ms, queue_residence_ms);
+    return true;
+  }
+
+  FilterResult run_filter(const std::vector<Point> & world_points, const Point & origin)
+  {
+    if (visibility_observer_) {
+      return visibility_observer_->process(world_points, origin);
+    }
+    return observer_v1_->process(world_points, origin);
+  }
+
+  void publish_result(
+    const PendingScan & scan, const FilterResult & result, double processing_ms,
+    double queue_residence_ms)
+  {
 
     std_msgs::msg::Header header;
     header.stamp = scan.stamp;
@@ -422,14 +534,24 @@ private:
       ",\"static_points\":" << stats.static_points <<
       ",\"dynamic_points\":" << stats.dynamic_points <<
       ",\"unknown_points\":" << stats.unknown_points <<
+      ",\"observed_ray_voxels\":" << stats.observed_ray_voxels <<
+      ",\"vacated_surface_voxels\":" << stats.vacated_surface_voxels <<
+      ",\"persistent_dynamic_voxels\":" << stats.persistent_dynamic_voxels <<
       ",\"free_voxels\":" << stats.free_voxels <<
       ",\"allocated_voxels\":" << stats.allocated_voxels <<
+      ",\"state_memory_bytes\":" << stats.approximate_memory_bytes <<
       ",\"processing_ms\":" << number(processing_ms) <<
       ",\"queue_residence_ms\":" << number(queue_residence_ms) <<
       ",\"scan_duration_ms\":" << number(static_cast<double>(scan_duration_ns) * 1.0e-6) <<
       ",\"queue_depth\":" << pending_.size() <<
       ",\"queue_overflow\":" << queue_overflow_count_ <<
       ",\"pose_timeout\":" << pose_timeout_count_ <<
+      ",\"deskew_reject\":" << deskew_reject_count_ <<
+      ",\"deskew_reason\":\"" << last_deskew_reason_ << "\"" <<
+      ",\"deskew_mode\":\"" << deskew_mode_ << "\"" <<
+      ",\"filter_implementation\":\"" << filter_implementation_ << "\"" <<
+      ",\"anchor_age_ms\":" << number(last_anchor_age_ms_) <<
+      ",\"max_imu_gap_ms\":" << number(last_imu_gap_ms_) <<
       ",\"fastlio_input_modified\":false}";
     statistics.data = json.str();
     statistics_pub_->publish(statistics);
@@ -449,6 +571,12 @@ private:
     status.values.push_back(diagnostic_value("queue_depth", std::to_string(pending_.size())));
     status.values.push_back(diagnostic_value("queue_overflow", std::to_string(queue_overflow_count_)));
     status.values.push_back(diagnostic_value("pose_timeout", std::to_string(pose_timeout_count_)));
+    status.values.push_back(diagnostic_value("deskew_reject", std::to_string(deskew_reject_count_)));
+    status.values.push_back(diagnostic_value("deskew_reason", last_deskew_reason_));
+    status.values.push_back(diagnostic_value("deskew_mode", deskew_mode_));
+    status.values.push_back(diagnostic_value("filter_implementation", filter_implementation_));
+    status.values.push_back(diagnostic_value("anchor_age_ms", number(last_anchor_age_ms_)));
+    status.values.push_back(diagnostic_value("max_imu_gap_ms", number(last_imu_gap_ms_)));
     status.values.push_back(diagnostic_value("input_mode", input_mode_));
     status.values.push_back(diagnostic_value("fastlio_input_modified", "false"));
     diagnostics.status.push_back(std::move(status));
@@ -456,18 +584,28 @@ private:
   }
 
   std::string input_mode_;
+  std::string filter_implementation_;
+  std::string deskew_mode_;
   std::string world_frame_;
   std::size_t max_pending_scans_{8U};
   double max_pose_wait_ms_{250.0};
-  double max_pose_gap_s_{0.15};
+  double deskew_max_imu_gap_s_{0.025};
   std::uint64_t queue_overflow_count_{0U};
   std::uint64_t pose_timeout_count_{0U};
+  std::uint64_t deskew_reject_count_{0U};
+  std::string last_deskew_reason_{"not_run"};
+  double last_anchor_age_ms_{0.0};
+  double last_imu_gap_ms_{0.0};
   Eigen::Isometry3d body_from_lidar_{Eigen::Isometry3d::Identity()};
-  std::unique_ptr<ConservativeFreeSpaceObserver> observer_;
+  std::unique_ptr<ConservativeFreeSpaceObserver> observer_v1_;
+  std::unique_ptr<VisibilityAwareDynamicObserver> visibility_observer_;
+  std::unique_ptr<CausalImuDeskew> causal_deskew_;
   std::deque<PoseSample> poses_;
+  std::deque<CausalImuSample> imu_;
   std::deque<PendingScan> pending_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr static_pub_;

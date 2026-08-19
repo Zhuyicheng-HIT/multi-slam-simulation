@@ -1,5 +1,9 @@
 # Dynamic observer phase-1 validation
 
+> This is the frozen v1/ten-scenario record. DYN-EVAL-003 v2 results are in
+> `DYNAMIC_OBSERVER_V2_VALIDATION.md`; the values use different matrices and
+> must not be compared as if they came from one input set.
+
 Date: 2026-08-19
 
 ## Safety and ownership

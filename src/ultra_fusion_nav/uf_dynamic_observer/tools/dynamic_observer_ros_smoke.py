@@ -11,6 +11,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 
 
@@ -25,7 +26,10 @@ class SmokePublisher(Node):
     def __init__(self):
         super().__init__("dynamic_observer_smoke_publisher")
         self.odom_pub = self.create_publisher(
-            Odometry, "/fusion/unified/odom", qos_profile_sensor_data
+            Odometry, "/Odometry", qos_profile_sensor_data
+        )
+        self.imu_pub = self.create_publisher(
+            Imu, "/livox/imu", qos_profile_sensor_data
         )
         self.lidar_pub = self.create_publisher(
             CustomMsg, "/livox/lidar", qos_profile_sensor_data
@@ -82,6 +86,11 @@ class SmokePublisher(Node):
         odom.child_frame_id = "base_link"
         odom.pose.pose.orientation.w = 1.0
         self.odom_pub.publish(odom)
+        imu = Imu()
+        imu.header.stamp = time_message(now_ns)
+        imu.header.frame_id = "body"
+        imu.linear_acceleration.z = 9.80665
+        self.imu_pub.publish(imu)
         self.tick += 1
         if self.tick < 15 or self.tick % 5:
             return
