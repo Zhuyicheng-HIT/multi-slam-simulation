@@ -77,6 +77,13 @@ Therefore:
   fresh flight PASS. The PR's recorded validation remains the source baseline
   until a compliant GPU/offscreen environment is available.
 
+Follow-up on 2026-08-19: the WSL/WSLg stack was updated and a direct EGL/OpenGL
+hardware probe now verifies `D3D12 (NVIDIA GeForce RTX 4070 Laptop GPU)`.
+Gazebo/Ogre2 hardware rendering, all 14 route checkpoints, LAND, and disarm were
+reproduced. The remaining strict-gate failures are independent of the GPU path
+and are documented in `docs/WSL2_GAZEBO_GPU_RECOVERY_20260819.md`; the full
+frozen acceptance result therefore remains not reproduced.
+
 Ignored diagnostic logs:
 
 - `logs/baseline_freeze_pr14_fastrtps_20260819/sim_launcher.log`

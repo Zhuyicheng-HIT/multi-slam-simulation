@@ -575,7 +575,7 @@ Optional companion GPS/flow ExternalNav:
   Accuracy report: $LOG_DIR/externalnav_accuracy.json
 
 GPU diagnostics:
-  Renderer selection and OpenCV backend: $GPU_REPORT
+  EGL/OpenGL renderer and hardware acceleration: $GPU_REPORT
   REQUIRE_GAZEBO_GPU=1 rejects an unexpected adapter or software rendering
   HEADLESS=1 uses Gazebo OGRE2 EGL rendering without the GUI process
 
