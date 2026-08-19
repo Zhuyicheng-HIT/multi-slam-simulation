@@ -53,6 +53,15 @@ unified_backend_fusion:
     # reprojection factor for that batch. The verified default remains the
     # paper-style reprojection representation.
     rgbd_depth_factor_enabled: false
+    # Sparse direct RGB-D mode is a single batch factor: metric depth and
+    # exposure-normalized texture residuals share the same tracks and are not
+    # accompanied by reprojection/depth duplicates.
+    rgbd_direct_factor_minimum_tracks: 12
+    rgbd_direct_factor_maximum_tracks: 32
+    rgbd_direct_factor_maximum_depth_rmse_m: 0.20
+    rgbd_direct_factor_maximum_photometric_rmse: 0.60
+    rgbd_direct_depth_information_scale: 0.25
+    rgbd_direct_photometric_information_scale: 0.10
     rgbd_depth_factor_tolerance_s: 0.010
     rgbd_depth_factor_minimum_tracks: 12
     # Information is normalized to a 20-track equivalent, so retaining more
@@ -102,9 +111,13 @@ unified_backend_fusion:
     # states are present. The original tolerance is unchanged; no future
     # measurement or timestamp rewriting is allowed.
     visual_pending_enabled: true
-    visual_pending_max_wait_s: 0.60
-    visual_pending_max_wall_wait_s: 3.0
-    visual_pending_max_queue: 64
+    # Best-effort DDS is also enforced at the application queue. A visual
+    # candidate older than this horizon relative to a newer candidate is
+    # superseded instead of being applied to an already advanced window.
+    visual_pending_latest_horizon_s: 0.25
+    visual_pending_max_wait_s: 0.25
+    visual_pending_max_wall_wait_s: 0.35
+    visual_pending_max_queue: 3
     # Each feature batch has its own reliability score with the same camera
     # timestamp. Wait briefly for cross-topic callback reordering, then reject
     # explicitly instead of silently falling back to the continuous D_V score.
@@ -184,6 +197,16 @@ unified_backend_fusion:
     flow_range_near_limit_m: 2.0
     flow_range_near_sigma_m: 0.04
     flow_range_far_relative_sigma: 0.02
+    # Experimental Range-VIO row. It is disabled for the frozen baseline;
+    # when enabled it is fused with the same MTF-01P flow packet, never added
+    # as a second independent range factor.
+    range_facet_enabled: false
+    range_facet_minimum_support_points: 3
+    range_facet_maximum_plane_rmse_m: 0.05
+    range_facet_denominator_epsilon: 0.05
+    range_facet_timestamp_tolerance_s: 0.08
+    range_facet_facet_margin_m: 0.25
+    range_facet_mahalanobis_gate: 9.0
     flow_maximum_speed_at_1m_mps: 7.0
     flow_speed_gate_margin: 1.10
     gnss_default_variance_m2: 4.0
@@ -198,15 +221,33 @@ unified_backend_fusion:
     # continuous GNSS axis completely. Invalid fixes and temporal jumps remain
     # hard gates before this recovery floor is applied.
     gnss_minimum_axis_information_scale: 0.01
-    # Directional handoff diagnostics compare weak LiDAR translation axes with
-    # fresh GNSS/RGB-D information. Raw point-plane rows are never rescaled:
-    # direct per-axis residual modification breaks map/state consistency.
+    # Experimental only: the frozen figure-eight replay showed that bounded
+    # GNSS target motion cannot repair an already-corrupted map/prior epoch.
+    # Keep the single-factor implementation available for ablation, but never
+    # enable it in the stable baseline.
+    gnss_z_reanchor_enabled: false
+    gnss_z_reanchor_maximum_step_m: 0.15
+    gnss_z_reanchor_minimum_consecutive: 2
+    # When the bounded recovery target is explicitly enabled, retain this
+    # finite amount of the same GNSS Z factor instead of its large-NIS scale.
+    gnss_z_recovery_information_scale: 0.50
+    # Directional handoff remains opt-in until a full-bag replay proves that
+    # the condensed normal remains consistent with map relinearization and the
+    # marginal prior. Direct per-axis point residual edits are forbidden.
     axis_information_handoff_enabled: false
+    # First production trial is deliberately Z-only. X/Y remain observable
+    # through LiDAR and must not be weakened by a vertical recovery policy.
+    axis_handoff_enable_x: false
+    axis_handoff_enable_y: false
+    axis_handoff_enable_z: true
     # Frozen figure-eight evidence separated X/Y (>=0.45) from weak Z
     # (median about 0.31). Hysteresis therefore hands off only the weak axis.
-    axis_handoff_enter_support: 0.35
-    axis_handoff_exit_support: 0.45
-    axis_handoff_minimum_lidar_information_scale: 0.000001
+    axis_handoff_enter_support: 0.30
+    axis_handoff_exit_support: 0.35
+    # Numerical floor only. A weak axis must be allowed to fall to the
+    # independently measured GNSS/RGB-D/barometer information scale; 0.10
+    # left LiDAR thousands of times stronger and made the handoff ineffective.
+    axis_handoff_minimum_lidar_information_scale: 0.00001
     axis_handoff_maximum_lidar_to_alternative_ratio: 1.0
     # GNSS is 5 Hz and accepted RGB-D depth is about 5 Hz versus 10 Hz LiDAR.
     axis_handoff_gnss_rate_ratio: 0.50
@@ -224,12 +265,19 @@ unified_backend_fusion:
     axis_map_protection_gnss_disagreement_m: 0.20
     # Raw FCU static pressure is a last-resort local relative-Z constraint.
     # A fresh datum is fitted from the two seconds immediately before each
-    # activation and destroyed at recovery; it is never a global altitude.
+    # activation and destroyed at recovery; the separate trusted reference
+    # expires after a few seconds and is never a global altitude.
     barometer_fallback_enabled: false
     barometer_baseline_window_s: 2.0
     barometer_minimum_baseline_samples: 8
     barometer_minimum_baseline_span_s: 0.8
     barometer_maximum_sample_age_s: 0.5
+    # Refresh this datum only after a committed state agrees with an admitted
+    # GNSS-Z factor.  It is frozen while a pressure fallback segment is active
+    # and expires quickly enough not to bridge unrelated pressure environments.
+    barometer_trusted_reference_maximum_age_s: 5.0
+    barometer_reference_maximum_gnss_residual_m: 0.20
+    barometer_reference_minimum_gnss_information_scale: 0.50
     barometer_scale_height_m: 8434.5
     barometer_default_height_variance_m2: 0.25
     barometer_maximum_relative_height_m: 30.0
@@ -373,6 +421,10 @@ unified_backend_fusion:
     # delayed absolute map alignment, then transport the latest backend state
     # into the new epoch instead of rewinding to the query pose.
     relocalization_state_tolerance_s: 0.25
+    # A queued map result may be newer than the last committed backend state.
+    # Keep it pending until the state timestamp catches up; never apply it
+    # non-causally.  The bound also prevents an indefinitely stale reset.
+    relocalization_future_wait_timeout_s: 8.0
     relocalization_result_max_age_s: 2.0
     # Commit one keyframe only after the optimized state, cost and information
     # matrix pass the integrity gate. Failed updates restore the full window.

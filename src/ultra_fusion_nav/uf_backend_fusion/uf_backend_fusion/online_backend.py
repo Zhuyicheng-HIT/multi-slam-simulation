@@ -44,6 +44,7 @@ from uf_interfaces.msg import (
     LidarCalibrationMotion,
     ReliabilityScore,
     RelocalizationResult,
+    RgbdDirectTracks,
     RgbdGeometryTracks,
     SchedulerState,
     VisualFeatureTracks,
@@ -64,8 +65,10 @@ from .axis_reliability import (
 from .manifold_window import ManifoldSlidingWindowBackend, propagate_state
 from .visual_reprojection import (
     RgbdDepthTrackBatch,
+    RgbdDirectTrackBatch,
     VisualTrackBatch,
     rgbd_depth_residual_jacobians,
+    rgbd_direct_residual_jacobians,
     validate_visual_linearization,
     visual_pose_observability,
 )
@@ -107,6 +110,10 @@ from .native_lidar import (
     transform_native_factor_map,
     validate_native_frame_contract,
     with_yaw_reference,
+)
+from .range_facet import (
+    RangeFacetObservation,
+    evaluate_range_facet,
 )
 from .window import SlidingWindowBackend
 from uf_reliability.scoring import (
@@ -1438,6 +1445,23 @@ def gnss_axis_information_scale(nis, gate, minimum_scale=0.01):
     return max(minimum_scale, math.sqrt(gate / nis))
 
 
+def bounded_axis_reanchor_target(prediction, measurement, maximum_step):
+    """Move one absolute-axis target toward a measurement by a bounded step."""
+    prediction = float(prediction)
+    measurement = float(measurement)
+    maximum_step = float(maximum_step)
+    if (
+        not math.isfinite(prediction)
+        or not math.isfinite(measurement)
+        or not math.isfinite(maximum_step)
+        or maximum_step <= 0.0
+    ):
+        raise ValueError("axis reanchor inputs are invalid")
+    innovation = measurement - prediction
+    step = min(maximum_step, max(-maximum_step, innovation))
+    return prediction + step, abs(innovation) > maximum_step
+
+
 def pose_translation_profile_information(pose_hessian):
     """Profile each translation axis after eliminating the other pose axes."""
     information = np.asarray(pose_hessian, dtype=float)
@@ -1496,7 +1520,15 @@ def scale_conditional_translation_normal(
     )
     root_scale = np.diag(np.sqrt(scales))
     scaled_schur = root_scale @ schur @ root_scale
-    scaled_conditional_gradient = root_scale @ conditional_gradient
+    # Preserve the LiDAR factor's conditional optimum while reducing its
+    # information.  A badly conditioned scan can otherwise encode an enormous
+    # conditional correction even after its weak axis has been downweighted;
+    # bound that correction before projecting it into the reduced normal.
+    conditional_delta = np.linalg.pinv(schur, rcond=1.0e-9) @ (
+        conditional_gradient
+    )
+    conditional_delta = np.clip(conditional_delta, -0.5, 0.5)
+    scaled_conditional_gradient = scaled_schur @ conditional_delta
 
     scaled_information = information.copy()
     scaled_information[:3, :3] = (
@@ -1583,6 +1615,7 @@ def axis_information_handoff(
     alternative_information,
     latched,
     *,
+    enabled_axes=(True, True, True),
     enter_support=0.15,
     exit_support=0.35,
     minimum_lidar_information_scale=1.0e-4,
@@ -1601,6 +1634,7 @@ def axis_information_handoff(
         alternative_information, dtype=float
     )
     latched = np.asarray(latched, dtype=bool)
+    enabled_axes = np.asarray(enabled_axes, dtype=bool)
     if any(
         values.shape != (3,)
         for values in (
@@ -1608,6 +1642,7 @@ def axis_information_handoff(
             lidar_support,
             alternative_information,
             latched,
+            enabled_axes,
         )
     ):
         raise ValueError("axis handoff inputs must be 3-vectors")
@@ -1636,6 +1671,9 @@ def axis_information_handoff(
     scales = np.ones(3, dtype=float)
     next_latched = latched.copy()
     for axis in range(3):
+        if not enabled_axes[axis]:
+            next_latched[axis] = False
+            continue
         alternative_available = alternative_information[axis] > 0.0
         if not alternative_available:
             next_latched[axis] = False
@@ -2502,6 +2540,11 @@ class UnifiedBackendNode(Node):
             "fusion_epoch_topic": "/fusion/unified/epoch",
             "relocalization_pending_timeout_s": 2.0,
             "relocalization_state_tolerance_s": 0.25,
+            # Relocalization can be produced from a queued frontend/map
+            # result while the single-writer backend is temporarily behind.
+            # Keep the result causal by waiting for the backend timestamp;
+            # never apply a future result directly to the current state.
+            "relocalization_future_wait_timeout_s": 8.0,
             "relocalization_result_max_age_s": 2.0,
             "output_topic": "/fusion/unified/odom",
             "path_topic": "/fusion/unified/path",
@@ -2563,6 +2606,13 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("flow_range_near_limit_m", 2.0)
         self.declare_parameter("flow_range_near_sigma_m", 0.04)
         self.declare_parameter("flow_range_far_relative_sigma", 0.02)
+        self.declare_parameter("range_facet_enabled", False)
+        self.declare_parameter("range_facet_minimum_support_points", 3)
+        self.declare_parameter("range_facet_maximum_plane_rmse_m", 0.05)
+        self.declare_parameter("range_facet_denominator_epsilon", 0.05)
+        self.declare_parameter("range_facet_timestamp_tolerance_s", 0.08)
+        self.declare_parameter("range_facet_facet_margin_m", 0.25)
+        self.declare_parameter("range_facet_mahalanobis_gate", 9.0)
         self.declare_parameter("flow_maximum_speed_at_1m_mps", 7.0)
         self.declare_parameter("flow_speed_gate_margin", 1.10)
         self.declare_parameter("gnss_default_variance_m2", 4.0)
@@ -2574,7 +2624,14 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("gnss_z_nis_gate", 6.635)
         self.declare_parameter("gnss_minimum_reliability_weight", 0.05)
         self.declare_parameter("gnss_minimum_axis_information_scale", 0.01)
+        self.declare_parameter("gnss_z_reanchor_enabled", False)
+        self.declare_parameter("gnss_z_reanchor_maximum_step_m", 0.15)
+        self.declare_parameter("gnss_z_reanchor_minimum_consecutive", 2)
+        self.declare_parameter("gnss_z_recovery_information_scale", 0.50)
         self.declare_parameter("axis_information_handoff_enabled", False)
+        self.declare_parameter("axis_handoff_enable_x", False)
+        self.declare_parameter("axis_handoff_enable_y", False)
+        self.declare_parameter("axis_handoff_enable_z", True)
         self.declare_parameter("axis_handoff_enter_support", 0.35)
         self.declare_parameter("axis_handoff_exit_support", 0.45)
         self.declare_parameter(
@@ -2596,6 +2653,15 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("barometer_minimum_baseline_samples", 8)
         self.declare_parameter("barometer_minimum_baseline_span_s", 0.8)
         self.declare_parameter("barometer_maximum_sample_age_s", 0.5)
+        self.declare_parameter(
+            "barometer_trusted_reference_maximum_age_s", 5.0
+        )
+        self.declare_parameter(
+            "barometer_reference_maximum_gnss_residual_m", 0.20
+        )
+        self.declare_parameter(
+            "barometer_reference_minimum_gnss_information_scale", 0.50
+        )
         self.declare_parameter("barometer_scale_height_m", 8434.5)
         self.declare_parameter(
             "barometer_default_height_variance_m2", 0.25
@@ -2702,6 +2768,19 @@ class UnifiedBackendNode(Node):
         self.declare_parameter(
             "rgbd_geometry_tracks_topic", "/vision/rgbd_geometry_tracks"
         )
+        self.declare_parameter(
+            "rgbd_direct_tracks_topic", "/vision/rgbd_direct_tracks"
+        )
+        self.declare_parameter("rgbd_direct_factor_minimum_tracks", 12)
+        self.declare_parameter("rgbd_direct_factor_maximum_tracks", 32)
+        self.declare_parameter("rgbd_direct_factor_maximum_depth_rmse_m", 0.20)
+        self.declare_parameter(
+            "rgbd_direct_factor_maximum_photometric_rmse", 0.60
+        )
+        self.declare_parameter("rgbd_direct_depth_information_scale", 0.25)
+        self.declare_parameter(
+            "rgbd_direct_photometric_information_scale", 0.10
+        )
         self.declare_parameter("rgbd_depth_factor_enabled", False)
         self.declare_parameter("rgbd_depth_factor_tolerance_s", 0.010)
         self.declare_parameter("rgbd_depth_factor_minimum_tracks", 12)
@@ -2758,9 +2837,10 @@ class UnifiedBackendNode(Node):
         )
         self.declare_parameter("visual_state_tolerance_s", 0.065)
         self.declare_parameter("visual_pending_enabled", True)
-        self.declare_parameter("visual_pending_max_wait_s", 0.60)
-        self.declare_parameter("visual_pending_max_wall_wait_s", 3.0)
-        self.declare_parameter("visual_pending_max_queue", 64)
+        self.declare_parameter("visual_pending_latest_horizon_s", 0.25)
+        self.declare_parameter("visual_pending_max_wait_s", 0.25)
+        self.declare_parameter("visual_pending_max_wall_wait_s", 0.35)
+        self.declare_parameter("visual_pending_max_queue", 3)
         self.declare_parameter(
             "visual_timing_diagnostic_topic", "/fusion/unified/visual_timing"
         )
@@ -2973,6 +3053,20 @@ class UnifiedBackendNode(Node):
             self.get_parameter("flow_range_near_sigma_m").value)
         self.flow_range_far_relative_sigma = float(
             self.get_parameter("flow_range_far_relative_sigma").value)
+        self.range_facet_enabled = bool(
+            self.get_parameter("range_facet_enabled").value)
+        self.range_facet_minimum_support_points = int(
+            self.get_parameter("range_facet_minimum_support_points").value)
+        self.range_facet_maximum_plane_rmse_m = float(
+            self.get_parameter("range_facet_maximum_plane_rmse_m").value)
+        self.range_facet_denominator_epsilon = float(
+            self.get_parameter("range_facet_denominator_epsilon").value)
+        self.range_facet_timestamp_tolerance_s = float(
+            self.get_parameter("range_facet_timestamp_tolerance_s").value)
+        self.range_facet_facet_margin_m = float(
+            self.get_parameter("range_facet_facet_margin_m").value)
+        self.range_facet_mahalanobis_gate = float(
+            self.get_parameter("range_facet_mahalanobis_gate").value)
         self.flow_maximum_speed_at_1m_mps = float(
             self.get_parameter("flow_maximum_speed_at_1m_mps").value)
         self.flow_speed_gate_margin = float(
@@ -2987,6 +3081,12 @@ class UnifiedBackendNode(Node):
             or self.flow_range_far_relative_sigma <= 0.0
             or self.flow_maximum_speed_at_1m_mps <= 0.0
             or self.flow_speed_gate_margin < 1.0
+            or self.range_facet_minimum_support_points < 3
+            or self.range_facet_maximum_plane_rmse_m <= 0.0
+            or self.range_facet_denominator_epsilon <= 0.0
+            or self.range_facet_timestamp_tolerance_s < 0.0
+            or self.range_facet_facet_margin_m < 0.0
+            or self.range_facet_mahalanobis_gate <= 0.0
         ):
             raise ValueError("MTF-01P flow measurement limits are invalid")
         self.gnss_default_variance = float(
@@ -3006,9 +3106,28 @@ class UnifiedBackendNode(Node):
                 "gnss_minimum_axis_information_scale"
             ).value
         )
+        self.gnss_z_reanchor_enabled = bool(
+            self.get_parameter("gnss_z_reanchor_enabled").value
+        )
+        self.gnss_z_reanchor_maximum_step_m = float(
+            self.get_parameter("gnss_z_reanchor_maximum_step_m").value
+        )
+        self.gnss_z_reanchor_minimum_consecutive = int(
+            self.get_parameter(
+                "gnss_z_reanchor_minimum_consecutive"
+            ).value
+        )
+        self.gnss_z_recovery_information_scale = float(
+            self.get_parameter("gnss_z_recovery_information_scale").value
+        )
         self.axis_information_handoff_enabled = bool(
             self.get_parameter("axis_information_handoff_enabled").value
         )
+        self.axis_handoff_enabled_axes = np.asarray([
+            bool(self.get_parameter("axis_handoff_enable_x").value),
+            bool(self.get_parameter("axis_handoff_enable_y").value),
+            bool(self.get_parameter("axis_handoff_enable_z").value),
+        ], dtype=bool)
         self.axis_handoff_enter_support = float(
             self.get_parameter("axis_handoff_enter_support").value
         )
@@ -3054,6 +3173,16 @@ class UnifiedBackendNode(Node):
         self.barometer_minimum_information_scale = float(
             self.get_parameter("barometer_minimum_information_scale").value
         )
+        self.barometer_reference_maximum_gnss_residual_m = float(
+            self.get_parameter(
+                "barometer_reference_maximum_gnss_residual_m"
+            ).value
+        )
+        self.barometer_reference_minimum_gnss_information_scale = float(
+            self.get_parameter(
+                "barometer_reference_minimum_gnss_information_scale"
+            ).value
+        )
         self.barometer_activate_on_gnss_z_inconsistency = bool(
             self.get_parameter(
                 "barometer_activate_on_gnss_z_inconsistency"
@@ -3068,6 +3197,11 @@ class UnifiedBackendNode(Node):
             or self.gnss_z_nis_gate <= 0.0
             or not 0.0 < self.gnss_minimum_reliability_weight <= 1.0
             or not 0.0 < self.gnss_minimum_axis_information_scale <= 1.0
+            or self.gnss_z_reanchor_maximum_step_m <= 0.0
+            or self.gnss_z_reanchor_minimum_consecutive < 1
+            or not 0.0 < self.gnss_z_recovery_information_scale <= 1.0
+            or self.gnss_z_recovery_information_scale
+            < self.gnss_minimum_axis_information_scale
             or not 0.0 <= self.axis_handoff_enter_support
             < self.axis_handoff_exit_support <= 1.0
             or not 0.0
@@ -3083,6 +3217,9 @@ class UnifiedBackendNode(Node):
             or self.axis_map_protection_gnss_disagreement_m <= 0.0
             or self.barometer_prefit_nis_gate <= 0.0
             or not 0.0 < self.barometer_minimum_information_scale <= 1.0
+            or self.barometer_reference_maximum_gnss_residual_m <= 0.0
+            or not 0.0
+            < self.barometer_reference_minimum_gnss_information_scale <= 1.0
         ):
             raise ValueError("GNSS and axis handoff limits are invalid")
         self.barometer_segment = LocalBarometerSegment(
@@ -3094,6 +3231,9 @@ class UnifiedBackendNode(Node):
                 "barometer_minimum_baseline_span_s").value),
             maximum_sample_age_s=float(self.get_parameter(
                 "barometer_maximum_sample_age_s").value),
+            maximum_trusted_reference_age_s=float(self.get_parameter(
+                "barometer_trusted_reference_maximum_age_s").value),
+            require_trusted_reference=True,
             scale_height_m=float(self.get_parameter(
                 "barometer_scale_height_m").value),
             default_height_variance_m2=float(self.get_parameter(
@@ -3355,9 +3495,47 @@ class UnifiedBackendNode(Node):
         self.visual_factor_mode = str(
             self.get_parameter("visual_factor_mode").value
         ).lower()
-        if self.visual_factor_mode not in {"disabled", "paper_reprojection"}:
+        if self.visual_factor_mode not in {
+            "disabled", "paper_reprojection", "rgbd_direct"
+        }:
             raise ValueError(
-                "visual_factor_mode must be disabled or paper_reprojection")
+                "visual_factor_mode must be disabled, paper_reprojection, "
+                "or rgbd_direct")
+        self.rgbd_direct_factor_minimum_tracks = int(
+            self.get_parameter("rgbd_direct_factor_minimum_tracks").value
+        )
+        self.rgbd_direct_factor_maximum_tracks = int(
+            self.get_parameter("rgbd_direct_factor_maximum_tracks").value
+        )
+        self.rgbd_direct_factor_maximum_depth_rmse_m = float(
+            self.get_parameter(
+                "rgbd_direct_factor_maximum_depth_rmse_m"
+            ).value
+        )
+        self.rgbd_direct_factor_maximum_photometric_rmse = float(
+            self.get_parameter(
+                "rgbd_direct_factor_maximum_photometric_rmse"
+            ).value
+        )
+        self.rgbd_direct_depth_information_scale = float(
+            self.get_parameter("rgbd_direct_depth_information_scale").value
+        )
+        self.rgbd_direct_photometric_information_scale = float(
+            self.get_parameter(
+                "rgbd_direct_photometric_information_scale"
+            ).value
+        )
+        if (
+            self.rgbd_direct_factor_minimum_tracks < 4
+            or self.rgbd_direct_factor_maximum_tracks
+            < self.rgbd_direct_factor_minimum_tracks
+            or self.rgbd_direct_factor_maximum_depth_rmse_m <= 0.0
+            or self.rgbd_direct_factor_maximum_photometric_rmse <= 0.0
+            or not 0.0 < self.rgbd_direct_depth_information_scale <= 1.0
+            or not 0.0
+            < self.rgbd_direct_photometric_information_scale <= 1.0
+        ):
+            raise ValueError("RGB-D direct factor configuration is invalid")
         self.rgbd_depth_factor_enabled = bool(
             self.get_parameter("rgbd_depth_factor_enabled").value
         )
@@ -3462,6 +3640,9 @@ class UnifiedBackendNode(Node):
         self.visual_pending_max_wait_s = float(
             self.get_parameter("visual_pending_max_wait_s").value
         )
+        self.visual_pending_latest_horizon_s = float(
+            self.get_parameter("visual_pending_latest_horizon_s").value
+        )
         self.visual_pending_max_wall_wait_s = float(
             self.get_parameter("visual_pending_max_wall_wait_s").value
         )
@@ -3540,6 +3721,7 @@ class UnifiedBackendNode(Node):
             or self.visual_pnp_maximum_condition_number <= 1.0
             or self.visual_pnp_maximum_mean_reprojection_error_px <= 0.0
             or self.visual_information_reference_tracks < 1
+            or self.visual_pending_latest_horizon_s <= 0.0
             or self.visual_pending_max_wait_s <= 0.0
             or self.visual_pending_max_wall_wait_s <= 0.0
             or self.visual_pending_max_queue < 2
@@ -3589,6 +3771,12 @@ class UnifiedBackendNode(Node):
         )
         self.relocalization_pending_timeout_s = max(0.2, float(
             self.get_parameter("relocalization_pending_timeout_s").value), )
+        self.relocalization_future_wait_timeout_s = max(
+            self.relocalization_pending_timeout_s,
+            float(self.get_parameter(
+                "relocalization_future_wait_timeout_s"
+            ).value),
+        )
         self.relocalization_state_tolerance_s = max(0.01, float(
             self.get_parameter("relocalization_state_tolerance_s").value), )
         self.relocalization_result_max_age_s = max(
@@ -3874,7 +4062,12 @@ class UnifiedBackendNode(Node):
         self.visual_lock = threading.Lock()
         self.visual_tracks = deque(maxlen=64)
         self.rgbd_geometry_lock = threading.Lock()
-        self.rgbd_geometry_tracks = deque(maxlen=128)
+        # Keep one frame of pairing slack: feature, geometry and direct topics
+        # are published separately, so strict one-slot queues can overwrite a
+        # matching sibling before the executor delivers it.
+        self.rgbd_geometry_tracks = deque(maxlen=2)
+        self.rgbd_direct_lock = threading.Lock()
+        self.rgbd_direct_tracks = deque(maxlen=2)
         self.pending_visual_candidates = deque()
         self.pending_visual_keys = set()
         self.visual_candidate_sequence = 0
@@ -3915,6 +4108,11 @@ class UnifiedBackendNode(Node):
             3, dtype=float
         )
         self.last_rgbd_depth_axis_support = np.zeros(3, dtype=float)
+        self.last_rgbd_direct_reason = "disabled"
+        self.last_rgbd_direct_track_count = 0
+        self.last_rgbd_direct_depth_rmse_m = -1.0
+        self.last_rgbd_direct_photometric_rmse = -1.0
+        self.last_rgbd_direct_photometric_information_scale = 1.0
         self.rgbd_depth_candidate_sequence = 0
         self.axis_handoff_latched = np.zeros(3, dtype=bool)
         self.lidar_axis_observability_latched = np.zeros(3, dtype=bool)
@@ -3924,6 +4122,7 @@ class UnifiedBackendNode(Node):
         )
         self.last_axis_handoff_gnss_information = np.zeros(3, dtype=float)
         self.last_axis_handoff_rgbd_information = np.zeros(3, dtype=float)
+        self.last_axis_handoff_barometer_information = np.zeros(3, dtype=float)
         self.last_axis_map_protected = np.zeros(3, dtype=bool)
         self.last_axis_map_protection_sources = ("none", "none", "none")
         self.last_axis_reliability = np.zeros(3, dtype=float)
@@ -3946,6 +4145,9 @@ class UnifiedBackendNode(Node):
             "gnss_z_admitted": 0,
             "gnss_xy_robust_downweighted": 0,
             "gnss_z_robust_downweighted": 0,
+            "gnss_z_reanchor_attempts": 0,
+            "gnss_z_reanchor_factors": 0,
+            "gnss_z_recovery_factors": 0,
             "gnss_all_axes_inconsistent": 0,
             "gnss_prefit_recovery_floor": 0,
             "gnss_prefit_valid": 0,
@@ -3962,6 +4164,8 @@ class UnifiedBackendNode(Node):
             "barometer_factors": 0,
             "barometer_segments_started": 0,
             "barometer_segments_ended": 0,
+            "barometer_reference_updates": 0,
+            "barometer_reference_rejected": 0,
             "flow_received": 0,
             "flow_factor_attempts": 0, "flow_factors": 0,
             "flow_clock_mismatch": 0,
@@ -3973,8 +4177,18 @@ class UnifiedBackendNode(Node):
             "visual_factors": 0, "visual_rejected_time": 0,
             "visual_rejected_tracks": 0,
             "rgbd_geometry_received": 0,
+            "rgbd_geometry_superseded": 0,
             "rgbd_geometry_matched": 0,
             "rgbd_geometry_missing": 0,
+            "rgbd_direct_received": 0,
+            "rgbd_direct_superseded": 0,
+            "rgbd_direct_matched": 0,
+            "rgbd_direct_missing": 0,
+            "rgbd_direct_factor_attempts": 0,
+            "rgbd_direct_factors": 0,
+            "rgbd_direct_rejected_tracks": 0,
+            "rgbd_direct_rejected_prefit": 0,
+            "rgbd_direct_photometric_downweighted": 0,
             "rgbd_depth_factor_attempts": 0,
             "rgbd_depth_factors": 0,
             "rgbd_depth_rejected_tracks": 0,
@@ -3993,6 +4207,7 @@ class UnifiedBackendNode(Node):
             "visual_solver_accepted": 0,
             "visual_solver_rejected": 0,
             "visual_pending_enqueued": 0,
+            "visual_pending_superseded": 0,
             "visual_pending_waits": 0,
             "visual_pending_expired": 0,
             "visual_pending_overflow": 0,
@@ -4024,8 +4239,11 @@ class UnifiedBackendNode(Node):
             "flow_lever_arm_unavailable": 0,
             "flow_lever_arm_per_exposure": 0,
             "flow_lever_arm_interval_fallback": 0,
+            "flow_range_facet_accepted": 0,
+            "flow_range_facet_rejected": 0,
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
             "imu_reintegrations": 0,
+            "imu_reintegrations_deferred": 0,
             "calibration_updates": 0, "calibration_accepted": 0,
             "calibration_frozen": 0,
             "calibration_motion_received": 0,
@@ -4053,7 +4271,9 @@ class UnifiedBackendNode(Node):
             "native_trigger_terminal_stale": 0,
             "native_trigger_waiting_for_initial_factor": 0,
             "native_worker_queue_overflow": 0,
+            "native_worker_queue_superseded": 0,
             "native_worker_queue_discarded": 0,
+            "native_worker_latest_skipped": 0,
             "native_worker_errors": 0,
             "optimized_states_committed": 0,
             "optimized_odom_published": 0,
@@ -4155,6 +4375,12 @@ class UnifiedBackendNode(Node):
         self.last_gnss_z_admitted = False
         self.last_gnss_xy_information_scale = 0.0
         self.last_gnss_z_information_scale = 0.0
+        self.last_gnss_factor_covariance = np.full(
+            3, math.inf, dtype=float
+        )
+        self.gnss_z_reanchor_consecutive = 0
+        self.last_gnss_z_reanchor_applied = False
+        self.last_gnss_z_reanchor_target_m = math.nan
         self.last_gnss_prefit_residual_norm_m = -1.0
         self.last_gnss_prefit_residual_xyz = np.full(3, math.nan, dtype=float)
         self.last_gnss_prefit_stamp_s = -1.0
@@ -4172,7 +4398,14 @@ class UnifiedBackendNode(Node):
         self.last_barometer_segment_id = 0
         self.last_barometer_prefit_residual_m = -1.0
         self.last_barometer_information_scale = 0.0
+        self.last_barometer_variance_m2 = math.inf
+        self.last_barometer_stamp_s = -1.0
         self.last_barometer_measurement_height_m = math.nan
+        self.last_barometer_anchor_source = "none"
+        self.last_barometer_anchor_reference_age_s = math.inf
+        self.last_barometer_reference_reason = "not_attempted"
+        self.last_barometer_reference_stamp_s = -1.0
+        self.last_barometer_reference_z_m = math.nan
         self.last_imu_residual_error = "none"
         self.last_exception = "none"
         self.last_flow_reason = "unavailable"
@@ -4389,6 +4622,12 @@ class UnifiedBackendNode(Node):
             RgbdGeometryTracks,
             str(self.get_parameter("rgbd_geometry_tracks_topic").value),
             self._rgbd_geometry_tracks,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            RgbdDirectTracks,
+            str(self.get_parameter("rgbd_direct_tracks_topic").value),
+            self._rgbd_direct_tracks,
             qos_profile_sensor_data,
         )
         self.create_subscription(
@@ -4616,6 +4855,8 @@ class UnifiedBackendNode(Node):
         ):
             return
         with self.rgbd_geometry_lock:
+            if len(self.rgbd_geometry_tracks) == self.rgbd_geometry_tracks.maxlen:
+                self.counts["rgbd_geometry_superseded"] += 1
             self.rgbd_geometry_tracks.append(copy.deepcopy(msg))
         self.counts["rgbd_geometry_received"] += 1
 
@@ -4630,7 +4871,7 @@ class UnifiedBackendNode(Node):
                     if stamp_seconds(message.header.stamp)
                     >= target_current - tolerance
                 ),
-                maxlen=128,
+                maxlen=2,
             )
             if not self.rgbd_geometry_tracks:
                 return None
@@ -4648,6 +4889,249 @@ class UnifiedBackendNode(Node):
             del self.rgbd_geometry_tracks[index]
         self.counts["rgbd_geometry_matched"] += 1
         return message
+
+    def _rgbd_direct_tracks(self, msg):
+        current = stamp_seconds(msg.header.stamp)
+        previous = stamp_seconds(msg.previous_stamp)
+        if (
+            not math.isfinite(current) or not math.isfinite(previous)
+            or previous <= 0.0 or current <= previous
+        ):
+            return
+        with self.rgbd_direct_lock:
+            if len(self.rgbd_direct_tracks) == self.rgbd_direct_tracks.maxlen:
+                self.counts["rgbd_direct_superseded"] += 1
+            self.rgbd_direct_tracks.append(copy.deepcopy(msg))
+        self.counts["rgbd_direct_received"] += 1
+
+    def _matched_rgbd_direct(self, visual_message):
+        target_previous = stamp_seconds(visual_message.previous_stamp)
+        target_current = stamp_seconds(visual_message.header.stamp)
+        tolerance = self.rgbd_depth_factor_tolerance_s
+        with self.rgbd_direct_lock:
+            self.rgbd_direct_tracks = deque(
+                (
+                    message for message in self.rgbd_direct_tracks
+                    if stamp_seconds(message.header.stamp)
+                    >= target_current - tolerance
+                ),
+                maxlen=2,
+            )
+            if not self.rgbd_direct_tracks:
+                return None
+            errors = [
+                max(
+                    abs(stamp_seconds(message.previous_stamp) - target_previous),
+                    abs(stamp_seconds(message.header.stamp) - target_current),
+                )
+                for message in self.rgbd_direct_tracks
+            ]
+            index = int(np.argmin(errors))
+            if errors[index] > tolerance:
+                return None
+            message = self.rgbd_direct_tracks[index]
+            del self.rgbd_direct_tracks[index]
+        self.counts["rgbd_direct_matched"] += 1
+        return message
+
+    def _add_rgbd_direct_factor(
+            self, visual_message, previous_index, current_index, decision):
+        self.counts["rgbd_direct_factor_attempts"] += 1
+        self.last_rgbd_direct_photometric_information_scale = 1.0
+        direct = self._matched_rgbd_direct(visual_message)
+        if direct is None:
+            self.last_rgbd_direct_reason = "matching_direct_tracks_missing"
+            self.counts["rgbd_direct_missing"] += 1
+            return False
+        candidates = []
+        for track in direct.tracks:
+            values = (
+                track.previous_x, track.previous_y,
+                track.previous_depth_m, track.previous_depth_variance_m2,
+                track.current_x, track.current_y,
+                track.current_depth_m, track.current_depth_variance_m2,
+                track.previous_intensity, track.current_intensity,
+                track.current_gradient_x_normalized,
+                track.current_gradient_y_normalized,
+                track.photometric_variance,
+            )
+            if (
+                track.track_age < 2
+                or any(not math.isfinite(float(value)) for value in values)
+                or track.previous_depth_m <= 0.0
+                or track.current_depth_m <= 0.0
+                or track.previous_depth_variance_m2 <= 0.0
+                or track.current_depth_variance_m2 <= 0.0
+                or track.photometric_variance <= 0.0
+            ):
+                continue
+            candidates.append((
+                float(track.previous_depth_variance_m2)
+                + float(track.current_depth_variance_m2),
+                int(track.grid_cell),
+                track,
+            ))
+        candidates.sort(key=lambda item: item[0])
+        per_cell = Counter()
+        selected = []
+        for _, grid_cell, track in candidates:
+            if per_cell[grid_cell] >= 2:
+                continue
+            selected.append(track)
+            per_cell[grid_cell] += 1
+            if len(selected) >= self.rgbd_direct_factor_maximum_tracks:
+                break
+        self.last_rgbd_direct_track_count = len(selected)
+        if len(selected) < self.rgbd_direct_factor_minimum_tracks:
+            self.last_rgbd_direct_reason = (
+                f"insufficient_tracks:{len(selected)}"
+            )
+            self.counts["rgbd_direct_rejected_tracks"] += 1
+            return False
+        batch_scale = visual_batch_information_scale(
+            len(selected), self.visual_information_reference_tracks
+        )
+        depth_variance = np.asarray([
+            track.previous_depth_variance_m2
+            + track.current_depth_variance_m2
+            for track in selected
+        ])
+        depth_variance *= (
+            batch_scale / self.rgbd_direct_depth_information_scale
+        )
+        photometric_variance = np.asarray([
+            track.photometric_variance for track in selected
+        ])
+        photometric_variance *= (
+            batch_scale / self.rgbd_direct_photometric_information_scale
+        )
+        try:
+            batch = RgbdDirectTrackBatch(
+                np.asarray([
+                    [track.previous_x, track.previous_y]
+                    for track in selected
+                ]),
+                np.asarray([
+                    [track.current_x, track.current_y]
+                    for track in selected
+                ]),
+                np.asarray([track.previous_depth_m for track in selected]),
+                np.asarray([track.current_depth_m for track in selected]),
+                depth_variance,
+                np.asarray([track.previous_intensity for track in selected]),
+                np.asarray([track.current_intensity for track in selected]),
+                np.asarray([[
+                    track.current_gradient_x_normalized,
+                    track.current_gradient_y_normalized,
+                ] for track in selected]),
+                photometric_variance,
+                self.visual_rotation_body_camera,
+                self.visual_translation_body_camera,
+            )
+            values = rgbd_direct_residual_jacobians(
+                self.backend.state(previous_index),
+                self.backend.state(current_index),
+                batch,
+            )
+            valid_ratio = values[6].size / max(1, batch.track_count)
+            depth_rmse = (
+                float(np.sqrt(np.mean(values[0] ** 2)))
+                if values[0].size else math.inf
+            )
+            photometric_rmse = (
+                float(np.sqrt(np.mean(values[1] ** 2)))
+                if values[1].size else math.inf
+            )
+            self.last_rgbd_direct_depth_rmse_m = depth_rmse
+            self.last_rgbd_direct_photometric_rmse = photometric_rmse
+            if (
+                valid_ratio < self.visual_minimum_projectable_track_ratio
+                or not math.isfinite(depth_rmse)
+                or not math.isfinite(photometric_rmse)
+                or depth_rmse
+                > self.rgbd_direct_factor_maximum_depth_rmse_m
+            ):
+                self.last_rgbd_direct_reason = (
+                    f"prefit_rejected:depth_rmse={depth_rmse:.6f}:"
+                    f"photo_rmse={photometric_rmse:.6f}:"
+                    f"valid_ratio={valid_ratio:.6f}"
+                )
+                self.counts["rgbd_direct_rejected_prefit"] += 1
+                return False
+            photo_limit = self.rgbd_direct_factor_maximum_photometric_rmse
+            photo_information_scale = min(
+                1.0,
+                (photo_limit / max(photo_limit, photometric_rmse)) ** 2,
+            )
+            self.last_rgbd_direct_photometric_information_scale = (
+                photo_information_scale
+            )
+            if photo_information_scale < 1.0:
+                # Keep the metric depth rows from this D435 batch and reduce
+                # only the inconsistent texture rows. The source still enters
+                # the window exactly once as one combined RGB-D factor.
+                batch = RgbdDirectTrackBatch(
+                    batch.anchor_normalized,
+                    batch.current_normalized,
+                    batch.anchor_depth_m,
+                    batch.current_depth_m,
+                    batch.depth_variance_m2,
+                    batch.previous_intensity,
+                    batch.current_intensity,
+                    batch.current_gradient_normalized,
+                    batch.photometric_variance / max(
+                        1.0e-4, photo_information_scale
+                    ),
+                    batch.rotation_body_camera,
+                    batch.translation_body_camera,
+                )
+                self.counts[
+                    "rgbd_direct_photometric_downweighted"
+                ] += 1
+            effective_weight = (
+                float(decision.get("reliability_weight", 0.0))
+                / max(
+                    1.0,
+                    float(decision.get("covariance_inflation", 1.0)),
+                )
+                if bool(decision.get("factor_enabled", False)) else 0.0
+            )
+            depth_jacobian = values[3][:, :6]
+            depth_information = depth_jacobian.T @ (
+                (
+                    effective_weight
+                    / batch.depth_variance_m2[values[6]]
+                )[:, None]
+                * depth_jacobian
+            )
+            axis_profile = pose_translation_profile_information(
+                depth_information
+            )
+            maximum_profile = max(1.0e-12, float(np.max(axis_profile)))
+            self.last_rgbd_depth_axis_profile_information = axis_profile
+            self.last_rgbd_depth_axis_support = axis_profile / maximum_profile
+            self.last_rgbd_depth_stamp_s = (
+                stamp_seconds(visual_message.header.stamp)
+                + (
+                    self._effective_visual_time_offset_s()
+                    if hasattr(self, "last_visual_time_calibration")
+                    else float(getattr(self, "visual_time_offset_s", 0.0))
+                )
+            )
+            self.backend.add_rgbd_direct(
+                previous_index, current_index, batch, decision=decision
+            )
+        except (ValueError, FloatingPointError) as error:
+            self.last_rgbd_direct_reason = f"invalid_batch:{error}"
+            self.counts["rgbd_direct_rejected_tracks"] += 1
+            return False
+        self.last_rgbd_direct_reason = (
+            "accepted"
+            if self.last_rgbd_direct_photometric_information_scale >= 1.0
+            else "accepted_photometric_downweighted"
+        )
+        self.counts["rgbd_direct_factors"] += 1
+        return True
 
     def _add_rgbd_depth_factor(
             self, visual_message, previous_index, current_index, decision):
@@ -4849,6 +5333,32 @@ class UnifiedBackendNode(Node):
                     self.counts["visual_duplicate_candidates"] += 1
                     self.last_visual_reason = "duplicate_candidate"
                     return
+                latest_cutoff = (
+                    current - self.visual_pending_latest_horizon_s
+                )
+                while self.pending_visual_candidates:
+                    oldest = self.pending_visual_candidates[0]
+                    oldest_current = stamp_seconds(
+                        oldest.message.header.stamp
+                    )
+                    if oldest_current >= latest_cutoff:
+                        break
+                    dropped = self.pending_visual_candidates.popleft()
+                    self.pending_visual_keys.discard(dropped.key)
+                    self.visual_factor_score_wait_started.pop(
+                        dropped.key, None
+                    )
+                    self.counts["visual_pending_superseded"] += 1
+                    self.counts["visual_rejected_time"] += 1
+                    self.visual_timing_reason_counts[
+                        "superseded_by_newer_candidate"
+                    ] += 1
+                    self._publish_visual_timing(
+                        dropped,
+                        "rejected",
+                        "superseded_by_newer_candidate",
+                        (),
+                    )
                 if len(self.pending_visual_candidates) >= self.visual_pending_max_queue:
                     dropped = self.pending_visual_candidates.popleft()
                     self.pending_visual_keys.discard(dropped.key)
@@ -5051,6 +5561,35 @@ class UnifiedBackendNode(Node):
                 self.counts["visual_factor_score_invalid"] += 1
             self.counts["visual_quality_rejected_dv"] += 1
             return False
+        if self.visual_factor_mode == "rgbd_direct":
+            # Metric RGB-D performs its own depth and photometric prefit. PnP
+            # remains diagnostic evidence, but it must not gate this distinct
+            # observation model or initialize a factor that is never added.
+            pnp_metrics = self._visual_pnp_metrics(message)
+            self.last_visual_pnp_inlier_ratio = pnp_metrics["inlier_ratio"]
+            self.last_visual_pnp_information_rank = pnp_metrics["rank"]
+            self.last_visual_pnp_condition_number = pnp_metrics["condition"]
+            self.last_visual_pnp_mean_reprojection_error_px = (
+                pnp_metrics["mean_reprojection_px"]
+            )
+            self.last_visual_prefit_rmse_normalized = -1.0
+            self.last_visual_prefit_rmse_px = -1.0
+            self.last_visual_prefit_valid_track_ratio = -1.0
+            self.last_visual_prefit_jacobian_rank = 0
+            self.last_visual_prefit_jacobian_condition = -1.0
+            self.last_visual_prefit_nis_per_dof = -1.0
+            self.last_visual_prefit_information_trace = 0.0
+            self.last_visual_prefit_information_max_eigenvalue = 0.0
+            if not self._add_rgbd_direct_factor(
+                message, previous_index, current_index, decision
+            ):
+                self.last_visual_reason = (
+                    f"rgbd_direct:{self.last_rgbd_direct_reason}"
+                )
+                return False
+            self.last_visual_reason = "accepted_rgbd_direct"
+            self.counts["visual_factors"] += 1
+            return True
         pnp_metrics = self._visual_pnp_metrics(message)
         selected = pnp_metrics["selected"]
         if len(selected) < self.visual_minimum_tracks:
@@ -5151,7 +5690,9 @@ class UnifiedBackendNode(Node):
             if self.visual_initialization_enabled:
                 was_ready = self.visual_initializer.ready
                 initialization = self.visual_initializer.observe(
-                    geometrically_valid=(check.valid and bool(message.pnp_valid)),
+                    geometrically_valid=(
+                        check.valid and bool(message.pnp_valid)
+                    ),
                     time_locked=(
                         not self.visual_time_calibration_enabled
                         or self.last_visual_time_calibration.locked
@@ -5180,11 +5721,10 @@ class UnifiedBackendNode(Node):
             self.last_visual_reason = f"invalid_track_batch:{error}"
             self.counts["visual_rejected_tracks"] += 1
             return False
-        self.last_visual_reason = (
-            "accepted_rgbd_depth"
-            if factor_representation == "rgbd_depth"
-            else "accepted_paper_reprojection"
-        )
+        self.last_visual_reason = {
+            "rgbd_depth": "accepted_rgbd_depth",
+            "rgbd_direct": "accepted_rgbd_direct",
+        }.get(factor_representation, "accepted_paper_reprojection")
         self.counts["visual_factors"] += 1
         return True
 
@@ -5564,9 +6104,21 @@ class UnifiedBackendNode(Node):
                 raise ValueError(
                     "relocalization requires an initialized state")
             result_age_s = float(self.last_lio_stamp) - stamp
-            if result_age_s < -self.relocalization_state_tolerance_s:
+            result_is_future = (
+                result_age_s < -self.relocalization_state_tolerance_s
+            )
+            future_wait_timeout_s = max(
+                self.relocalization_pending_timeout_s,
+                float(getattr(
+                    self, "relocalization_future_wait_timeout_s",
+                    self.relocalization_pending_timeout_s,
+                )),
+            )
+            if result_is_future and (
+                -result_age_s > future_wait_timeout_s
+            ):
                 raise ValueError(
-                    "relocalization result is ahead of backend state")
+                    "relocalization result is too far ahead of backend state")
             if result_age_s > self.relocalization_result_max_age_s:
                 raise ValueError("relocalization result is stale")
             with self.relocalization_lock:
@@ -5586,9 +6138,17 @@ class UnifiedBackendNode(Node):
                     msg.candidate_id)
                 self.pending_relocalization_transaction_id = transaction_id
                 self.pending_relocalization_deadline_s = (
-                    self._now_s() + self.relocalization_pending_timeout_s
+                    self._now_s() + (
+                        future_wait_timeout_s
+                        if result_is_future
+                        else self.relocalization_pending_timeout_s
+                    )
                 )
-            self.last_reason = "relocalization_pending_window_reset"
+            self.last_reason = (
+                "relocalization_waiting_for_backend_state"
+                if result_is_future
+                else "relocalization_pending_window_reset"
+            )
         except (ValueError, IndexError, TypeError) as error:
             self.counts["relocalization_rejections"] += 1
             self.last_reason = f"relocalization_invalid_result:{type(error).__name__}"
@@ -5795,6 +6355,12 @@ class UnifiedBackendNode(Node):
                     self.rgbd_geometry_tracks
                 )
                 self.rgbd_geometry_tracks.clear()
+        if hasattr(self, "rgbd_direct_lock"):
+            with self.rgbd_direct_lock:
+                stats["rgbd_direct_discarded"] = len(
+                    self.rgbd_direct_tracks
+                )
+                self.rgbd_direct_tracks.clear()
 
         stats["native_buffer_discarded"] = self.native_lidar_buffer.clear()
         stats["pending_lio_discarded"] = len(self.pending_lio)
@@ -5846,6 +6412,11 @@ class UnifiedBackendNode(Node):
         self.last_gnss_z_admitted = False
         self.last_gnss_xy_information_scale = 0.0
         self.last_gnss_z_information_scale = 0.0
+        if hasattr(self, "last_gnss_factor_covariance"):
+            self.last_gnss_factor_covariance.fill(math.inf)
+            self.gnss_z_reanchor_consecutive = 0
+            self.last_gnss_z_reanchor_applied = False
+            self.last_gnss_z_reanchor_target_m = math.nan
         self.last_gnss_prefit_residual_norm_m = -1.0
         if hasattr(self, "last_gnss_prefit_residual_xyz"):
             self.last_gnss_prefit_residual_xyz.fill(math.nan)
@@ -5861,6 +6432,7 @@ class UnifiedBackendNode(Node):
             self.last_axis_handoff_alternative_information.fill(0.0)
             self.last_axis_handoff_gnss_information.fill(0.0)
             self.last_axis_handoff_rgbd_information.fill(0.0)
+            self.last_axis_handoff_barometer_information.fill(0.0)
             self.last_axis_map_protected.fill(False)
             self.last_axis_map_protection_sources = (
                 "none", "none", "none"
@@ -5876,7 +6448,14 @@ class UnifiedBackendNode(Node):
             self.last_barometer_segment_id = self.barometer_segment.segment_id
             self.last_barometer_prefit_residual_m = -1.0
             self.last_barometer_information_scale = 0.0
+            self.last_barometer_variance_m2 = math.inf
+            self.last_barometer_stamp_s = -1.0
             self.last_barometer_measurement_height_m = math.nan
+            self.last_barometer_anchor_source = "none"
+            self.last_barometer_anchor_reference_age_s = math.inf
+            self.last_barometer_reference_reason = "relocalization_reset"
+            self.last_barometer_reference_stamp_s = -1.0
+            self.last_barometer_reference_z_m = math.nan
         if hasattr(self, "last_axis_reliability"):
             self.last_axis_reliability.fill(0.0)
             self.last_axis_degradation.fill(1.0)
@@ -5939,56 +6518,42 @@ class UnifiedBackendNode(Node):
         decision["reasons"] = ("scheduler_unavailable_default",)
         return decision
 
-    def _axis_handoff_alternative_information(self, stamp_s):
+    def _axis_handoff_alternative_information(
+        self, stamp_s, *, include_barometer=True
+    ):
         """Return fresh per-LiDAR-frame axis information from other sensors."""
         gnss_information = np.zeros(3, dtype=float)
         rgbd_information = np.zeros(3, dtype=float)
-        with self.gnss_lock:
-            gnss = None if self.latest_gnss is None else dict(self.latest_gnss)
-        if gnss is not None:
-            observation_age = float(stamp_s) - float(gnss["stamp_s"])
-            prefit_age = float(stamp_s) - self.last_gnss_prefit_stamp_s
-            decision = self._decision("gnss", default_enabled=True)
-            if (
-                -self.gnss_future_tolerance_s <= observation_age
-                <= self.gnss_max_age_s
-                and 0.0 <= prefit_age <= self.gnss_max_age_s
-                and int(gnss.get("status", -1)) >= 0
-                and not bool(gnss.get("temporal_jump", False))
-                and bool(decision.get("factor_enabled", False))
-            ):
-                covariance = np.asarray(gnss["covariance"], dtype=float)
-                if (
-                    covariance.shape == (3,)
-                    and np.all(np.isfinite(covariance))
-                    and np.all(covariance > 0.0)
-                ):
-                    effective_weight = (
-                        float(decision.get("reliability_weight", 0.0))
-                        / max(
-                            1.0,
-                            float(decision.get("covariance_inflation", 1.0)),
-                        )
-                    )
-                    axis_scale = np.asarray([
-                        self.last_gnss_xy_information_scale,
-                        self.last_gnss_xy_information_scale,
-                        self.last_gnss_z_information_scale,
-                    ])
-                    # A GNSS fix may remain globally healthy while its Z
-                    # innovation is rejected by the current local state. Do
-                    # not let that weak/rejected Z residual block the
-                    # axis-specific barometer fallback. XY remains available
-                    # independently; a GNSS Z factor is an alternative only
-                    # when its own admission gate passed.
-                    if not bool(self.last_gnss_z_admitted):
-                        axis_scale[2] = 0.0
-                    gnss_information = (
-                        self.axis_handoff_gnss_rate_ratio
-                        * effective_weight
-                        * axis_scale
-                        / covariance
-                    )
+        prefit_age = float(stamp_s) - self.last_gnss_prefit_stamp_s
+        decision = self._decision("gnss", default_enabled=True)
+        covariance = np.asarray(
+            self.last_gnss_factor_covariance, dtype=float
+        )
+        if (
+            0.0 <= prefit_age <= self.gnss_max_age_s
+            and bool(decision.get("factor_enabled", False))
+            and covariance.shape == (3,)
+            and np.all(np.isfinite(covariance))
+            and np.all(covariance > 0.0)
+        ):
+            effective_weight = (
+                float(decision.get("reliability_weight", 0.0))
+                / max(
+                    1.0,
+                    float(decision.get("covariance_inflation", 1.0)),
+                )
+            )
+            axis_scale = np.asarray([
+                self.last_gnss_xy_information_scale,
+                self.last_gnss_xy_information_scale,
+                self.last_gnss_z_information_scale,
+            ])
+            gnss_information = (
+                self.axis_handoff_gnss_rate_ratio
+                * effective_weight
+                * axis_scale
+                / covariance
+            )
         rgbd_age = float(stamp_s) - self.last_rgbd_depth_stamp_s
         if 0.0 <= rgbd_age <= self.axis_handoff_rgbd_freshness_s:
             rgbd_information = (
@@ -6001,10 +6566,26 @@ class UnifiedBackendNode(Node):
                 rgbd_information,
                 0.0,
             )
+        barometer_information = np.zeros(3, dtype=float)
+        barometer_age = float(stamp_s) - self.last_barometer_stamp_s
+        if (
+            include_barometer
+            and 0.0 <= barometer_age
+            <= self.barometer_segment.maximum_sample_age_s
+            and self.barometer_segment.active
+            and self.last_barometer_information_scale > 0.0
+            and math.isfinite(self.last_barometer_variance_m2)
+            and self.last_barometer_variance_m2 > 0.0
+        ):
+            barometer_information[2] = (
+                self.last_barometer_information_scale
+                / self.last_barometer_variance_m2
+            )
         self.last_axis_handoff_gnss_information = gnss_information
         self.last_axis_handoff_rgbd_information = rgbd_information
+        self.last_axis_handoff_barometer_information = barometer_information
         self.last_axis_handoff_alternative_information = (
-            gnss_information + rgbd_information
+            gnss_information + rgbd_information + barometer_information
         )
         return self.last_axis_handoff_alternative_information.copy()
 
@@ -6869,6 +7450,9 @@ class UnifiedBackendNode(Node):
                 "rgbd_information_per_lidar_xyz": (
                     self.last_axis_handoff_rgbd_information.tolist()
                 ),
+                "barometer_information_per_lidar_xyz": (
+                    self.last_axis_handoff_barometer_information.tolist()
+                ),
                 "translation_profile_information": (
                     self.last_native_translation_profile_information.tolist()
                 ),
@@ -7210,6 +7794,7 @@ class UnifiedBackendNode(Node):
             innovation, dtype=float
         ).copy()
         self.last_gnss_prefit_stamp_s = float(observation["stamp_s"])
+        self.last_gnss_factor_covariance = covariance.copy()
         self.last_gnss_degradation_score = 1.0 - min(
             1.0,
             max(
@@ -7236,11 +7821,83 @@ class UnifiedBackendNode(Node):
         else:
             self.counts["gnss_xy_rejected_nis"] += 1
             self.counts["gnss_xy_robust_downweighted"] += 1
+        self.last_gnss_z_reanchor_applied = False
         if decision["gnss_z_admitted"]:
             self.counts["gnss_z_admitted"] += 1
+            self.gnss_z_reanchor_consecutive = 0
         else:
             self.counts["gnss_z_rejected_nis"] += 1
             self.counts["gnss_z_robust_downweighted"] += 1
+            self.counts["gnss_z_reanchor_attempts"] = (
+                self.counts.get("gnss_z_reanchor_attempts", 0) + 1
+            )
+            lidar_z_weak = bool(
+                np.asarray(
+                    getattr(
+                        self,
+                        "last_native_isotropic_information_support",
+                        np.ones(3),
+                    ),
+                    dtype=float,
+                )[2]
+                < float(getattr(self, "axis_handoff_enter_support", 0.35))
+            )
+            self.gnss_z_reanchor_consecutive = (
+                int(getattr(self, "gnss_z_reanchor_consecutive", 0)) + 1
+                if lidar_z_weak else 0
+            )
+            if (
+                bool(getattr(self, "gnss_z_reanchor_enabled", False))
+                and lidar_z_weak
+                and self.gnss_z_reanchor_consecutive
+                >= int(getattr(
+                    self, "gnss_z_reanchor_minimum_consecutive", 2
+                ))
+            ):
+                reanchor_target, _ = bounded_axis_reanchor_target(
+                    factor_prediction[2],
+                    solver_gnss_position[2],
+                    float(getattr(
+                        self, "gnss_z_reanchor_maximum_step_m", 0.15
+                    )),
+                )
+                solver_gnss_position[2] = reanchor_target
+                self.last_gnss_z_reanchor_applied = True
+                self.last_gnss_z_reanchor_target_m = reanchor_target
+                # The bounded target prevents one stale map/prior epoch from
+                # causing a transaction rollback.  Once the raw GNSS stream
+                # is healthy and LiDAR Z is weak, retain a finite recovery
+                # amount of the same GNSS factor instead of its NIS-derived
+                # downweight; the next samples continue the bounded motion.
+                recovery_scale = max(
+                    float(getattr(
+                        self, "gnss_z_information_scale",
+                        decision["gnss_z_information_scale"],
+                    )),
+                    float(getattr(
+                        self, "gnss_z_recovery_information_scale", 0.50
+                    )),
+                )
+                decision["gnss_z_information_scale"] = min(
+                    1.0, recovery_scale
+                )
+                decision["gnss_z_bounded_recovery"] = True
+                decision["admission_reason"] = (
+                    "admitted_xy_with_z_bounded_recovery"
+                )
+                self.last_gnss_z_information_scale = float(
+                    decision["gnss_z_information_scale"]
+                )
+                self.last_gnss_effective_information_scale = float(
+                    decision["reliability_weight"]
+                    / decision["covariance_inflation"]
+                )
+                self.counts["gnss_z_reanchor_factors"] = (
+                    self.counts.get("gnss_z_reanchor_factors", 0) + 1
+                )
+                self.counts["gnss_z_recovery_factors"] = (
+                    self.counts.get("gnss_z_recovery_factors", 0) + 1
+                )
         if decision["gnss_recovery_floor"]:
             self.counts["gnss_all_axes_inconsistent"] += 1
             self.counts["gnss_prefit_recovery_floor"] += 1
@@ -7256,14 +7913,100 @@ class UnifiedBackendNode(Node):
         if "gnss_provisional_bootstrap" in decision.get("reasons", ()):
             self.counts["gnss_provisional_bootstrap_admitted"] += 1
 
+    def _update_barometer_trusted_reference(self, stamp_s, position_z_m):
+        """Cache pressure/Z only while at least one absolute-Z source is sound."""
+        if not self.barometer_fallback_enabled:
+            self.last_barometer_reference_reason = "disabled"
+            return False
+        gnss_age_s = float(stamp_s) - self.last_gnss_prefit_stamp_s
+        gnss_observation_fresh = bool(
+            0.0 <= gnss_age_s <= self.gnss_max_age_s
+        )
+        residual_z_m = float(self.last_gnss_prefit_residual_xyz[2])
+        gnss_trusted = bool(
+            self.last_gnss_z_admitted
+            and 0.0 <= gnss_age_s <= self.gnss_max_age_s
+            and math.isfinite(residual_z_m)
+            and abs(residual_z_m)
+            <= self.barometer_reference_maximum_gnss_residual_m
+            and self.last_gnss_z_information_scale
+            >= self.barometer_reference_minimum_gnss_information_scale
+        )
+        lidar_support_z = float(
+            self.last_native_isotropic_information_support[2]
+        )
+        lidar_trusted = bool(
+            lidar_support_z >= self.axis_handoff_exit_support
+            and self.last_native_health_degradation <= 0.50
+            and self.last_native_consistency_degradation <= 0.50
+        )
+        rgbd_information_z = float(
+            self.last_axis_handoff_rgbd_information[2]
+        )
+        rgbd_trusted = bool(
+            rgbd_information_z >= self.axis_handoff_rgbd_minimum_support
+        )
+        # A fresh GNSS disagreement is independent evidence that the local
+        # map Z may already be drifting.  In that case it is unsafe to let
+        # LiDAR/RGB-D overwrite the pre-fallback pressure datum.  Local-only
+        # sources may establish the datum only when GNSS is genuinely absent,
+        # as in an indoor segment.
+        if gnss_observation_fresh:
+            trusted_sources = ["gnss_z"] if gnss_trusted else []
+        else:
+            trusted_sources = [
+                source for source, available in (
+                    ("lidar_z", lidar_trusted),
+                    ("rgbd_z", rgbd_trusted),
+                ) if available
+            ]
+        if not trusted_sources:
+            self.counts["barometer_reference_rejected"] += 1
+            self.last_barometer_reference_reason = "z_reference_not_trusted"
+            return False
+        with self.barometer_lock:
+            if self.barometer_segment.active:
+                self.last_barometer_reference_reason = (
+                    "active_segment_reference_frozen"
+                )
+                return False
+            updated = self.barometer_segment.update_trusted_reference(
+                stamp_s, position_z_m
+            )
+            reference_stamp_s = (
+                self.barometer_segment.trusted_reference_stamp_s
+            )
+            reason = self.barometer_segment.last_reason
+        self.last_barometer_reference_reason = str(reason)
+        if not updated:
+            self.counts["barometer_reference_rejected"] += 1
+            return False
+        self.counts["barometer_reference_updates"] += 1
+        self.last_barometer_reference_reason = (
+            "trusted_reference_updated:" + ",".join(trusted_sources)
+        )
+        self.last_barometer_reference_stamp_s = float(reference_stamp_s)
+        self.last_barometer_reference_z_m = float(position_z_m)
+        return True
+
     def _barometer_factor(self, stamp_s, position_z_m, index):
         """Add a Z-only pressure factor only while stronger Z sources are absent."""
         if not self.barometer_fallback_enabled:
             self.last_barometer_reason = "disabled"
             return False
-        alternative_information = self._axis_handoff_alternative_information(
-            stamp_s
+        # Do not use a previous pressure factor to decide whether this new
+        # segment is needed.  The current pressure sample becomes alternative
+        # Z information only after this factor is admitted below.
+        self._axis_handoff_alternative_information(
+            stamp_s, include_barometer=False
         )
+        alternative_z_information = float(
+            self.last_axis_handoff_rgbd_information[2]
+        )
+        if self.last_gnss_z_admitted:
+            alternative_z_information += float(
+                self.last_axis_handoff_gnss_information[2]
+            )
         support_threshold = (
             self.axis_handoff_exit_support
             if self.barometer_segment.active
@@ -7275,7 +8018,7 @@ class UnifiedBackendNode(Node):
         )
         fallback_required = barometer_activation_required(
             lidar_z_weak=lidar_z_weak,
-            alternative_z_information=alternative_information[2],
+            alternative_z_information=alternative_z_information,
             stamp_s=stamp_s,
             gnss_prefit_stamp_s=self.last_gnss_prefit_stamp_s,
             gnss_max_age_s=self.gnss_max_age_s,
@@ -7284,6 +8027,13 @@ class UnifiedBackendNode(Node):
             gnss_z_nis_gate=self.barometer_prefit_nis_gate,
             enabled=self.barometer_activate_on_gnss_z_inconsistency,
         )
+        if not fallback_required:
+            # Keep the datum causal even when the current transaction later
+            # takes a different factor path. This is the last healthy state
+            # before a local Z fallback is requested.
+            self._update_barometer_trusted_reference(
+                stamp_s, position_z_m
+            )
         with self.barometer_lock:
             was_active = self.barometer_segment.active
             measurement = self.barometer_segment.measurement(
@@ -7292,14 +8042,24 @@ class UnifiedBackendNode(Node):
             is_active = self.barometer_segment.active
             reason = self.barometer_segment.last_reason
             segment_id = self.barometer_segment.segment_id
+            anchor_source = self.barometer_segment.anchor_source
+            anchor_reference_age_s = (
+                self.barometer_segment.anchor_reference_age_s
+            )
         if is_active and not was_active:
             self.counts["barometer_segments_started"] += 1
         elif was_active and not is_active:
             self.counts["barometer_segments_ended"] += 1
         self.last_barometer_reason = str(reason)
         self.last_barometer_segment_id = int(segment_id)
+        self.last_barometer_anchor_source = str(anchor_source)
+        self.last_barometer_anchor_reference_age_s = float(
+            anchor_reference_age_s
+        )
         if measurement is None:
             self.last_barometer_information_scale = 0.0
+            self.last_barometer_variance_m2 = math.inf
+            self.last_barometer_stamp_s = -1.0
             return False
         self.counts["barometer_factor_attempts"] += 1
         residual_m = float(position_z_m) - float(measurement.height_m)
@@ -7321,6 +8081,8 @@ class UnifiedBackendNode(Node):
         self.counts["barometer_factors"] += 1
         self.last_barometer_prefit_residual_m = residual_m
         self.last_barometer_information_scale = information_scale
+        self.last_barometer_variance_m2 = float(measurement.variance_m2)
+        self.last_barometer_stamp_s = float(measurement.stamp_s)
         self.last_barometer_measurement_height_m = float(measurement.height_m)
         return True
 
@@ -7579,9 +8341,175 @@ class UnifiedBackendNode(Node):
             "source": source,
         }
 
+    def _build_range_facet_observation(
+            self, records, flow_observation, native_factor, current_state,
+            current_stamp):
+        """Build one conservative ray/plane observation from native matches."""
+        if not self.range_facet_enabled or native_factor is None:
+            return None, None
+        normals = getattr(native_factor, "plane_normals", None)
+        points = getattr(native_factor, "plane_points", None)
+        if normals is None or points is None:
+            return None, "missing_native_plane_support"
+        normals = np.asarray(normals, dtype=float).reshape(-1, 3)
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        valid = np.all(np.isfinite(normals), axis=1) & np.all(
+            np.isfinite(points), axis=1)
+        normals = normals[valid]
+        points = points[valid]
+        if normals.shape[0] < self.range_facet_minimum_support_points:
+            return None, "insufficient_native_plane_support"
+        # FAST-LIO's native message carries plane_points in the map frame.  It
+        # is tempting to apply T_body_sensor here because the lidar points are
+        # sensor-frame samples, but the plane points are already the fitted map
+        # facet used by the authoritative point-to-plane residual.  Keep this
+        # experimental copy in that same frame and do not double-transform it.
+        normal_norms = np.linalg.norm(normals, axis=1)
+        valid_norms = normal_norms > 1.0e-9
+        normals = normals[valid_norms] / normal_norms[valid_norms, None]
+        points = points[valid_norms]
+        if normals.shape[0] < self.range_facet_minimum_support_points:
+            return None, "invalid_native_plane_normals"
+        # One native scan contains several unrelated surfaces.  Build a small
+        # deterministic normal/offset cluster instead of averaging all rows;
+        # averaging would create a plane that does not exist in the scene.
+        candidate_clusters = []
+        normal_alignment = 0.97
+        offset_tolerance = max(0.03, self.range_facet_maximum_plane_rmse_m)
+        candidate_count = min(normals.shape[0], 32)
+        candidate_indices = np.linspace(
+            0, normals.shape[0] - 1, candidate_count, dtype=int)
+        for candidate_normal in normals[candidate_indices]:
+            oriented_signs = np.where(
+                normals @ candidate_normal >= 0.0, 1.0, -1.0)
+            oriented = normals * oriented_signs[:, None]
+            normal_mask = oriented @ candidate_normal >= normal_alignment
+            if int(np.count_nonzero(normal_mask)) < (
+                self.range_facet_minimum_support_points
+            ):
+                continue
+            normal = np.mean(oriented[normal_mask], axis=0)
+            normal_norm = float(np.linalg.norm(normal))
+            if normal_norm <= 1.0e-9:
+                continue
+            normal /= normal_norm
+            candidate_points = points[normal_mask]
+            signed_offsets = candidate_points @ normal
+            # Select the densest offset neighborhood for this orientation.
+            offset_count = min(signed_offsets.size, 32)
+            offset_indices = np.linspace(
+                0, signed_offsets.size - 1, offset_count, dtype=int)
+            for center in signed_offsets[offset_indices]:
+                offset_mask = np.abs(signed_offsets - center) <= offset_tolerance
+                if int(np.count_nonzero(offset_mask)) < (
+                    self.range_facet_minimum_support_points
+                ):
+                    continue
+                support_candidate = candidate_points[offset_mask]
+                offset_candidate = -float(
+                    normal @ np.mean(support_candidate, axis=0))
+                errors = support_candidate @ normal + offset_candidate
+                rmse_candidate = float(np.sqrt(np.mean(errors * errors)))
+                candidate_clusters.append((
+                    support_candidate, normal, rmse_candidate,
+                    offset_candidate,
+                ))
+        if not candidate_clusters:
+            return None, "inconsistent_native_plane_normals"
+        range_stamp = float(current_stamp)
+        stamped = []
+        for record in records:
+            try:
+                stamp = float(record["stamp_s"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(stamp):
+                stamped.append(stamp)
+        if stamped:
+            range_stamp = min(stamped, key=lambda value: abs(value - current_stamp))
+        sensor_rotation_body = np.asarray([
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+        ], dtype=float)
+        state = np.asarray(current_state, dtype=float)
+        body_rotation = rpy_to_rotation_matrix(state[3:6])
+        # A scan contains unrelated wall, floor, and ceiling facets.  Test
+        # every compact candidate against the actual range ray first, then
+        # choose the strongest admissible facet.
+        evaluated = []
+        rejection_reasons = []
+        for support, normal, plane_rmse, offset in candidate_clusters:
+            support_centroid = np.mean(support, axis=0)
+            support_radius = float(np.max(
+                np.linalg.norm(support - support_centroid, axis=1)
+            ))
+            normal_sigma = min(
+                0.25,
+                max(0.002, plane_rmse / max(support_radius, 0.10)),
+            )
+            plane_sigma = max(0.005, plane_rmse)
+            plane_covariance = np.diag(np.array([
+                normal_sigma * normal_sigma,
+                normal_sigma * normal_sigma,
+                normal_sigma * normal_sigma,
+                plane_sigma * plane_sigma,
+            ], dtype=float))
+            observation = RangeFacetObservation(
+                stamp_s=range_stamp,
+                measured_range_m=float(flow_observation["distance_m"]),
+                ray_direction_sensor=np.asarray([1.0, 0.0, 0.0], dtype=float),
+                sensor_translation_body=np.asarray(
+                    self.flow_sensor_offset_body_m, dtype=float),
+                sensor_rotation_body=sensor_rotation_body,
+                plane_normal_world=normal,
+                plane_offset=offset,
+                support_points_world=support,
+                plane_rmse_m=plane_rmse,
+                facet_stamp_s=float(native_factor.stamp_s),
+                plane_covariance=plane_covariance,
+            )
+            result = evaluate_range_facet(
+                observation,
+                state[:3],
+                body_rotation,
+                range_sigma_m=float(self.last_flow_range_sigma_m),
+                min_range_m=self.minimum_flow_distance_m,
+                max_range_m=self.maximum_flow_distance_m,
+                minimum_support_points=(
+                    self.range_facet_minimum_support_points
+                ),
+                maximum_plane_rmse_m=self.range_facet_maximum_plane_rmse_m,
+                denominator_epsilon=self.range_facet_denominator_epsilon,
+                facet_margin_m=self.range_facet_facet_margin_m,
+                timestamp_tolerance_s=self.range_facet_timestamp_tolerance_s,
+                mahalanobis_gate=self.range_facet_mahalanobis_gate,
+            )
+            if result.accepted:
+                evaluated.append((
+                    support.shape[0], plane_rmse, observation, result,
+                ))
+            else:
+                rejection_reasons.append(result.reason)
+        if not evaluated:
+            if rejection_reasons:
+                for preferred in (
+                    "nonpositive_intersection", "parallel_facet",
+                    "outside_facet", "mahalanobis", "facet_timestamp",
+                ):
+                    if preferred in rejection_reasons:
+                        return None, preferred
+                return None, rejection_reasons[0]
+            return None, "inconsistent_native_plane_normals"
+        _, _, observation, result = max(
+            evaluated, key=lambda item: (item[0], -item[1])
+        )
+        return observation, result
+
     def _flow_factor(self, previous_stamp, current_stamp, previous_yaw,
                      previous_index, current_index, lio_delta,
-                     previous_state=None, ordered_imu=None):
+                     previous_state=None, ordered_imu=None,
+                     native_factor=None, current_state=None):
         self.counts["flow_factor_attempts"] += 1
         with self.flow_buffer_lock:
             records, remaining, delayed = select_flow_records(
@@ -7813,13 +8741,64 @@ class UnifiedBackendNode(Node):
             self.last_flow_reason = rotation_gate.reason
         else:
             self.last_flow_reason = "accepted"
-        if self.optical_flow_yaw_coupling_enabled:
-            self.backend.add_optical_flow_body(
-                previous_index, current_index, flow_delta_body.tolist(),
-                previous_yaw,
-                covariance=flow_covariance, decision=decision,
+        range_observation = None
+        range_result = None
+        if self.range_facet_enabled and current_state is not None:
+            range_observation, range_result = (
+                self._build_range_facet_observation(
+                    records, observation, native_factor, current_state,
+                    current_stamp
+                )
             )
-            self.last_flow_factor_type = "body_horizontal_2d"
+            if range_observation is None:
+                self.counts["flow_range_facet_rejected"] += 1
+                rejection_reason = str(range_result or "unavailable")
+                rejection_reasons = getattr(
+                    self, "range_facet_rejection_reasons", None)
+                if rejection_reasons is None:
+                    rejection_reasons = Counter()
+                    self.range_facet_rejection_reasons = rejection_reasons
+                rejection_reasons[rejection_reason] += 1
+                self.last_range_facet_rejection_reason = rejection_reason
+                decision["evidence"]["range_facet_rejected"] = 1.0
+                decision["evidence"]["range_facet_rejection_reason"] = (
+                    rejection_reason
+                )
+            else:
+                self.last_range_facet_rejection_reason = "accepted"
+                decision["evidence"].update({
+                    "range_facet_accepted": 1.0,
+                    "range_facet_residual_m": float(
+                        range_result.residual_m
+                    ),
+                    "range_facet_support_count": int(
+                        range_result.support_count
+                    ),
+                    "range_facet_plane_rmse_m": float(
+                        range_observation.plane_rmse_m
+                    ),
+                    "range_facet_predicted_m": float(
+                        range_result.predicted_range_m
+                    ),
+                })
+        if self.optical_flow_yaw_coupling_enabled:
+            if range_observation is not None:
+                self.backend.add_optical_flow_range_body(
+                    previous_index, current_index, flow_delta_body.tolist(),
+                    range_observation,
+                    range_result.measurement_variance_m2,
+                    previous_yaw,
+                    covariance=flow_covariance, decision=decision,
+                )
+                self.counts["flow_range_facet_accepted"] += 1
+                self.last_flow_factor_type = "body_horizontal_2d_range_facet"
+            else:
+                self.backend.add_optical_flow_body(
+                    previous_index, current_index, flow_delta_body.tolist(),
+                    previous_yaw,
+                    covariance=flow_covariance, decision=decision,
+                )
+                self.last_flow_factor_type = "body_horizontal_2d"
         else:
             self.backend.add_optical_flow(
                 previous_index, current_index, flow_delta_position[:2].tolist(),
@@ -7892,7 +8871,7 @@ class UnifiedBackendNode(Node):
             self.counts["native_worker_queue_overflow"] += 1
             self.last_reason = "native_worker_queue_enqueue_failed"
         elif discarded:
-            self.counts["native_worker_queue_overflow"] += 1
+            self.counts["native_worker_queue_superseded"] += discarded
             self.counts["native_worker_queue_discarded"] += discarded
 
     def _native_worker_loop(self):
@@ -7903,6 +8882,14 @@ class UnifiedBackendNode(Node):
                 self._process_auxiliary_keyframe_if_due()
                 continue
             try:
+                # The worker may dequeue a frame just before a newer frame is
+                # enqueued. Once a newer frame is already waiting, doing the
+                # full sliding-window solve for the older one only increases
+                # source age and can trigger a rollback storm. Drop this
+                # frame before it mutates the backend; the newer frame remains
+                # the sole candidate for the next transaction.
+                if self._native_worker_frame_superseded(factor):
+                    continue
                 self._process_native_worker_frame(header, factor)
             except Exception as error:  # one bad packet must not kill the worker
                 if self.native_worker_stop.is_set() or not rclpy.ok():
@@ -7921,6 +8908,36 @@ class UnifiedBackendNode(Node):
                 )
             finally:
                 self.native_work_queue.task_done()
+
+    def _native_worker_frame_superseded(self, factor):
+        """Return true when a newer native frame is already queued.
+
+        The queue is inspected under its mutex so the decision is consistent
+        with enqueue. The current frame is released as an intentional
+        latest-only drop, distinct from a frame that entered optimization and
+        failed its integrity checks.
+        """
+        current_sequence = int(factor.scan_sequence)
+        try:
+            with self.native_work_queue.mutex:
+                pending = list(self.native_work_queue.queue)
+        except (AttributeError, RuntimeError):
+            return False
+        for item in pending:
+            try:
+                pending_sequence = int(item[1].scan_sequence)
+            except (IndexError, AttributeError, TypeError, ValueError):
+                continue
+            if pending_sequence > current_sequence:
+                self.counts["native_worker_latest_skipped"] += 1
+                self.last_reason = "native_worker_latest_only_skip"
+                self._consume_native_sequence(
+                    current_sequence,
+                    state_committed=False,
+                    intentional_latest_skip=True,
+                )
+                return True
+        return False
 
     def _process_auxiliary_keyframe_if_due(self):
         if (
@@ -8043,9 +9060,10 @@ class UnifiedBackendNode(Node):
                 int(factor.scan_sequence), state_committed=state_committed
             )
 
-    def _consume_native_sequence(self, sequence, state_committed):
+    def _consume_native_sequence(
+            self, sequence, state_committed, intentional_latest_skip=False):
         """Release the next scan after this factor reaches a terminal outcome."""
-        if not state_committed:
+        if not state_committed and not intentional_latest_skip:
             self.counts["native_consumed_without_state_commit"] += 1
         self.last_native_consumed_sequence = max(
             self.last_native_consumed_sequence, int(sequence)
@@ -8611,6 +9629,58 @@ class UnifiedBackendNode(Node):
                 initial_state.copy(),
                 covariance=prior_covariance,
             )
+        # Add the causal local-pressure factor before computing LiDAR axis
+        # handoff.  The pressure observation is still inserted exactly once;
+        # this ordering only lets its current Z information protect a weak
+        # LiDAR axis in the same transaction.
+        barometer_started = time.perf_counter_ns()
+        barometer_active = False
+        if self.last_lio_stamp is not None and reference is not None:
+            self._barometer_factor(
+                stamp, reference["position"][2], current_index
+            )
+            with self.barometer_lock:
+                barometer_active = bool(self.barometer_segment.active)
+        elif self.barometer_fallback_enabled:
+            self.last_barometer_reason = "waiting_for_previous_state"
+        self._record_phase_timing("barometer_factor", barometer_started)
+
+        # Admit the current GNSS observation before assembling the native
+        # LiDAR factor.  Axis handoff must use the same-time GNSS/barometer
+        # information, rather than the previous cycle's cached admission.
+        # The factor is still added exactly once; this only fixes the causal
+        # ordering of the independent factor blocks.
+        if self.last_lio_stamp is not None:
+            previous_index = current_index - 1
+            gnss_started = time.perf_counter_ns()
+            gnss_factor_decision = self._decision(
+                "gnss", default_enabled=True
+            )
+            if bool(gnss_factor_decision.get("factor_enabled", False)):
+                gnss_prediction, gnss_prediction_reason = (
+                    self._gnss_prefit_prediction(stamp, manifold_measurement)
+                )
+            else:
+                gnss_prediction = None
+                gnss_prediction_reason = "scheduler_disabled_before_prediction"
+            if gnss_prediction is None:
+                gnss_position_prediction = reference["position"]
+                gnss_position_covariance = None
+            else:
+                gnss_position_prediction, gnss_position_covariance = (
+                    gnss_prediction
+                )
+            self._gnss_factor(
+                stamp,
+                gnss_position_prediction,
+                current_index,
+                gnss_position_covariance,
+                gnss_prediction_reason,
+                gnss_factor_decision,
+                initial_state[6:9],
+            )
+            self._record_phase_timing("gnss_factor", gnss_started)
+
         lidar_factor_started = time.perf_counter_ns()
         lidar_decision = self._decision("lidar", default_enabled=True)
         if native_prediction_recovery_floor:
@@ -8736,6 +9806,7 @@ class UnifiedBackendNode(Node):
                         self.last_native_isotropic_information_support,
                         alternative_information,
                         self.axis_handoff_latched,
+                        enabled_axes=self.axis_handoff_enabled_axes,
                         enter_support=self.axis_handoff_enter_support,
                         exit_support=self.axis_handoff_exit_support,
                         minimum_lidar_information_scale=(
@@ -8753,41 +9824,26 @@ class UnifiedBackendNode(Node):
                                 self.counts[
                                     f"native_lidar_axis_handoff_{name}"
                                 ] += 1
-                if (
-                    np.any(self.last_lidar_axis_information_scale < 1.0)
-                    and native_factor.pose_hessian_right is not None
-                    and native_factor.pose_gradient_right is not None
-                ):
-                    scaled_hessian, scaled_gradient = (
-                        scale_conditional_translation_normal(
-                            native_factor.pose_hessian_right,
-                            native_factor.pose_gradient_right,
-                            self.last_lidar_axis_information_scale,
-                        )
-                    )
-                    self.backend.add_native_lidar_normal(
-                        current_index,
-                        native_factor.linearization_pose,
-                        scaled_hessian,
-                        scaled_gradient,
-                        native_factor.measurement_variance,
-                        native_factor.matched_points,
-                        native_factor.residual_squared,
-                        decision=lidar_decision,
-                    )
+                axis_scaled = np.any(
+                    self.last_lidar_axis_information_scale < 1.0
+                )
+                self.backend.add_native_lidar_correspondences(
+                    current_index,
+                    native_factor,
+                    decision=lidar_decision,
+                    axis_information_scale=(
+                        self.last_lidar_axis_information_scale
+                    ),
+                )
+                self.counts["native_lidar_relinearized"] += 1
+                if axis_scaled:
                     self.counts[
                         "native_lidar_axis_conditional_factors"
                     ] += 1
                     self.last_lidar_source = (
-                        "native_point_to_plane_axis_conditional"
+                        "native_point_to_plane_axis_scaled_relinearized"
                     )
                 else:
-                    self.backend.add_native_lidar_correspondences(
-                        current_index,
-                        native_factor,
-                        decision=lidar_decision,
-                    )
-                    self.counts["native_lidar_relinearized"] += 1
                     self.last_lidar_source = (
                         "native_point_to_plane_relinearized"
                     )
@@ -8899,41 +9955,14 @@ class UnifiedBackendNode(Node):
         imu_diagnostic_covariance = None
         aux_factors_started = time.perf_counter_ns()
         if self.last_lio_stamp is not None:
-            previous_index = current_index - 1
-            gnss_started = time.perf_counter_ns()
-            gnss_factor_decision = self._decision(
-                "gnss", default_enabled=True
-            )
-            if bool(gnss_factor_decision.get("factor_enabled", False)):
-                gnss_prediction, gnss_prediction_reason = (
-                    self._gnss_prefit_prediction(stamp, manifold_measurement)
-                )
-            else:
-                gnss_prediction = None
-                gnss_prediction_reason = "scheduler_disabled_before_prediction"
-            if gnss_prediction is None:
-                gnss_position_prediction = reference["position"]
-                gnss_position_covariance = None
-            else:
-                gnss_position_prediction, gnss_position_covariance = (
-                    gnss_prediction
-                )
-            self._gnss_factor(
-                stamp,
-                gnss_position_prediction,
-                current_index,
-                gnss_position_covariance,
-                gnss_prediction_reason,
-                gnss_factor_decision,
-                initial_state[6:9],
-            )
-            self._record_phase_timing("gnss_factor", gnss_started)
             flow_started = time.perf_counter_ns()
             self._flow_factor(
                 self.last_lio_stamp, stamp, reference["yaw"],
                 previous_index, current_index, reference["delta_position"],
                 previous_state=previous_state,
                 ordered_imu=cycle_imu_samples,
+                native_factor=native_factor,
+                current_state=initial_state,
             )
             self._record_phase_timing("flow_factor", flow_started)
             if self.visual_pending_enabled:
@@ -8945,12 +9974,6 @@ class UnifiedBackendNode(Node):
                     self.last_lio_stamp, stamp, previous_index, current_index
                 ):
                     staged_visual_candidates = [None]
-            barometer_started = time.perf_counter_ns()
-            self._barometer_factor(
-                stamp, reference["position"][2], current_index
-            )
-            with self.barometer_lock:
-                barometer_active = bool(self.barometer_segment.active)
             gnss_age_s = float(stamp) - self.last_gnss_prefit_stamp_s
             gnss_fresh = bool(
                 self.last_gnss_prefit_stamp_s > 0.0
@@ -9062,6 +10085,20 @@ class UnifiedBackendNode(Node):
             # once at the optimized start bias, replace the active factor, and
             # solve again. This keeps the window's IMU factor consistent without
             # feeding the FCU's fused pose back into the estimator.
+            # A second solve after bias re-integration is useful only when the
+            # worker is otherwise caught up. If a newer native frame is
+            # already waiting, defer this optional refinement to the next
+            # committed cycle so the keyframe clock does not fall further
+            # behind the sensor stream. The original IMU factor remains in
+            # this transaction; no observation is duplicated.
+            reintegration_deferred = False
+            try:
+                reintegration_deferred = not self.native_work_queue.empty()
+            except (AttributeError, RuntimeError):
+                reintegration_deferred = False
+            if reintegration_deferred and performance_context is not None:
+                performance_context["imu_reintegration_deferred"] = True
+                self.counts["imu_reintegrations_deferred"] += 1
             if (
                 self.backend_solver_mode == "manifold"
                 and manifold_measurement is not None
@@ -9069,6 +10106,7 @@ class UnifiedBackendNode(Node):
                 and self._manifold_imu_bias_changed(
                     current_index - 1, manifold_measurement
                 )
+                and not reintegration_deferred
             ):
                 updated_measurement = self._manifold_imu_measurement(
                     self.last_lio_stamp,
@@ -9220,6 +10258,9 @@ class UnifiedBackendNode(Node):
             self.last_lio_position = np.asarray(
                 estimate[:3], dtype=float).copy()
             self.last_lio_yaw = float(estimate[5])
+            self._update_barometer_trusted_reference(
+                stamp, float(estimate[2])
+            )
         if commit_started is not None:
             self._record_phase_timing("commit", commit_started)
         self.last_callback_ms = (time.perf_counter_ns() - started) * 1.0e-6
@@ -9826,6 +10867,8 @@ class UnifiedBackendNode(Node):
             f"imu_factors={self.counts['imu_factors']};"
             f"imu_pair_timeouts={self.counts['imu_pair_timeouts']};"
             f"imu_reintegrations={self.counts['imu_reintegrations']};"
+            "imu_reintegrations_deferred="
+            f"{self.counts['imu_reintegrations_deferred']};"
             f"calibration_accepted={self.counts['calibration_accepted']};"
             "calibration_motion_received="
             f"{self.counts['calibration_motion_received']};"
@@ -9912,8 +10955,12 @@ class UnifiedBackendNode(Node):
             f"native_pair_timeouts={self.counts['native_lidar_pair_timeouts']};"
             f"native_received={self.counts['native_lidar_received']};"
             f"native_queue_overflow={self.counts['native_worker_queue_overflow']};"
+            "native_queue_superseded="
+            f"{self.counts['native_worker_queue_superseded']};"
             "native_queue_discarded="
             f"{self.counts['native_worker_queue_discarded']};"
+            "native_latest_skipped="
+            f"{self.counts['native_worker_latest_skipped']};"
             f"native_worker_errors={self.counts['native_worker_errors']};"
             f"native_rank={self.last_native_effective_rank};"
             f"native_translation_rank={self.last_native_translation_rank};"
@@ -9984,6 +11031,10 @@ class UnifiedBackendNode(Node):
             f"{self.counts['gnss_xy_robust_downweighted']};"
             "gnss_z_robust_downweighted="
             f"{self.counts['gnss_z_robust_downweighted']};"
+            "gnss_z_reanchor_factors="
+            f"{self.counts['gnss_z_reanchor_factors']};"
+            "gnss_z_recovery_factors="
+            f"{self.counts['gnss_z_recovery_factors']};"
             "gnss_all_axes_inconsistent="
             f"{self.counts['gnss_all_axes_inconsistent']};"
             "gnss_prefit_recovery_floor="
@@ -10057,6 +11108,14 @@ class UnifiedBackendNode(Node):
             f"rgbd_depth_tracks={self.last_rgbd_depth_track_count};"
             "rgbd_depth_prefit_rmse_m="
             f"{self.last_rgbd_depth_prefit_rmse_m:.9g};"
+            f"rgbd_direct_reason={self.last_rgbd_direct_reason};"
+            f"rgbd_direct_tracks={self.last_rgbd_direct_track_count};"
+            "rgbd_direct_depth_rmse_m="
+            f"{self.last_rgbd_direct_depth_rmse_m:.9g};"
+            "rgbd_direct_photometric_rmse="
+            f"{self.last_rgbd_direct_photometric_rmse:.9g};"
+            "rgbd_direct_photometric_information_scale="
+            f"{self.last_rgbd_direct_photometric_information_scale:.9g};"
             "visual_reprojection_rmse_normalized="
             f"{self.last_visual_reprojection_rmse_normalized:.9g};"
             "visual_reprojection_residual_dimension="
@@ -10414,6 +11473,30 @@ class UnifiedBackendNode(Node):
                 f"{self.last_gnss_z_information_scale:.9g}",
             ),
             self._key(
+                "gnss_z_reanchor_applied",
+                self.last_gnss_z_reanchor_applied,
+            ),
+            self._key(
+                "gnss_z_reanchor_target_m",
+                f"{self.last_gnss_z_reanchor_target_m:.9g}",
+            ),
+            self._key(
+                "gnss_z_reanchor_consecutive",
+                self.gnss_z_reanchor_consecutive,
+            ),
+            self._key(
+                "gnss_z_reanchor_attempts",
+                self.counts["gnss_z_reanchor_attempts"],
+            ),
+            self._key(
+                "gnss_z_reanchor_factors",
+                self.counts["gnss_z_reanchor_factors"],
+            ),
+            self._key(
+                "gnss_z_recovery_factors",
+                self.counts["gnss_z_recovery_factors"],
+            ),
+            self._key(
                 "gnss_prefit_residual_norm_m",
                 f"{self.last_gnss_prefit_residual_norm_m:.9g}",
             ),
@@ -10760,6 +11843,26 @@ class UnifiedBackendNode(Node):
             self._key("barometer_segment_id", self.last_barometer_segment_id),
             self._key("barometer_reason", self.last_barometer_reason),
             self._key(
+                "barometer_anchor_source",
+                self.last_barometer_anchor_source,
+            ),
+            self._key(
+                "barometer_anchor_reference_age_s",
+                f"{self.last_barometer_anchor_reference_age_s:.9g}",
+            ),
+            self._key(
+                "barometer_reference_reason",
+                self.last_barometer_reference_reason,
+            ),
+            self._key(
+                "barometer_reference_stamp_s",
+                f"{self.last_barometer_reference_stamp_s:.9g}",
+            ),
+            self._key(
+                "barometer_reference_z_m",
+                f"{self.last_barometer_reference_z_m:.9g}",
+            ),
+            self._key(
                 "barometer_prefit_residual_m",
                 f"{self.last_barometer_prefit_residual_m:.9g}",
             ),
@@ -10780,6 +11883,29 @@ class UnifiedBackendNode(Node):
             self._key("pending_native_worker_frames", self.native_work_queue.qsize()),
             self._key("last_flow_reason", self.last_flow_reason),
             self._key("last_flow_factor_type", self.last_flow_factor_type),
+            self._key("range_facet_enabled", self.range_facet_enabled),
+            self._key(
+                "flow_range_facet_accepted",
+                self.counts["flow_range_facet_accepted"],
+            ),
+            self._key(
+                "flow_range_facet_rejected",
+                self.counts["flow_range_facet_rejected"],
+            ),
+            self._key(
+                "range_facet_last_rejection_reason",
+                getattr(self, "last_range_facet_rejection_reason", "none"),
+            ),
+            self._key(
+                "range_facet_rejection_reasons",
+                ",".join(
+                    f"{key}:{value}"
+                    for key, value in sorted(
+                        getattr(self, "range_facet_rejection_reasons", {})
+                        .items()
+                    )
+                ),
+            ),
             self._key("flow_rotation_phase", self.last_flow_rotation_phase),
             self._key(
                 "flow_rotation_weight", f"{self.last_flow_rotation_weight:.9g}"
@@ -10905,6 +12031,20 @@ class UnifiedBackendNode(Node):
             self._key(
                 "rgbd_depth_prefit_rmse_m",
                 f"{self.last_rgbd_depth_prefit_rmse_m:.9g}",
+            ),
+            self._key("rgbd_direct_reason", self.last_rgbd_direct_reason),
+            self._key("rgbd_direct_tracks", self.last_rgbd_direct_track_count),
+            self._key(
+                "rgbd_direct_depth_rmse_m",
+                f"{self.last_rgbd_direct_depth_rmse_m:.9g}",
+            ),
+            self._key(
+                "rgbd_direct_photometric_rmse",
+                f"{self.last_rgbd_direct_photometric_rmse:.9g}",
+            ),
+            self._key(
+                "rgbd_direct_photometric_information_scale",
+                f"{self.last_rgbd_direct_photometric_information_scale:.9g}",
             ),
             self._key("visual_initialized", self.visual_initializer.ready),
             self._key(

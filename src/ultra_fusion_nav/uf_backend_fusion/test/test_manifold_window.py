@@ -10,11 +10,17 @@ try:
     from uf_backend_core_cpp import (
         imu_preintegrated_graph_normal as cpp_imu_preintegrated_graph_normal,
         lidar_point_plane_graph_normal as cpp_lidar_point_plane_graph_normal,
+        lidar_point_plane_graph_normal_axis_scaled as cpp_lidar_point_plane_graph_normal_axis_scaled,
+        lidar_point_plane_normal as cpp_lidar_point_plane_normal,
+        lidar_point_plane_normal_axis_scaled as cpp_lidar_point_plane_normal_axis_scaled,
         state_plus_batch as cpp_state_plus_batch,
     )
 except ImportError:
     cpp_imu_preintegrated_graph_normal = None
     cpp_lidar_point_plane_graph_normal = None
+    cpp_lidar_point_plane_graph_normal_axis_scaled = None
+    cpp_lidar_point_plane_normal = None
+    cpp_lidar_point_plane_normal_axis_scaled = None
     cpp_state_plus_batch = None
 
 from uf_backend_fusion.imu_preintegration import (
@@ -215,6 +221,96 @@ class ManifoldWindowTest(unittest.TestCase):
             batched_gradient, scalar_gradient, atol=1.0e-12, rtol=1.0e-12
         )
         self.assertAlmostEqual(batched_cost, scalar_cost, places=12)
+
+    @unittest.skipIf(
+        cpp_lidar_point_plane_normal_axis_scaled is None,
+        "axis-scaled C++ LiDAR backend core is not installed",
+    )
+    def test_axis_scaled_lidar_scales_translation_jacobian_only(self):
+        factor = plane_factor([1.2, -0.4, 0.7], [0.6, -0.3, 0.74], [0.1, 0.2, -0.3])
+        pose = np.asarray([0.2, -0.1, 0.4, 0.08, -0.04, 0.12])
+        scale = np.asarray([0.25, 0.0, 0.64])
+        base_hessian, base_gradient, base_cost = cpp_lidar_point_plane_normal(
+            pose,
+            factor.lidar_points,
+            factor.plane_normals,
+            factor.plane_points,
+            factor.lidar_to_body_rotation,
+            factor.lidar_to_body_translation,
+            np.asarray([factor.measurement_variance]),
+            0.7,
+            2.5,
+        )
+        scaled_hessian, scaled_gradient, scaled_cost = (
+            cpp_lidar_point_plane_normal_axis_scaled(
+                pose,
+                factor.lidar_points,
+                factor.plane_normals,
+                factor.plane_points,
+                factor.lidar_to_body_rotation,
+                factor.lidar_to_body_translation,
+                scale,
+                np.asarray([factor.measurement_variance]),
+                0.7,
+                2.5,
+            )
+        )
+        jacobian_scale = np.diag(np.r_[np.sqrt(scale), np.ones(3)])
+        np.testing.assert_allclose(
+            scaled_hessian,
+            jacobian_scale @ base_hessian @ jacobian_scale,
+            atol=1.0e-12,
+            rtol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            scaled_gradient,
+            jacobian_scale @ base_gradient,
+            atol=1.0e-12,
+            rtol=1.0e-12,
+        )
+        self.assertAlmostEqual(scaled_cost, base_cost, places=12)
+
+    @unittest.skipIf(
+        cpp_lidar_point_plane_graph_normal_axis_scaled is None,
+        "axis-scaled batched C++ LiDAR backend core is not installed",
+    )
+    def test_axis_scaled_lidar_graph_matches_scalar_and_python_paths(self):
+        scaled = np.asarray([0.16, 0.0, 0.49])
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        state = np.asarray([
+            0.1, -0.2, 0.3, 0.02, -0.03, 0.04,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ])
+        index = backend.add_state(state)
+        backend.add_native_lidar_correspondences(
+            index,
+            plane_factor([1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]),
+            axis_information_scale=scaled,
+        )
+        hessian, gradient, cost = backend._normal()
+        scalar_hessian = np.zeros_like(hessian)
+        scalar_gradient = np.zeros_like(gradient)
+        _, _, scalar_cost = backend._factor_normal(
+            backend._factors[0], backend._states,
+            scalar_hessian, scalar_gradient,
+        )
+        np.testing.assert_allclose(hessian, scalar_hessian, atol=1.0e-12)
+        np.testing.assert_allclose(gradient, scalar_gradient, atol=1.0e-12)
+        self.assertAlmostEqual(cost, scalar_cost, places=12)
+
+        python_backend = ManifoldSlidingWindowBackend(
+            max_states=3, cpp_math_core_enabled=False
+        )
+        python_index = python_backend.add_state(state)
+        python_backend.add_native_lidar_correspondences(
+            python_index,
+            plane_factor([1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]),
+            axis_information_scale=scaled,
+        )
+        python_hessian, python_gradient, python_cost = python_backend._normal()
+        np.testing.assert_allclose(hessian, python_hessian, atol=1.0e-12)
+        np.testing.assert_allclose(gradient, python_gradient, atol=1.0e-12)
+        self.assertAlmostEqual(cost, python_cost, places=12)
 
     def test_barometer_factor_constrains_only_vertical_position(self):
         backend = ManifoldSlidingWindowBackend(max_states=2)

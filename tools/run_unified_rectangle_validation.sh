@@ -16,6 +16,9 @@ then
 fi
 export ROS_DOMAIN_ID="$VALIDATION_ROS_DOMAIN_ID"
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+VALIDATION_WORLD_NAME=${VALIDATION_WORLD_NAME:-${WORLD_NAME:-low_indoor_apm_rgbd_mid360}}
+VALIDATION_TAKEOFF_ALT=${VALIDATION_TAKEOFF_ALT:-2.2}
+VALIDATION_RANGE_FACET_ENABLED=${VALIDATION_RANGE_FACET_ENABLED:-false}
 if [[ "$VALIDATION_ROUTE" == "s_curve" &&
   "${VALIDATION_CALIBRATION_ONLY,,}" == "true" ]]; then
   METRICS_DURATION=${METRICS_DURATION:-105}
@@ -45,6 +48,10 @@ esac
 VALIDATION_MID360_SIM_BRIDGE_MODE=${VALIDATION_MID360_SIM_BRIDGE_MODE:-direct_livox}
 VALIDATION_PRESERVE_LIO_ANCHOR=${VALIDATION_PRESERVE_LIO_ANCHOR:-false}
 VALIDATION_PERFORMANCE_PROFILING=${VALIDATION_PERFORMANCE_PROFILING:-true}
+VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED=${VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED:-false}
+VALIDATION_GNSS_Z_REANCHOR_ENABLED=${VALIDATION_GNSS_Z_REANCHOR_ENABLED:-false}
+VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE=${VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE:-0.50}
+VALIDATION_BAROMETER_FALLBACK_ENABLED=${VALIDATION_BAROMETER_FALLBACK_ENABLED:-false}
 VALIDATION_RELIABILITY_MODE=${VALIDATION_RELIABILITY_MODE:-dynamic}
 case "$VALIDATION_RELIABILITY_MODE" in
   dynamic|fixed) ;;
@@ -70,6 +77,14 @@ VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_VISUAL_TIME
 VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED=${VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED:-false}
 VALIDATION_ENABLE_VISION=${VALIDATION_ENABLE_VISION:-0}
 VALIDATION_VISUAL_KEYFRAME_PROFILE=${VALIDATION_VISUAL_KEYFRAME_PROFILE:-balanced}
+VALIDATION_VISUAL_FACTOR_MODE=${VALIDATION_VISUAL_FACTOR_MODE:-paper_reprojection}
+case "$VALIDATION_VISUAL_FACTOR_MODE" in
+  paper_reprojection|rgbd_direct) ;;
+  *)
+    printf 'VALIDATION_VISUAL_FACTOR_MODE must be paper_reprojection or rgbd_direct.\n' >&2
+    exit 2
+    ;;
+esac
 case "$VALIDATION_VISUAL_KEYFRAME_PROFILE" in
   conservative|balanced_light|balanced|balanced_plus|dense|custom) ;;
   *)
@@ -80,7 +95,7 @@ esac
 case "${VALIDATION_ENABLE_VISION,,}" in
   1|true|yes|on)
     validation_enable_vision_arg=true
-    validation_visual_factor_mode=paper_reprojection
+    validation_visual_factor_mode="$VALIDATION_VISUAL_FACTOR_MODE"
     ;;
   0|false|no|off)
     validation_enable_vision_arg=false
@@ -182,6 +197,12 @@ printf 'Validation reliability: mode=%s lidar=%s imu=%s gnss=%s flow=%s vision=%
   "${FIXED_VISION_WEIGHT:-1.0}"
 printf 'Validation visual cadence: profile=%s\n' \
   "$VALIDATION_VISUAL_KEYFRAME_PROFILE"
+printf 'Validation Z recovery: lidar_axis_handoff=%s gnss_reanchor=%s barometer=%s\n' \
+  "$VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED" \
+  "$VALIDATION_GNSS_Z_REANCHOR_ENABLED" \
+  "$VALIDATION_BAROMETER_FALLBACK_ENABLED"
+printf 'Validation GNSS Z recovery information scale: %s\n' \
+  "$VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE"
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
 if ! ros2 pkg prefix "$RMW_IMPLEMENTATION" >/dev/null 2>&1; then
@@ -318,6 +339,7 @@ if [[ "$validation_enable_vision_arg" == "true" ]]; then
     use_sim_time:=true \
     enabled:=true \
     start_fusion_stack:=false \
+    visual_factor_mode:="$validation_visual_factor_mode" \
     visual_keyframe_profile:="$VALIDATION_VISUAL_KEYFRAME_PROFILE" \
     rgbd_minimum_depth_m:="$VALIDATION_RGBD_MINIMUM_DEPTH_M" \
     rgbd_maximum_depth_m:="$VALIDATION_RGBD_MAXIMUM_DEPTH_M" \
@@ -358,6 +380,11 @@ setsid env ENABLE_VISION="$validation_enable_vision_arg" \
   RELOCALIZATION_SEARCH_TIMEOUT_S="$VALIDATION_RELOCALIZATION_SEARCH_TIMEOUT_S" \
   EXTERNAL_NAV_OUTPUT_TOPIC="$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
   PERFORMANCE_PROFILING_ENABLED="$VALIDATION_PERFORMANCE_PROFILING" \
+  AXIS_INFORMATION_HANDOFF_ENABLED="$VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED" \
+  GNSS_Z_REANCHOR_ENABLED="$VALIDATION_GNSS_Z_REANCHOR_ENABLED" \
+  GNSS_Z_RECOVERY_INFORMATION_SCALE="$VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE" \
+  BAROMETER_FALLBACK_ENABLED="$VALIDATION_BAROMETER_FALLBACK_ENABLED" \
+  RANGE_FACET_ENABLED="$VALIDATION_RANGE_FACET_ENABLED" \
   RELIABILITY_MODE="$VALIDATION_RELIABILITY_MODE" \
   VISUAL_TIME_CALIBRATION_APPLY_LOCKED="${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}" \
   LOG_DIR="$LOG_DIR/unified" \
@@ -402,6 +429,7 @@ esac
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   -p use_sim_time:=true \
+  -p world_name:="$VALIDATION_WORLD_NAME" \
   -p odom_topic:=/Odometry \
   -p output_path:="$LOG_DIR/fastlio_accuracy.json" \
   >"$LOG_DIR/fastlio_accuracy.log" 2>&1 &
@@ -409,6 +437,7 @@ pids+=("$!")
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   -p use_sim_time:=true \
+  -p world_name:="$VALIDATION_WORLD_NAME" \
   -p odom_topic:=/fusion/unified/odom \
   -p output_path:="$LOG_DIR/unified_accuracy.json" \
   >"$LOG_DIR/unified_accuracy.log" 2>&1 &
@@ -502,6 +531,7 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /reliability/vision_factor_score \
       /vision/feature_tracks \
       /vision/rgbd_geometry_tracks \
+      /vision/rgbd_direct_tracks \
       /fusion/unified/visual_timing \
       /calibration/lidar_relative_motion \
       /fusion/unified/odom \
@@ -543,6 +573,7 @@ case "$VALIDATION_ROUTE" in
     ;;
 esac
 env ROUTE_FEEDBACK_SOURCE="$VALIDATION_ROUTE_FEEDBACK_SOURCE" \
+  TAKEOFF_ALT="$VALIDATION_TAKEOFF_ALT" \
   LOCALIZATION_SAFETY_ENABLED="$VALIDATION_LOCALIZATION_SAFETY_ENABLED" \
   POST_TAKEOFF_HOLD_TIME="$VALIDATION_POST_TAKEOFF_HOLD_TIME" \
   FINAL_HOLD_TIME="$VALIDATION_FINAL_HOLD_TIME" \

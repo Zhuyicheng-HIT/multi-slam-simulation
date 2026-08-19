@@ -24,6 +24,7 @@ VISUAL_TOPICS = (
 )
 VISUAL_FACTOR_SCORE_TOPIC = "/reliability/vision_factor_score"
 RGBD_GEOMETRY_TOPIC = "/vision/rgbd_geometry_tracks"
+RGBD_DIRECT_TOPIC = "/vision/rgbd_direct_tracks"
 
 
 def topic_counts(metadata):
@@ -42,6 +43,7 @@ def build_report(
     require_visual=False,
     require_visual_factor_score=False,
     require_rgbd_geometry=False,
+    require_rgbd_direct=False,
     require_frontend_scan_request=False,
 ):
     counts = topic_counts(metadata)
@@ -52,6 +54,8 @@ def build_report(
         required.append(VISUAL_FACTOR_SCORE_TOPIC)
     if require_rgbd_geometry:
         required.append(RGBD_GEOMETRY_TOPIC)
+    if require_rgbd_direct:
+        required.append(RGBD_DIRECT_TOPIC)
     if require_frontend_scan_request:
         required.append(FRONTEND_SCAN_REQUEST_TOPIC)
     missing = [topic for topic in required if counts.get(topic, 0) <= 0]
@@ -73,6 +77,7 @@ def build_report(
             VISUAL_FACTOR_SCORE_TOPIC, 0
         ),
         "rgbd_geometry_count": counts.get(RGBD_GEOMETRY_TOPIC, 0),
+        "rgbd_direct_count": counts.get(RGBD_DIRECT_TOPIC, 0),
     }
 
 
@@ -107,6 +112,14 @@ def main():
             "metric depth factor."
         ),
     )
+    parser.add_argument(
+        "--require-rgbd-direct",
+        action="store_true",
+        help=(
+            "Require timestamped RGB-D depth and photometric tracks used by "
+            "the direct visual factor."
+        ),
+    )
     args = parser.parse_args()
 
     bag = Path(args.bag)
@@ -120,6 +133,7 @@ def main():
         require_visual=args.require_visual,
         require_visual_factor_score=args.require_visual_factor_score,
         require_rgbd_geometry=args.require_rgbd_geometry,
+        require_rgbd_direct=args.require_rgbd_direct,
         require_frontend_scan_request=args.require_frontend_scan_request,
     )
     report["bag"] = str(bag)

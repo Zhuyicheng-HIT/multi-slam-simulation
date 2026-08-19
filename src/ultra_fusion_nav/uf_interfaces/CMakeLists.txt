@@ -18,6 +18,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RelocalizationResult.msg"
   "msg/RgbdGeometryTrack.msg"
   "msg/RgbdGeometryTracks.msg"
+  "msg/RgbdDirectTrack.msg"
+  "msg/RgbdDirectTracks.msg"
   "msg/VisualFeatureTrack.msg"
   "msg/VisualFeatureTracks.msg"
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs

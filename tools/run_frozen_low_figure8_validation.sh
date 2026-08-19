@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+# Frozen low-altitude figure-eight baseline recorded on 2026-08-19.
+# Experimental Range-Facet, barometer fallback, active relocalization, and
+# EKF3 ExternalNav control is enabled again. Their source, tests,
+# and documentation remain in the tree for later one-variable experiments.
+export VALIDATION_ROUTE=s_curve
+export VALIDATION_WORLD_NAME=low_indoor_apm_rgbd_mid360
+export VALIDATION_TAKEOFF_ALT=2.2
+export VALIDATION_ENABLE_VISION=1
+export VALIDATION_VISUAL_FACTOR_MODE=rgbd_direct
+export VALIDATION_RGBD_MAXIMUM_DEPTH_M=10.0
+export VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED=true
+export VALIDATION_RANGE_FACET_ENABLED=false
+export VALIDATION_BAROMETER_FALLBACK_ENABLED=false
+export VALIDATION_ENABLE_EXTERNALNAV_EKF3=1
+export VALIDATION_REQUIRE_VISUAL_FACTORS=1
+export VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK=false
+export VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED=false
+export VALIDATION_RECORD_REPLAY_BAG=${VALIDATION_RECORD_REPLAY_BAG:-true}
+export VALIDATION_ROUTE_FEEDBACK_SOURCE=unified_backend
+export VALIDATION_START_FASTLIO_CLOUD_MAPPER=0
+export VALIDATION_START_FASTLIO_OCCUPANCY_GRID=0
+export METRICS_DURATION=${METRICS_DURATION:-280}
+export DRIFT_DURATION=${DRIFT_DURATION:-270}
+export LOG_DIR=${LOG_DIR:-$REPO_ROOT/logs/frozen_low_figure8_baseline_20260819}
+
+exec bash "$REPO_ROOT/tools/run_unified_rectangle_validation.sh" "$@"

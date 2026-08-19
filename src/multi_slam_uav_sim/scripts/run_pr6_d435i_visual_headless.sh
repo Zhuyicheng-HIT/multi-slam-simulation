@@ -75,8 +75,11 @@ VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
 SIM_RGBD_MIN_DEPTH_M=${SIM_RGBD_MIN_DEPTH_M:-0.30}
 SIM_RGBD_MAX_DEPTH_M=${SIM_RGBD_MAX_DEPTH_M:-10.0}
 case "$VISUAL_FACTOR_MODE" in
-  disabled|paper_reprojection) ;;
-  *) printf 'VISUAL_FACTOR_MODE must be disabled or paper_reprojection.\n' >&2; exit 2 ;;
+  disabled|paper_reprojection|rgbd_direct) ;;
+  *)
+    printf 'VISUAL_FACTOR_MODE must be disabled, paper_reprojection, or rgbd_direct.\n' >&2
+    exit 2
+    ;;
 esac
 VISUAL_KEYFRAME_PROFILE=${VISUAL_KEYFRAME_PROFILE:-balanced}
 case "$VISUAL_KEYFRAME_PROFILE" in

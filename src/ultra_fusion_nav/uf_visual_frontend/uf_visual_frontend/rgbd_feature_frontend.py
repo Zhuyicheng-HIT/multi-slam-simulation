@@ -10,9 +10,17 @@ import numpy as np
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import CameraInfo, Image
 from uf_interfaces.msg import (
+    RgbdDirectTrack,
+    RgbdDirectTracks,
     RgbdGeometryTrack,
     RgbdGeometryTracks,
     VisualFeatureTrack,
@@ -69,7 +77,10 @@ def visual_candidate_quality(
     _ = minimum_parallax_px
     geometric = np.asarray(result.geometric_inlier, dtype=bool)
     depth = np.asarray(result.depth_valid, dtype=bool)
-    selected = geometric & depth
+    current_depth = np.asarray(
+        getattr(result, "current_depth_valid", depth), dtype=bool
+    )
+    selected = geometric & depth if require_pnp else depth & current_depth
     geometric_tracks = int(np.count_nonzero(geometric))
     valid_depth_tracks = int(np.count_nonzero(selected))
     if valid_depth_tracks:
@@ -81,13 +92,16 @@ def visual_candidate_quality(
         distribution = grid_uniformity(
             np.asarray(result.current_pixels)[selected], width, height
         )
-        reprojection = np.asarray(result.reprojection_error)[selected]
-        reprojection = reprojection[
-            np.isfinite(reprojection) & (reprojection >= 0.0)
-        ]
-        mean_reprojection = (
-            float(np.mean(reprojection)) if reprojection.size else math.inf
-        )
+        if require_pnp:
+            reprojection = np.asarray(result.reprojection_error)[selected]
+            reprojection = reprojection[
+                np.isfinite(reprojection) & (reprojection >= 0.0)
+            ]
+            mean_reprojection = (
+                float(np.mean(reprojection)) if reprojection.size else math.inf
+            )
+        else:
+            mean_reprojection = -1.0
     else:
         median_parallax = 0.0
         distribution = 0.0
@@ -95,15 +109,19 @@ def visual_candidate_quality(
     reason = "quality_valid"
     if require_pnp and result.rotation is None:
         reason = "pnp_invalid"
-    elif geometric_tracks < int(minimum_tracks):
+    elif require_pnp and geometric_tracks < int(minimum_tracks):
         reason = "insufficient_geometric_tracks"
     elif valid_depth_tracks < int(minimum_depth_tracks):
         reason = "insufficient_depth_tracks"
-    elif float(result.pnp_inlier_ratio) < float(minimum_pnp_inlier_ratio):
+    elif require_pnp and (
+        float(result.pnp_inlier_ratio) < float(minimum_pnp_inlier_ratio)
+    ):
         reason = "insufficient_pnp_inlier_ratio"
-    elif int(result.pnp_information_rank) < int(minimum_pnp_information_rank):
+    elif require_pnp and (
+        int(result.pnp_information_rank) < int(minimum_pnp_information_rank)
+    ):
         reason = "insufficient_pnp_information_rank"
-    elif (
+    elif require_pnp and (
         not math.isfinite(float(result.pnp_condition_number))
         or float(result.pnp_condition_number)
         > float(maximum_pnp_condition_number)
@@ -111,7 +129,7 @@ def visual_candidate_quality(
         reason = "ill_conditioned_pnp_geometry"
     elif distribution < float(minimum_spatial_distribution):
         reason = "insufficient_spatial_coverage"
-    elif (
+    elif require_pnp and (
         not math.isfinite(mean_reprojection)
         or mean_reprojection > float(maximum_reprojection_error_px)
     ):
@@ -159,6 +177,94 @@ def stamp_ns(stamp):
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
+def direct_photometric_evidence(
+    previous_gray, current_gray, previous_pixels, current_pixels,
+    fx, fy, sigma=0.15,
+):
+    """Sample exposure-normalized intensity and current image gradients.
+
+    Gradients are returned with respect to normalized image coordinates, so
+    the backend can multiply them directly by the projection Jacobian. Only
+    sparse tracked pixels are sampled; no dense image enters the optimizer.
+    """
+    previous = np.asarray(previous_gray, dtype=np.float32)
+    current = np.asarray(current_gray, dtype=np.float32)
+    previous_pixels = np.asarray(previous_pixels, dtype=np.float32)
+    current_pixels = np.asarray(current_pixels, dtype=np.float32)
+    if previous.shape != current.shape or previous.ndim != 2:
+        raise ValueError("direct RGB-D images must be matching grayscale frames")
+    if (
+        previous_pixels.ndim != 2 or previous_pixels.shape[1] != 2
+        or current_pixels.shape != previous_pixels.shape
+    ):
+        raise ValueError("direct RGB-D pixels must be matching Nx2 arrays")
+    if not math.isfinite(float(sigma)) or float(sigma) <= 0.0:
+        raise ValueError("direct RGB-D intensity sigma must be positive")
+
+    def normalize(image):
+        mean = float(np.mean(image))
+        scale = max(16.0, float(np.std(image)))
+        return (image - mean) / scale
+
+    previous = normalize(previous)
+    current = normalize(current)
+    gradient_x = cv2.Sobel(current, cv2.CV_32F, 1, 0, ksize=3, scale=0.125)
+    gradient_y = cv2.Sobel(current, cv2.CV_32F, 0, 1, ksize=3, scale=0.125)
+
+    def sample(image, pixels):
+        x = pixels[:, 0].reshape(-1, 1)
+        y = pixels[:, 1].reshape(-1, 1)
+        return cv2.remap(
+            image, x, y, cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        ).reshape(-1)
+
+    previous_intensity = sample(previous, previous_pixels)
+    current_intensity = sample(current, current_pixels)
+    gradients = np.column_stack((
+        sample(gradient_x, current_pixels) * float(fx),
+        sample(gradient_y, current_pixels) * float(fy),
+    ))
+
+    # The two frames are normalized independently, but a tracked subset can
+    # still have a frame-to-frame affine brightness offset (auto exposure,
+    # clipping, or a different amount of wall texture in the image). Estimate
+    # that nuisance transform only from the sparse correspondences. It keeps
+    # the geometric/depth observation intact and prevents a global brightness
+    # change from rejecting an otherwise useful RGB-D batch.
+    finite = np.isfinite(previous_intensity) & np.isfinite(current_intensity)
+    if int(np.count_nonzero(finite)) >= 4:
+        x = previous_intensity[finite].astype(float)
+        y = current_intensity[finite].astype(float)
+        design = np.column_stack((x, np.ones_like(x)))
+        parameters = np.asarray([1.0, 0.0])
+        for _ in range(3):
+            residual = y - design @ parameters
+            center = float(np.median(residual))
+            scale = max(
+                0.02,
+                1.4826 * float(np.median(np.abs(residual - center))),
+            )
+            normalized = residual / (2.5 * scale)
+            weights = 1.0 / (1.0 + normalized * normalized)
+            weighted_design = design * weights[:, None]
+            try:
+                parameters = np.linalg.lstsq(
+                    weighted_design.T @ design,
+                    weighted_design.T @ y,
+                    rcond=None,
+                )[0]
+            except np.linalg.LinAlgError:
+                parameters = np.asarray([1.0, 0.0])
+                break
+        gain = float(np.clip(parameters[0], 0.5, 2.0))
+        bias = float(parameters[1])
+        current_intensity = (current_intensity - bias) / gain
+        gradients = gradients / gain
+    variance = np.full(len(previous_pixels), float(sigma) ** 2, dtype=float)
+    return previous_intensity, current_intensity, gradients, variance
+
+
 class ExactRgbdFeatureFrontend(Node):
     def __init__(self):
         super().__init__("uf_rgbd_feature_frontend")
@@ -168,6 +274,7 @@ class ExactRgbdFeatureFrontend(Node):
             "camera_info_topic": "/sensors/rgbd/camera_info",
             "tracks_topic": "/vision/feature_tracks",
             "geometry_tracks_topic": "/vision/rgbd_geometry_tracks",
+            "direct_tracks_topic": "/vision/rgbd_direct_tracks",
             "max_features": 240,
             "minimum_distance_px": 12.0,
             "forward_backward_threshold_px": 1.0,
@@ -184,6 +291,7 @@ class ExactRgbdFeatureFrontend(Node):
             "depth_noise_floor_m": 0.005,
             "inverse_depth_sigma_ratio": 0.015,
             "pixel_sigma_px": 0.8,
+            "direct_photometric_sigma": 0.15,
             "keyframe_profile": "balanced",
             "keyframe_period_s": 0.10,
             "candidate_quality_enabled": True,
@@ -197,7 +305,10 @@ class ExactRgbdFeatureFrontend(Node):
             "candidate_maximum_pnp_condition_number": 500.0,
             "candidate_require_pnp": True,
             "diagnostic_topic": "/vision/frontend_diagnostics",
-            "cache_size": 12,
+            # RGB and depth are paired by the bridge with the same stamp.
+            # Keep one frame of arrival-order slack, but never retain a long
+            # stale backlog when one side is delayed or dropped.
+            "cache_size": 2,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -256,6 +367,10 @@ class ExactRgbdFeatureFrontend(Node):
             "published_candidates": 0,
             "geometry_batches_published": 0,
             "geometry_tracks_published": 0,
+            "direct_batches_published": 0,
+            "direct_tracks_published": 0,
+            "color_cache_superseded": 0,
+            "depth_cache_superseded": 0,
         }
         self.quality_reasons = {}
         self.last_quality = CandidateQuality(
@@ -263,13 +378,26 @@ class ExactRgbdFeatureFrontend(Node):
             0.0, 0, math.inf
         )
         self.last_frontend_latency_s = math.inf
+        self.latest_output_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
         self.publisher = self.create_publisher(
-            VisualFeatureTracks, self.get_parameter("tracks_topic").value, 20
+            VisualFeatureTracks,
+            self.get_parameter("tracks_topic").value,
+            self.latest_output_qos,
         )
         self.geometry_publisher = self.create_publisher(
             RgbdGeometryTracks,
             self.get_parameter("geometry_tracks_topic").value,
-            20,
+            self.latest_output_qos,
+        )
+        self.direct_publisher = self.create_publisher(
+            RgbdDirectTracks,
+            self.get_parameter("direct_tracks_topic").value,
+            self.latest_output_qos,
         )
         self.diagnostic_publisher = self.create_publisher(
             DiagnosticArray,
@@ -301,6 +429,10 @@ class ExactRgbdFeatureFrontend(Node):
         cache[stamp_ns(msg.header.stamp)] = msg
         while len(cache) > self.cache_size:
             cache.popitem(last=False)
+            if cache is self.color_cache:
+                self.counts["color_cache_superseded"] += 1
+            elif cache is self.depth_cache:
+                self.counts["depth_cache_superseded"] += 1
         self._try_pair(stamp_ns(msg.header.stamp))
 
     def _color(self, msg):
@@ -333,6 +465,10 @@ class ExactRgbdFeatureFrontend(Node):
                 dtype=float).reshape(
                 3,
                 3)
+            previous_gray = (
+                None if self.tracker.previous_gray is None
+                else self.tracker.previous_gray.copy()
+            )
             result = self.tracker.process(gray, depth_image, camera_matrix)
         except Exception as error:
             self.get_logger().warning(f"RGB-D pair rejected: {error}")
@@ -449,18 +585,36 @@ class ExactRgbdFeatureFrontend(Node):
                 np.count_nonzero(result.geometric_inlier)
             )
         geometry = RgbdGeometryTracks()
+        direct = RgbdDirectTracks()
         geometry.header = color.header
+        direct.header = color.header
         if self.previous_header is not None:
             geometry.previous_stamp = self.previous_header.stamp
             geometry.previous_frame_id = self.previous_header.frame_id
+            direct.previous_stamp = self.previous_header.stamp
+            direct.previous_frame_id = self.previous_header.frame_id
         geometry.source_feature_count = len(message.tracks)
         geometry.spatial_distribution = message.spatial_distribution
+        direct.source_feature_count = len(message.tracks)
+        direct.spatial_distribution = message.spatial_distribution
         sigma_ratio = float(self.get_parameter(
             "inverse_depth_sigma_ratio").value)
+        if previous_gray is None:
+            raise RuntimeError("tracked RGB-D frame has no previous image")
+        previous_intensity, current_intensity, gradients, photo_variance = (
+            direct_photometric_evidence(
+                previous_gray,
+                gray,
+                result.previous_pixels,
+                result.current_pixels,
+                fx,
+                fy,
+                self.get_parameter("direct_photometric_sigma").value,
+            )
+        )
         for index, feature_track in enumerate(message.tracks):
             if not (
-                feature_track.geometric_inlier
-                and feature_track.depth_valid
+                feature_track.depth_valid
                 and bool(result.current_depth_valid[index])
                 and feature_track.track_age >= 2
             ):
@@ -483,13 +637,48 @@ class ExactRgbdFeatureFrontend(Node):
             )
             track.track_age = feature_track.track_age
             track.grid_cell = feature_track.grid_cell
-            geometry.tracks.append(track)
+            if feature_track.geometric_inlier:
+                geometry.tracks.append(track)
+            direct_track = RgbdDirectTrack()
+            direct_track.feature_id = track.feature_id
+            direct_track.previous_x = track.previous_x
+            direct_track.previous_y = track.previous_y
+            direct_track.previous_depth_m = track.previous_depth_m
+            direct_track.previous_depth_variance_m2 = (
+                track.previous_depth_variance_m2
+            )
+            direct_track.current_x = track.current_x
+            direct_track.current_y = track.current_y
+            direct_track.current_depth_m = track.current_depth_m
+            direct_track.current_depth_variance_m2 = (
+                track.current_depth_variance_m2
+            )
+            direct_track.previous_intensity = float(
+                previous_intensity[index]
+            )
+            direct_track.current_intensity = float(current_intensity[index])
+            direct_track.current_gradient_x_normalized = float(
+                gradients[index, 0]
+            )
+            direct_track.current_gradient_y_normalized = float(
+                gradients[index, 1]
+            )
+            direct_track.photometric_variance = float(
+                photo_variance[index]
+            )
+            direct_track.track_age = track.track_age
+            direct_track.grid_cell = track.grid_cell
+            direct.tracks.append(direct_track)
         if geometry.tracks:
             # Publish first so the backend normally has depth evidence when the
             # corresponding feature candidate reaches its pending queue.
             self.geometry_publisher.publish(geometry)
             self.counts["geometry_batches_published"] += 1
             self.counts["geometry_tracks_published"] += len(geometry.tracks)
+        if direct.tracks:
+            self.direct_publisher.publish(direct)
+            self.counts["direct_batches_published"] += 1
+            self.counts["direct_tracks_published"] += len(direct.tracks)
         self.publisher.publish(message)
         self.counts["published_candidates"] += 1
         now_s = self.get_clock().now().nanoseconds * 1.0e-9

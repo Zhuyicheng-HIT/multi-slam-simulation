@@ -39,6 +39,13 @@ def generate_launch_description():
         DeclareLaunchArgument("rgbd_maximum_depth_m", default_value="6.0"),
         DeclareLaunchArgument("rgbd_depth_factor_enabled", default_value="false"),
         DeclareLaunchArgument(
+            "range_facet_enabled",
+            default_value="false",
+            description=(
+                "Fuse the MTF-01P ray/plane RangeFacet row with its flow packet"
+            ),
+        ),
+        DeclareLaunchArgument(
             "rgbd_depth_healthy_lidar_stride",
             default_value="1",
             description=(
@@ -120,6 +127,18 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "barometer_topic", default_value="/mavros/imu/static_pressure"
         ),
+        DeclareLaunchArgument(
+            "axis_information_handoff_enabled", default_value="false"
+        ),
+        DeclareLaunchArgument(
+            "gnss_z_reanchor_enabled", default_value="false"
+        ),
+        DeclareLaunchArgument(
+            "gnss_z_recovery_information_scale", default_value="0.50"
+        ),
+        DeclareLaunchArgument(
+            "barometer_fallback_enabled", default_value="false"
+        ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
@@ -161,6 +180,7 @@ def generate_launch_description():
                     LaunchConfiguration("rgbd_maximum_depth_m"),
                     value_type=float,
                 ),
+                "vision.factor_mode": LaunchConfiguration("visual_factor_mode"),
             }],
             output="screen",
         ),
@@ -214,6 +234,10 @@ def generate_launch_description():
                     ),
                     "rgbd_depth_factor_enabled": ParameterValue(
                         LaunchConfiguration("rgbd_depth_factor_enabled"),
+                        value_type=bool,
+                    ),
+                    "range_facet_enabled": ParameterValue(
+                        LaunchConfiguration("range_facet_enabled"),
                         value_type=bool,
                     ),
                     "rgbd_depth_healthy_lidar_stride": ParameterValue(
@@ -272,6 +296,24 @@ def generate_launch_description():
                         value_type=bool,
                     ),
                     "barometer_topic": LaunchConfiguration("barometer_topic"),
+                    "axis_information_handoff_enabled": ParameterValue(
+                        LaunchConfiguration("axis_information_handoff_enabled"),
+                        value_type=bool,
+                    ),
+                    "gnss_z_reanchor_enabled": ParameterValue(
+                        LaunchConfiguration("gnss_z_reanchor_enabled"),
+                        value_type=bool,
+                    ),
+                    "gnss_z_recovery_information_scale": ParameterValue(
+                        LaunchConfiguration(
+                            "gnss_z_recovery_information_scale"
+                        ),
+                        value_type=float,
+                    ),
+                    "barometer_fallback_enabled": ParameterValue(
+                        LaunchConfiguration("barometer_fallback_enabled"),
+                        value_type=bool,
+                    ),
                 },
             ],
             output="screen",

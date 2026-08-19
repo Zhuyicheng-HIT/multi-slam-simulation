@@ -800,8 +800,8 @@
 
     <link name="mid360_link">
       <!-- Measured simulation mount: 5 cm forward, 10 cm above body origin,
-           with a 10 degree nose-down pitch. -->
-      <pose>0.05 0.0 0.10 0 0.174532925199433 0</pose>
+           with a 15 degree nose-down pitch. -->
+      <pose>0.05 0.0 0.10 0 0.2617993877991494 0</pose>
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>

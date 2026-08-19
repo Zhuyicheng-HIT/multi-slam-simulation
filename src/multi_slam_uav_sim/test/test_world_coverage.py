@@ -11,6 +11,7 @@ from multi_slam_uav_sim.s_curve_path import (
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
 WORLD = PACKAGE_ROOT / "worlds" / "simple_apm_rgbd_mid360.sdf"
+LOW_WORLD = PACKAGE_ROOT / "worlds" / "low_indoor_apm_rgbd_mid360.sdf"
 LANDMARKS = (
     PACKAGE_ROOT / "models" / "s_curve_lidar_landmarks" / "model.sdf"
 )
@@ -151,6 +152,17 @@ def test_optical_flow_camera_and_range_point_downward():
         assert forward_body_z < -0.999999
 
 
+def test_mid360_mount_is_fifteen_degrees_nose_down():
+    root = ET.parse(AIRCRAFT_MODEL).getroot()
+    link = root.find(".//link[@name='mid360_link']")
+    assert link is not None
+    pose = [float(value) for value in link.findtext("pose").split()]
+    assert len(pose) == 6
+    assert math.isclose(pose[0], 0.05, abs_tol=1.0e-9)
+    assert math.isclose(pose[2], 0.10, abs_tol=1.0e-9)
+    assert math.isclose(pose[4], math.radians(15.0), abs_tol=1.0e-9)
+
+
 def test_rgbd_cameras_run_at_fifteen_hz_without_throttling_optical_flow():
     aircraft = ET.parse(AIRCRAFT_MODEL).getroot()
     sensors = {
@@ -165,6 +177,28 @@ def test_rgbd_cameras_run_at_fifteen_hz_without_throttling_optical_flow():
     rgbd = downward.find(".//sensor[@name='d435i_rgbd_down']")
     assert rgbd is not None
     assert float(rgbd.findtext("update_rate")) == 15.0
+
+
+def test_low_world_has_nonplanar_ground_for_range_facets():
+    root = ET.parse(LOW_WORLD).getroot()
+    collisions = root.findall(".//collision")
+    reliefs = [
+        collision for collision in collisions
+        if collision.get("name", "").startswith("relief_")
+    ]
+    assert len(reliefs) >= 8
+    heights = []
+    for collision in reliefs:
+        geometry = collision.find("geometry")
+        assert geometry is not None
+        if geometry.find("box") is not None:
+            heights.append(float(geometry.findtext("box/size").split()[2]))
+        elif geometry.find("cylinder") is not None:
+            heights.append(float(geometry.findtext("cylinder/length")))
+        else:
+            raise AssertionError("unsupported relief geometry")
+    assert max(heights) >= 0.20
+    assert max(heights) <= 0.50
 
 
 def test_companion_sensor_payloads_are_dynamically_negligible():
@@ -249,6 +283,16 @@ def test_lidar_landmarks_cover_the_large_figure_eight_and_outer_area():
         for x, y, _ in route
     )
     assert route_max_distance <= 4.5
+
+
+def test_low_figure_eight_stays_below_five_metres():
+    route = generate_large_figure_eight(
+        9.0, 1.5, 2.2, 0.8, samples=481,
+        rotation_deg=158.0, altitude_power=4)
+    altitudes = [point[2] for point in route]
+    assert min(altitudes) >= 2.2 - 1.0e-9
+    assert max(altitudes) <= 3.0 + 1.0e-9
+    assert sum(value <= 5.0 for value in altitudes) / len(altitudes) >= 0.50
 
     audit_grid = [
         (x, y)
@@ -487,7 +531,7 @@ def test_figure_eight_runner_keeps_single_pass_geometry_and_yaw_contract():
     assert "RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp" in runner
     assert "S_CURVE_SPAN=${S_CURVE_SPAN:-9.0}" in runner
     assert "S_CURVE_AMPLITUDE=${S_CURVE_AMPLITUDE:-1.5}" in runner
-    assert "S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-4.5}" in runner
+    assert "S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-0.8}" in runner
     assert "S_CURVE_PASSES=${S_CURVE_PASSES:-1}" in runner
     assert "FIGURE8_ROTATION_DEG=${FIGURE8_ROTATION_DEG:-158.0}" in runner
     assert "follow_heading_fraction=0.5" in controller
@@ -547,9 +591,10 @@ def test_vertical_diagnostic_uses_a_clear_corridor_outside_the_tunnel_roof():
 def test_s_curve_navigation_feedback_is_strictly_the_unified_backend():
     source = S_CURVE_CONTROLLER.read_text(encoding="utf-8")
     assert '"unified_odom_topic", "/fusion/unified/odom"' in source
-    assert "route_feedback_source=unified_backend" in source
-    assert "ground_truth" not in source
-    assert "/sim/" not in source
+    assert '"route_feedback_source", "unified_backend"' in source
+    assert '"gazebo_truth_odom_topic", "/sim/mid360/ground_truth_odom"' in source
+    assert 'self.route_feedback_source == "gazebo_truth"' in source
+    assert 'self.route_feedback_source == "unified_backend"' in source
     assert "effective_hold = mission_hold_required(" in source
     assert "decision.hold, lost, self.relocalization_request_active" in source
     assert "route_hold_fcu_setpoint" in source

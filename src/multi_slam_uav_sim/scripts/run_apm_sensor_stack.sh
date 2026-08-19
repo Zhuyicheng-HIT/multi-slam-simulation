@@ -12,8 +12,10 @@ source "$PKG_SHARE/scripts/env.sh"
 
 ARDUPILOT_DIR=${ARDUPILOT_DIR:-$HOME/ardupilot}
 ARDUPILOT_GAZEBO_DIR=${ARDUPILOT_GAZEBO_DIR:-$HOME/ardupilot_gazebo}
-WORLD=${WORLD:-$PKG_SHARE/worlds/simple_apm_rgbd_mid360.sdf}
-WORLD_NAME=${WORLD_NAME:-simple_apm_rgbd_mid360}
+# The default demo is a low-altitude indoor route. The legacy urban scene
+# remains selectable with WORLD/WORLD_NAME for regression and high-wall tests.
+WORLD=${WORLD:-$PKG_SHARE/worlds/low_indoor_apm_rgbd_mid360.sdf}
+WORLD_NAME=${WORLD_NAME:-low_indoor_apm_rgbd_mid360}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/apm_sensor_stack_$(date +%Y%m%d_%H%M%S)}
 LOCK_FILE=${LOCK_FILE:-/tmp/multi_slam_apm_sensor_stack.lock}
 # Keep FCU source configuration separate from the estimator that publishes
@@ -130,7 +132,7 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     "$MID360_BODY_MIN_X_M" "$MID360_BODY_MAX_X_M" \
     "$MID360_BODY_MIN_Y_M" "$MID360_BODY_MAX_Y_M" \
     "$MID360_BODY_MIN_Z_M" "$MID360_BODY_MAX_Z_M"
-  printf 'MID360 body extrinsic: lidar origin [%.3f, %.3f, %.3f] m; pitch=+10 deg\n' \
+  printf 'MID360 body extrinsic: lidar origin [%.3f, %.3f, %.3f] m; pitch=+15 deg\n' \
     "$MID360_LIDAR_TO_BODY_X_M" "$MID360_LIDAR_TO_BODY_Y_M" \
     "$MID360_LIDAR_TO_BODY_Z_M"
 fi
@@ -547,12 +549,12 @@ FCU-routed MTF01P observation path:
 
 Optional companion GPS/flow ExternalNav:
   ENABLE_EXTERNALNAV_FUSION=1 starts /fusion/gps_flow/odom -> /mavros/odometry/out
-  ENABLE_EXTERNALNAV_EKF3=1 configures EKF3 to consume ExternalNav without selecting a publisher
-  ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=1 starts only the legacy GPS/flow publisher
+  ENABLE_EXTERNALNAV_EKF3=1 configures EKF3 to consume ExternalNav without selecting a publishe
+  ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=1 starts only the legacy GPS/flow publishe
   FLOW_USE_PHYSICS=false is required for algorithm-quality evaluation
   MID360_SIM_BRIDGE_MODE=direct_livox uses C++: Gazebo LaserScan -> /livox/lidar CustomMsg
   MID360_SIM_BRIDGE_MODE=pointcloud_python retains /sim/mid360/points_raw for legacy testing
-  MID360_SIM_BRIDGE_MODE=disabled starts no MID360 ROS adapter
+  MID360_SIM_BRIDGE_MODE=disabled starts no MID360 ROS adapte
   Real MID-360S must use the official livox_ros_driver2 and the same /livox/* interface;
   do not run the simulation adapter against real hardware.
   ENABLE_D435_BRIDGE=0 disables the D435 ROS bridge; the Gazebo sensor is lazy

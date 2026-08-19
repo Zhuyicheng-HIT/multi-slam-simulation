@@ -50,6 +50,7 @@ from uf_backend_fusion.online_backend import (
     gnss_axis_information_scale,
     gnss_prefit_axis_nis,
     gnss_prefit_statistics,
+    bounded_axis_reanchor_target,
     time_compensate_gnss_observation,
     gnss_temporal_jump_rejected,
     imu_interval_covered,
@@ -139,6 +140,17 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             [10.0, 20.0, 21.0],
         )
 
+    def test_axis_reanchor_target_is_bounded_without_changing_sign(self):
+        target, clipped = bounded_axis_reanchor_target(3.0, 5.0, 0.15)
+        self.assertAlmostEqual(target, 3.15)
+        self.assertTrue(clipped)
+        target, clipped = bounded_axis_reanchor_target(3.0, 2.0, 0.15)
+        self.assertAlmostEqual(target, 2.85)
+        self.assertTrue(clipped)
+        target, clipped = bounded_axis_reanchor_target(3.0, 3.04, 0.15)
+        self.assertAlmostEqual(target, 3.04)
+        self.assertFalse(clipped)
+
     def test_conditional_translation_scaling_preserves_rotation_and_coupling(self):
         rotation = np.diag([7.0, 8.0, 9.0])
         coupling = np.asarray([
@@ -162,6 +174,20 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         np.testing.assert_allclose(scaled_h[3:, 3:], rotation)
         np.testing.assert_allclose(scaled_h[:3, 3:], coupling)
         np.testing.assert_allclose(scaled_g[3:], gradient[3:])
+        original_conditional_gradient = (
+            gradient[:3]
+            - coupling @ np.linalg.inv(rotation) @ gradient[3:]
+        )
+        scaled_conditional_gradient = (
+            scaled_g[:3]
+            - coupling @ np.linalg.inv(rotation) @ scaled_g[3:]
+        )
+        original_optimum = np.linalg.solve(schur, original_conditional_gradient)
+        scaled_schur = np.diag([30.0, 20.0, 0.1])
+        scaled_optimum = np.linalg.solve(
+            scaled_schur, scaled_conditional_gradient
+        )
+        np.testing.assert_allclose(scaled_optimum, original_optimum)
         np.testing.assert_allclose(
             pose_translation_profile_information(scaled_h),
             [30.0, 20.0, 0.1],
@@ -199,6 +225,67 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         )
         np.testing.assert_allclose(scales, np.ones(3))
         np.testing.assert_array_equal(latched, [False, False, False])
+
+    def test_axis_handoff_respects_enabled_axis_mask(self):
+        scales, latched = axis_information_handoff(
+            [100.0, 80.0, 2000.0],
+            [0.05, 0.05, 0.05],
+            [2.0, 2.0, 3.0],
+            [True, True, False],
+            enabled_axes=[False, False, True],
+        )
+        np.testing.assert_allclose(scales, [1.0, 1.0, 0.0015])
+        np.testing.assert_array_equal(latched, [False, False, True])
+
+    def test_axis_handoff_weak_z_uses_healthy_gnss_support(self):
+        # The GNSS factor remains admitted; only the weak LiDAR Z block is
+        # reduced to the independently available Z information.
+        gnss = apply_gnss_prefit_gate(
+            scheduler_decision(1.0, enabled=True, inflation=1.0),
+            prefit_xy_nis=0.1,
+            prefit_z_nis=0.1,
+        )
+        self.assertTrue(gnss["factor_enabled"])
+        self.assertTrue(gnss["gnss_z_admitted"])
+        scales, latched = axis_information_handoff(
+            [100.0, 80.0, 20000.0],
+            [0.80, 0.70, 0.05],
+            [0.0, 0.0, 5.0],
+            [False, False, False],
+            enabled_axes=[False, False, True],
+            enter_support=0.30,
+            exit_support=0.35,
+            minimum_lidar_information_scale=1.0e-5,
+            maximum_lidar_to_alternative_ratio=1.0,
+        )
+        np.testing.assert_allclose(scales[:2], [1.0, 1.0])
+        self.assertAlmostEqual(scales[2], 5.0 / 20000.0)
+        np.testing.assert_array_equal(latched, [False, False, True])
+        native_normal = np.diag([100.0, 80.0, 20000.0, 10.0, 10.0, 10.0])
+        scaled_normal, _ = scale_conditional_translation_normal(
+            native_normal, np.zeros(6), scales
+        )
+        np.testing.assert_allclose(
+            pose_translation_profile_information(scaled_normal),
+            [100.0, 80.0, 5.0],
+        )
+
+    def test_axis_handoff_weak_z_accepts_barometer_alternative_only(self):
+        # A local barometer can own Z without changing either strong
+        # horizontal LiDAR axis or the GNSS admission policy.
+        scales, latched = axis_information_handoff(
+            [100.0, 80.0, 20000.0],
+            [0.80, 0.70, 0.05],
+            [0.0, 0.0, 20.0],
+            [False, False, False],
+            enabled_axes=[False, False, True],
+            enter_support=0.30,
+            exit_support=0.35,
+            minimum_lidar_information_scale=1.0e-5,
+            maximum_lidar_to_alternative_ratio=1.0,
+        )
+        np.testing.assert_allclose(scales, [1.0, 1.0, 0.001])
+        np.testing.assert_array_equal(latched, [False, False, True])
 
     def test_axis_observability_latch_is_independent_per_axis(self):
         latched = axis_observability_latch(
@@ -505,6 +592,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.visual_candidate_sequence = 0
         node.visual_pending_enabled = True
         node.visual_pending_max_queue = 64
+        node.visual_pending_latest_horizon_s = 0.35
         node.visual_state_stamps = deque([1.0], maxlen=8)
         node.visual_lock = threading.Lock()
         node.pending_visual_candidates = deque()
@@ -512,19 +600,22 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.visual_factor_score_wait_started = {}
         node.visual_tracks = deque()
         node.visual_timing_reason_counts = {
-            "prebootstrap_window_unavailable": 0
+            "prebootstrap_window_unavailable": 0,
+            "superseded_by_newer_candidate": 0,
         }
         node.last_visual_reason = "none"
         node.counts = {
             "visual_received": 0,
             "visual_prebootstrap_dropped": 0,
             "visual_pending_enqueued": 0,
+            "visual_pending_superseded": 0,
             "visual_pending_overflow": 0,
             "visual_rejected_time": 0,
             "visual_duplicate_candidates": 0,
             "visual_time_calibration_geometry_rejected": 0,
         }
         node._now_s = lambda: 1.3
+        node._publish_visual_timing = lambda *_args, **_kwargs: None
         node._visual_pnp_metrics = lambda _message: {"selected": [object()]}
         node._visual_pnp_admissible = lambda _message, _metrics: True
         calibration_updates = []
@@ -566,6 +657,21 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(node.counts["visual_prebootstrap_dropped"], 1)
         self.assertEqual(node.counts["visual_pending_enqueued"], 1)
         self.assertEqual(len(node.pending_visual_candidates), 1)
+
+        node._visual_tracks(message(1.7, 1.8))
+
+        self.assertEqual(len(node.pending_visual_candidates), 1)
+        self.assertEqual(
+            node.pending_visual_candidates[0].key,
+            (1_700_000_000, 1_800_000_000),
+        )
+        self.assertEqual(node.counts["visual_pending_superseded"], 1)
+        self.assertEqual(
+            node.visual_timing_reason_counts[
+                "superseded_by_newer_candidate"
+            ],
+            1,
+        )
 
     def test_rgbd_depth_geometry_is_timestamp_matched_and_consumed_once(self):
         node = object.__new__(UnifiedBackendNode)
@@ -668,6 +774,209 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(
             node.last_rgbd_depth_reason, "matching_geometry_missing"
         )
+
+    def test_rgbd_auxiliary_queues_keep_only_latest_batch(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.rgbd_depth_factor_tolerance_s = 0.01
+        node.rgbd_geometry_lock = threading.Lock()
+        node.rgbd_direct_lock = threading.Lock()
+        node.rgbd_geometry_tracks = deque(maxlen=2)
+        node.rgbd_direct_tracks = deque(maxlen=2)
+        node.counts = {
+            "rgbd_geometry_received": 0,
+            "rgbd_geometry_superseded": 0,
+            "rgbd_geometry_matched": 0,
+            "rgbd_direct_received": 0,
+            "rgbd_direct_superseded": 0,
+            "rgbd_direct_matched": 0,
+        }
+
+        def stamp(value):
+            return SimpleNamespace(
+                sec=int(value),
+                nanosec=int(round((value % 1.0) * 1.0e9)),
+            )
+
+        def batch(previous_s, current_s, marker):
+            return SimpleNamespace(
+                previous_stamp=stamp(previous_s),
+                header=SimpleNamespace(stamp=stamp(current_s)),
+                marker=marker,
+            )
+
+        node._rgbd_geometry_tracks(batch(1.0, 1.1, "old-geometry"))
+        node._rgbd_geometry_tracks(batch(1.1, 1.2, "middle-geometry"))
+        node._rgbd_geometry_tracks(batch(1.2, 1.3, "new-geometry"))
+        node._rgbd_direct_tracks(batch(1.0, 1.1, "old-direct"))
+        node._rgbd_direct_tracks(batch(1.1, 1.2, "middle-direct"))
+        node._rgbd_direct_tracks(batch(1.2, 1.3, "new-direct"))
+
+        self.assertEqual(len(node.rgbd_geometry_tracks), 2)
+        self.assertEqual(len(node.rgbd_direct_tracks), 2)
+        self.assertEqual(node.counts["rgbd_geometry_superseded"], 1)
+        self.assertEqual(node.counts["rgbd_direct_superseded"], 1)
+
+        middle = batch(1.1, 1.2, "target")
+        matched_geometry = node._matched_rgbd_geometry(middle)
+        matched_direct = node._matched_rgbd_direct(middle)
+        self.assertEqual(matched_geometry.marker, "middle-geometry")
+        self.assertEqual(matched_direct.marker, "middle-direct")
+        latest = batch(1.2, 1.3, "target-latest")
+        self.assertEqual(
+            node._matched_rgbd_geometry(latest).marker, "new-geometry"
+        )
+        self.assertEqual(
+            node._matched_rgbd_direct(latest).marker, "new-direct"
+        )
+        self.assertIsNone(node._matched_rgbd_geometry(middle))
+        self.assertIsNone(node._matched_rgbd_direct(middle))
+
+    def test_rgbd_direct_batch_is_one_combined_factor_and_consumed_once(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.rgbd_depth_factor_tolerance_s = 0.01
+        node.rgbd_direct_factor_minimum_tracks = 4
+        node.rgbd_direct_factor_maximum_tracks = 8
+        node.rgbd_direct_factor_maximum_depth_rmse_m = 0.20
+        node.rgbd_direct_factor_maximum_photometric_rmse = 0.60
+        node.rgbd_direct_depth_information_scale = 0.25
+        node.rgbd_direct_photometric_information_scale = 0.10
+        node.visual_information_reference_tracks = 4
+        node.visual_minimum_projectable_track_ratio = 0.8
+        node.visual_rotation_body_camera = np.eye(3)
+        node.visual_translation_body_camera = np.zeros(3)
+        node.rgbd_direct_lock = threading.Lock()
+        node.rgbd_direct_tracks = deque(maxlen=32)
+        node.last_rgbd_direct_reason = "none"
+        node.last_rgbd_direct_track_count = 0
+        node.last_rgbd_direct_photometric_information_scale = 1.0
+        node.counts = {
+            "rgbd_direct_received": 0,
+            "rgbd_direct_matched": 0,
+            "rgbd_direct_missing": 0,
+            "rgbd_direct_factor_attempts": 0,
+            "rgbd_direct_factors": 0,
+            "rgbd_direct_rejected_tracks": 0,
+            "rgbd_direct_rejected_prefit": 0,
+            "rgbd_direct_photometric_downweighted": 0,
+            "visual_factor_attempts": 0,
+            "visual_factor_score_invalid": 0,
+            "visual_quality_rejected_dv": 0,
+            "visual_factors": 0,
+        }
+        node.visual_factor_mode = "rgbd_direct"
+        node.backend_solver_mode = "manifold"
+        node._decision = lambda *_args, **_kwargs: {
+            "factor_enabled": True,
+            "reliability_weight": 1.0,
+            "covariance_inflation": 1.0,
+            "reasons": (),
+        }
+        node._visual_pnp_metrics = lambda _message: {
+            "selected": [],
+            "inlier_ratio": 0.0,
+            "mean_reprojection_px": -1.0,
+            "rank": 0,
+            "condition": float("inf"),
+        }
+        node.backend = ManifoldSlidingWindowBackend(max_states=2)
+        previous_index = node.backend.add_state(np.zeros(15))
+        current_index = node.backend.add_state(np.zeros(15))
+
+        def stamp(value):
+            return SimpleNamespace(
+                sec=int(value),
+                nanosec=int(round((value % 1.0) * 1.0e9)),
+            )
+
+        tracks = []
+        for index, (x, y) in enumerate((
+                (-0.2, -0.1), (0.2, -0.1),
+                (-0.2, 0.1), (0.2, 0.1))):
+            tracks.append(SimpleNamespace(
+                previous_x=x,
+                previous_y=y,
+                previous_depth_m=2.0,
+                previous_depth_variance_m2=0.0004,
+                current_x=x,
+                current_y=y,
+                current_depth_m=2.0,
+                current_depth_variance_m2=0.0004,
+                previous_intensity=0.1 * index,
+                current_intensity=0.1 * index,
+                current_gradient_x_normalized=5.0,
+                current_gradient_y_normalized=3.0,
+                photometric_variance=0.15 ** 2,
+                track_age=3,
+                grid_cell=index,
+            ))
+        direct = SimpleNamespace(
+            previous_stamp=stamp(1.0),
+            header=SimpleNamespace(stamp=stamp(1.1)),
+            tracks=tracks,
+        )
+        visual = SimpleNamespace(
+            previous_stamp=stamp(1.0),
+            header=SimpleNamespace(stamp=stamp(1.1)),
+            pnp_valid=False,
+        )
+        node._rgbd_direct_tracks(direct)
+        decision = {
+            "factor_enabled": True,
+            "reliability_weight": 1.0,
+            "covariance_inflation": 1.0,
+        }
+
+        self.assertTrue(node._add_visual_message_factor(
+            visual,
+            previous_index,
+            current_index,
+            factor_score={
+                "valid": True,
+                "weight": 1.0,
+                "degradation_score": 0.0,
+                "reasons": (),
+            },
+        ))
+        self.assertEqual(node.backend._factors[-1]["name"], "rgbd_direct")
+        self.assertEqual(node.counts["rgbd_direct_factors"], 1)
+        self.assertEqual(node.counts["visual_factors"], 1)
+        self.assertEqual(node.last_visual_reason, "accepted_rgbd_direct")
+
+        shifted_tracks = [
+            SimpleNamespace(**{
+                **vars(track),
+                "current_intensity": track.current_intensity + 2.0,
+            })
+            for track in tracks
+        ]
+        shifted = SimpleNamespace(
+            previous_stamp=stamp(1.1),
+            header=SimpleNamespace(stamp=stamp(1.2)),
+            tracks=shifted_tracks,
+        )
+        shifted_visual = SimpleNamespace(
+            previous_stamp=stamp(1.1),
+            header=SimpleNamespace(stamp=stamp(1.2)),
+        )
+        node._rgbd_direct_tracks(shifted)
+        self.assertTrue(node._add_rgbd_direct_factor(
+            shifted_visual, previous_index, current_index, decision
+        ))
+        self.assertEqual(
+            node.last_rgbd_direct_reason,
+            "accepted_photometric_downweighted",
+        )
+        self.assertLess(
+            node.last_rgbd_direct_photometric_information_scale, 1.0
+        )
+        self.assertEqual(
+            node.counts["rgbd_direct_photometric_downweighted"], 1
+        )
+        self.assertFalse(node._add_rgbd_direct_factor(
+            visual, previous_index, current_index, decision
+        ))
+        self.assertEqual(node.last_rgbd_direct_reason,
+                         "matching_direct_tracks_missing")
 
     def test_pending_visual_left_of_window_is_discarded(self):
         node = object.__new__(UnifiedBackendNode)
@@ -1647,6 +1956,28 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             "admitted_xy_with_z_robust",
         )
 
+        z_reanchor = node_with_decision(
+            scheduler_decision(1.0, enabled=True, inflation=1.0)
+        )
+        z_reanchor.gnss_z_reanchor_enabled = True
+        z_reanchor.gnss_z_reanchor_maximum_step_m = 0.15
+        z_reanchor.gnss_z_reanchor_minimum_consecutive = 1
+        z_reanchor.gnss_z_recovery_information_scale = 0.50
+        z_reanchor.last_native_isotropic_information_support = np.asarray(
+            [1.0, 1.0, 0.1]
+        )
+        z_reanchor.axis_handoff_enter_support = 0.35
+        z_reanchor._gnss_factor(
+            10.0, [0.0, 0.0, 10.0], 3, np.eye(3) * 0.01
+        )
+        self.assertAlmostEqual(z_reanchor.backend.calls[0][1][2], 9.85)
+        self.assertTrue(z_reanchor.last_gnss_z_reanchor_applied)
+        self.assertEqual(z_reanchor.counts["gnss_z_reanchor_factors"], 1)
+        self.assertEqual(z_reanchor.counts["gnss_z_recovery_factors"], 1)
+        self.assertGreaterEqual(
+            z_reanchor.backend.calls[0][3]["gnss_z_information_scale"], 0.50
+        )
+
         recovery = node_with_decision(
             scheduler_decision(1.0, enabled=True, inflation=1.0)
         )
@@ -1886,6 +2217,48 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(work_queue.get_nowait(), "newest")
         work_queue.task_done()
 
+    def test_native_worker_skips_dequeued_frame_when_newer_is_pending(self):
+        owner = SimpleNamespace(
+            native_work_queue=queue.Queue(maxsize=1),
+            counts={"native_worker_latest_skipped": 0},
+            last_reason="none",
+        )
+        consumed = []
+        owner._consume_native_sequence = lambda sequence, state_committed, intentional_latest_skip=False: consumed.append(
+            (sequence, state_committed, intentional_latest_skip)
+        )
+        owner.native_work_queue.put_nowait(
+            (Header(), SimpleNamespace(scan_sequence=12))
+        )
+
+        skipped = UnifiedBackendNode._native_worker_frame_superseded(
+            owner, SimpleNamespace(scan_sequence=11)
+        )
+
+        self.assertTrue(skipped)
+        self.assertEqual(owner.counts["native_worker_latest_skipped"], 1)
+        self.assertEqual(owner.last_reason, "native_worker_latest_only_skip")
+        self.assertEqual(consumed, [(11, False, True)])
+
+    def test_native_worker_processes_frame_when_no_newer_is_pending(self):
+        owner = SimpleNamespace(
+            native_work_queue=queue.Queue(maxsize=1),
+            counts={"native_worker_latest_skipped": 0},
+            last_reason="none",
+        )
+        consumed = []
+        owner._consume_native_sequence = lambda *args, **kwargs: consumed.append(
+            (args, kwargs)
+        )
+
+        skipped = UnifiedBackendNode._native_worker_frame_superseded(
+            owner, SimpleNamespace(scan_sequence=11)
+        )
+
+        self.assertFalse(skipped)
+        self.assertEqual(owner.counts["native_worker_latest_skipped"], 0)
+        self.assertEqual(consumed, [])
+
     def test_imu_interval_coverage_requires_sample_at_or_after_target(self):
         self.assertFalse(imu_interval_covered(None, 10.0))
         self.assertFalse(imu_interval_covered(9.999, 10.0))
@@ -1984,6 +2357,43 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertAlmostEqual(mtf01p_range_sigma_m(2.0), 0.04)
         self.assertAlmostEqual(mtf01p_range_sigma_m(5.0), 0.10)
         self.assertTrue(math.isinf(mtf01p_range_sigma_m(float("nan"))))
+
+    def test_range_facet_builder_uses_explicit_manifold_state_slices(self):
+        node = UnifiedBackendNode.__new__(UnifiedBackendNode)
+        node.range_facet_enabled = True
+        node.range_facet_minimum_support_points = 3
+        node.range_facet_maximum_plane_rmse_m = 0.05
+        node.range_facet_denominator_epsilon = 0.05
+        node.range_facet_facet_margin_m = 0.25
+        node.range_facet_timestamp_tolerance_s = 0.08
+        node.range_facet_mahalanobis_gate = 9.0
+        node.minimum_flow_distance_m = 0.08
+        node.maximum_flow_distance_m = 12.0
+        node.flow_sensor_offset_body_m = np.asarray([0.0, 0.0, -0.35])
+        node.last_flow_range_sigma_m = 0.04
+        native = SimpleNamespace(
+            plane_normals=np.tile([0.0, 0.0, 1.0], (4, 1)),
+            plane_points=np.asarray([
+                [-1.0, -1.0, 1.0],
+                [1.0, -1.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [-1.0, 1.0, 1.0],
+            ]),
+            stamp_s=10.0,
+            linearization_pose=np.asarray([0.0, 0.0, 2.0, 0.0, 0.0, 0.0]),
+            lidar_to_body_rotation=np.eye(3),
+            lidar_to_body_translation=np.zeros(3),
+        )
+        observation, result = node._build_range_facet_observation(
+            [{"stamp_s": 10.0}],
+            {"distance_m": 0.65},
+            native,
+            np.asarray([0.0, 0.0, 2.0] + [0.0] * 12),
+            10.0,
+        )
+        self.assertIsNotNone(observation)
+        self.assertTrue(result.accepted)
+        self.assertAlmostEqual(result.predicted_range_m, 0.65)
 
     def test_flow_covariance_includes_range_accuracy_without_z_row(self):
         covariance = optical_flow_displacement_covariance_m2(
@@ -2612,6 +3022,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.backend = FakeBackend()
         node.last_lio_stamp = 10.0
         node.relocalization_state_tolerance_s = 0.25
+        node.relocalization_future_wait_timeout_s = 8.0
         node.relocalization_result_max_age_s = 2.0
         node.relocalization_pending_timeout_s = 2.0
         node.last_applied_relocalization_transaction_id = 0
@@ -2628,7 +3039,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             transaction_id=17,
             candidate_id=3,
             header=SimpleNamespace(
-                stamp=SimpleNamespace(sec=9, nanosec=200_000_000)
+                stamp=SimpleNamespace(sec=10, nanosec=800_000_000)
             ),
             map_from_lio=pose(1.0),
             source_lio_pose=pose(2.0),
@@ -2642,6 +3053,10 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertIsNotNone(node.pending_relocalization)
         self.assertEqual(node.pending_relocalization_transaction_id, 17)
         self.assertEqual(node.counts["relocalization_rejections"], 0)
+        self.assertEqual(
+            node.last_reason,
+            "relocalization_waiting_for_backend_state",
+        )
         node.pending_relocalization = None
         node.pending_relocalization_transaction_id = 0
         message.transaction_id = 18

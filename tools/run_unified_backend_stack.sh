@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Ee -o pipefail
 
+# Keep every ROS process on the known-good middleware in the simulation.
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 LOG_DIR=${LOG_DIR:-"$REPO_ROOT/logs/unified_backend_$(date +%Y%m%d_%H%M%S)"}
@@ -21,9 +24,9 @@ case "${ENABLE_VISION,,}" in
     ;;
 esac
 case "$VISUAL_FACTOR_MODE" in
-  disabled|paper_reprojection) ;;
+  disabled|paper_reprojection|rgbd_direct) ;;
   *)
-    printf 'VISUAL_FACTOR_MODE must be disabled or paper_reprojection.\n' >&2
+    printf 'VISUAL_FACTOR_MODE must be disabled, paper_reprojection, or rgbd_direct.\n' >&2
     exit 2
     ;;
 esac
@@ -31,9 +34,14 @@ RGBD_MINIMUM_DEPTH_M=${RGBD_MINIMUM_DEPTH_M:-0.30}
 RGBD_MAXIMUM_DEPTH_M=${RGBD_MAXIMUM_DEPTH_M:-6.0}
 RGBD_DEPTH_FACTOR_ENABLED=${RGBD_DEPTH_FACTOR_ENABLED:-false}
 RGBD_DEPTH_HEALTHY_LIDAR_STRIDE=${RGBD_DEPTH_HEALTHY_LIDAR_STRIDE:-1}
+RANGE_FACET_ENABLED=${RANGE_FACET_ENABLED:-false}
 PRESERVE_LIO_ANCHOR=${PRESERVE_LIO_ANCHOR:-false}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-false}
+AXIS_INFORMATION_HANDOFF_ENABLED=${AXIS_INFORMATION_HANDOFF_ENABLED:-false}
+GNSS_Z_REANCHOR_ENABLED=${GNSS_Z_REANCHOR_ENABLED:-false}
+GNSS_Z_RECOVERY_INFORMATION_SCALE=${GNSS_Z_RECOVERY_INFORMATION_SCALE:-0.50}
+BAROMETER_FALLBACK_ENABLED=${BAROMETER_FALLBACK_ENABLED:-false}
 RELIABILITY_MODE=${RELIABILITY_MODE:-dynamic}
 FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
 FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
@@ -52,6 +60,22 @@ if [[ -z "${BAROMETER_TOPIC+x}" ]]; then
     *) BAROMETER_TOPIC=/mavros/imu/static_pressure ;;
   esac
 fi
+for toggle_name in \
+  AXIS_INFORMATION_HANDOFF_ENABLED \
+  GNSS_Z_REANCHOR_ENABLED \
+  BAROMETER_FALLBACK_ENABLED \
+  RANGE_FACET_ENABLED
+do
+  toggle_value=${!toggle_name}
+  case "${toggle_value,,}" in
+    1|true|yes|on) printf -v "${toggle_name}_ARG" '%s' true ;;
+    0|false|no|off) printf -v "${toggle_name}_ARG" '%s' false ;;
+    *)
+      printf '%s must be true/false or 1/0.\n' "$toggle_name" >&2
+      exit 2
+      ;;
+  esac
+done
 FRONTEND_STATE_SEED_ENABLED=${FRONTEND_STATE_SEED_ENABLED:-false}
 # The unified backend owns the trajectory by default.  Keep the legacy
 # FAST-LIO-local trajectory available only as an explicit compatibility mode.
@@ -144,6 +168,7 @@ setsid env \
   rgbd_maximum_depth_m:="$RGBD_MAXIMUM_DEPTH_M" \
   rgbd_depth_factor_enabled:="$RGBD_DEPTH_FACTOR_ENABLED" \
   rgbd_depth_healthy_lidar_stride:="$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" \
+  range_facet_enabled:="$RANGE_FACET_ENABLED_ARG" \
   preserve_lio_anchor:="$PRESERVE_LIO_ANCHOR" \
   frontend_state_seed_enabled:="$FRONTEND_STATE_SEED_ENABLED_ARG" \
   frontend_scan_prediction_enabled:="$FRONTEND_SCAN_PREDICTION_ENABLED_ARG" \
@@ -159,6 +184,10 @@ setsid env \
   calibration_apply_locked_rotation:="$CALIBRATION_APPLY_LOCKED_ROTATION" \
   visual_time_calibration_apply_locked:="$VISUAL_TIME_CALIBRATION_APPLY_LOCKED" \
   barometer_topic:="$BAROMETER_TOPIC" \
+  axis_information_handoff_enabled:="$AXIS_INFORMATION_HANDOFF_ENABLED_ARG" \
+  gnss_z_reanchor_enabled:="$GNSS_Z_REANCHOR_ENABLED_ARG" \
+  gnss_z_recovery_information_scale:="$GNSS_Z_RECOVERY_INFORMATION_SCALE" \
+  barometer_fallback_enabled:="$BAROMETER_FALLBACK_ENABLED_ARG" \
   external_nav_output_topic:="$EXTERNAL_NAV_OUTPUT_TOPIC" \
   publish_mavros_frame_transforms:="$PUBLISH_MAVROS_FRAME_TRANSFORMS" \
   relocalization_search_timeout_s:="$RELOCALIZATION_SEARCH_TIMEOUT_S" \

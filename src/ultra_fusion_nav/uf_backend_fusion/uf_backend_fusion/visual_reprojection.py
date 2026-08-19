@@ -133,6 +133,83 @@ class RgbdDepthTrackBatch:
 
 
 @dataclass(frozen=True)
+class RgbdDirectTrackBatch:
+    """One sparse RGB-D batch with metric depth and direct texture evidence."""
+
+    anchor_normalized: np.ndarray
+    current_normalized: np.ndarray
+    anchor_depth_m: np.ndarray
+    current_depth_m: np.ndarray
+    depth_variance_m2: np.ndarray
+    previous_intensity: np.ndarray
+    current_intensity: np.ndarray
+    current_gradient_normalized: np.ndarray
+    photometric_variance: np.ndarray
+    rotation_body_camera: np.ndarray = None
+    translation_body_camera: np.ndarray = None
+
+    def __post_init__(self):
+        anchor = np.asarray(self.anchor_normalized, dtype=float)
+        current = np.asarray(self.current_normalized, dtype=float)
+        count = anchor.shape[0] if anchor.ndim == 2 else 0
+        vectors = [
+            np.asarray(value, dtype=float).reshape(-1)
+            for value in (
+                self.anchor_depth_m,
+                self.current_depth_m,
+                self.depth_variance_m2,
+                self.previous_intensity,
+                self.current_intensity,
+                self.photometric_variance,
+            )
+        ]
+        gradient = np.asarray(
+            self.current_gradient_normalized, dtype=float
+        )
+        rotation = (
+            np.eye(3) if self.rotation_body_camera is None
+            else np.asarray(self.rotation_body_camera, dtype=float)
+        )
+        translation = (
+            np.zeros(3) if self.translation_body_camera is None
+            else np.asarray(self.translation_body_camera, dtype=float)
+        )
+        if (
+            count == 0 or anchor.shape != (count, 2)
+            or current.shape != (count, 2)
+            or any(value.shape != (count,) for value in vectors)
+            or gradient.shape != (count, 2)
+            or rotation.shape != (3, 3) or translation.shape != (3,)
+            or any(np.any(~np.isfinite(value)) for value in vectors)
+            or np.any(~np.isfinite(anchor)) or np.any(~np.isfinite(current))
+            or np.any(~np.isfinite(gradient))
+            or np.any(vectors[0] <= 0.0) or np.any(vectors[1] <= 0.0)
+            or np.any(vectors[2] <= 0.0) or np.any(vectors[5] <= 0.0)
+            or np.any(~np.isfinite(rotation))
+            or np.any(~np.isfinite(translation))
+        ):
+            raise ValueError("RGB-D direct tracks must be finite and valid")
+        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1.0e-6):
+            raise ValueError("camera extrinsic rotation must be orthonormal")
+        names = (
+            "anchor_depth_m", "current_depth_m", "depth_variance_m2",
+            "previous_intensity", "current_intensity",
+            "photometric_variance",
+        )
+        object.__setattr__(self, "anchor_normalized", anchor)
+        object.__setattr__(self, "current_normalized", current)
+        for name, value in zip(names, vectors):
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "current_gradient_normalized", gradient)
+        object.__setattr__(self, "rotation_body_camera", rotation)
+        object.__setattr__(self, "translation_body_camera", translation)
+
+    @property
+    def track_count(self):
+        return int(self.anchor_depth_m.size)
+
+
+@dataclass(frozen=True)
 class VisualLinearizationCheck:
     """Pre-solve consistency of one measured track batch and two states."""
 
@@ -402,6 +479,124 @@ def rgbd_depth_residual_jacobians(
         point_camera_current[valid, 2] - tracks.current_depth_m[valid]
     )
     return residual, anchor_jacobian, current_jacobian, valid_indices
+
+
+def rgbd_direct_residual_jacobians(
+        anchor_state, current_state, tracks, minimum_depth=1.0e-4):
+    """Return metric-depth and first-order direct photometric residuals."""
+    if not isinstance(tracks, RgbdDirectTrackBatch):
+        raise ValueError("RGB-D direct factor has the wrong track type")
+    anchor_state = np.asarray(anchor_state, dtype=float)
+    current_state = np.asarray(current_state, dtype=float)
+    if anchor_state.shape != (STATE_SIZE,) or current_state.shape != (STATE_SIZE,):
+        raise ValueError("RGB-D direct factor requires two 15-state vectors")
+    rotation_anchor = rpy_to_rotation_matrix(anchor_state[3:6])
+    rotation_current = rpy_to_rotation_matrix(current_state[3:6])
+    rotation_body_camera = tracks.rotation_body_camera
+    translation_body_camera = tracks.translation_body_camera
+    bearings = np.column_stack((
+        tracks.anchor_normalized,
+        np.ones(tracks.track_count, dtype=float),
+    ))
+    point_camera_anchor = bearings * tracks.anchor_depth_m[:, None]
+    point_body_anchor = (
+        point_camera_anchor @ rotation_body_camera.T
+        + translation_body_camera
+    )
+    point_world = point_body_anchor @ rotation_anchor.T + anchor_state[:3]
+    point_body_current = (
+        point_world - current_state[:3]
+    ) @ rotation_current
+    point_camera_current = (
+        point_body_current - translation_body_camera
+    ) @ rotation_body_camera
+    valid = (
+        np.isfinite(point_camera_current).all(axis=1)
+        & (point_camera_current[:, 2] > minimum_depth)
+    )
+    valid_indices = np.flatnonzero(valid)
+    if valid_indices.size == 0:
+        empty_jacobian = np.empty((0, STATE_SIZE))
+        return (
+            np.empty(0), np.empty(0), empty_jacobian, empty_jacobian.copy(),
+            empty_jacobian.copy(), empty_jacobian.copy(), valid_indices,
+        )
+
+    def skew_batch(points):
+        matrices = np.zeros((points.shape[0], 3, 3), dtype=float)
+        matrices[:, 0, 1] = -points[:, 2]
+        matrices[:, 0, 2] = points[:, 1]
+        matrices[:, 1, 0] = points[:, 2]
+        matrices[:, 1, 2] = -points[:, 0]
+        matrices[:, 2, 0] = -points[:, 1]
+        matrices[:, 2, 1] = points[:, 0]
+        return matrices
+
+    camera_points = point_camera_current[valid]
+    body_anchor = point_body_anchor[valid]
+    body_current = point_body_current[valid]
+    inverse_z = 1.0 / camera_points[:, 2]
+    prediction = camera_points[:, :2] * inverse_z[:, None]
+    projection = np.zeros((valid_indices.size, 2, 3), dtype=float)
+    projection[:, 0, 0] = inverse_z
+    projection[:, 1, 1] = inverse_z
+    projection[:, 0, 2] = -camera_points[:, 0] * inverse_z ** 2
+    projection[:, 1, 2] = -camera_points[:, 1] * inverse_z ** 2
+    body_to_camera = rotation_body_camera.T
+    current_to_camera = body_to_camera @ rotation_current.T
+    anchor_rotation = np.einsum(
+        "ij,njk->nik",
+        -current_to_camera @ rotation_anchor,
+        skew_batch(body_anchor),
+        optimize=True,
+    )
+    current_rotation = np.einsum(
+        "ij,njk->nik",
+        body_to_camera,
+        skew_batch(body_current),
+        optimize=True,
+    )
+    pose_anchor = np.zeros((valid_indices.size, 2, STATE_SIZE), dtype=float)
+    pose_current = np.zeros_like(pose_anchor)
+    pose_anchor[:, :, :3] = np.einsum(
+        "nij,jk->nik", projection, current_to_camera, optimize=True
+    )
+    pose_anchor[:, :, 3:6] = np.einsum(
+        "nij,njk->nik", projection, anchor_rotation, optimize=True
+    )
+    pose_current[:, :, :3] = -pose_anchor[:, :, :3]
+    pose_current[:, :, 3:6] = np.einsum(
+        "nij,njk->nik", projection, current_rotation, optimize=True
+    )
+    depth_anchor = np.zeros((valid_indices.size, STATE_SIZE), dtype=float)
+    depth_current = np.zeros_like(depth_anchor)
+    depth_anchor[:, :3] = current_to_camera[2]
+    depth_anchor[:, 3:6] = anchor_rotation[:, 2, :]
+    depth_current[:, :3] = -current_to_camera[2]
+    depth_current[:, 3:6] = current_rotation[:, 2, :]
+    gradients = tracks.current_gradient_normalized[valid]
+    photo_anchor = np.einsum(
+        "ni,nij->nj", gradients, pose_anchor, optimize=True
+    )
+    photo_current = np.einsum(
+        "ni,nij->nj", gradients, pose_current, optimize=True
+    )
+    depth_residual = (
+        camera_points[:, 2] - tracks.current_depth_m[valid]
+    )
+    photo_residual = (
+        tracks.current_intensity[valid] - tracks.previous_intensity[valid]
+        + np.sum(
+            gradients
+            * (prediction - tracks.current_normalized[valid]),
+            axis=1,
+        )
+    )
+    return (
+        depth_residual, photo_residual,
+        depth_anchor, depth_current, photo_anchor, photo_current,
+        valid_indices,
+    )
 
 
 def validate_visual_linearization(

@@ -1,4 +1,5 @@
 import cv2
+import math
 import numpy as np
 import unittest
 
@@ -10,6 +11,7 @@ from uf_visual_frontend.feature_tracker import (
 from uf_visual_frontend.rgbd_feature_frontend import (
     CADENCE_PERIOD_S,
     depth_variance,
+    direct_photometric_evidence,
     inverse_depth_variance,
     visual_candidate_quality,
 )
@@ -75,6 +77,30 @@ def test_candidate_quality_uses_rgbd_health_without_requiring_motion():
     assert quality.median_parallax_px < 1.0e-6
 
 
+def test_direct_candidate_does_not_require_pnp_solution():
+    tracker = RgbdFeatureTracker(max_features=120, fb_threshold_px=0.5)
+    depth = synthetic_depth_with_geometry()
+    camera = np.asarray(
+        [[250.0, 0.0, 160.0], [0.0, 250.0, 120.0], [0.0, 0.0, 1.0]])
+    assert tracker.process(synthetic_image(), depth, camera) is None
+    result = tracker.process(synthetic_image(2), depth, camera)
+    result.rotation = None
+    result.geometric_inlier[:] = False
+    result.pnp_inlier_ratio = 0.0
+    result.pnp_information_rank = 0
+    result.pnp_condition_number = math.inf
+    result.reprojection_error[:] = -1.0
+
+    direct = visual_candidate_quality(result, 320, 240, require_pnp=False)
+    paper = visual_candidate_quality(result, 320, 240, require_pnp=True)
+
+    assert direct.valid
+    assert direct.valid_depth_tracks >= 20
+    assert direct.mean_reprojection_error_px == -1.0
+    assert not paper.valid
+    assert paper.reason == "pnp_invalid"
+
+
 def test_balanced_cadence_scan_is_strictly_ordered():
     periods = [
         CADENCE_PERIOD_S[name]
@@ -123,6 +149,23 @@ def test_per_track_depth_sigma_propagates_to_inverse_depth_variance():
     noisy = inverse_depth_variance(2.0, 0.20, 0.015)
     assert nominal > 0.0
     assert noisy > nominal
+
+
+def test_direct_photometric_evidence_uses_normalized_coordinate_gradients():
+    x = np.arange(40, dtype=np.float32)[None, :]
+    previous = np.repeat(x, 30, axis=0).astype(np.uint8)
+    current = np.roll(previous, 1, axis=1)
+    previous_pixels = np.asarray([[10.0, 10.0], [20.0, 15.0]])
+    current_pixels = previous_pixels + np.asarray([1.0, 0.0])
+
+    previous_i, current_i, gradients, variance = direct_photometric_evidence(
+        previous, current, previous_pixels, current_pixels, 250.0, 250.0
+    )
+
+    np.testing.assert_allclose(previous_i, current_i, atol=1.0e-5)
+    assert np.all(gradients[:, 0] > 0.0)
+    np.testing.assert_allclose(gradients[:, 1], 0.0, atol=1.0e-6)
+    np.testing.assert_allclose(variance, 0.15 ** 2)
 
 
 def test_current_depth_and_metric_variance_are_preserved_per_track():
@@ -207,6 +250,9 @@ class FeatureTrackerUnittest(unittest.TestCase):
     def test_balanced_cadence_scan(self):
         test_balanced_cadence_scan_is_strictly_ordered()
 
+    def test_direct_candidate_without_pnp(self):
+        test_direct_candidate_does_not_require_pnp_solution()
+
     def test_sparse_neighborhood_depth(self):
         test_sparse_neighborhood_depth_rejects_range_and_edge_outliers()
 
@@ -215,6 +261,9 @@ class FeatureTrackerUnittest(unittest.TestCase):
 
     def test_inverse_depth_variance(self):
         test_per_track_depth_sigma_propagates_to_inverse_depth_variance()
+
+    def test_direct_photometric_evidence(self):
+        test_direct_photometric_evidence_uses_normalized_coordinate_gradients()
 
     def test_current_depth_geometry(self):
         test_current_depth_and_metric_variance_are_preserved_per_track()

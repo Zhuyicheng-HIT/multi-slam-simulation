@@ -73,6 +73,13 @@ def generate_launch_description():
                 "candidate_quality_enabled": LaunchConfiguration(
                     "visual_candidate_quality_enabled"
                 ),
+                "candidate_require_pnp": ParameterValue(
+                    PythonExpression([
+                        "'", LaunchConfiguration("visual_factor_mode"),
+                        "' != 'rgbd_direct'",
+                    ]),
+                    value_type=bool,
+                ),
                 "minimum_depth_m": ParameterValue(
                     LaunchConfiguration("rgbd_minimum_depth_m"),
                     value_type=float,
@@ -96,6 +103,7 @@ def generate_launch_description():
                     LaunchConfiguration("rgbd_maximum_depth_m"),
                     value_type=float,
                 ),
+                "vision.factor_mode": LaunchConfiguration("visual_factor_mode"),
             }],
             condition=IfCondition(start_fusion_stack),
             output="screen",

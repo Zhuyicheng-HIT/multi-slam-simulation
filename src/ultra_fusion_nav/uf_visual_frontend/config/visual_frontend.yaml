@@ -42,4 +42,4 @@ uf_rgbd_feature_frontend:
     candidate_maximum_pnp_condition_number: 500.0
     candidate_require_pnp: true
     diagnostic_topic: /vision/frontend_diagnostics
-    cache_size: 12
+    cache_size: 2

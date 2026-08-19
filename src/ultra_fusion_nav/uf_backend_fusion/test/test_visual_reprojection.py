@@ -6,8 +6,10 @@ from uf_backend_fusion.manifold import STATE_SIZE, state_plus
 from uf_backend_fusion.manifold_window import ManifoldSlidingWindowBackend
 from uf_backend_fusion.visual_reprojection import (
     RgbdDepthTrackBatch,
+    RgbdDirectTrackBatch,
     VisualTrackBatch,
     rgbd_depth_residual_jacobians,
+    rgbd_direct_residual_jacobians,
     validate_visual_linearization,
     visual_pose_observability,
     visual_reprojection_residual,
@@ -145,6 +147,92 @@ class VisualReprojectionTest(unittest.TestCase):
             backend.state(previous), backend.state(current), tracks
         )[0])
         self.assertLess(after, before * 0.1)
+
+    def test_rgbd_direct_depth_and_photometric_jacobians_match_numeric(self):
+        anchor_pixels = np.asarray([
+            [-0.2, -0.1], [0.1, -0.15], [0.2, 0.2], [-0.1, 0.25]
+        ])
+        depth = np.asarray([2.0, 2.5, 3.0, 2.2])
+        seed_visual = VisualTrackBatch(
+            anchor_pixels, anchor_pixels, 1.0 / depth, 2.5e-5
+        )
+        projected, _, _, valid = visual_reprojection_residual_jacobians(
+            self.anchor, self.current, seed_visual
+        )
+        self.assertEqual(valid.size, 4)
+        current_pixels = anchor_pixels + projected.reshape(-1, 2)
+        seed_depth = RgbdDepthTrackBatch(
+            anchor_pixels, depth, depth, np.full(4, 0.01 ** 2)
+        )
+        predicted_depth = rgbd_depth_residual_jacobians(
+            self.anchor, self.current, seed_depth
+        )[0]
+        gradient = np.asarray([
+            [12.0, 4.0], [-8.0, 6.0], [5.0, -9.0], [7.0, 3.0]
+        ])
+        previous_intensity = np.asarray([0.1, -0.2, 0.3, -0.1])
+        tracks = RgbdDirectTrackBatch(
+            anchor_pixels,
+            current_pixels,
+            depth,
+            depth + predicted_depth,
+            np.full(4, 0.01 ** 2),
+            previous_intensity,
+            previous_intensity,
+            gradient,
+            np.full(4, 0.15 ** 2),
+        )
+        values = rgbd_direct_residual_jacobians(
+            self.anchor, self.current, tracks
+        )
+        np.testing.assert_allclose(values[0], 0.0, atol=1.0e-12)
+        np.testing.assert_allclose(values[1], 0.0, atol=1.0e-12)
+
+        def residual(states):
+            result = rgbd_direct_residual_jacobians(
+                states[0], states[1], tracks
+            )
+            return np.concatenate((result[0], result[1]))
+
+        analytic_blocks = (
+            np.vstack((values[2], values[4])),
+            np.vstack((values[3], values[5])),
+        )
+        epsilon = 1.0e-7
+        for state_index, analytic in enumerate(analytic_blocks):
+            numeric = np.zeros_like(analytic)
+            for column in range(6):
+                delta = np.zeros(STATE_SIZE)
+                delta[column] = epsilon
+                plus = [self.anchor.copy(), self.current.copy()]
+                minus = [self.anchor.copy(), self.current.copy()]
+                plus[state_index] = state_plus(plus[state_index], delta)
+                minus[state_index] = state_plus(minus[state_index], -delta)
+                numeric[:, column] = (
+                    residual(plus) - residual(minus)
+                ) / (2.0 * epsilon)
+            np.testing.assert_allclose(
+                analytic[:, :6], numeric[:, :6], atol=2.0e-5
+            )
+
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        previous = backend.add_state(self.anchor)
+        wrong = self.current.copy()
+        wrong[1] += 0.04
+        current = backend.add_state(wrong)
+        backend.add_rgbd_direct(previous, current, tracks)
+        factor = backend._factors[-1]
+        backend.cpp_math_core_enabled = False
+        python_hessian, python_gradient, python_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        backend.cpp_math_core_enabled = True
+        cpp_hessian, cpp_gradient, cpp_cost = backend._factor_normal(
+            factor, backend._states
+        )
+        np.testing.assert_allclose(cpp_hessian, python_hessian, atol=1.0e-7)
+        np.testing.assert_allclose(cpp_gradient, python_gradient, atol=1.0e-8)
+        self.assertAlmostEqual(cpp_cost, python_cost, places=9)
 
     def test_cpp_rgbd_depth_normal_matches_python_with_extrinsic_and_huber(self):
         angle = 0.13
