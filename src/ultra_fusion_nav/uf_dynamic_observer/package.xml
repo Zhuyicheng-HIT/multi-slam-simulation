@@ -16,14 +16,20 @@
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-psutil</exec_depend>
+  <exec_depend>rosbag2_py</exec_depend>
   <depend>sensor_msgs</depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
   <depend>std_msgs</depend>
+  <depend>uf_dynamic_interfaces</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

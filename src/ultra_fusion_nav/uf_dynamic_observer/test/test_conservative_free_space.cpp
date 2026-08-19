@@ -1,5 +1,6 @@
-#include "uf_dynamic_observer/conservative_free_space.hpp"
 #include "uf_dynamic_observer/causal_imu_deskew.hpp"
+#include "uf_dynamic_observer/clean_scan_admission.hpp"
+#include "uf_dynamic_observer/conservative_free_space.hpp"
 
 #include <gtest/gtest.h>
 
@@ -279,6 +280,78 @@ TEST(CausalImuDeskew, RejectsMissingImuCoverageAndLargeGap)
   const auto result = CausalImuDeskew(config).propagate(anchor, imu, {20000000});
   EXPECT_FALSE(result.valid);
   EXPECT_EQ(result.reason, "imu_gap_exceeded");
+}
+
+TEST(CausalImuDeskew, UsesCalibratedBiasFromPreviousPosterior)
+{
+  CausalDeskewConfig config;
+  config.max_imu_gap_s = 0.02;
+  config.gravity_world = Eigen::Vector3d::Zero();
+  CausalImuDeskew deskew(config);
+  CausalPose anchor;
+  anchor.stamp_ns = 1000000000LL;
+  anchor.has_calibrated_bias = true;
+  anchor.accel_bias = {1.0, 0.0, 0.0};
+  anchor.gyro_bias = {0.0, 0.0, 0.1};
+  const std::vector<CausalImuSample> imu{
+    {1000000000LL, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.1}},
+    {1010000000LL, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.1}}};
+  const auto result = deskew.propagate(anchor, imu, {1010000000LL});
+  ASSERT_TRUE(result.valid) << result.reason;
+  ASSERT_EQ(result.poses.size(), 1U);
+  EXPECT_NEAR(result.poses.front().position.norm(), 0.0, 1.0e-12);
+  EXPECT_NEAR(result.poses.front().velocity.norm(), 0.0, 1.0e-12);
+  EXPECT_NEAR(
+    result.poses.front().orientation.angularDistance(Eigen::Quaterniond::Identity()),
+    0.0, 1.0e-12);
+}
+
+TEST(CleanScanAdmission, KeepsStaticAndUnknownAndRemovesOnlyConfirmedDynamic)
+{
+  CleanScanAdmission admission;
+  std::vector<LabeledPoint> labels(3U);
+  labels[0].label = PointLabel::kStatic;
+  labels[1].label = PointLabel::kDynamic;
+  labels[2].label = PointLabel::kUnknown;
+  const auto result = admission.apply(5U, {0U, 2U, 4U}, labels);
+  ASSERT_TRUE(result.healthy);
+  EXPECT_FALSE(result.fail_open);
+  EXPECT_EQ(result.reason, "ok");
+  EXPECT_EQ(result.keep, (std::vector<bool>{true, true, false, true, true}));
+  EXPECT_EQ(result.static_points, 1U);
+  EXPECT_EQ(result.dynamic_removed, 1U);
+  EXPECT_EQ(result.unknown_points, 1U);
+}
+
+TEST(CleanScanAdmission, FailsOpenOnMalformedClassificationContract)
+{
+  CleanScanAdmission admission;
+  std::vector<LabeledPoint> labels(2U);
+  labels[0].label = PointLabel::kDynamic;
+  labels[1].label = PointLabel::kDynamic;
+  const auto duplicate = admission.apply(3U, {1U, 1U}, labels);
+  EXPECT_FALSE(duplicate.healthy);
+  EXPECT_TRUE(duplicate.fail_open);
+  EXPECT_EQ(duplicate.reason, "classification_index_duplicate");
+  EXPECT_EQ(duplicate.keep, (std::vector<bool>{true, true, true}));
+
+  const auto mismatch = admission.apply(3U, {1U}, labels);
+  EXPECT_FALSE(mismatch.healthy);
+  EXPECT_EQ(mismatch.reason, "classification_size_mismatch");
+  EXPECT_EQ(mismatch.keep, (std::vector<bool>{true, true, true}));
+}
+
+TEST(CleanScanAdmission, PreventsObserverFailureFromPublishingAnEmptyFrame)
+{
+  CleanScanAdmission admission;
+  std::vector<LabeledPoint> labels(2U);
+  labels[0].label = PointLabel::kDynamic;
+  labels[1].label = PointLabel::kDynamic;
+  const auto result = admission.apply(2U, {0U, 1U}, labels);
+  EXPECT_FALSE(result.healthy);
+  EXPECT_TRUE(result.fail_open);
+  EXPECT_EQ(result.reason, "empty_clean_scan_guard");
+  EXPECT_EQ(result.keep, (std::vector<bool>{true, true}));
 }
 
 }  // namespace

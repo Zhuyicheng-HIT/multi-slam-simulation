@@ -31,7 +31,9 @@ CausalDeskewResult CausalImuDeskew::propagate(
     return output;
   }
   if (!anchor.position.allFinite() || !anchor.velocity.allFinite() ||
-    anchor.orientation.norm() < 1.0e-9)
+    anchor.orientation.norm() < 1.0e-9 ||
+    (anchor.has_calibrated_bias &&
+    (!anchor.accel_bias.allFinite() || !anchor.gyro_bias.allFinite())))
   {
     output.reason = "invalid_anchor";
     return output;
@@ -94,6 +96,10 @@ CausalDeskewResult CausalImuDeskew::propagate(
   std::size_t imu_index = static_cast<std::size_t>(std::distance(imu.begin(), upper) - 1);
   CausalPose state = anchor;
   state.orientation.normalize();
+  const Eigen::Vector3d accel_bias = anchor.has_calibrated_bias ?
+    anchor.accel_bias : config_.accel_bias;
+  const Eigen::Vector3d gyro_bias = anchor.has_calibrated_bias ?
+    anchor.gyro_bias : config_.gyro_bias;
   std::int64_t current_ns = anchor.stamp_ns;
   output.poses.reserve(query_stamps_ns.size());
 
@@ -118,8 +124,8 @@ CausalDeskewResult CausalImuDeskew::propagate(
         return output;
       }
 
-      const Eigen::Vector3d omega = imu[imu_index].angular_velocity - config_.gyro_bias;
-      const Eigen::Vector3d body_accel = imu[imu_index].linear_acceleration - config_.accel_bias;
+      const Eigen::Vector3d omega = imu[imu_index].angular_velocity - gyro_bias;
+      const Eigen::Vector3d body_accel = imu[imu_index].linear_acceleration - accel_bias;
       const Eigen::Vector3d world_accel = state.orientation * body_accel + config_.gravity_world;
       state.position += state.velocity * dt + 0.5 * world_accel * dt * dt;
       state.velocity += world_accel * dt;

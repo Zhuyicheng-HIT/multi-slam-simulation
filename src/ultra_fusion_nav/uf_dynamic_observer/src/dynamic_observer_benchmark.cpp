@@ -79,20 +79,20 @@ double divide(double numerator, double denominator, double fallback = 0.0)
 double precision(const Counts & c)
 {
   return divide(static_cast<double>(c.true_positive),
-    static_cast<double>(c.true_positive + c.false_positive), 1.0);
+    static_cast<double>(c.true_positive + c.false_positive), 0.0);
 }
 
 double recall(const Counts & c)
 {
   return divide(static_cast<double>(c.true_positive),
-    static_cast<double>(c.true_positive + c.false_negative), 1.0);
+    static_cast<double>(c.true_positive + c.false_negative), 0.0);
 }
 
 double f1(const Counts & c)
 {
   const double p = precision(c);
   const double r = recall(c);
-  return divide(2.0 * p * r, p + r, 1.0);
+  return divide(2.0 * p * r, p + r, 0.0);
 }
 
 double percentile(std::vector<double> values, double q)
@@ -433,7 +433,7 @@ std::string failure_mode(const Counts & c)
   if (false_dynamic > 0.005) {
     return "static_structure_false_dynamic";
   }
-  if (recall(c) < 0.60) {
+  if (c.true_dynamic > 0U && recall(c) < 0.60) {
     return "low_dynamic_recall";
   }
   if (contamination > 0.25) {
@@ -447,9 +447,17 @@ std::string metrics_json(const Counts & c)
   std::ostringstream output;
   const double evaluated = static_cast<double>(c.true_dynamic + c.true_static);
   output << std::fixed << std::setprecision(6)
-         << "\"dynamic_precision\":" << precision(c)
-         << ",\"dynamic_recall\":" << recall(c)
-         << ",\"dynamic_f1\":" << f1(c)
+         << "\"dynamic_metrics_applicable\":" <<
+    (c.true_dynamic > 0U ? "true" : "false")
+         << ",\"dynamic_precision\":";
+  if (c.true_dynamic > 0U) {
+    output << precision(c)
+           << ",\"dynamic_recall\":" << recall(c)
+           << ",\"dynamic_f1\":" << f1(c);
+  } else {
+    output << "null,\"dynamic_recall\":null,\"dynamic_f1\":null";
+  }
+  output
          << ",\"static_preservation_rate\":"
          << divide(static_cast<double>(c.true_negative), static_cast<double>(c.true_static), 1.0)
          << ",\"false_dynamic_ratio\":"
@@ -477,13 +485,41 @@ std::string metrics_json(const Counts & c)
   return output.str();
 }
 
+std::string macro_dynamic_json(const std::vector<ScenarioResult> & scenarios)
+{
+  double precision_sum = 0.0;
+  double recall_sum = 0.0;
+  double f1_sum = 0.0;
+  std::size_t count = 0U;
+  for (const auto & scenario : scenarios) {
+    if (scenario.counts.true_dynamic == 0U) {
+      continue;
+    }
+    precision_sum += precision(scenario.counts);
+    recall_sum += recall(scenario.counts);
+    f1_sum += f1(scenario.counts);
+    ++count;
+  }
+  std::ostringstream output;
+  output << std::fixed << std::setprecision(6)
+         << "\"dynamic_macro_scenario_count\":" << count
+         << ",\"dynamic_macro_precision\":" <<
+    divide(precision_sum, static_cast<double>(count))
+         << ",\"dynamic_macro_recall\":" <<
+    divide(recall_sum, static_cast<double>(count))
+         << ",\"dynamic_macro_f1\":" <<
+    divide(f1_sum, static_cast<double>(count));
+  return output.str();
+}
+
 std::string report_json(const std::string & method, const std::vector<ScenarioResult> & scenarios)
 {
   const auto total = combine(scenarios);
   std::ostringstream output;
   output << "{\"method\":\"" << method << "\",\"seeds\":[101,202,303],"
          << "\"repeats_per_seed\":" << kRepeatsPerSeed << ','
-         << metrics_json(total) << ",\"failure_mode\":\"" << failure_mode(total)
+         << metrics_json(total) << ',' << macro_dynamic_json(scenarios)
+         << ",\"failure_mode\":\"" << failure_mode(total)
          << "\",\"scenarios\":[";
   for (std::size_t index = 0U; index < scenarios.size(); ++index) {
     if (index != 0U) {
@@ -554,6 +590,10 @@ int main(int argc, char ** argv)
   std::ostringstream report;
   report << "{\"schema\":\"uf_dynamic_observer_benchmark_v2\","
          << "\"truth_used_by_detector\":false,\"truth_role\":\"evaluator_only\","
+         << "\"aggregation_contract\":{"
+         << "\"micro\":\"pooled TP/FP/FN; static-only false positives retained\","
+         << "\"macro\":\"unweighted dynamic-bearing scenario mean\","
+         << "\"pure_static_dynamic_metrics\":\"null and excluded from macro\"},"
          << "\"missing_ray_implies_free\":false,\"low_altitude_near_constant_height\":true,"
          << "\"fastlio_input_mutations\":0,\"scenario_count\":18,"
          << "\"ate_delta_m\":0.0,\"rpe_delta_m\":0.0,"

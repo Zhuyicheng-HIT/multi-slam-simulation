@@ -53,15 +53,15 @@ milliseconds and then seconds. The causal deskew contract is:
 - prediction horizon bounded independently;
 - failure rejects the observer scan and never affects FAST-LIO.
 
-The observer estimates anchor velocity from two prior FAST-LIO posteriors. A
-production gateway should expose FAST-LIO velocity and calibrated biases in an
-explicit previous-state message before hardware cutover; this is a fidelity
-improvement, not a causal blocker for the present observer-mode stage.
+The DYN-INTEGRATION-005 candidate now exposes pose, velocity, calibrated IMU
+biases, sequence, reset epoch, and timestamp from the completed Clean FAST-LIO
+posterior. Scan i uses only a state strictly preceding it. The observer-mode
+node remains available; the production raw path is unchanged.
 
 ## Integration-stage gate
 
-The next phase may add a fail-open clean-scan gateway beside the raw path and
-run two identical FAST-LIO instances. It must compare ATE/RPE, point-to-plane
-residuals, map contamination/completeness, queue health, CPU/RAM, and latency on
-captured MID360 data before any source-topic ownership change. The raw path must
-remain immediately recoverable.
+DYN-INTEGRATION-005 added a default-off fail-open gateway and completed a frozen
+Raw/Clean dual FAST-LIO replay. The synthetic gate is recorded in
+`DYN_INTEGRATION_005_CLEAN_GATEWAY.md`. Captured team MID360 data and hardware
+scheduling remain mandatory before any source-topic ownership change; the raw
+path must remain immediately recoverable.
