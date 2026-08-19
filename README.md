@@ -89,7 +89,33 @@ bash tools/setup_ubuntu.sh
 话题桥，但应保持这些命令可用。若关键架构调整确实无法兼容旧命令，必须在
 同一个版本中更新本节和迁移说明，并在合并或发布前明确告知，不允许静默失效。
 
-### 5.0 五源统一后端 + EKF3 一键严格验证
+### 5.0 当前推荐：低空大八字 + 五源统一后端 + EKF3 ExternalNav
+
+这是当前冻结的演示/回归入口。它使用低空室内地图，RGB-D direct 因子、MID360
+原始点面、GNSS、飞控 IMU、光流和统一滑窗，并让 ArduPilot EKF3 消费统一
+ExternalNav。气压计回退、Range-Facet 和主动重定位触发仍保持冻结。
+
+如果已经配置了 `cuf_ws`，可以直接执行：
+
+```bash
+cuf_ws && bash tools/run_frozen_low_figure8_validation.sh
+```
+
+未配置 `cuf_ws` 时使用完整命令：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+source /opt/ros/humble/setup.bash
+source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
+source install/setup.bash
+bash tools/run_frozen_low_figure8_validation.sh
+```
+
+该入口默认只飞一圈大八字，并记录统一后端、ExternalNav、因子计数和因果误差。
+参考低空观察运行的 3D RMSE 为 3.23 cm、P95 为 4.97 cm、最大误差为 11.46 cm；
+ExternalNav 切回后应以新的闭环日志为准，不要直接复用观察运行指标作为飞控闭环结论。
+
+### 5.0.1 五源统一后端 + EKF3 一键严格矩形验证
 
 已完成环境恢复并配置 `cuf_ws` 的机器，使用下面一条命令启动当前仿真稳定
 候选。它会启动完整五源栈、执行一次短矩形、让 EKF3 消费 ExternalNav、记录
@@ -104,7 +130,7 @@ cuf_ws && bash tools/run_stable_five_source_validation.sh
 详细边界与已验证指标见
 [`docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md`](docs/STABLE_FIVE_SOURCE_EXTERNALNAV_20260816.md)。
 
-### 5.0.1 大八字 UI 与点云地图演示
+### 5.0.2 大八字 UI 与点云地图演示（辅助可视化）
 
 下面一条命令启动 Gazebo 图形界面、五源统一后端、视觉前端和单个 RViz，
 随后按统一后端定位执行一次三维大八字。RViz 默认显示在线共享点云、统一轨迹
@@ -118,7 +144,7 @@ cuf_ws && bash tools/run_figure8_ui_demo.sh
 拥有的 Gazebo、RViz、SITL、MAVROS 和算法子进程。航线控制不读取 Gazebo 真值，
 真值只用于评估。
 
-### 5.0.2 统一滑窗的数据所有权底线
+### 5.0.3 统一滑窗的数据所有权底线
 
 同一传感器、同一时间窗的观测只能进入统一滑窗一次。可以对不同轴采用不同
 权重或协方差，但不得把同一批数据同时包装成多个因子重复约束状态。当前 D435i
