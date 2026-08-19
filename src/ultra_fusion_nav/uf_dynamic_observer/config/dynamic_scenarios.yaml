@@ -1,0 +1,45 @@
+schema: uf_dynamic_scenarios_v1
+detector_truth_access: forbidden
+truth_usage: evaluator_only
+baseline: uf_lio_adapter.TemporalVoxelFilter
+metrics:
+  - dynamic_precision
+  - dynamic_recall
+  - dynamic_f1
+  - static_preservation_rate
+  - false_dynamic_ratio
+  - static_map_contamination
+  - map_completeness
+  - ate
+  - rpe
+  - native_lidar_factor_residual
+  - cpu_percent
+  - memory_mib
+  - latency_p50_ms
+  - latency_p95_ms
+scenarios:
+  - id: static_fast_turn
+    dynamic_entities: []
+    protects: [static_structure, pose_change]
+  - id: new_area_in_fov
+    dynamic_entities: []
+    protects: [unknown_space, new_static_structure]
+  - id: person_crossing
+    dynamic_entities: [pedestrian]
+  - id: stationary_then_moving
+    dynamic_entities: [pedestrian]
+    protects: [motion_onset]
+  - id: multiple_people_crossing
+    dynamic_entities: [pedestrian, pedestrian]
+  - id: small_fast_target
+    dynamic_entities: [small_fast_object]
+  - id: slow_target
+    dynamic_entities: [slow_object]
+  - id: moving_box_or_vehicle
+    dynamic_entities: [box_or_vehicle]
+  - id: opening_door
+    dynamic_entities: [door]
+    protects: [articulated_static_structure]
+  - id: large_dynamic_occlusion
+    dynamic_entities: [large_occluder]
+    protects: [background_reappearance]

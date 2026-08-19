@@ -1,0 +1,27 @@
+dynamic_static_map_observer:
+  ros__parameters:
+    # Safety contract: observer is opt-in and never remaps /livox/lidar.
+    enabled: false
+    input_mode: livox_custom
+    livox_topic: /livox/lidar
+    pointcloud_topic: /sim/mid360/points_raw
+    pose_topic: /fusion/unified/odom
+    world_frame: map
+    max_pending_scans: 8
+    max_pose_wait_ms: 250.0
+    max_pose_gap_s: 0.15
+
+    # T_body_lidar. Replace with the audited MID360-to-body calibration.
+    extrinsic.body_from_lidar_translation: [0.0, 0.0, 0.0]
+    extrinsic.body_from_lidar_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+    filter.voxel_size_m: 0.25
+    filter.min_range_m: 0.5
+    filter.max_range_m: 35.0
+    filter.free_confirmations: 4
+    filter.static_confirmations: 2
+    filter.occupied_recovery: 20
+    filter.endpoint_guard_voxels: 1
+    filter.dynamic_growth_voxels: 1
+    filter.ray_stride: 4
+    filter.max_voxels: 1500000
