@@ -163,11 +163,13 @@ be a clean ROS2/C++ implementation that combines:
    trajectory used by FAST-LIO;
 4. bounded queues, fail-open diagnostics, and no truth access.
 
-The first observer implements items 1, 3 (using delayed committed poses only in
-observer mode), and 4. A true MID360 angular raycast enhancement is intentionally
-not enabled until a measured scan-pattern/FoV mask proves it does not create
-false free space. The long-term map-refinement backend remains a separate next
-step.
+Observer v2 now implements items 1 and 4 plus a causal form of item 3: the
+latest FAST-LIO posterior no newer than scan start anchors raw IMU propagation
+to every Livox point offset. Delayed unified-pose deskew is no longer accepted,
+so the proposed gateway has no unified-backend feedback cycle. A true MID360
+angular raycast enhancement remains intentionally disabled until a measured
+scan-pattern/FoV mask proves it does not create false free space. The long-term
+map-refinement backend remains separate.
 
 ## Proposed production boundary
 
