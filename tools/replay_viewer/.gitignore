@@ -1,0 +1,4 @@
+node_modules/
+dist/
+public/replay/*
+!public/replay/.gitignore
