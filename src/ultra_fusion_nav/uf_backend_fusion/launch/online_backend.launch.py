@@ -143,6 +143,16 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "visual_rotation_body_camera",
+            default_value="[0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]",
+            description="Measured row-major rotation for T_body_camera",
+        ),
+        DeclareLaunchArgument(
+            "visual_translation_body_camera_m",
+            default_value="[0.20, 0.0, 0.02]",
+            description="Measured translation in metres for T_body_camera",
+        ),
+        DeclareLaunchArgument(
             "barometer_topic", default_value="/mavros/imu/static_pressure"
         ),
         DeclareLaunchArgument(
@@ -310,6 +320,14 @@ def generate_launch_description():
                     "visual_time_calibration_apply_locked": ParameterValue(
                         LaunchConfiguration("visual_time_calibration_apply_locked"),
                         value_type=bool,
+                    ),
+                    "visual_rotation_body_camera": ParameterValue(
+                        LaunchConfiguration("visual_rotation_body_camera"),
+                        value_type=List[float],
+                    ),
+                    "visual_translation_body_camera_m": ParameterValue(
+                        LaunchConfiguration("visual_translation_body_camera_m"),
+                        value_type=List[float],
                     ),
                     "barometer_topic": LaunchConfiguration("barometer_topic"),
                     "axis_information_handoff_enabled": ParameterValue(
