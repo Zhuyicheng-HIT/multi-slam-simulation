@@ -104,6 +104,15 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn('stop_collector "$resource_pid"', runner)
         self.assertIn("resource_metrics.json", runner)
 
+    def test_validation_records_lio_dynamic_diagnostics(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("record_reliability_timeline.py", runner)
+        self.assertIn('stop_collector "$timeline_pid"', runner)
+        self.assertIn("/lio/diagnostics", runner)
+
     def test_truth_subscription_is_confined_to_route_controller(self):
         route = (
             SIM_ROOT

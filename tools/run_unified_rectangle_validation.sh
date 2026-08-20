@@ -588,6 +588,14 @@ python3 "$REPO_ROOT/tools/unified_runtime_metrics.py" --duration "$METRICS_DURAT
 metrics_pid=$!
 pids+=("$metrics_pid")
 
+setsid python3 \
+  "$REPO_ROOT/src/ultra_fusion_nav/scripts/record_reliability_timeline.py" \
+  --duration "$METRICS_DURATION" \
+  --output "$LOG_DIR/reliability_timeline.json" \
+  >"$LOG_DIR/reliability_timeline.log" 2>&1 &
+timeline_pid=$!
+pids+=("$timeline_pid")
+
 relocalization_trigger_pid=""
 if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_SIM_S" ||
   -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ||
@@ -672,6 +680,7 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /vision/rgbd_geometry_tracks \
       /vision/rgbd_direct_tracks \
       /fusion/unified/visual_timing \
+      /lio/diagnostics \
       /calibration/lidar_relative_motion \
       /fusion/unified/odom \
       /fusion/unified/map_pose \
@@ -796,6 +805,7 @@ fi
 if [[ -n "$collector_stop_reason" ]]; then
   stop_collector "$metrics_pid"
   stop_collector "$drift_pid"
+  stop_collector "$timeline_pid"
   stop_collector "$reliability_pid"
   stop_collector "$replay_bag_pid"
   stop_collector "$resource_pid"
@@ -830,6 +840,8 @@ with open(path, "w", encoding="utf-8") as stream:
 PY
   metrics_status=0
 fi
+timeline_status=0
+wait "$timeline_pid" || timeline_status=$?
 drift_status=0
 wait "$drift_pid" || drift_status=$?
 if [[ -n "$collector_stop_reason" && -s "$LOG_DIR/slam_drift.json" ]]; then
@@ -873,6 +885,13 @@ fi
 if (( metrics_status != 0 )); then
   printf 'metric_collection_failed: runtime=%d\n' \
     "$metrics_status" >&2
+  exit 3
+fi
+if (( timeline_status != 0 )) ||
+  [[ ! -s "$LOG_DIR/reliability_timeline.json" ]]
+then
+  printf 'timeline_collection_failed: status=%d report=%s\n' \
+    "$timeline_status" "$LOG_DIR/reliability_timeline.json" >&2
   exit 3
 fi
 if (( drift_status != 0 )); then
