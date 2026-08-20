@@ -17,6 +17,7 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>uf_dynamic_observer</depend>
   <depend>uf_interfaces</depend>
   <depend>pcl_conversions</depend>
 

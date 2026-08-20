@@ -13,6 +13,7 @@ PATCH_FILES=(
   "$PATCH_DIR/0003-relocalization-epoch-gate.patch"
   "$PATCH_DIR/0004-native-lidar-factor-epoch-contract.patch"
   "$PATCH_DIR/0005-reliable-native-factor-qos.patch"
+  "$PATCH_DIR/0006-previous-posterior-export.patch"
 )
 
 if ! git -C "$FAST_LIO_SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -41,7 +42,10 @@ fi
 # Later patches build on files introduced or changed by earlier patches, so
 # validate and apply the pinned series in order.
 for patch_file in "${PATCH_FILES[@]}"; do
-  git -C "$FAST_LIO_SRC" apply --unidiff-zero --check "$patch_file"
-  git -C "$FAST_LIO_SRC" apply --unidiff-zero "$patch_file"
+  # Historical patches were generated from several staged integration commits;
+  # --recount validates their actual hunk bodies instead of trusting stale line
+  # counts while preserving strict context checking.
+  git -C "$FAST_LIO_SRC" apply --unidiff-zero --recount --check "$patch_file"
+  git -C "$FAST_LIO_SRC" apply --unidiff-zero --recount "$patch_file"
 done
 echo "Applied FAST-LIO downstream-backend patch series to $FAST_LIO_SRC"

@@ -1,0 +1,44 @@
+clean_scan_gateway:
+  ros__parameters:
+    # Opt-in candidate only. Production /livox/lidar is never remapped here.
+    enabled: false
+    raw_topic: /livox/lidar
+    clean_topic: /dynamic_observer/clean/livox
+    imu_topic: /livox/imu
+    previous_state_topic: /clean_fast_lio/previous_state
+    fusion_epoch_topic: /fusion/unified/epoch
+    expected_map_frame: camera_init
+    expected_body_frame: body
+    max_pending_scans: 8
+    max_state_wait_ms: 250.0
+    max_processing_ms: 20.0
+    reinit.reseed_healthy_scans: 6
+
+    deskew.max_imu_gap_s: 0.025
+    deskew.max_prediction_horizon_s: 0.20
+    deskew.gravity_world: [0.0, 0.0, -9.80665]
+
+    extrinsic.body_from_lidar_translation: [0.0, 0.0, 0.0]
+    extrinsic.body_from_lidar_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+    filter.voxel_size_m: 0.25
+    filter.min_range_m: 0.5
+    filter.max_range_m: 35.0
+    filter.free_confirmations: 4
+    filter.static_confirmations: 2
+    filter.occupied_recovery: 20
+    filter.endpoint_guard_voxels: 1
+    filter.dynamic_growth_voxels: 1
+    filter.ray_stride: 1
+    filter.max_voxels: 1500000
+    filter.dynamic_confirmations: 1
+    filter.dynamic_free_view_bins: 3
+    filter.dynamic_hold_scans: 12
+    filter.vacated_hold_scans: 8
+    filter.static_vacate_confirmations: 1
+    filter.dynamic_track_radius_voxels: 1
+    filter.vacated_surface_radius_voxels: 1
+    filter.static_support_radius_voxels: 1
+    filter.min_static_neighbor_voxels: 0
+    filter.far_range_m: 15.0
+    filter.far_static_confirmations: 12
