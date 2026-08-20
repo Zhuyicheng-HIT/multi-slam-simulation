@@ -9,6 +9,7 @@ from cv_bridge import CvBridge
 import numpy as np
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     QoSDurabilityPolicy,
@@ -730,9 +731,12 @@ def main(args=None):
     node = ExactRgbdFeatureFrontend()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

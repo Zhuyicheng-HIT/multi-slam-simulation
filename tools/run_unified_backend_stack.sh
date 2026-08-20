@@ -54,6 +54,8 @@ CALIBRATION_APPLY_LOCKED_ROTATION=${CALIBRATION_APPLY_LOCKED_ROTATION:-false}
 VISUAL_TIME_CALIBRATION_APPLY_LOCKED=${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}
 USE_SIM_TIME=${USE_SIM_TIME:-true}
 OPTICAL_FLOW_INPUT_TOPIC=${OPTICAL_FLOW_INPUT_TOPIC:-/sim/optical_flow/rad}
+D435_COLOR_INPUT_TOPIC=${D435_COLOR_INPUT_TOPIC:-/front/d435i/color/image_raw}
+D435_DEPTH_INPUT_TOPIC=${D435_DEPTH_INPUT_TOPIC:-/front/d435i/aligned_depth_to_color/image_raw}
 SENSOR_PIPELINE_CONFIG=${SENSOR_PIPELINE_CONFIG:-$REPO_ROOT/src/ultra_fusion_nav/uf_sensor_pipeline/config/sim_sensor_config.yaml}
 GNSS_INPUT_TOPIC=${GNSS_INPUT_TOPIC:-/mavros/global_position/raw/fix}
 GNSS_RAW_INPUT_TOPIC=${GNSS_RAW_INPUT_TOPIC:-/mavros/gpsstatus/gps1/raw}
@@ -154,6 +156,8 @@ setsid ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
   enable_vision:="$ENABLE_VISION_ARG" \
   active_modalities:="$ACTIVE_MODALITIES" \
   optical_flow_input_topic:="$OPTICAL_FLOW_INPUT_TOPIC" \
+  d435_color_input_topic:="$D435_COLOR_INPUT_TOPIC" \
+  d435_depth_input_topic:="$D435_DEPTH_INPUT_TOPIC" \
   gnss_input_topic:="$GNSS_INPUT_TOPIC" \
   gnss_raw_input_topic:="$GNSS_RAW_INPUT_TOPIC" \
   gnss_algorithm_rate_hz:="$GNSS_ALGORITHM_RATE_HZ" \
