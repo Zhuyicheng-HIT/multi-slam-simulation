@@ -1,0 +1,5 @@
+relocalization_node:
+  ros__parameters:
+    # Explicit opt-in overlay. Use only with long_term_static_map_refinement
+    # enabled and publishing the same map frame expected by relocalization.
+    keyframe_cloud_topic: /mapping/long_term_static/relocalization_points
