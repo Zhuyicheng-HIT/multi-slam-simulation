@@ -1,0 +1,49 @@
+long_term_static_map_refinement:
+  ros__parameters:
+    # Opt-in project-owned map. It never remaps /livox/lidar and it is not an
+    # estimator input. On missing causal state, the last good map is held.
+    enabled: false
+    scored_cloud_topic: /dynamic_observer/scored_cloud
+    previous_state_topic: /clean_fast_lio/previous_state
+    output_topic: /mapping/long_term_static/points
+    relocalization_topic: /mapping/long_term_static/relocalization_points
+    loop_closure_topic: /mapping/long_term_static/loop_closure_points
+    status_topic: /mapping/long_term_static/status
+    expected_frame_id: ""
+    maximum_previous_state_age_s: 0.30
+    maximum_state_history: 128
+    publish_period_s: 1.0
+
+    map.voxel_size_m: 0.25
+    map.min_range_m: 0.5
+    map.max_range_m: 35.0
+    map.static_candidate_observations: 2
+    map.static_confirmed_observations: 6
+    map.static_confirmed_duration_s: 1.0
+    map.static_confirmed_view_bins: 2
+    map.static_consistency_ratio: 0.65
+    map.candidate_free_contradictions: 2
+    map.dynamic_candidate_free_traversals: 3
+    map.dynamic_confirmed_free_traversals: 6
+    map.dynamic_confirmed_view_bins: 2
+    map.dynamic_confirmed_duration_s: 0.4
+    map.dynamic_label_confirmations: 2
+    map.dynamic_recovery_static_observations: 12
+    map.dynamic_recovery_duration_s: 2.0
+    map.far_range_m: 12.0
+    # Far non-repetitive returns require a deliberately long history. This
+    # preserves weakly observable targets as UNKNOWN instead of permanent map.
+    map.far_static_confirmed_observations: 60
+    map.far_static_confirmed_duration_s: 15.0
+    map.far_static_confirmed_view_bins: 6
+    map.endpoint_guard_voxels: 1
+    map.ray_stride: 2
+    map.max_voxels: 1500000
+    map.stale_dynamic_after_scans: 1200
+
+    # Optional D435i semantic evidence is auxiliary only. The default shadow
+    # mode records agreement without changing voxel state.
+    semantic_auxiliary.enabled: false
+    semantic_auxiliary.shadow_only: true
+    semantic_auxiliary.topic: /semantic/dynamic_evidence
+    semantic_auxiliary.dynamic_threshold: 0.70
