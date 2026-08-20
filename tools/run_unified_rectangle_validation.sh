@@ -685,6 +685,8 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /fusion/unified/odom \
       /fusion/unified/map_pose \
       /lio/odom \
+      /lio/local_map \
+      /lidar/points_deskewed \
       /fusion/unified/diagnostics \
       /fusion/unified/epoch \
       /relocalization/result \

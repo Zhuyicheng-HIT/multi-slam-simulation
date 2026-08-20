@@ -114,6 +114,14 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn('stop_collector "$timeline_pid"', runner)
         self.assertIn("/lio/diagnostics", runner)
 
+    def test_validation_records_relocalization_point_cloud_inputs(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("/lio/local_map", runner)
+        self.assertIn("/lidar/points_deskewed", runner)
+
     def test_truth_subscription_is_confined_to_route_controller(self):
         route = (
             SIM_ROOT
