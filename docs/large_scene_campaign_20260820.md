@@ -164,12 +164,61 @@ least `0.12` on the 20 Hz ExternalNav stream. A slower simulation now exits
 before GUIDED/arming instead of spending a route attempt on stale MAVLink and
 estimator traffic. The ordinary frozen validator leaves this gate disabled.
 
+The first RTF-gated tunnel attempt reached takeoff and route checkpoint 1, but
+a 1.26 s MAVROS heartbeat loss was represented by an empty/disarmed state and
+the route stopped before the reconnect arrived. Route supervision now permits
+at most 2.0 s of `connected=false` only when preceded by a confirmed
+connected/GUIDED/armed state. A connected disarm or mode change still stops
+immediately. This change passed 13 focused tests and did not alter estimator or
+FCU parameters.
+
+## Static repetitive-tunnel failure baseline
+
+Evidence: `logs/large_scene_tunnel_static_heartbeat_grace_20260820`
+
+The heartbeat fix allowed takeoff, calibration excitation, and five route
+checkpoints (about 10 m commanded route distance). The run then exposed a real
+longitudinal observability failure and ended in EKF3 variance LAND. It is a
+valid failed baseline, not a complete tunnel route.
+
+| Result | Observed |
+| --- | ---: |
+| Planned route / reached checkpoints | 146.44 m / 5 |
+| Causal unified 3D RMSE / P95 / max | 31.65 / 83.28 / 157.66 m |
+| Causal unified XY / Z RMSE | 31.64 / 0.86 m |
+| Unified endpoint error | 157.66 m |
+| Causal FAST-LIO 3D RMSE / P95 / max | 16.02 / 44.22 / 69.31 m |
+| First unified error above 0.20 m | simulation stamp 48.114 s |
+| Optimization rejected / rolled back | 86 / 86 |
+| Native queue discarded / superseded | 57 / 57 |
+| Final native LiDAR rank / condition | 2 / infinite |
+| Maximum output position variance | 289751.7 m2 |
+| Validation CPU P50 / P95 | 964 / 1503 percent (multi-core sum) |
+| Validation RSS P50 / max | 4099 / 4209 MiB |
+| Global GPU P50 / P95 | 22 / 99 percent |
+
+The causal chain is: FAST-LIO loses along-tunnel translation; unified output
+stalls near local y=10 m; excessive translation corrections are rejected;
+GNSS XY NIS rejection/downweighting rises to 92; scheduler enters
+`RELOCALIZING`; EKF3 reports position lost and changes to LAND. At the end,
+Gazebo truth (evaluation only) was near y=169 m while FCU/unified local
+coordinates remained near y=10--12 m. The aircraft had physically left the
+96 m tunnel, explaining why the simulated LiDAR later contained almost no
+environment returns. Truth was not used by the estimator or route feedback.
+
+The body filter was not the cause: the direct bridge's cumulative removal
+ratio was about `0.12%`, while environment returns fell from about 19,800 to
+single digits only after physical divergence. LiDAR dynamic and uncertain
+ratios were also low (median `0.97%` and `2.42%`), with median feature
+repeatability `0.913`. The replay bag contains 410 deskewed scans and 62 local
+maps, so the next core change can be evaluated as a single-variable replay.
+
 ## Current interpretation
 
-The campaign validates the large-scene launcher, one static repeat, and one
-dynamic screening route. It is not a stable accuracy release: static
-repeatability is weak, maximum-error gates remain red, and no relocalization or
-tunnel profile has completed.
+The campaign validates the large-scene launcher, one static repeat, one
+dynamic screening route, and a causally diagnosed static tunnel failure. It is
+not a stable accuracy release: static repeatability is weak, maximum-error
+gates remain red, and no relocalization or tunnel profile has completed.
 
 The existing `TemporalVoxelFilter` produces dynamic/static diagnostics and a
 filtered cloud for downstream consumers. It does not remove dynamic points
