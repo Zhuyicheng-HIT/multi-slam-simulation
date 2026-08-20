@@ -50,6 +50,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("flow_min_quality", 0)
         self.declare_parameter("flow_max_age_s", 1.0)
         self.declare_parameter("command_retry_s", 60.0)
+        self.declare_parameter("mavros_disconnect_grace_s", 2.0)
         self.declare_parameter("land_at_end", True)
         self.declare_parameter("land_disarm_timeout_s", 60.0)
         self.declare_parameter("final_hold_time_s", 0.0)
@@ -88,6 +89,10 @@ class GuidedRectangleWaypoints(Node):
         self.flow_min_quality = int(self.get_parameter("flow_min_quality").value)
         self.flow_max_age_s = float(self.get_parameter("flow_max_age_s").value)
         self.command_retry_s = float(self.get_parameter("command_retry_s").value)
+        self.mavros_disconnect_grace_s = max(
+            0.0,
+            float(self.get_parameter("mavros_disconnect_grace_s").value),
+        )
         self.land_at_end = bool(self.get_parameter("land_at_end").value)
         self.final_hold_time_s = max(
             0.0, float(self.get_parameter("final_hold_time_s").value)
@@ -117,6 +122,8 @@ class GuidedRectangleWaypoints(Node):
         self.home_yaw = 0.0
         self.last_status_time = 0.0
         self.last_commanded_setpoint = None
+        self.last_connected_guided_armed_wall_s = None
+        self.disconnect_grace_logged = False
 
         self.create_subscription(State, "/mavros/state", self._state_cb, 10)
         self.create_subscription(
@@ -163,6 +170,9 @@ class GuidedRectangleWaypoints(Node):
 
     def _state_cb(self, msg):
         self.state = msg
+        if msg.connected and msg.armed and msg.mode == "GUIDED":
+            self.last_connected_guided_armed_wall_s = time.monotonic()
+            self.disconnect_grace_logged = False
 
     def _pose_cb(self, msg):
         self.pose = msg
@@ -366,6 +376,27 @@ class GuidedRectangleWaypoints(Node):
         """Hook for diagnostic controllers that adapt another feedback frame."""
 
     def ensure_guided(self, label):
+        if not self.state.connected:
+            elapsed_s = math.inf
+            if self.last_connected_guided_armed_wall_s is not None:
+                elapsed_s = (
+                    time.monotonic()
+                    - self.last_connected_guided_armed_wall_s
+                )
+            if elapsed_s <= self.mavros_disconnect_grace_s:
+                if not self.disconnect_grace_logged:
+                    self.get_logger().warning(
+                        f"{label}: MAVROS heartbeat temporarily unavailable; "
+                        f"holding the active setpoint for up to "
+                        f"{self.mavros_disconnect_grace_s:.1f}s"
+                    )
+                    self.disconnect_grace_logged = True
+                return
+            raise RuntimeError(
+                f"{label}: MAVROS disconnected during an active flight "
+                f"segment for {elapsed_s:.2f}s; "
+                f"last_fcu_text={self.last_statustext}"
+            )
         if not self.state.armed:
             raise RuntimeError(
                 f"{label}: FCU disarmed during an active flight segment; "

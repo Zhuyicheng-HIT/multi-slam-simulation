@@ -157,6 +157,53 @@ def test_command_phase_retries_timed_out_mode_and_arm_services(monkeypatch):
     assert calls == {"mode": 2, "arm": 2}
 
 
+def _guided_state_node(monotonic_s):
+    node = GuidedRectangleWaypoints.__new__(GuidedRectangleWaypoints)
+    node.state = SimpleNamespace(mode="GUIDED", armed=True, connected=True)
+    node.last_statustext = ""
+    node.mavros_disconnect_grace_s = 2.0
+    node.last_connected_guided_armed_wall_s = monotonic_s
+    node.disconnect_grace_logged = False
+    node.get_logger = lambda: SimpleNamespace(warning=lambda _message: None)
+    return node
+
+
+def test_active_flight_tolerates_a_short_mavros_disconnect(monkeypatch):
+    node = _guided_state_node(10.0)
+    node.state = SimpleNamespace(mode="", armed=False, connected=False)
+    monkeypatch.setattr(waypoint_module.time, "monotonic", lambda: 11.25)
+
+    node.ensure_guided("route")
+
+    assert node.disconnect_grace_logged
+
+
+def test_active_flight_rejects_disconnect_past_grace(monkeypatch):
+    node = _guided_state_node(10.0)
+    node.state = SimpleNamespace(mode="", armed=False, connected=False)
+    monkeypatch.setattr(waypoint_module.time, "monotonic", lambda: 12.01)
+
+    try:
+        node.ensure_guided("route")
+    except RuntimeError as error:
+        assert "MAVROS disconnected" in str(error)
+    else:
+        raise AssertionError("disconnect past grace must stop the route")
+
+
+def test_connected_fcu_disarm_is_never_hidden_by_disconnect_grace(monkeypatch):
+    node = _guided_state_node(10.0)
+    node.state = SimpleNamespace(mode="GUIDED", armed=False, connected=True)
+    monkeypatch.setattr(waypoint_module.time, "monotonic", lambda: 10.1)
+
+    try:
+        node.ensure_guided("route")
+    except RuntimeError as error:
+        assert "FCU disarmed" in str(error)
+    else:
+        raise AssertionError("a connected disarm must stop the route")
+
+
 def test_strict_route_loss_freezes_current_fcu_pose_not_a_future_target():
     node = GuidedSCurveWaypoints.__new__(GuidedSCurveWaypoints)
     node.route_control_active = True
@@ -221,7 +268,7 @@ def test_calibration_only_finish_requests_land_once():
 
     node.finish_mission((0.0, 0.0, 5.0), 0.0, "calibration")
 
-    assert phases == ["landing"]
+    assert phases == ["landing", "landed"]
     assert len(calls) == 1
     assert calls[0][0] is node.land_cli
     assert calls[0][2] == "land"
