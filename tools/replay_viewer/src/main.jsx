@@ -32,7 +32,7 @@ function frameAt(frames, time) {
   return high;
 }
 
-function ReplayScene({ kind, manifest, time }) {
+function ReplayScene({ kind, manifest, time, assetBase }) {
   const mount = useRef(null);
   const state = useRef(null);
 
@@ -84,7 +84,7 @@ function ReplayScene({ kind, manifest, time }) {
           geometry.computeBoundingSphere();
         }
       };
-      fetch('/replay/lidar-local.bin').then(response => response.arrayBuffer()).then(buffer => {
+      fetch(`${assetBase}/lidar-local.bin`).then(response => response.arrayBuffer()).then(buffer => {
         if (disposed) return;
         state.current.localData = new Float32Array(buffer);
         state.current.lastFrame = -2;
@@ -128,14 +128,16 @@ function ReplayScene({ kind, manifest, time }) {
           }
         }
       };
-      fetch('/replay/lidar-map.bin').then(response => response.arrayBuffer()).then(buffer => {
-        if (disposed) return;
-        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buffer), 3));
-        geometry.computeBoundingSphere();
-        state.current.mapReady = true;
-        state.current.lastScan = -2;
-        state.current.update(state.current.time ?? 0);
-      });
+      if (manifest.mapAvailable) {
+        fetch(`${assetBase}/lidar-map.bin`).then(response => response.arrayBuffer()).then(buffer => {
+          if (disposed) return;
+          geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buffer), 3));
+          geometry.computeBoundingSphere();
+          state.current.mapReady = true;
+          state.current.lastScan = -2;
+          state.current.update(state.current.time ?? 0);
+        });
+      }
     }
 
     const resize = () => {
@@ -159,7 +161,7 @@ function ReplayScene({ kind, manifest, time }) {
       geometries.forEach(item => item.dispose()); materials.forEach(item => item.dispose());
       renderer.dispose(); host.removeChild(renderer.domElement); state.current = null;
     };
-  }, [kind, manifest]);
+  }, [kind, manifest, assetBase]);
 
   useEffect(() => { state.current?.update(time); }, [time]);
   return <div ref={mount} className="three-mount" />;
@@ -174,16 +176,29 @@ function formatClock(seconds) {
 }
 
 function App() {
+  const [catalog, setCatalog] = useState([]);
+  const [datasetId, setDatasetId] = useState('m2dgr-anomaly');
   const [manifest, setManifest] = useState(null);
   const [playing, setPlaying] = useState(true);
   const [time, setTime] = useState(0);
   const [cameraMode, setCameraMode] = useState('RGB');
   const rgbVideo = useRef(null);
   const depthVideo = useRef(null);
+  const assetBase = `/replay/${datasetId}`;
   const duration = manifest?.duration ?? FALLBACK_DURATION;
   const progress = Math.min(1, time / duration);
 
-  useEffect(() => { fetch('/replay/manifest.json').then(response => response.json()).then(setManifest); }, []);
+  useEffect(() => { fetch('/replay/catalog.json').then(response => response.json()).then(data => setCatalog(data.datasets)); }, []);
+  useEffect(() => {
+    setPlaying(false);
+    setTime(0);
+    setManifest(null);
+    setCameraMode('RGB');
+    fetch(`${assetBase}/manifest.json`).then(response => response.json()).then(data => {
+      setManifest(data);
+      setPlaying(true);
+    });
+  }, [assetBase]);
   useEffect(() => {
     const videos = [rgbVideo.current, depthVideo.current].filter(Boolean);
     videos.forEach(video => { video.playbackRate = 1; });
@@ -214,45 +229,52 @@ function App() {
   const poseFrames = useMemo(() => manifest?.trajectory.map(item => ({ time: item[0] })) ?? [], [manifest]);
   const poseIndex = frameAt(poseFrames, time);
   const pose = poseIndex >= 0 ? manifest.trajectory[poseIndex] : [0, 0, 0, 0];
-  const globalPoints = scan ? scan.mapOffset + scan.mapCount : 0;
+  const globalPoints = manifest?.mapAvailable && scan ? scan.mapOffset + scan.mapCount : 0;
+  const sourceRows = Object.entries(manifest?.counts ?? {});
+  const rateFor = name => {
+    const rates = manifest?.id === 'r3live-degenerate-02'
+      ? { LiDAR: '10.0 Hz', IMU: '204 Hz', RGB: '32.8 Hz', GNSS: '50.0 Hz' }
+      : { LiDAR: '5.02 Hz', IMU: '100 Hz', RGB: '15.0 Hz', Depth: '15.0 Hz', Odometry: '20.0 Hz' };
+    return rates[name] ?? '—';
+  };
 
   return <main className="app-shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark"><Layers3 size={17} /></span><div><strong>UltraFusion Replay</strong><span>多源融合数据集播放器</span></div></div>
-      <div className="dataset-select"><Database size={15} /><div><span>DATASET</span><strong>M2DGR-Plus / Anomaly</strong></div><ChevronDown size={15} /></div>
-      <div className="run-state"><Badge>{manifest ? '数据已就绪' : '正在载入'}</Badge><span className="divider" /><span>完整回放 · 46.43 s</span><span>增量地图</span><IconButton label="设置"><Settings2 size={17} /></IconButton></div>
+      <label className="dataset-select"><Database size={15} /><div><span>DATASET</span><select value={datasetId} onChange={event => setDatasetId(event.target.value)}>{catalog.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div><ChevronDown size={15} /></label>
+      <div className="run-state"><Badge>{manifest ? '数据已就绪' : '正在载入'}</Badge><span className="divider" /><span>完整回放 · {duration.toFixed(2)} s</span><span>{manifest?.mapAvailable ? '增量地图' : '原始数据模式'}</span><IconButton label="设置"><Settings2 size={17} /></IconButton></div>
     </header>
 
     <section className="workspace">
       <div className="upper-grid">
         <article className="viewer-panel local-panel">
-          <PanelHeader icon={<CircleDot size={15} />} title="局部 LiDAR" topic="/rslidar_points">
+          <PanelHeader icon={<CircleDot size={15} />} title="局部 LiDAR" topic={manifest?.topics?.lidar ?? 'loading'}>
             <Badge>{scanIndex >= 0 ? `${scanIndex + 1} / ${manifest?.lidarFrames.length}` : '等待首帧'}</Badge><IconButton label="重置视角"><RotateCcw size={15} /></IconButton><IconButton label="全屏"><Maximize2 size={15} /></IconButton>
           </PanelHeader>
-          <div className="viewer-body"><ReplayScene kind="local" manifest={manifest} time={time} /><div className="axis-widget"><b className="x">X</b><b className="y">Y</b><b className="z">Z</b></div><div className="viewer-readout"><span>POINTS <b>{scan?.localCount.toLocaleString() ?? 0}</b></span><span>RANGE <b>0–90 m</b></span><span>FRAME <b>rslidar</b></span></div></div>
+          <div className="viewer-body"><ReplayScene kind="local" manifest={manifest} time={time} assetBase={assetBase} /><div className="axis-widget"><b className="x">X</b><b className="y">Y</b><b className="z">Z</b></div><div className="viewer-readout"><span>POINTS <b>{scan?.localCount.toLocaleString() ?? 0}</b></span><span>RANGE <b>0–90 m</b></span><span>FRAME <b>{manifest?.id === 'r3live-degenerate-02' ? 'camera_init' : 'rslidar'}</b></span></div></div>
         </article>
 
         <article className="viewer-panel camera-panel">
-          <PanelHeader icon={<Camera size={15} />} title="相机" topic={cameraMode === 'RGB' ? '/camera/color/image_raw' : '/camera/aligned_depth_to_color/image_raw'}>
-            <div className="segmented"><button className={cameraMode === 'RGB' ? 'selected' : ''} onClick={() => setCameraMode('RGB')}>RGB</button><button className={cameraMode === 'Depth' ? 'selected' : ''} onClick={() => setCameraMode('Depth')}>Depth</button></div><IconButton label="全屏"><Maximize2 size={15} /></IconButton>
+          <PanelHeader icon={<Camera size={15} />} title="相机" topic={cameraMode === 'RGB' ? manifest?.topics?.camera : manifest?.topics?.depth}>
+            <div className="segmented"><button className={cameraMode === 'RGB' ? 'selected' : ''} onClick={() => setCameraMode('RGB')}>RGB</button><button disabled={!manifest?.depthFrames} className={cameraMode === 'Depth' ? 'selected' : ''} onClick={() => setCameraMode('Depth')}>Depth</button></div><IconButton label="全屏"><Maximize2 size={15} /></IconButton>
           </PanelHeader>
-          <div className="camera-feed replay-video"><video ref={rgbVideo} className={cameraMode === 'RGB' ? 'visible' : ''} src="/replay/camera-rgb.webm" muted playsInline onEnded={() => { setPlaying(false); setTime(duration); }} /><video ref={depthVideo} className={cameraMode === 'Depth' ? 'visible' : ''} src="/replay/camera-depth.webm" muted playsInline /><div className="camera-readout"><span>640 × 480</span><span>15.00 Hz</span><Badge>{Math.min(manifest?.rgbFrames ?? 0, Math.floor(time * 15) + 1)} / {manifest?.rgbFrames ?? 696}</Badge></div></div>
+          <div className="camera-feed replay-video"><video key={`${datasetId}-rgb`} ref={rgbVideo} className={cameraMode === 'RGB' ? 'visible' : ''} src={`${assetBase}/camera-rgb.webm`} muted playsInline onEnded={() => { setPlaying(false); setTime(duration); }} />{manifest?.depthFrames > 0 && <video key={`${datasetId}-depth`} ref={depthVideo} className={cameraMode === 'Depth' ? 'visible' : ''} src={`${assetBase}/camera-depth.webm`} muted playsInline />}<div className="camera-readout"><span>{manifest?.id === 'r3live-degenerate-02' ? '1280 × 1024' : '640 × 480'}</span><span>{manifest?.cameraFps.toFixed(2)} Hz</span><Badge>{Math.min(manifest?.rgbFrames ?? 0, Math.floor(time * (manifest?.cameraFps ?? 1)) + 1)} / {manifest?.rgbFrames ?? 0}</Badge></div></div>
         </article>
       </div>
 
       <div className="lower-grid">
         <article className="global-view">
-          <PanelHeader icon={<Box size={15} />} title="增量全局点云与轨迹" topic="odom_combined">
-            <div className="legend"><span><i className="map-dot"/>已建地图</span><span><i className="traj-line"/>当前轨迹</span></div><IconButton label="放大"><ZoomIn size={15} /></IconButton><IconButton label="缩小"><ZoomOut size={15} /></IconButton><IconButton label="定位载体"><Crosshair size={15} /></IconButton><IconButton label="全屏"><Maximize2 size={15} /></IconButton>
+          <PanelHeader icon={<Box size={15} />} title={manifest?.mapAvailable ? '增量全局点云与轨迹' : '全局地图'} topic={manifest?.topics?.pose ?? 'unavailable'}>
+            {manifest?.mapAvailable && <div className="legend"><span><i className="map-dot"/>已建地图</span><span><i className="traj-line"/>当前轨迹</span></div>}<IconButton label="放大"><ZoomIn size={15} /></IconButton><IconButton label="缩小"><ZoomOut size={15} /></IconButton><IconButton label="定位载体"><Crosshair size={15} /></IconButton><IconButton label="全屏"><Maximize2 size={15} /></IconButton>
           </PanelHeader>
-          <div className="global-canvas"><ReplayScene kind="global" manifest={manifest} time={time} /><div className="pose-readout"><span>POSITION</span><strong>{pose.slice(1).map(value => value.toFixed(2)).join('  ')} m</strong><span>MAP POINTS</span><strong>{globalPoints.toLocaleString()}</strong></div></div>
+          <div className="global-canvas"><ReplayScene kind="global" manifest={manifest} time={time} assetBase={assetBase} />{manifest?.mapAvailable ? <div className="pose-readout"><span>POSITION</span><strong>{pose.slice(1).map(value => value.toFixed(2)).join('  ')} m</strong><span>MAP POINTS</span><strong>{globalPoints.toLocaleString()}</strong></div> : <div className="map-unavailable"><strong>无可用位姿</strong><span>{manifest?.mapReason}</span><small>仅播放原始相机与当前 LiDAR 扫描</small></div>}</div>
         </article>
 
         <aside className="telemetry">
           <div className="telemetry-head"><Gauge size={15}/><strong>回放状态</strong><Badge>{playing ? 'PLAYING' : 'PAUSED'}</Badge></div>
-          <dl className="metric-list"><div><dt>数据时间</dt><dd>{time.toFixed(2)} <small>s</small></dd></div><div><dt>完成度</dt><dd>{(progress * 100).toFixed(1)} <small>%</small></dd></div><div><dt>LiDAR 帧</dt><dd>{Math.max(0, scanIndex + 1)} <small>/ 233</small></dd></div><div><dt>地图点数</dt><dd>{globalPoints.toLocaleString()}</dd></div></dl>
-          <div className="source-table"><div className="source-row head"><span>数据源</span><span>频率</span><span>总帧</span></div><div className="source-row"><span><i className="source-ok"/>LiDAR</span><b>5.02 Hz</b><em>233</em></div><div className="source-row"><span><i className="source-ok"/>IMU</span><b>100 Hz</b><em>4,644</em></div><div className="source-row"><span><i className="source-ok"/>RGB</span><b>15.0 Hz</b><em>696</em></div><div className="source-row"><span><i className="source-ok"/>Depth</span><b>15.0 Hz</b><em>696</em></div><div className="source-row"><span><i className="source-ok"/>Odometry</span><b>20.0 Hz</b><em>928</em></div></div>
-          <div className="resource-strip"><span>MODE <b>SEEKABLE</b></span><span>MAP <b>INCREMENTAL</b></span></div>
+          <dl className="metric-list"><div><dt>数据时间</dt><dd>{time.toFixed(2)} <small>s</small></dd></div><div><dt>完成度</dt><dd>{(progress * 100).toFixed(1)} <small>%</small></dd></div><div><dt>LiDAR 帧</dt><dd>{Math.max(0, scanIndex + 1)} <small>/ {manifest?.lidarFrames.length ?? 0}</small></dd></div><div><dt>地图点数</dt><dd>{globalPoints.toLocaleString()}</dd></div></dl>
+          <div className="source-table"><div className="source-row head"><span>数据源</span><span>频率</span><span>总帧</span></div>{sourceRows.map(([name, count]) => <div className="source-row" key={name}><span><i className="source-ok"/>{name}</span><b>{rateFor(name)}</b><em>{count.toLocaleString()}</em></div>)}</div>
+          <div className="resource-strip"><span>MODE <b>SEEKABLE</b></span><span>MAP <b>{manifest?.mapAvailable ? 'INCREMENTAL' : 'UNAVAILABLE'}</b></span></div>
         </aside>
       </div>
     </section>

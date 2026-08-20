@@ -16,3 +16,54 @@
 .replay-video video.visible {
   opacity: 1;
 }
+
+.dataset-select select {
+  max-width: 220px;
+  border: 0;
+  outline: 0;
+  appearance: none;
+  color: #d9e0e3;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dataset-select option {
+  color: #d9e0e3;
+  background: #151a1d;
+}
+
+.segmented button:disabled {
+  color: #3f474b;
+  cursor: not-allowed;
+}
+
+.map-unavailable {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 7px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.map-unavailable strong {
+  color: #ffc857;
+  font-size: 14px;
+}
+
+.map-unavailable span {
+  max-width: 430px;
+  color: #9aa4a9;
+  font-size: 10px;
+}
+
+.map-unavailable small {
+  color: #59646a;
+  font-size: 9px;
+}

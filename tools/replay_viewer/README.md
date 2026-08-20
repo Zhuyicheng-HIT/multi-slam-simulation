@@ -12,7 +12,12 @@ cd tools/replay_viewer
 source /opt/ros/humble/setup.bash
 python3 scripts/export_replay_assets.py \
   /path/to/anomaly_ros2_mcap \
-  public/replay
+  public/replay/m2dgr-anomaly
+
+source /home/ld666/ultrafusion-datasets/adapters_ws/install/setup.bash
+python3 scripts/export_r3live_assets.py \
+  /path/to/degenerate_seq_02 \
+  public/replay/r3live-degenerate-02
 ```
 
 The generated WebM and binary point-cloud assets are intentionally ignored by
