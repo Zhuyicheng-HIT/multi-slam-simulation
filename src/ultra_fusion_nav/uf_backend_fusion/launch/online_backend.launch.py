@@ -173,6 +173,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "axis_information_handoff_enabled", default_value="false"
         ),
+        DeclareLaunchArgument("axis_handoff_enable_x", default_value="false"),
+        DeclareLaunchArgument("axis_handoff_enable_y", default_value="false"),
+        DeclareLaunchArgument("axis_handoff_enable_z", default_value="true"),
         DeclareLaunchArgument(
             "gnss_z_reanchor_enabled", default_value="false"
         ),
@@ -359,6 +362,18 @@ def generate_launch_description():
                     "barometer_topic": LaunchConfiguration("barometer_topic"),
                     "axis_information_handoff_enabled": ParameterValue(
                         LaunchConfiguration("axis_information_handoff_enabled"),
+                        value_type=bool,
+                    ),
+                    "axis_handoff_enable_x": ParameterValue(
+                        LaunchConfiguration("axis_handoff_enable_x"),
+                        value_type=bool,
+                    ),
+                    "axis_handoff_enable_y": ParameterValue(
+                        LaunchConfiguration("axis_handoff_enable_y"),
+                        value_type=bool,
+                    ),
+                    "axis_handoff_enable_z": ParameterValue(
+                        LaunchConfiguration("axis_handoff_enable_z"),
                         value_type=bool,
                     ),
                     "gnss_z_reanchor_enabled": ParameterValue(

@@ -48,6 +48,9 @@ case "$profile" in
     export VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS=${VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS:-45}
     export METRICS_DURATION=${METRICS_DURATION:-480}
     export DRIFT_DURATION=${DRIFT_DURATION:-470}
+    # The tunnel route is rotated onto world Y. Keep this explicit so a
+    # reported global handoff switch cannot silently leave that axis masked.
+    export VALIDATION_AXIS_HANDOFF_ENABLE_Y=${VALIDATION_AXIS_HANDOFF_ENABLE_Y:-false}
     ;;
   *)
     printf 'Unknown LARGE_SCENE_PROFILE=%s\n' "$profile" >&2
@@ -92,6 +95,10 @@ mkdir -p "$LOG_DIR"
   printf 'route_speed_mps=%s\n' "$S_CURVE_SPEED"
   printf 'relocalization_checkpoints=%s\n' "$VALIDATION_RELOCALIZATION_CHECKPOINTS"
   printf 'body_envelope_m=0.50,0.50,0.10\n'
+  printf 'axis_handoff_mask=%s,%s,%s\n' \
+    "${VALIDATION_AXIS_HANDOFF_ENABLE_X:-false}" \
+    "${VALIDATION_AXIS_HANDOFF_ENABLE_Y:-false}" \
+    "${VALIDATION_AXIS_HANDOFF_ENABLE_Z:-true}"
 } >"$LOG_DIR/campaign_profile.env"
 
 printf 'Large-scene profile: %s\n' "$profile"

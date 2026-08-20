@@ -35,6 +35,9 @@ RGBD_DEPTH_HEALTHY_LIDAR_STRIDE=${RGBD_DEPTH_HEALTHY_LIDAR_STRIDE:-1}
 RGBD_DIRECT_DEPTH_INFORMATION_SCALE=${RGBD_DIRECT_DEPTH_INFORMATION_SCALE:-0.25}
 RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE=${RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE:-0.10}
 AXIS_INFORMATION_HANDOFF_ENABLED=${AXIS_INFORMATION_HANDOFF_ENABLED:-false}
+AXIS_HANDOFF_ENABLE_X=${AXIS_HANDOFF_ENABLE_X:-false}
+AXIS_HANDOFF_ENABLE_Y=${AXIS_HANDOFF_ENABLE_Y:-false}
+AXIS_HANDOFF_ENABLE_Z=${AXIS_HANDOFF_ENABLE_Z:-true}
 RANGE_FACET_ENABLED=${RANGE_FACET_ENABLED:-false}
 GNSS_Z_REANCHOR_ENABLED=${GNSS_Z_REANCHOR_ENABLED:-false}
 BAROMETER_FALLBACK_ENABLED=${BAROMETER_FALLBACK_ENABLED:-false}
@@ -75,11 +78,17 @@ if [[ "$CPP_MATH_CORE_ENABLED" != true && "$CPP_MATH_CORE_ENABLED" != false ]]; 
   printf 'CPP_MATH_CORE_ENABLED must be true or false.\n' >&2
   exit 2
 fi
-if [[ "$AXIS_INFORMATION_HANDOFF_ENABLED" != true && \
-      "$AXIS_INFORMATION_HANDOFF_ENABLED" != false ]]; then
-  printf 'AXIS_INFORMATION_HANDOFF_ENABLED must be true or false.\n' >&2
-  exit 2
-fi
+for toggle_name in \
+  AXIS_INFORMATION_HANDOFF_ENABLED \
+  AXIS_HANDOFF_ENABLE_X \
+  AXIS_HANDOFF_ENABLE_Y \
+  AXIS_HANDOFF_ENABLE_Z; do
+  toggle_value=${!toggle_name}
+  if [[ "$toggle_value" != true && "$toggle_value" != false ]]; then
+    printf '%s must be true or false.\n' "$toggle_name" >&2
+    exit 2
+  fi
+done
 if [[ "$RANGE_FACET_ENABLED" != true && "$RANGE_FACET_ENABLED" != false ]]; then
   printf 'RANGE_FACET_ENABLED must be true or false.\n' >&2
   exit 2
@@ -337,6 +346,9 @@ backend_command=(
   -p rgbd_direct_depth_information_scale:="$RGBD_DIRECT_DEPTH_INFORMATION_SCALE"
   -p rgbd_direct_photometric_information_scale:="$RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE"
   -p axis_information_handoff_enabled:="$AXIS_INFORMATION_HANDOFF_ENABLED"
+  -p axis_handoff_enable_x:="$AXIS_HANDOFF_ENABLE_X"
+  -p axis_handoff_enable_y:="$AXIS_HANDOFF_ENABLE_Y"
+  -p axis_handoff_enable_z:="$AXIS_HANDOFF_ENABLE_Z"
   -p range_facet_enabled:="$RANGE_FACET_ENABLED"
   -p gnss_z_reanchor_enabled:="$GNSS_Z_REANCHOR_ENABLED"
   -p barometer_fallback_enabled:="$BAROMETER_FALLBACK_ENABLED"
@@ -575,6 +587,9 @@ printf 'rgbd_direct_depth_information_scale=%s\nrgbd_direct_photometric_informat
   "$RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE" >>"$OUTPUT_DIR/replay_result.env"
 printf 'axis_information_handoff_enabled=%s\n' \
   "$AXIS_INFORMATION_HANDOFF_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
+printf 'axis_handoff_enable_x=%s\naxis_handoff_enable_y=%s\naxis_handoff_enable_z=%s\n' \
+  "$AXIS_HANDOFF_ENABLE_X" "$AXIS_HANDOFF_ENABLE_Y" \
+  "$AXIS_HANDOFF_ENABLE_Z" >>"$OUTPUT_DIR/replay_result.env"
 printf 'range_facet_enabled=%s\n' \
   "$RANGE_FACET_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
 printf 'gnss_z_reanchor_enabled=%s\nbarometer_fallback_enabled=%s\nbarometer_topic=%s\n' \

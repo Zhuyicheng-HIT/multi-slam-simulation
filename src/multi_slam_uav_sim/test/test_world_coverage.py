@@ -660,6 +660,12 @@ def test_stable_unified_launch_exports_native_factors_without_scan_handshake():
     assert "FASTLIO_MAP_INSERTION_MODE:-backend_confirmed" in frontend
     assert "FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0" in frontend
     assert "FRONTEND_SCAN_PREDICTION_ENABLED:-false" in backend
+    assert "AXIS_HANDOFF_ENABLE_X:-false" in backend
+    assert "AXIS_HANDOFF_ENABLE_Y:-false" in backend
+    assert "AXIS_HANDOFF_ENABLE_Z:-true" in backend
+    assert 'axis_handoff_enable_x:="$AXIS_HANDOFF_ENABLE_X_ARG"' in backend
+    assert 'axis_handoff_enable_y:="$AXIS_HANDOFF_ENABLE_Y_ARG"' in backend
+    assert 'axis_handoff_enable_z:="$AXIS_HANDOFF_ENABLE_Z_ARG"' in backend
     assert "FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0" in validation
     assert "VALIDATION_RELIABILITY_MODE:-dynamic" in validation
     assert 'RELIABILITY_MODE="$VALIDATION_RELIABILITY_MODE"' in validation

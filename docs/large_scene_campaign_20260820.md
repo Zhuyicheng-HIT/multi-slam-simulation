@@ -213,6 +213,61 @@ ratios were also low (median `0.97%` and `2.42%`), with median feature
 repeatability `0.913`. The replay bag contains 410 deskewed scans and 62 local
 maps, so the next core change can be evaluated as a single-variable replay.
 
+## Tunnel axis-handoff screening
+
+The tunnel route is aligned with world Y. Audit of the effective backend
+configuration found that the global handoff switch was enabled, but the
+per-axis mask remained the frozen `X=false, Y=false, Z=true` default. Therefore
+the failed online tunnel run did not hand off its weak longitudinal axis.
+
+The failed bag was replayed once with the recorded Z-only mask (A) and once
+with only `axis_handoff_enable_y` changed to true (B). Both used the same
+RGB-D direct mode, dynamic reliability policy, GNSS gates, solver settings,
+and 1.0 replay rate.
+
+| Result | A: Z only | B: Y + Z |
+| --- | ---: | ---: |
+| Causal 3D RMSE / P95 / max | 3.473 / 7.852 / 9.072 m | 3.630 / 7.900 / 12.334 m |
+| Causal Y RMSE | 2.987 m | 3.165 m |
+| Endpoint error | 9.072 m | 12.334 m |
+| Y handoff frames | 0 | 306 |
+| Final Y LiDAR information scale | 1.0 | 0.000775 |
+| Optimization rejected / rolled back | 11 / 11 | 12 / 12 |
+| Maximum output position variance | 1.322 m2 | 5.460 m2 |
+| Native queue discarded / superseded | 115 / 115 | 124 / 124 |
+
+Enabling Y handoff alone did not recover the trajectory and regressed the
+screening metrics. It also exposed LiDAR prediction-gate rejection after the
+backend diverged from the recorded front-end epoch. The 1.0-rate replay is not
+fully deterministic because latest-only queue counts differed, so this is a
+screening rejection rather than a precise effect-size claim. The candidate
+must remain disabled. Parameter plumbing now records the explicit X/Y/Z mask
+so future reports cannot confuse the global enable switch with axis coverage.
+
+The pair was repeated at the repository's standard 0.5 replay rate. Both runs
+received all 575 native packets. Their bounded latest-only workers discarded
+105 packets in A and 103 in B, leaving 435 and 433 committed states.
+
+| 0.5-rate result | A: Z only | B: Y + Z |
+| --- | ---: | ---: |
+| Causal 3D RMSE / P95 / max | 3.543 / 7.933 / 9.212 m | 3.861 / 8.433 / 17.042 m |
+| Causal Y RMSE | 3.069 m | 3.426 m |
+| Endpoint error | 9.212 m | 17.042 m |
+| Y handoff frames | 0 | 395 |
+| Optimization rejected / rolled back | 26 / 26 | 31 / 31 |
+| Maximum output position variance | 4.812 m2 | 11.226 m2 |
+
+The slower replay confirms the screening rejection: B regressed despite
+discarding two fewer packets. Exact effect size remains timing-sensitive, but
+there is no evidence supporting Y handoff. A code audit also found that the
+active raw-correspondence path scales translation Jacobian columns while
+leaving point-plane residuals unchanged. That transformation can enlarge an
+isolated weak-axis update by the inverse square root of the requested scale.
+The older conditional-normal helper preserves and bounds the factor optimum,
+but it was removed from the active path when raw relinearization was enabled.
+This is an implementation-defect candidate requiring a focused unit test and
+separate replay; it is not yet a validated fix.
+
 ## Current interpretation
 
 The campaign validates the large-scene launcher, one static repeat, one
@@ -227,14 +282,18 @@ must therefore not be described as FAST-LIO map-level dynamic-object removal.
 
 ## Next controlled runs
 
-1. Restore stable Gazebo/MAVROS wall-time progress and prove a complete static
+1. Prove the axis-scaling semantics with a synthetic LiDAR-plus-GNSS normal
+   test before changing the active raw-correspondence implementation.
+2. Diagnose the front-end/map and marginal-prior epoch mismatch; do not enable
+   Y handoff or tune GNSS NIS from this screening result.
+3. Restore stable Gazebo/MAVROS wall-time progress and prove a complete static
    takeoff/route/landing run before consuming more relocalization runs.
-2. Run `city_dynamic_relocalization` at checkpoints 8 and 16, requiring clean
+4. Run `city_dynamic_relocalization` at checkpoints 8 and 16, requiring clean
    transaction, epoch, native queue, latency, and post-reset integrity evidence.
-3. Repeat static/dynamic/relocalization in the long repetitive tunnel.
-4. Use the newly recorded relocalization point clouds for deterministic replay
+5. Repeat static/dynamic/relocalization in the long repetitive tunnel.
+6. Use the newly recorded relocalization point clouds for deterministic replay
    of candidate acceptance and rejection.
-5. Change at most one core variable per A/B. Retain each failed run and use the
+7. Change at most one core variable per A/B. Retain each failed run and use the
    campaign tag for rollback if a candidate regresses.
 
 ## Verification
@@ -242,5 +301,6 @@ must therefore not be described as FAST-LIO map-level dynamic-object removal.
 - `colcon build --symlink-install --packages-select multi_slam_uav_sim`: pass.
 - `colcon test --packages-select multi_slam_uav_sim`: 155 tests pass.
 - `colcon test --packages-select uf_relocalization`: 8 test executables pass.
+- `uf_backend_fusion`: 286 tests pass after explicit axis-mask plumbing.
 - Combined recorded result: 76 tests, zero errors or failures.
 - Shell syntax, Python compile, and `git diff --check`: pass.
