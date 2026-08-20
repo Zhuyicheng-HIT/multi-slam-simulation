@@ -1,6 +1,7 @@
 #include "uf_dynamic_observer/conservative_free_space.hpp"
 
 #include <algorithm>
+#include <bitset>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -10,6 +11,8 @@ namespace uf_dynamic_observer
 {
 namespace
 {
+
+constexpr double kPi = 3.14159265358979323846;
 
 std::uint16_t saturating_increment(std::uint16_t value)
 {
@@ -258,6 +261,7 @@ VisibilityAwareDynamicObserver::VisibilityAwareDynamicObserver(
   }
   if (config_.free_confirmations == 0U || config_.static_confirmations == 0U ||
     config_.occupied_recovery == 0U || config_.dynamic_confirmations == 0U ||
+    config_.dynamic_free_view_bins == 0U || config_.dynamic_free_view_bins > 64U ||
     config_.dynamic_hold_scans == 0U || config_.vacated_hold_scans == 0U ||
     config_.static_vacate_confirmations == 0U || config_.endpoint_guard_voxels < 0 ||
     config_.dynamic_track_radius_voxels < 0 || config_.vacated_surface_radius_voxels < 0 ||
@@ -268,6 +272,19 @@ VisibilityAwareDynamicObserver::VisibilityAwareDynamicObserver(
   {
     throw std::invalid_argument("invalid visibility-aware free-space configuration");
   }
+}
+
+std::uint64_t VisibilityAwareDynamicObserver::view_bit(
+  const Point & origin, const VoxelKey & voxel) const
+{
+  const double x = (static_cast<double>(voxel.x) + 0.5) * config_.voxel_size_m;
+  const double y = (static_cast<double>(voxel.y) + 0.5) * config_.voxel_size_m;
+  const double dx = x - origin.x;
+  const double dy = y - origin.y;
+  const double azimuth = std::atan2(dy, dx);
+  const int azimuth_bin = std::clamp(
+    static_cast<int>(std::floor((azimuth + kPi) / (2.0 * kPi) * 64.0)), 0, 63);
+  return std::uint64_t{1U} << static_cast<unsigned int>(azimuth_bin);
 }
 
 VoxelKey VisibilityAwareDynamicObserver::key(const Point & point) const
@@ -442,7 +459,11 @@ FilterResult VisibilityAwareDynamicObserver::process(
   for (const auto & endpoint : endpoints) {
     const auto it = evidence_.find(endpoint);
     if (it != evidence_.end() &&
-      (it->second.confirmed_free || it->second.dynamic_until_scan >= scan_index_))
+      (it->second.dynamic_until_scan >= scan_index_ ||
+      (it->second.confirmed_free &&
+      ((it->second.free_view_mask & view_bit(sensor_origin, endpoint)) != 0U ||
+      std::bitset<64>(it->second.free_view_mask).count() >=
+      config_.dynamic_free_view_bins))))
     {
       strong_dynamic_seeds.insert(endpoint);
     }
@@ -470,12 +491,19 @@ FilterResult VisibilityAwareDynamicObserver::process(
     if (direct_free_contradiction) {
       labeled.label = PointLabel::kDynamic;
       labeled.dynamic_score = 1.0F;
+      ++result.stats.direct_free_dynamic_points;
     } else if (articulated_surface_motion) {
       labeled.label = PointLabel::kDynamic;
       labeled.dynamic_score = 0.90F;
-    } else if (current_seed_growth || tracked_motion) {
+      ++result.stats.articulated_dynamic_points;
+    } else if (current_seed_growth) {
       labeled.label = PointLabel::kDynamic;
       labeled.dynamic_score = 0.80F;
+      ++result.stats.growth_dynamic_points;
+    } else if (tracked_motion) {
+      labeled.label = PointLabel::kDynamic;
+      labeled.dynamic_score = 0.80F;
+      ++result.stats.tracked_dynamic_points;
     } else if (stable_static) {
       labeled.label = PointLabel::kStatic;
       labeled.dynamic_score = 0.0F;
@@ -503,6 +531,7 @@ FilterResult VisibilityAwareDynamicObserver::process(
     evidence.free_streak = evidence.last_free_scan + 1U == scan_index_ ?
       saturating_increment(evidence.free_streak) : 1U;
     evidence.last_free_scan = scan_index_;
+    evidence.free_view_mask |= view_bit(sensor_origin, traversed_key);
     evidence.occupied_streak = 0U;
     evidence.last_seen_scan = scan_index_;
     if (evidence.confirmed_static &&

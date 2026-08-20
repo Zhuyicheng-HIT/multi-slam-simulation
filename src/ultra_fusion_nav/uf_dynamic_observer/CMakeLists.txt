@@ -16,11 +16,13 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(uf_dynamic_interfaces REQUIRED)
+find_package(uf_interfaces REQUIRED)
 
 add_library(dynamic_observer_core
   src/causal_imu_deskew.cpp
   src/clean_scan_admission.cpp
   src/conservative_free_space.cpp
+  src/epoch_reseed_guard.cpp
   src/long_term_static_map.cpp)
 target_compile_features(dynamic_observer_core PUBLIC cxx_std_17)
 target_include_directories(dynamic_observer_core PUBLIC
@@ -33,26 +35,32 @@ target_compile_features(dynamic_observer_node PUBLIC cxx_std_17)
 target_include_directories(dynamic_observer_node PRIVATE include)
 target_link_libraries(dynamic_observer_node dynamic_observer_core Eigen3::Eigen)
 ament_target_dependencies(dynamic_observer_node
-  diagnostic_msgs geometry_msgs livox_ros_driver2 nav_msgs rclcpp sensor_msgs std_msgs)
+  diagnostic_msgs geometry_msgs livox_ros_driver2 nav_msgs rclcpp sensor_msgs std_msgs
+  uf_dynamic_interfaces uf_interfaces)
 
 add_executable(clean_scan_gateway_node src/clean_scan_gateway_node.cpp)
 target_compile_features(clean_scan_gateway_node PUBLIC cxx_std_17)
 target_include_directories(clean_scan_gateway_node PRIVATE include)
 target_link_libraries(clean_scan_gateway_node dynamic_observer_core Eigen3::Eigen)
 ament_target_dependencies(clean_scan_gateway_node
-  diagnostic_msgs livox_ros_driver2 rclcpp sensor_msgs std_msgs uf_dynamic_interfaces)
+  diagnostic_msgs livox_ros_driver2 rclcpp sensor_msgs std_msgs uf_dynamic_interfaces uf_interfaces)
 
 add_executable(dynamic_observer_benchmark src/dynamic_observer_benchmark.cpp)
 target_compile_features(dynamic_observer_benchmark PUBLIC cxx_std_17)
 target_include_directories(dynamic_observer_benchmark PRIVATE include)
 target_link_libraries(dynamic_observer_benchmark dynamic_observer_core)
 
+add_executable(dynamic_active_motion_benchmark src/dynamic_active_motion_benchmark.cpp)
+target_compile_features(dynamic_active_motion_benchmark PUBLIC cxx_std_17)
+target_include_directories(dynamic_active_motion_benchmark PRIVATE include)
+target_link_libraries(dynamic_active_motion_benchmark dynamic_observer_core)
+
 add_executable(long_term_static_map_node src/long_term_static_map_node.cpp)
 target_compile_features(long_term_static_map_node PUBLIC cxx_std_17)
 target_include_directories(long_term_static_map_node PRIVATE include)
 target_link_libraries(long_term_static_map_node dynamic_observer_core)
 ament_target_dependencies(long_term_static_map_node
-  diagnostic_msgs rclcpp sensor_msgs std_msgs uf_dynamic_interfaces)
+  diagnostic_msgs rclcpp sensor_msgs std_msgs uf_dynamic_interfaces uf_interfaces)
 
 add_executable(long_term_static_map_benchmark src/long_term_static_map_benchmark.cpp)
 target_compile_features(long_term_static_map_benchmark PUBLIC cxx_std_17)
@@ -64,7 +72,8 @@ install(TARGETS dynamic_observer_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
-install(TARGETS dynamic_observer_node dynamic_observer_benchmark clean_scan_gateway_node
+install(TARGETS dynamic_observer_node dynamic_observer_benchmark dynamic_active_motion_benchmark
+  clean_scan_gateway_node
   long_term_static_map_node long_term_static_map_benchmark
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
@@ -102,6 +111,12 @@ if(BUILD_TESTING)
     target_compile_features(test_long_term_static_map PUBLIC cxx_std_17)
     target_include_directories(test_long_term_static_map PRIVATE include)
     target_link_libraries(test_long_term_static_map dynamic_observer_core)
+  endif()
+  ament_add_gtest(test_epoch_reseed_guard test/test_epoch_reseed_guard.cpp)
+  if(TARGET test_epoch_reseed_guard)
+    target_compile_features(test_epoch_reseed_guard PUBLIC cxx_std_17)
+    target_include_directories(test_epoch_reseed_guard PRIVATE include)
+    target_link_libraries(test_epoch_reseed_guard dynamic_observer_core)
   endif()
   ament_add_pytest_test(test_evaluator_contract test/test_evaluator_contract.py)
   ament_add_pytest_test(

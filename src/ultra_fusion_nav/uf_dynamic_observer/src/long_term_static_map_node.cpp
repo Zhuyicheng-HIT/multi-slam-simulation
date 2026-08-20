@@ -1,4 +1,5 @@
 #include "uf_dynamic_observer/long_term_static_map.hpp"
+#include "uf_dynamic_observer/epoch_reseed_guard.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
@@ -8,6 +9,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <uf_dynamic_interfaces/msg/previous_fast_lio_state.hpp>
+#include <uf_interfaces/msg/fusion_epoch.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -58,6 +60,8 @@ public:
       "scored_cloud_topic", "/dynamic_observer/scored_cloud");
     const auto previous_state_topic = declare_parameter<std::string>(
       "previous_state_topic", "/clean_fast_lio/previous_state");
+    const auto fusion_epoch_topic = declare_parameter<std::string>(
+      "fusion_epoch_topic", "/fusion/unified/epoch");
     output_topic_ = declare_parameter<std::string>(
       "output_topic", "/mapping/long_term_static/points");
     relocalization_topic_ = declare_parameter<std::string>(
@@ -70,6 +74,8 @@ public:
     maximum_state_age_s_ = declare_parameter<double>("maximum_previous_state_age_s", 0.30);
     maximum_state_history_ = static_cast<std::size_t>(std::max<std::int64_t>(
       4, declare_parameter<int>("maximum_state_history", 128)));
+    epoch_guard_ = std::make_unique<EpochReseedGuard>(static_cast<std::size_t>(
+      std::max<std::int64_t>(1, declare_parameter<int>("reinit.reseed_healthy_scans", 6))));
     const double publish_period_s = declare_parameter<double>("publish_period_s", 1.0);
     semantic_enabled_ = declare_parameter<bool>("semantic_auxiliary.enabled", false);
     semantic_shadow_only_ = declare_parameter<bool>("semantic_auxiliary.shadow_only", true);
@@ -147,9 +153,34 @@ public:
         if (!message->valid) {
           return;
         }
+        const auto decision = epoch_guard_->observe_lio_state(message->reset_counter);
+        if (!decision.accepted) {
+          ++stale_epoch_state_rejections_;
+          return;
+        }
+        if (decision.reset_local_history) {
+          states_.clear();
+          map_->reset();
+          last_stamp_ = message->header.stamp;
+          ++lio_epoch_reset_count_;
+          // Replace every transient-local admission immediately. Old-frame
+          // STATIC_CONFIRMED geometry is quarantined rather than transformed
+          // without an authoritative FAST-LIO correction.
+          publish_map();
+        }
         states_.push_back(*message);
         while (states_.size() > maximum_state_history_) {
           states_.pop_front();
+        }
+      });
+    fusion_epoch_sub_ = create_subscription<uf_interfaces::msg::FusionEpoch>(
+      fusion_epoch_topic, rclcpp::QoS(20).reliable().transient_local(),
+      [this](uf_interfaces::msg::FusionEpoch::ConstSharedPtr message) {
+        const auto decision = epoch_guard_->observe_backend_epoch(
+          message->applied, message->session_id, message->transaction_id,
+          message->reset_counter);
+        if (decision.accepted) {
+          ++retained_backend_epoch_count_;
         }
       });
     scored_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -215,6 +246,13 @@ private:
       // Fail-open at the system boundary: retain the last good long-term map,
       // publish an explicit hold, and never block any scan or estimator.
       publish_status("DEGRADED", "previous_state_unavailable_map_held", 0.0);
+      return;
+    }
+    if (epoch_guard_->fail_open_required()) {
+      const bool completed = epoch_guard_->observe_reseed_scan(true);
+      publish_status(
+        "DEGRADED", completed ? "lio_epoch_reseed_complete_map_held" :
+        "lio_epoch_reseeding_map_held", 0.0);
       return;
     }
     std::vector<LabeledPoint> observations;
@@ -343,7 +381,12 @@ private:
       ",\"update_ms\":" << number(update_ms) <<
       ",\"state_wait_rejections\":" << state_wait_rejections_ <<
       ",\"frame_rejections\":" << frame_rejections_ <<
-      ",\"decode_rejections\":" << decode_rejections_ << "}";
+      ",\"decode_rejections\":" << decode_rejections_ <<
+      ",\"dynamic_epoch_state\":\"" << to_string(epoch_guard_->state()) << "\"" <<
+      ",\"reseed_scans\":" << epoch_guard_->reseed_scans() <<
+      ",\"lio_epoch_resets\":" << lio_epoch_reset_count_ <<
+      ",\"backend_epochs_retained\":" << retained_backend_epoch_count_ <<
+      ",\"stale_epoch_states\":" << stale_epoch_state_rejections_ << "}";
     message.data = json.str();
     status_pub_->publish(message);
 
@@ -383,9 +426,14 @@ private:
   std::uint64_t state_wait_rejections_{0U};
   std::uint64_t frame_rejections_{0U};
   std::uint64_t decode_rejections_{0U};
+  std::uint64_t lio_epoch_reset_count_{0U};
+  std::uint64_t retained_backend_epoch_count_{0U};
+  std::uint64_t stale_epoch_state_rejections_{0U};
   std::unique_ptr<LongTermStaticMap> map_;
+  std::unique_ptr<EpochReseedGuard> epoch_guard_;
   std::deque<uf_dynamic_interfaces::msg::PreviousFastLioState> states_;
   rclcpp::Subscription<uf_dynamic_interfaces::msg::PreviousFastLioState>::SharedPtr state_sub_;
+  rclcpp::Subscription<uf_interfaces::msg::FusionEpoch>::SharedPtr fusion_epoch_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr scored_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr semantic_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
