@@ -77,11 +77,13 @@ install(
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   tools/analyze_clean_gateway_ab_replay.py
+  tools/analyze_dynamic_localization_replay.py
   tools/clean_gateway_ros_smoke.py
   tools/dynamic_observer_ros_smoke.py
   tools/evaluate_dynamic_observer_csv.py
   tools/fast_lio_latency_probe.py
   tools/generate_clean_gateway_frozen_replay.py
+  tools/generate_dynamic_localization_frozen_replay.py
   tools/long_term_static_map_ros_smoke.py
   tools/run_clean_gateway_ab_replay.py
   DESTINATION lib/${PROJECT_NAME})
@@ -102,6 +104,8 @@ if(BUILD_TESTING)
     target_link_libraries(test_long_term_static_map dynamic_observer_core)
   endif()
   ament_add_pytest_test(test_evaluator_contract test/test_evaluator_contract.py)
+  ament_add_pytest_test(
+    test_dynamic_localization_replay test/test_dynamic_localization_replay.py)
 endif()
 
 ament_export_targets(export_dynamic_observer_core HAS_LIBRARY_TARGET)
