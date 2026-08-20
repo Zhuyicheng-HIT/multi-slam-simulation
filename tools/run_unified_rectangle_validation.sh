@@ -809,6 +809,9 @@ if [[ -n "$collector_stop_reason" ]]; then
   stop_collector "$reliability_pid"
   stop_collector "$replay_bag_pid"
   stop_collector "$resource_pid"
+  if (( route_status != 0 )); then
+    stop_collector "$relocalization_trigger_pid"
+  fi
 fi
 
 metrics_status=0

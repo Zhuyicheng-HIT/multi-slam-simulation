@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from multi_slam_uav_sim.relocalization_checkpoints import (
     MissionCheckpoint,
@@ -8,7 +9,17 @@ from multi_slam_uav_sim.relocalization_checkpoints import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
 class RelocalizationCheckpointTest(unittest.TestCase):
+    def test_checkpoint_trigger_records_route_end_interrupt(self):
+        trigger = (
+            REPO_ROOT / "tools" / "trigger_relocalization_checkpoints.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('reason = "interrupted_after_route_end"', trigger)
+
     def test_checkpoint_indices_are_positive_unique_and_increasing(self):
         self.assertEqual(parse_checkpoint_indices("3, 7,11"), (3, 7, 11))
 

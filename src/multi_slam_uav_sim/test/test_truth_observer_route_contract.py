@@ -94,6 +94,7 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn("collector_stop_reason=route_failed", runner)
         self.assertIn("route_terminated: stopping collectors", runner)
         self.assertIn('stop_collector "$replay_bag_pid"', runner)
+        self.assertIn('stop_collector "$relocalization_trigger_pid"', runner)
 
     def test_validation_records_process_and_gpu_resources(self):
         runner = (

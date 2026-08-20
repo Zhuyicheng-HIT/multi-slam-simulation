@@ -302,6 +302,8 @@ def main():
                 break
             if now_wall_s - started_wall_s >= args.wall_timeout:
                 break
+    except KeyboardInterrupt:
+        reason = "interrupted_after_route_end"
     finally:
         node.publish_request(False)
         rclpy.spin_once(node, timeout_sec=0.1)
