@@ -9,7 +9,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 # EKF3 ExternalNav control is enabled again. Their source, tests,
 # and documentation remain in the tree for later one-variable experiments.
 export VALIDATION_ROUTE=s_curve
-export VALIDATION_WORLD_NAME=low_indoor_apm_rgbd_mid360
+export VALIDATION_WORLD_NAME=${VALIDATION_WORLD_NAME:-low_indoor_apm_rgbd_mid360}
 export VALIDATION_TAKEOFF_ALT=2.2
 export VALIDATION_ENABLE_VISION=1
 export VALIDATION_VISUAL_FACTOR_MODE=rgbd_direct

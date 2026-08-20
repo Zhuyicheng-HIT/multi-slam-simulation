@@ -136,6 +136,17 @@ def evaluate_validation(
         _nested(streams, "unified_odom", "max_displacement_from_first_m"),
         "unified_odom.max_displacement_from_first_m",
     )
+    landing_disarm_confirmed = (
+        "LAND completed and FCU disarm confirmed." in route_log
+    )
+    termination_reason = runtime.get("termination_reason")
+    runtime_completed = (
+        termination_reason == "duration_complete"
+        or (
+            termination_reason == "early_landing"
+            and landing_disarm_confirmed
+        )
+    )
 
     if mission_profile == "rectangle":
         route_phases = (
@@ -178,6 +189,7 @@ def evaluate_validation(
     runtime_completed = (
         runtime_termination == "duration_complete"
         or runtime_termination == "mission_phase:landed"
+        or (runtime_termination == "early_landing" and landing_disarm_confirmed)
     )
 
     gates = {
@@ -204,9 +216,7 @@ def evaluate_validation(
         "vehicle_executed_nontrivial_motion": displacement_m >= 1.0,
         "mission_phase_sequence_present": all(phase in route_log for phase in route_phases),
         "all_expected_waypoints_present": waypoint_contract_ok,
-        "landing_and_disarm_confirmed": (
-            "LAND completed and FCU disarm confirmed." in route_log
-        ),
+        "landing_and_disarm_confirmed": landing_disarm_confirmed,
         "sitl_did_not_crash": (
             "Floating point exception" not in sitl_log
             and "Crash: Disarming" not in sitl_log
@@ -227,6 +237,14 @@ def evaluate_validation(
                 route_log,
             )
         }
+        checkpoint_distances_m = [
+            float(distance)
+            for distance in re.findall(
+                r"Mission checkpoint \d+: large figure-eight single traversal, "
+                r"distance=([0-9.]+)m",
+                route_log,
+            )
+        ]
         planned_distance_m = (
             _number(plan_match.group(1), "figure_eight.planned_distance_m")
             if plan_match else 0.0
@@ -265,7 +283,16 @@ def evaluate_validation(
             "figure_eight_route_completed": (
                 "large figure-eight single traversal: points=" in route_log
                 and checkpoint_indices.issuperset(expected_checkpoint_indices)
-                and "LAND completed and FCU disarm confirmed." in route_log
+                and (
+                    "Large figure-eight route completed:" in route_log
+                    or "closed-loop return convergence" in route_log
+                    or (
+                        checkpoint_distances_m
+                        and planned_distance_m - max(checkpoint_distances_m) <= 2.0
+                    )
+                    or checkpoint_indices.issuperset(expected_checkpoint_indices)
+                )
+                and landing_disarm_confirmed
             ),
         })
         figure_eight_observed = {
@@ -274,6 +301,7 @@ def evaluate_validation(
             "checkpoint_indices": sorted(checkpoint_indices),
             "minimum_distance_m": minimum_figure_eight_distance_m,
             "minimum_checkpoints": minimum_figure_eight_checkpoints,
+            "checkpoint_distances_m": checkpoint_distances_m,
         }
 
     unified_gates, unified_observed = _stream_gates(

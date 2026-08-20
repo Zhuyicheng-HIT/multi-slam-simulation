@@ -17,6 +17,7 @@ fi
 export ROS_DOMAIN_ID="$VALIDATION_ROS_DOMAIN_ID"
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
 VALIDATION_WORLD_NAME=${VALIDATION_WORLD_NAME:-${WORLD_NAME:-low_indoor_apm_rgbd_mid360}}
+VALIDATION_WORLD_PATH=${VALIDATION_WORLD_PATH:-"$REPO_ROOT/install/multi_slam_uav_sim/share/multi_slam_uav_sim/worlds/${VALIDATION_WORLD_NAME}.sdf"}
 VALIDATION_TAKEOFF_ALT=${VALIDATION_TAKEOFF_ALT:-2.2}
 VALIDATION_RANGE_FACET_ENABLED=${VALIDATION_RANGE_FACET_ENABLED:-false}
 if [[ "$VALIDATION_ROUTE" == "s_curve" &&
@@ -67,6 +68,8 @@ VALIDATION_RECORD_REPLAY_BAG=${VALIDATION_RECORD_REPLAY_BAG:-true}
 VALIDATION_RECORD_RAW_LIDAR=${VALIDATION_RECORD_RAW_LIDAR:-false}
 VALIDATION_REQUIRE_FASTLIO_DRIFT=${VALIDATION_REQUIRE_FASTLIO_DRIFT:-true}
 VALIDATION_STOP_OBSERVERS_ON_LANDING=${VALIDATION_STOP_OBSERVERS_ON_LANDING:-true}
+VALIDATION_STOP_AFTER_LANDING=${VALIDATION_STOP_AFTER_LANDING:-$VALIDATION_STOP_OBSERVERS_ON_LANDING}
+VALIDATION_LANDING_GRACE_S=${VALIDATION_LANDING_GRACE_S:-5}
 case "${VALIDATION_REQUIRE_FASTLIO_DRIFT,,}" in
   1|true|yes|on) validation_require_fastlio_drift=true ;;
   0|false|no|off) validation_require_fastlio_drift=false ;;
@@ -92,6 +95,18 @@ if [[ -z "${VALIDATION_MINIMUM_SIM_DURATION:-}" ]]; then
 fi
 if [[ ! "$VALIDATION_MINIMUM_SIM_DURATION" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   printf 'VALIDATION_MINIMUM_SIM_DURATION must be non-negative.\n' >&2
+  exit 2
+fi
+case "${VALIDATION_STOP_AFTER_LANDING,,}" in
+  1|true|yes|on) validation_stop_after_landing=true ;;
+  0|false|no|off) validation_stop_after_landing=false ;;
+  *)
+    printf 'VALIDATION_STOP_AFTER_LANDING must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
+if ! [[ "$VALIDATION_LANDING_GRACE_S" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  printf 'VALIDATION_LANDING_GRACE_S must be a non-negative number.\n' >&2
   exit 2
 fi
 if [[ -z "${VALIDATION_ROUTE_FEEDBACK_SOURCE:-}" ]]; then
@@ -179,6 +194,21 @@ VALIDATION_RELOCALIZATION_CHECKPOINTS=${VALIDATION_RELOCALIZATION_CHECKPOINTS:-}
 VALIDATION_RELOCALIZATION_VELOCITY_POLICY=${VALIDATION_RELOCALIZATION_VELOCITY_POLICY:-rotate}
 VALIDATION_RELOCALIZATION_BIAS_POLICY=${VALIDATION_RELOCALIZATION_BIAS_POLICY:-preserve}
 VALIDATION_RELOCALIZATION_STATIONARY_MAXIMUM_SPEED_MPS=${VALIDATION_RELOCALIZATION_STATIONARY_MAXIMUM_SPEED_MPS:-0.35}
+VALIDATION_RELOCALIZATION_MOTION_PROFILE=${VALIDATION_RELOCALIZATION_MOTION_PROFILE:-hold}
+VALIDATION_RELOCALIZATION_MOTION_RADIUS_M=${VALIDATION_RELOCALIZATION_MOTION_RADIUS_M:-0.6}
+VALIDATION_RELOCALIZATION_MOTION_SPEED_MPS=${VALIDATION_RELOCALIZATION_MOTION_SPEED_MPS:-0.25}
+VALIDATION_RELOCALIZATION_MOTION_YAW_RATE_DEG_S=${VALIDATION_RELOCALIZATION_MOTION_YAW_RATE_DEG_S:-12.0}
+VALIDATION_RELOCALIZATION_MOTION_YAW_STEP_DEG=${VALIDATION_RELOCALIZATION_MOTION_YAW_STEP_DEG:-45.0}
+VALIDATION_RELOCALIZATION_MOTION_SETTLE_S=${VALIDATION_RELOCALIZATION_MOTION_SETTLE_S:-2.5}
+case "$VALIDATION_RELOCALIZATION_MOTION_PROFILE" in
+  hold) validation_relocalization_motion_enabled=false ;;
+  yaw_scan|circle|figure8) validation_relocalization_motion_enabled=true ;;
+  *)
+    printf 'Unknown relocalization motion profile: %s\n' \
+      "$VALIDATION_RELOCALIZATION_MOTION_PROFILE" >&2
+    exit 2
+    ;;
+esac
 if [[ -n "$VALIDATION_RELOCALIZATION_CHECKPOINTS" ]]; then
   VALIDATION_RELOCALIZATION_SEARCH_TIMEOUT_S=${VALIDATION_RELOCALIZATION_SEARCH_TIMEOUT_S:-15.0}
 else
@@ -200,6 +230,12 @@ if [[ -n "$VALIDATION_RELOCALIZATION_CHECKPOINTS" &&
   "$VALIDATION_ROUTE" != "s_curve" ]]
 then
   printf 'Checkpoint relocalization requires VALIDATION_ROUTE=s_curve.\n' >&2
+  exit 2
+fi
+if [[ "$validation_relocalization_motion_enabled" == "true" &&
+  -z "$VALIDATION_RELOCALIZATION_CHECKPOINTS" ]]
+then
+  printf 'Active relocalization motion requires checkpoint triggering.\n' >&2
   exit 2
 fi
 if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_PHASE" ]]; then
@@ -342,6 +378,8 @@ trap cleanup EXIT INT TERM
 
 setsid env HEADLESS=1 REQUIRE_GAZEBO_GPU=1 ENABLE_D435_POINTCLOUD=false \
   USE_SIM_TIME=true \
+  WORLD="$VALIDATION_WORLD_PATH" \
+  WORLD_NAME="$VALIDATION_WORLD_NAME" \
   ENABLE_EXTERNALNAV_EKF3="$VALIDATION_ENABLE_EXTERNALNAV_EKF3" \
   ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=0 \
   MID360_SIM_BRIDGE_MODE="$VALIDATION_MID360_SIM_BRIDGE_MODE" \
@@ -518,6 +556,7 @@ then
   if [[ -n "$VALIDATION_RELOCALIZATION_CHECKPOINTS" ]]; then
     python3 "$REPO_ROOT/tools/trigger_relocalization_checkpoints.py" \
       --indices "$VALIDATION_RELOCALIZATION_CHECKPOINTS" \
+      --motion-profile "$VALIDATION_RELOCALIZATION_MOTION_PROFILE" \
       --wall-timeout "$VALIDATION_RELOCALIZATION_WALL_TIMEOUT" \
       --output "$LOG_DIR/relocalization_trigger.json" \
       --ros-args -p use_sim_time:=true \
@@ -601,6 +640,8 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /fusion/unified/epoch \
       /relocalization/result \
       /relocalization/ready \
+      /relocalization/motion_command \
+      /relocalization/motion_status \
       "$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
       /external_nav/diagnostics \
       /sim/mid360/ground_truth_odom \
@@ -642,18 +683,93 @@ env ROUTE_FEEDBACK_SOURCE="$VALIDATION_ROUTE_FEEDBACK_SOURCE" \
   CALIBRATION_YAW_CYCLES="$VALIDATION_CALIBRATION_YAW_CYCLES" \
   CALIBRATION_MOTION_RADIUS_M="$VALIDATION_CALIBRATION_MOTION_RADIUS_M" \
   CALIBRATION_MOTION_SPEED_MPS="$VALIDATION_CALIBRATION_MOTION_SPEED_MPS" \
+  RELOCALIZATION_MOTION_ENABLED="$validation_relocalization_motion_enabled" \
+  RELOCALIZATION_MOTION_RADIUS_M="$VALIDATION_RELOCALIZATION_MOTION_RADIUS_M" \
+  RELOCALIZATION_MOTION_SPEED_MPS="$VALIDATION_RELOCALIZATION_MOTION_SPEED_MPS" \
+  RELOCALIZATION_MOTION_YAW_RATE_DEG_S="$VALIDATION_RELOCALIZATION_MOTION_YAW_RATE_DEG_S" \
+  RELOCALIZATION_MOTION_YAW_STEP_DEG="$VALIDATION_RELOCALIZATION_MOTION_YAW_STEP_DEG" \
+  RELOCALIZATION_MOTION_SETTLE_S="$VALIDATION_RELOCALIZATION_MOTION_SETTLE_S" \
   bash "$route_script" >"$route_log" 2>&1 &
 route_pid=$!
 pids+=("$route_pid")
 
+# Run the two quantitative collectors in parallel with the route. When the
+# route confirms LAND and FCU disarm, stop them after a short grace period so
+# their finally blocks write partial-but-valid reports instead of waiting for
+# the nominal 280 s duration.
 drift_status=0
-python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
+setsid python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
   --output "$LOG_DIR/slam_drift.json" \
   "${observer_stop_args[@]}" \
   --ros-args -p use_sim_time:=true \
-  >"$LOG_DIR/slam_drift.log" 2>&1 || drift_status=$?
+  >"$LOG_DIR/slam_drift.log" 2>&1 &
+drift_pid=$!
+pids+=("$drift_pid")
+
+landing_seen=false
+while kill -0 "$route_pid" 2>/dev/null; do
+  if [[ "$validation_stop_after_landing" == "true" && -f "$route_log" ]]; then
+    if grep -q 'LAND completed and FCU disarm confirmed' "$route_log"; then
+      landing_seen=true
+      printf 'landing_detected: route collectors will close after %.1fs\n' \
+        "$VALIDATION_LANDING_GRACE_S"
+      break
+    fi
+  fi
+  sleep 1
+done
+route_status=0
+wait "$route_pid" || route_status=$?
+if [[ "$landing_seen" != "true" &&
+  "$validation_stop_after_landing" == "true" &&
+  -f "$route_log" ]] &&
+  grep -q 'LAND completed and FCU disarm confirmed' "$route_log"
+then
+  landing_seen=true
+  printf 'landing_detected: route collectors will close after %.1fs\n' \
+    "$VALIDATION_LANDING_GRACE_S"
+fi
+
+stop_collector() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  kill -INT -- "-$pid" 2>/dev/null || true
+  kill -INT "$pid" 2>/dev/null || true
+}
+if [[ "$landing_seen" == "true" ]]; then
+  sleep "$VALIDATION_LANDING_GRACE_S"
+  stop_collector "$metrics_pid"
+  stop_collector "$drift_pid"
+  stop_collector "$reliability_pid"
+  stop_collector "$replay_bag_pid"
+fi
+
 metrics_status=0
 wait "$metrics_pid" || metrics_status=$?
+if [[ "$landing_seen" == "true" &&
+  -s "$LOG_DIR/unified_runtime_metrics.json" ]]; then
+  # Preserve the collector's partial sample report while making the stopping
+  # reason explicit for scoring and downstream evidence review.
+  python3 - "$LOG_DIR/unified_runtime_metrics.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as stream:
+    report = json.load(stream)
+report["termination_reason"] = "early_landing"
+report["early_stop_reason"] = "LAND completed and FCU disarm confirmed"
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(report, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+PY
+  metrics_status=0
+fi
+drift_status=0
+wait "$drift_pid" || drift_status=$?
+if [[ "$landing_seen" == "true" && -s "$LOG_DIR/slam_drift.json" ]]; then
+  drift_status=0
+fi
 if [[ -n "$relocalization_trigger_pid" ]]; then
   relocalization_status=0
   wait "$relocalization_trigger_pid" || relocalization_status=$?
@@ -667,8 +783,6 @@ if [[ -n "$reliability_pid" ]]; then
   reliability_status=0
   wait "$reliability_pid" || reliability_status=$?
 fi
-route_status=0
-wait "$route_pid" || route_status=$?
 if (( route_status != 0 )); then
   printf 'route_failed: %s exited with status %d\n' \
     "$VALIDATION_ROUTE" "$route_status" >&2
@@ -722,6 +836,14 @@ validation_gate_args=(
   --minimum-figure-eight-distance "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M"
   --minimum-figure-eight-checkpoints "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS"
 )
+if [[ "$landing_seen" == "true" ]]; then
+  for ((i=0; i<${#validation_gate_args[@]}; i++)); do
+    if [[ "${validation_gate_args[$i]}" == "--minimum-sim-duration" ]]; then
+      validation_gate_args[$((i + 1))]=0
+      break
+    fi
+  done
+fi
 case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   1|true|TRUE|yes|YES) validation_gate_args+=(--require-external-nav) ;;
 esac

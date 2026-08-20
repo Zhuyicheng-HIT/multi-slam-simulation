@@ -128,6 +128,42 @@ class UnifiedValidationResultCheckerTest(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertIn("vehicle_executed_nontrivial_motion", report["failed_gates"])
 
+    def test_accepts_early_landing_after_confirmed_disarm(self):
+        accuracy, runtime, route, mavros, sitl = _valid_inputs()
+        runtime["termination_reason"] = "early_landing"
+        runtime["sim_duration_s"] = 80.0
+        report = MODULE.evaluate_validation(
+            accuracy,
+            runtime,
+            route,
+            mavros,
+            sitl,
+            minimum_sim_duration_s=0.0,
+        )
+
+        self.assertTrue(report["passed"])
+
+    def test_rejects_early_landing_without_confirmed_disarm(self):
+        accuracy, runtime, route, mavros, sitl = _valid_inputs()
+        runtime["termination_reason"] = "early_landing"
+        route = route.replace(
+            "LAND completed and FCU disarm confirmed.",
+            "land command sent",
+        )
+        report = MODULE.evaluate_validation(
+            accuracy,
+            runtime,
+            route,
+            mavros,
+            sitl,
+            minimum_sim_duration_s=0.0,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertIn(
+            "runtime_completed_requested_duration", report["failed_gates"]
+        )
+
     def test_rejects_missing_ekf3_consumption_and_landing(self):
         accuracy, runtime, route, _, sitl = _valid_inputs()
         route = route.replace("LAND completed and FCU disarm confirmed.", "land command sent")

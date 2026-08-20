@@ -3077,6 +3077,14 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         )
         self.assertEqual(node.state_reset_counter, 8)
         self.assertEqual(node.counts["relocalization_resets"], 1)
+        self.assertEqual(node.relocalization_integrity_baseline, {
+            "optimization_errors": 0,
+            "optimization_rollbacks": 0,
+            "native_consumed_without_state_commit": 0,
+            "native_worker_errors": 0,
+            "native_worker_queue_discarded": 1,
+            "native_worker_queue_overflow": 0,
+        })
         self.assertEqual(len(published_epochs), 1)
         self.assertEqual(anchors_visible_during_epoch_publish, [None])
         self.assertTrue(published_epochs[0].applied)
