@@ -4619,6 +4619,7 @@ class UnifiedBackendNode(Node):
         self.frontend_map_eligibility_order = deque()
         self.frontend_map_eligibility_capacity = max(32, 4 * self.window_size)
         self.last_relocalization_reset_stats = {}
+        self.relocalization_integrity_baseline = {}
 
         self.odom_pub = self.create_publisher(
             Odometry, str(self.get_parameter("output_topic").value), 20)
@@ -6403,6 +6404,17 @@ class UnifiedBackendNode(Node):
             )),
             **initialization_stats,
         })
+        self.relocalization_integrity_baseline = {
+            name: int(self.counts.get(name, 0))
+            for name in (
+                "optimization_errors",
+                "optimization_rollbacks",
+                "native_consumed_without_state_commit",
+                "native_worker_errors",
+                "native_worker_queue_discarded",
+                "native_worker_queue_overflow",
+            )
+        }
         if initialization_stats["stationary_observation_valid"]:
             self.counts[
                 "relocalization_stationary_initialization_accepted"
@@ -11332,6 +11344,19 @@ class UnifiedBackendNode(Node):
             float(np.percentile(self.flow_lever_arm_displacement_norms, 95))
             if self.flow_lever_arm_displacement_norms else -1.0
         )
+        integrity_baseline = getattr(
+            self, "relocalization_integrity_baseline", {}
+        )
+
+        def post_relocalization_count(name):
+            if name not in integrity_baseline:
+                return -1
+            return max(
+                0,
+                int(self.counts.get(name, 0))
+                - int(integrity_baseline[name]),
+            )
+
         diagnostic = DiagnosticStatus()
         diagnostic.name = "unified_backend_fusion"
         diagnostic.hardware_id = "companion_computer"
@@ -11469,6 +11494,32 @@ class UnifiedBackendNode(Node):
                 "frontend_state_seed_enabled", self.frontend_state_seed_enabled
             ),
             self._key("state_reset_counter", self.state_reset_counter),
+            self._key(
+                "relocalization_post_reset_optimization_errors",
+                post_relocalization_count("optimization_errors"),
+            ),
+            self._key(
+                "relocalization_post_reset_optimization_rollbacks",
+                post_relocalization_count("optimization_rollbacks"),
+            ),
+            self._key(
+                "relocalization_post_reset_native_without_commit",
+                post_relocalization_count(
+                    "native_consumed_without_state_commit"
+                ),
+            ),
+            self._key(
+                "relocalization_post_reset_native_worker_errors",
+                post_relocalization_count("native_worker_errors"),
+            ),
+            self._key(
+                "relocalization_post_reset_native_queue_discarded",
+                post_relocalization_count("native_worker_queue_discarded"),
+            ),
+            self._key(
+                "relocalization_post_reset_native_queue_overflow",
+                post_relocalization_count("native_worker_queue_overflow"),
+            ),
             self._key(
                 "relocalization_velocity_policy",
                 self.relocalization_velocity_policy,

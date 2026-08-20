@@ -28,6 +28,13 @@ from .localization_safety import (
     scheduler_localization_loss,
 )
 from .relocalization_checkpoints import MissionCheckpoint, encode_checkpoint
+from .relocalization_motion import (
+    MotionStatus,
+    body_offset_to_local,
+    decode_motion_command,
+    encode_motion_status,
+    motion_observations,
+)
 from .s_curve_path import (
     clamp_route_altitude_setpoint,
     feedback_error_to_fcu_setpoint,
@@ -96,6 +103,24 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.declare_parameter("unified_odom_timeout_s", 0.60)
         self.declare_parameter("external_nav_gate_timeout_s", 1.50)
         self.declare_parameter("relocalization_retry_cooldown_s", 5.0)
+        self.declare_parameter("relocalization_motion_enabled", False)
+        self.declare_parameter(
+            "relocalization_motion_command_topic",
+            "/relocalization/motion_command",
+        )
+        self.declare_parameter(
+            "relocalization_motion_status_topic",
+            "/relocalization/motion_status",
+        )
+        self.declare_parameter("relocalization_motion_radius_m", 0.6)
+        self.declare_parameter("relocalization_motion_speed_mps", 0.25)
+        self.declare_parameter("relocalization_motion_yaw_rate_deg_s", 12.0)
+        self.declare_parameter("relocalization_motion_yaw_step_deg", 45.0)
+        # The backend stationary initializer consumes a 1.5 s IMU window.
+        # Leave one second of margin so the window cannot include the motion.
+        self.declare_parameter("relocalization_motion_settle_s", 2.5)
+        self.declare_parameter("relocalization_motion_settle_timeout_s", 6.0)
+        self.declare_parameter("relocalization_motion_position_tolerance_m", 0.35)
         self.declare_parameter("localization_min_support", 0.15)
         self.declare_parameter("localization_loss_dwell_s", 0.30)
         self.declare_parameter("localization_hold_s", 1.0)
@@ -168,6 +193,55 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 self.get_parameter("relocalization_retry_cooldown_s").value
             ),
         )
+        self.relocalization_motion_enabled = bool(
+            self.get_parameter("relocalization_motion_enabled").value
+        )
+        self.relocalization_motion_radius_m = float(
+            self.get_parameter("relocalization_motion_radius_m").value
+        )
+        self.relocalization_motion_speed_mps = float(
+            self.get_parameter("relocalization_motion_speed_mps").value
+        )
+        self.relocalization_motion_yaw_rate_radps = math.radians(float(
+            self.get_parameter("relocalization_motion_yaw_rate_deg_s").value
+        ))
+        self.relocalization_motion_yaw_step_deg = float(
+            self.get_parameter("relocalization_motion_yaw_step_deg").value
+        )
+        self.relocalization_motion_settle_s = float(
+            self.get_parameter("relocalization_motion_settle_s").value
+        )
+        self.relocalization_motion_settle_timeout_s = float(
+            self.get_parameter("relocalization_motion_settle_timeout_s").value
+        )
+        self.relocalization_motion_position_tolerance_m = float(
+            self.get_parameter(
+                "relocalization_motion_position_tolerance_m"
+            ).value
+        )
+        if not 0.1 <= self.relocalization_motion_radius_m <= 1.0:
+            raise ValueError("relocalization motion radius must be in [0.1, 1.0] m")
+        if not 0.1 <= self.relocalization_motion_speed_mps <= 0.5:
+            raise ValueError("relocalization motion speed must be in [0.1, 0.5] m/s")
+        if not math.radians(5.0) <= self.relocalization_motion_yaw_rate_radps <= math.radians(30.0):
+            raise ValueError("relocalization yaw rate must be in [5, 30] deg/s")
+        # This validates the step size even before a command arrives.
+        motion_observations(
+            "yaw_scan",
+            self.relocalization_motion_radius_m,
+            self.relocalization_motion_yaw_step_deg,
+        )
+        if not 0.5 <= self.relocalization_motion_settle_s <= 5.0:
+            raise ValueError("relocalization motion settle must be in [0.5, 5.0] s")
+        if (
+            self.relocalization_motion_settle_timeout_s
+            < self.relocalization_motion_settle_s
+        ):
+            raise ValueError("relocalization motion settle timeout is too short")
+        if not 0.1 <= self.relocalization_motion_position_tolerance_m <= 0.75:
+            raise ValueError(
+                "relocalization motion position tolerance must be in [0.1, 0.75] m"
+            )
         self.localization_min_support = max(
             0.0, float(self.get_parameter("localization_min_support").value))
         self.unified_map_frame = str(
@@ -226,8 +300,28 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.last_route_fcu_setpoint = None
         self.route_hold_fcu_setpoint = None
         self.route_checkpoint_index = 0
+        self.relocalization_motion_pending = None
+        self.relocalization_motion_sequence_id = None
+        self.relocalization_motion_profile = None
+        self.relocalization_motion_anchor = None
+        self.relocalization_motion_last_completed_step = -1
         self.mission_checkpoint_pub = self.create_publisher(
             String, "/mission/checkpoint", 10)
+        self.relocalization_motion_status_pub = self.create_publisher(
+            String,
+            str(self.get_parameter(
+                "relocalization_motion_status_topic"
+            ).value),
+            10,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter(
+                "relocalization_motion_command_topic"
+            ).value),
+            self._relocalization_motion_command_cb,
+            10,
+        )
         self.localization_safety = LocalizationSafetyStateMachine(
             loss_dwell_s=float(
                 self.get_parameter("localization_loss_dwell_s").value),
@@ -339,6 +433,56 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         if self.relocalization_request_active and not active:
             self.last_relocalization_release_s = self._now_s()
         self.relocalization_request_active = active
+
+    def _publish_relocalization_motion_status(
+        self, command, state, reason, *, distance_m=0.0, duration_s=0.0
+    ):
+        status = MotionStatus(
+            command.sequence_id,
+            command.profile,
+            command.step_index,
+            command.step_count,
+            state,
+            reason,
+            distance_m,
+            duration_s,
+        )
+        message = String()
+        message.data = encode_motion_status(status)
+        self.relocalization_motion_status_pub.publish(message)
+        self.get_logger().info(f"RELOCALIZATION_MOTION_STATUS {message.data}")
+
+    def _relocalization_motion_command_cb(self, msg):
+        try:
+            command = decode_motion_command(msg.data)
+        except ValueError as error:
+            self.get_logger().error(str(error))
+            return
+        if not self.relocalization_motion_enabled:
+            self._publish_relocalization_motion_status(
+                command, "failed", "motion_disabled"
+            )
+            return
+        if self.relocalization_motion_pending is not None:
+            self._publish_relocalization_motion_status(
+                command, "failed", "another_motion_command_is_pending"
+            )
+            return
+        new_sequence = command.sequence_id != self.relocalization_motion_sequence_id
+        if new_sequence and command.step_index != 0:
+            self._publish_relocalization_motion_status(
+                command, "failed", "new_sequence_must_start_at_step_zero"
+            )
+            return
+        if not new_sequence and (
+            command.profile != self.relocalization_motion_profile
+            or command.step_index != self.relocalization_motion_last_completed_step + 1
+        ):
+            self._publish_relocalization_motion_status(
+                command, "failed", "motion_step_is_not_the_next_sequence_step"
+            )
+            return
+        self.relocalization_motion_pending = command
 
     def _relocalization_ready_cb(self, msg):
         self.relocalization_ready = bool(msg.data)
@@ -747,9 +891,193 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             "Localization safety readiness timed out: require a fresh scheduler "
             "state with propagation, horizontal motion, and yaw observability")
 
+    def _active_motion_health_check(self):
+        if self.relocalization_request_active:
+            raise RuntimeError("relocalization_request_became_active_during_motion")
+        lost, reason = self._obvious_localization_loss(self._now_s())
+        if lost:
+            raise RuntimeError(f"localization_became_unsafe:{reason}")
+
+    def _publish_active_motion_setpoint(self, target):
+        # Active-motion experiments use a bounded FCU-local offset from the
+        # frozen anchor. They must not advance the unified-map route target.
+        GuidedRectangleWaypoints.publish_setpoint(self, *target)
+
+    def _settle_active_motion_target(self, target, started_s):
+        minimum_end_s = self._now_s() + self.relocalization_motion_settle_s
+        deadline_s = self._now_s() + self.relocalization_motion_settle_timeout_s
+        next_publish_s = self._now_s()
+        last_observed_s = next_publish_s
+        while rclpy.ok() and self._now_s() < deadline_s:
+            self.ensure_guided("active relocalization motion settle")
+            self._active_motion_health_check()
+            self._publish_active_motion_setpoint(target)
+            rclpy.spin_once(self, timeout_sec=0.0)
+            if self.pose is not None:
+                position = self.pose.pose.position
+                error = math.dist(
+                    (
+                        float(position.x),
+                        float(position.y),
+                        float(position.z),
+                    ),
+                    target[:3],
+                )
+                if (
+                    self._now_s() >= minimum_end_s
+                    and error <= self.relocalization_motion_position_tolerance_m
+                ):
+                    return self._now_s() - started_s
+            next_publish_s = max(
+                next_publish_s + 1.0 / self.rate_hz, self._now_s()
+            )
+            last_observed_s = self._wait_until_sim_time(
+                min(next_publish_s, deadline_s), last_observed_s
+            )
+        raise RuntimeError("active_motion_failed_to_settle")
+
+    def _wait_for_active_motion_search(self, target):
+        deadline_s = self._now_s() + self.relocalization_motion_settle_timeout_s
+        next_publish_s = self._now_s()
+        last_observed_s = next_publish_s
+        while rclpy.ok() and self._now_s() < deadline_s:
+            if self.relocalization_request_active:
+                return
+            lost, reason = self._obvious_localization_loss(self._now_s())
+            if lost:
+                raise RuntimeError(
+                    f"localization_became_unsafe_before_search:{reason}"
+                )
+            self.ensure_guided("active relocalization observation hold")
+            self._publish_active_motion_setpoint(target)
+            rclpy.spin_once(self, timeout_sec=0.0)
+            next_publish_s = max(
+                next_publish_s + 1.0 / self.rate_hz, self._now_s()
+            )
+            last_observed_s = self._wait_until_sim_time(
+                min(next_publish_s, deadline_s), last_observed_s
+            )
+        raise RuntimeError("motion_search_request_handshake_timeout")
+
+    def _execute_relocalization_motion(self):
+        command = self.relocalization_motion_pending
+        if command is None:
+            return
+        new_sequence = command.sequence_id != self.relocalization_motion_sequence_id
+        try:
+            if self.pose is None:
+                raise RuntimeError("fcu_local_pose_is_unavailable")
+            self.ensure_guided("active relocalization motion")
+            self._active_motion_health_check()
+            if new_sequence:
+                position = self.pose.pose.position
+                self.relocalization_motion_sequence_id = command.sequence_id
+                self.relocalization_motion_profile = command.profile
+                self.relocalization_motion_anchor = (
+                    float(position.x),
+                    float(position.y),
+                    float(position.z),
+                    self._pose_yaw(self.pose.pose),
+                )
+                self.relocalization_motion_last_completed_step = -1
+            if self.relocalization_motion_anchor is None:
+                raise RuntimeError("motion_anchor_is_unavailable")
+
+            observations = motion_observations(
+                command.profile,
+                self.relocalization_motion_radius_m,
+                self.relocalization_motion_yaw_step_deg,
+            )
+            if len(observations) != command.step_count:
+                raise RuntimeError("motion_profile_step_count_mismatch")
+            observation = observations[command.step_index]
+            anchor_x, anchor_y, anchor_z, anchor_yaw = (
+                self.relocalization_motion_anchor
+            )
+            target_x, target_y = body_offset_to_local(
+                anchor_x,
+                anchor_y,
+                anchor_yaw,
+                observation.forward_m,
+                observation.left_m,
+            )
+            target_yaw = normalize_angle(
+                anchor_yaw + observation.yaw_offset_rad
+            )
+            target = (target_x, target_y, anchor_z, target_yaw)
+            current_position = self.pose.pose.position
+            start = (
+                float(current_position.x),
+                float(current_position.y),
+                float(current_position.z),
+                self._pose_yaw(self.pose.pose),
+            )
+            distance = math.dist(start[:3], target[:3])
+            yaw_delta = normalize_angle(target[3] - start[3])
+            duration = max(
+                distance / self.relocalization_motion_speed_mps,
+                abs(yaw_delta) / self.relocalization_motion_yaw_rate_radps,
+                0.1,
+            )
+            self._publish_relocalization_motion_status(
+                command, "started", "executing", distance_m=distance
+            )
+            started_s = self._now_s()
+            next_publish_s = started_s
+            last_observed_s = started_s
+            while rclpy.ok():
+                now_s = self._now_s()
+                if now_s < started_s:
+                    raise RuntimeError("ros_clock_moved_backwards_during_motion")
+                self.ensure_guided("active relocalization motion")
+                self._active_motion_health_check()
+                progress = min(1.0, (now_s - started_s) / duration)
+                target_tick = (
+                    start[0] + (target[0] - start[0]) * progress,
+                    start[1] + (target[1] - start[1]) * progress,
+                    start[2] + (target[2] - start[2]) * progress,
+                    normalize_angle(start[3] + yaw_delta * progress),
+                )
+                self._publish_active_motion_setpoint(target_tick)
+                rclpy.spin_once(self, timeout_sec=0.0)
+                if progress >= 1.0:
+                    break
+                next_publish_s = max(
+                    next_publish_s + 1.0 / self.rate_hz, self._now_s()
+                )
+                last_observed_s = self._wait_until_sim_time(
+                    next_publish_s, last_observed_s
+                )
+            elapsed = self._settle_active_motion_target(target, started_s)
+            self.relocalization_motion_last_completed_step = command.step_index
+            self._publish_relocalization_motion_status(
+                command,
+                "settled",
+                "ok",
+                distance_m=distance,
+                duration_s=elapsed,
+            )
+            self._wait_for_active_motion_search(target)
+        except Exception as error:
+            self._publish_relocalization_motion_status(
+                command, "failed", str(error)
+            )
+            if new_sequence:
+                self.relocalization_motion_sequence_id = None
+                self.relocalization_motion_profile = None
+                self.relocalization_motion_anchor = None
+                self.relocalization_motion_last_completed_step = -1
+        finally:
+            self.relocalization_motion_pending = None
+
     def mission_safety_checkpoint(self, label):
         if not self.localization_safety_enabled:
             return
+        if (
+            self.relocalization_motion_pending is not None
+            and not self.relocalization_request_active
+        ):
+            self._execute_relocalization_motion()
         now = self._now_s()
         lost, reason = self._obvious_localization_loss(now)
         decision = self.localization_safety.update(lost, now)
@@ -1099,17 +1427,24 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 self.get_logger().info(
                     "LAND completed and FCU disarm confirmed.")
                 return
-            deadline = time.monotonic() + self.land_disarm_timeout_s
-            while rclpy.ok() and time.monotonic() < deadline:
+            started_ros_s = self._now_s()
+            wall_deadline = (
+                time.monotonic()
+                + max(120.0, self.land_disarm_timeout_s * 10.0)
+            )
+            while rclpy.ok() and time.monotonic() < wall_deadline:
                 if not self.state.armed:
                     self.get_logger().info(
                         "LAND completed and FCU disarm confirmed.")
                     return
+                if self._now_s() - started_ros_s >= self.land_disarm_timeout_s:
+                    break
                 rclpy.spin_once(self, timeout_sec=0.1)
                 self._log_status("landing descent")
             raise RuntimeError(
                 "LAND was accepted but FCU did not disarm within "
-                f"{self.land_disarm_timeout_s:.1f}s"
+                f"{self.land_disarm_timeout_s:.1f}s simulation time "
+                "or the wall-clock watchdog"
             )
         self._publish_mission_phase("complete_hold")
         self.get_logger().info(
@@ -1230,6 +1565,10 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             follow_heading_fraction=0.5,
             heading_yaw_offset=self.locked_yaw_offset,
             publish_relocalization_checkpoints=True,
+        )
+        self.get_logger().info(
+            "Large figure-eight route completed: "
+            f"distance={route_length:.2f}m"
         )
         current = base_path[-1]
         if math.dist(current, self.route_origin_feedback) > 0.05:

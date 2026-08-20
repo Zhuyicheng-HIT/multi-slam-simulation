@@ -94,6 +94,42 @@ class UnifiedValidationResultCheckerTest(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertIn("vehicle_executed_nontrivial_motion", report["failed_gates"])
 
+    def test_accepts_early_landing_after_confirmed_disarm(self):
+        accuracy, runtime, route, mavros, sitl = _valid_inputs()
+        runtime["termination_reason"] = "early_landing"
+        runtime["sim_duration_s"] = 80.0
+        report = MODULE.evaluate_validation(
+            accuracy,
+            runtime,
+            route,
+            mavros,
+            sitl,
+            minimum_sim_duration_s=0.0,
+        )
+
+        self.assertTrue(report["passed"])
+
+    def test_rejects_early_landing_without_confirmed_disarm(self):
+        accuracy, runtime, route, mavros, sitl = _valid_inputs()
+        runtime["termination_reason"] = "early_landing"
+        route = route.replace(
+            "LAND completed and FCU disarm confirmed.",
+            "land command sent",
+        )
+        report = MODULE.evaluate_validation(
+            accuracy,
+            runtime,
+            route,
+            mavros,
+            sitl,
+            minimum_sim_duration_s=0.0,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertIn(
+            "runtime_completed_requested_duration", report["failed_gates"]
+        )
+
     def test_rejects_missing_ekf3_consumption_and_landing(self):
         accuracy, runtime, route, _, sitl = _valid_inputs()
         route = route.replace("LAND completed and FCU disarm confirmed.", "land command sent")
@@ -248,6 +284,41 @@ class UnifiedValidationResultCheckerTest(unittest.TestCase):
             report["acceptance_basis"],
             "strict_unified_figure_eight_end_to_end",
         )
+
+    def test_accepts_current_frozen_figure_eight_route_contract(self):
+        accuracy, runtime, _, mavros, sitl = _valid_inputs()
+        route = "\n".join([
+            "Mission phase: preflight",
+            "Mission phase: post_takeoff_hold",
+            "Mission phase: calibration_excitation",
+            "Large figure-eight plan: one closed traversal, "
+            "planned_path_distance=29.08m, altitude_range=4.90..9.40m, "
+            "ratio_at_or_below_8m=89.2%, axis=158.0deg",
+            "Mission phase: route_active",
+            "large figure-eight single traversal: points=1163, "
+            "distance=29.08m, feedback=unified_backend",
+            *(
+                f"Mission checkpoint {index}: large figure-eight single traversal, "
+                f"distance={2.0 * index:.1f}m"
+                for index in range(1, 15)
+            ),
+            "Large figure-eight route completed: distance=29.08m",
+            "closed-loop return convergence: position_error=0.04m",
+            "Mission phase: landing",
+            "LAND completed and FCU disarm confirmed.",
+        ])
+
+        report = MODULE.evaluate_validation(
+            accuracy,
+            runtime,
+            route,
+            mavros,
+            sitl,
+            mission_profile="figure_eight",
+            expected_waypoints=0,
+        )
+
+        self.assertTrue(report["passed"])
 
     def test_automatic_loop_rejects_large_epoch_jump(self):
         accuracy, runtime, _, mavros, sitl = _valid_inputs()
