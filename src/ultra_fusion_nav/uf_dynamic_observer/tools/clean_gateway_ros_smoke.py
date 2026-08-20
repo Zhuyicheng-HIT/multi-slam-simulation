@@ -8,10 +8,11 @@ import rclpy
 from builtin_interfaces.msg import Time
 from livox_ros_driver2.msg import CustomMsg, CustomPoint
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 from uf_dynamic_interfaces.msg import PreviousFastLioState
+from uf_interfaces.msg import FusionEpoch
 
 
 def stamp(nanoseconds):
@@ -42,6 +43,14 @@ class GatewaySmoke(Node):
         self.state_pub = self.create_publisher(
             PreviousFastLioState, "/clean_fast_lio/previous_state", reliable
         )
+        epoch_qos = QoSProfile(
+            depth=20,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.epoch_pub = self.create_publisher(
+            FusionEpoch, "/fusion/unified/epoch", epoch_qos
+        )
         self.create_subscription(
             CustomMsg, "/dynamic_observer/clean/livox", self._clean, reliable
         )
@@ -70,17 +79,29 @@ class GatewaySmoke(Node):
             self.imu_pub.publish(message)
             self.next_imu_ns += 10_000_000
 
-    def publish_state(self, state_ns, sequence):
+    def publish_state(self, state_ns, sequence, reset_counter=0):
         message = PreviousFastLioState()
         message.header.stamp = stamp(state_ns)
         message.header.frame_id = "camera_init"
         message.map_frame = "camera_init"
         message.body_frame = "body"
         message.scan_sequence = sequence
-        message.reset_counter = 0
+        message.reset_counter = reset_counter
         message.valid = True
         message.orientation_xyzw[3] = 1.0
         self.state_pub.publish(message)
+
+    def publish_backend_epoch(self, epoch_ns, transaction_id, reset_counter, applied=True):
+        message = FusionEpoch()
+        message.header.stamp = stamp(epoch_ns)
+        message.header.frame_id = "map"
+        message.applied = applied
+        message.session_id = 1
+        message.transaction_id = transaction_id
+        message.reset_counter = reset_counter
+        message.candidate_id = 7
+        message.reason = "smoke_relocalization_epoch"
+        self.epoch_pub.publish(message)
 
     @staticmethod
     def make_point(x, y, z, offset_ns, ordinal):
@@ -181,6 +202,25 @@ def main():
         node.publish_scan(regressed_stamp, True, 99)
         node.spin_for(0.2)
 
+        backend_epoch_stamp = 4_300_000_000
+        node.publish_backend_epoch(backend_epoch_stamp, 101, 1)
+        node.spin_for(0.05)
+        node.publish_imu_until(backend_epoch_stamp + 12_000_000)
+        node.publish_state(backend_epoch_stamp - 10_000_000, 101, 0)
+        node.publish_scan(backend_epoch_stamp, True, 101)
+        node.spin_for(0.15)
+
+        reseed_stamps = []
+        for sequence in range(7):
+            scan_ns = 5_000_000_000 + sequence * 100_000_000
+            node.publish_state(scan_ns - 10_000_000, 200 + sequence, 1)
+            node.spin_for(0.02)
+            node.publish_imu_until(scan_ns + 12_000_000)
+            node.spin_for(0.02)
+            node.publish_scan(scan_ns, True, 200 + sequence)
+            reseed_stamps.append(scan_ns)
+            node.spin_for(0.10)
+
         fail_open_message = node.clean_by_stamp.get(fail_open_stamp)
         fail_open_status = node.status_by_stamp.get(fail_open_stamp, {})
         imu_timeout_message = node.clean_by_stamp.get(imu_timeout_stamp)
@@ -205,6 +245,8 @@ def main():
                 preservation_ok = False
                 break
         regression_status = node.status_by_stamp.get(regressed_stamp, {})
+        backend_epoch_status = node.status_by_stamp.get(backend_epoch_stamp, {})
+        reseed_statuses = [node.status_by_stamp.get(value, {}) for value in reseed_stamps]
         report = {
             "fail_open_exact_raw": (
                 fail_open_message is not None
@@ -232,6 +274,16 @@ def main():
             "point_metadata_preserved": preservation_ok,
             "timestamp_regression_fail_open": regression_status.get("fail_open"),
             "timestamp_regression_reason": regression_status.get("reason"),
+            "backend_epoch_retains_history": (
+                backend_epoch_status.get("reason") == "ok"
+                and backend_epoch_status.get("backend_epochs_retained", 0) >= 1
+            ),
+            "lio_epoch_reseed_exact_raw": all(
+                messages_identical(node.raw_by_stamp[value], node.clean_by_stamp[value])
+                for value in reseed_stamps[:6]
+            ),
+            "lio_epoch_reseed_reasons": [value.get("reason") for value in reseed_statuses],
+            "lio_epoch_resumed": reseed_statuses[-1].get("reason") == "ok",
             "raw_publishers": node.count_publishers("/livox/lidar"),
             "clean_messages": len(node.clean_by_stamp),
             "status_messages": len(node.status_by_stamp),
@@ -250,6 +302,13 @@ def main():
             and report["timestamp_regression_fail_open"] is True
             and report["timestamp_regression_reason"]
             == "input_timestamp_regression"
+            and report["backend_epoch_retains_history"]
+            and report["lio_epoch_reseed_exact_raw"]
+            and report["lio_epoch_reseed_reasons"][:5]
+            == ["lio_epoch_reseeding"] * 5
+            and report["lio_epoch_reseed_reasons"][5]
+            == "lio_epoch_reseed_complete"
+            and report["lio_epoch_resumed"]
             and report["raw_publishers"] == 1
         )
         return 0 if passed else 1

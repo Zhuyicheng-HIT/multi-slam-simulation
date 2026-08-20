@@ -25,7 +25,7 @@ def split_stamp(seconds):
 def scored_cloud(stamp_s, score=0.0, semantic=False):
     message = PointCloud2()
     message.header.stamp.sec, message.header.stamp.nanosec = split_stamp(stamp_s)
-    message.header.frame_id = "map"
+    message.header.frame_id = "camera_init"
     names = ["x", "y", "z", "intensity", "dynamic_score"]
     if semantic:
         names = ["x", "y", "z", "dynamic_confidence"]
@@ -118,8 +118,8 @@ class Smoke(Node):
     def publish_state(self, stamp_s, sequence, y):
         message = PreviousFastLioState()
         message.header.stamp.sec, message.header.stamp.nanosec = split_stamp(stamp_s)
-        message.header.frame_id = "map"
-        message.map_frame = "map"
+        message.header.frame_id = "camera_init"
+        message.map_frame = "camera_init"
         message.body_frame = "body"
         message.scan_sequence = sequence
         message.valid = True

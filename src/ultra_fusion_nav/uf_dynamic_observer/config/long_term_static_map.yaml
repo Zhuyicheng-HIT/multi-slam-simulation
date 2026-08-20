@@ -5,13 +5,15 @@ long_term_static_map_refinement:
     enabled: false
     scored_cloud_topic: /dynamic_observer/scored_cloud
     previous_state_topic: /clean_fast_lio/previous_state
+    fusion_epoch_topic: /fusion/unified/epoch
     output_topic: /mapping/long_term_static/points
     relocalization_topic: /mapping/long_term_static/relocalization_points
     loop_closure_topic: /mapping/long_term_static/loop_closure_points
     status_topic: /mapping/long_term_static/status
-    expected_frame_id: ""
+    expected_frame_id: camera_init
     maximum_previous_state_age_s: 0.30
     maximum_state_history: 128
+    reinit.reseed_healthy_scans: 6
     publish_period_s: 1.0
 
     map.voxel_size_m: 0.25

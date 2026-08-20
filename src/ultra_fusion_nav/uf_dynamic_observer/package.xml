@@ -23,6 +23,7 @@
   <exec_depend>sensor_msgs_py</exec_depend>
   <depend>std_msgs</depend>
   <depend>uf_dynamic_interfaces</depend>
+  <depend>uf_interfaces</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
