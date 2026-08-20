@@ -102,6 +102,22 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("collect_validation_resources.py", runner)
+
+    def test_large_scene_rejects_low_rtf_before_flight(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+        campaign = (
+            REPO_ROOT / "tools" / "run_large_scene_validation.sh"
+        ).read_text(encoding="utf-8")
+        probe = (REPO_ROOT / "tools" / "topic_rate_probe.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("VALIDATION_MINIMUM_PREFLIGHT_RTF", runner)
+        self.assertIn("VALIDATION_MINIMUM_PREFLIGHT_RTF", campaign)
+        self.assertIn("--minimum-wall-source-ratio", runner)
+        self.assertIn("minimum_wall_source_ratio", probe)
         self.assertIn('stop_collector "$resource_pid"', runner)
         self.assertIn("resource_metrics.json", runner)
 

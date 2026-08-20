@@ -159,6 +159,10 @@ Validation now stops the relocalization trigger immediately after route
 termination, writes `interrupted_after_route_end`, and records
 `/lio/local_map` plus `/lidar/points_deskewed` so future bags can recompute the
 actual relocalization candidate. Collectors still stop after landing/disarm.
+Large-scene profiles also require a preflight wall/source rate ratio of at
+least `0.12` on the 20 Hz ExternalNav stream. A slower simulation now exits
+before GUIDED/arming instead of spending a route attempt on stale MAVLink and
+estimator traffic. The ordinary frozen validator leaves this gate disabled.
 
 ## Current interpretation
 
@@ -187,7 +191,7 @@ must therefore not be described as FAST-LIO map-level dynamic-object removal.
 ## Verification
 
 - `colcon build --symlink-install --packages-select multi_slam_uav_sim`: pass.
-- `colcon test --packages-select multi_slam_uav_sim`: 154 tests pass.
+- `colcon test --packages-select multi_slam_uav_sim`: 155 tests pass.
 - `colcon test --packages-select uf_relocalization`: 8 test executables pass.
 - Combined recorded result: 76 tests, zero errors or failures.
 - Shell syntax, Python compile, and `git diff --check`: pass.

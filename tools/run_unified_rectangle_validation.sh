@@ -69,6 +69,7 @@ VALIDATION_START_FASTLIO_OCCUPANCY_GRID=${VALIDATION_START_FASTLIO_OCCUPANCY_GRI
 VALIDATION_LOCALIZATION_SAFETY_ENABLED=${VALIDATION_LOCALIZATION_SAFETY_ENABLED:-true}
 VALIDATION_RECORD_REPLAY_BAG=${VALIDATION_RECORD_REPLAY_BAG:-true}
 VALIDATION_RECORD_RAW_LIDAR=${VALIDATION_RECORD_RAW_LIDAR:-false}
+VALIDATION_MINIMUM_PREFLIGHT_RTF=${VALIDATION_MINIMUM_PREFLIGHT_RTF:-0}
 VALIDATION_REQUIRE_FASTLIO_DRIFT=${VALIDATION_REQUIRE_FASTLIO_DRIFT:-true}
 VALIDATION_STOP_OBSERVERS_ON_LANDING=${VALIDATION_STOP_OBSERVERS_ON_LANDING:-true}
 VALIDATION_STOP_AFTER_LANDING=${VALIDATION_STOP_AFTER_LANDING:-$VALIDATION_STOP_OBSERVERS_ON_LANDING}
@@ -554,6 +555,19 @@ case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
     wait_static_transform camera_init_ned camera_init
     wait_static_transform body_frd body
     wait_rate /mavros/odometry/out 10.0 75
+    if awk -v value="$VALIDATION_MINIMUM_PREFLIGHT_RTF" \
+      'BEGIN {exit !(value > 0.0)}'
+    then
+      if ! python3 "$REPO_ROOT/tools/topic_rate_probe.py" \
+        --topic /mavros/odometry/out --minimum-hz 10.0 --timeout 20 \
+        --window 40 \
+        --minimum-wall-source-ratio "$VALIDATION_MINIMUM_PREFLIGHT_RTF"
+      then
+        printf 'Preflight RTF gate failed: require wall/source >= %s.\n' \
+          "$VALIDATION_MINIMUM_PREFLIGHT_RTF" >&2
+        exit 5
+      fi
+    fi
     ;;
   *) printf 'ExternalNav FCU consumption disabled; output continuity is metrics-only.\n' ;;
 esac

@@ -7,6 +7,7 @@ import math
 import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -39,9 +40,15 @@ def main():
     parser.add_argument("--minimum-hz", type=float, required=True)
     parser.add_argument("--timeout", type=float, required=True)
     parser.add_argument("--window", type=int, default=20)
+    parser.add_argument("--minimum-wall-source-ratio", type=float, default=0.0)
     args = parser.parse_args()
-    if args.minimum_hz <= 0.0 or args.timeout <= 0.0 or args.window < 2:
-        parser.error("rate, timeout, and window must be positive")
+    if (
+        args.minimum_hz <= 0.0
+        or args.timeout <= 0.0
+        or args.window < 2
+        or args.minimum_wall_source_ratio < 0.0
+    ):
+        parser.error("rate, timeout, and window must be positive; ratio must be non-negative")
 
     rclpy.init()
     node = Node("topic_rate_probe")
@@ -49,6 +56,7 @@ def main():
     source_stamps = deque(maxlen=args.window)
     subscription = None
     deadline = time.monotonic() + args.timeout
+    wall_source_ratio = 0.0
     try:
         while rclpy.ok() and time.monotonic() < deadline:
             if subscription is None:
@@ -78,6 +86,10 @@ def main():
                     continue
             rclpy.spin_once(node, timeout_sec=0.1)
             rate_hz = arrival_rate(source_stamps)
+            wall_rate_hz = arrival_rate(arrivals)
+            wall_source_ratio = (
+                wall_rate_hz / rate_hz if rate_hz > 0.0 else 0.0
+            )
             observation_span_s = (
                 source_stamps[-1] - source_stamps[0]
                 if len(source_stamps) >= 2 else 0.0
@@ -92,21 +104,27 @@ def main():
                 len(source_stamps) >= required_samples
                 and observation_span_s >= min(2.0, required_span_s)
                 and rate_hz >= args.minimum_hz
+                and wall_source_ratio >= args.minimum_wall_source_ratio
             ):
                 print(
                     f"ready: {args.topic} {rate_hz:.3f} Hz source_stamp "
-                    f"({arrival_rate(arrivals):.3f} Hz wall arrival)"
+                    f"({wall_rate_hz:.3f} Hz wall arrival, "
+                    f"wall/source={wall_source_ratio:.3f})"
                 )
                 return 0
         print(
             f"timeout: {args.topic} measured {arrival_rate(source_stamps):.3f} Hz "
             f"from {len(source_stamps)} source stamps "
-            f"({arrival_rate(arrivals):.3f} Hz wall arrival)",
+            f"({arrival_rate(arrivals):.3f} Hz wall arrival, "
+            f"wall/source={wall_source_ratio:.3f})",
         )
         return 1
+    except (KeyboardInterrupt, ExternalShutdownException):
+        return 130
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
