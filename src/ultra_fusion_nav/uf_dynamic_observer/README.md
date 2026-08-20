@@ -115,6 +115,54 @@ Before hardware use, set the audited MID360 `T_body_lidar` in `observer.yaml`.
 ros2 run uf_dynamic_observer dynamic_observer_benchmark /tmp/dynamic_observer.json
 ```
 
+## Opt-in long-term static map refinement
+
+`long_term_static_map_node` is a project-owned, downstream map product. It is
+disabled by default, never remaps `/livox/lidar`, never publishes TF, and is
+not an estimator input. Missing previous-state evidence holds the last valid
+map and publishes a degraded status; it cannot drop a LiDAR scan.
+
+```text
+observer v2 scored cloud + strictly previous FAST-LIO posterior
+                    |
+                    v
+ UNKNOWN <-> STATIC_CANDIDATE <-> STATIC_CONFIRMED
+    ^              |                    |
+    |              v                    v
+    +---- DYNAMIC_CANDIDATE <-> DYNAMIC_CONFIRMED
+```
+
+Only `STATIC_CONFIRMED` is published on:
+
+- `/mapping/long_term_static/points`
+- `/mapping/long_term_static/relocalization_points`
+- `/mapping/long_term_static/loop_closure_points`
+
+Promotion requires repeated occupied support, time persistence and multiple
+measured viewpoints. Demotion requires actual free-ray traversal; absence of a
+MID360 return never means free space. Far sparse returns use a deliberately
+longer admission history and otherwise remain `UNKNOWN`.
+
+```bash
+ros2 launch uf_dynamic_observer long_term_static_map.launch.py
+ros2 launch uf_dynamic_observer long_term_static_map.launch.py enabled:=true
+```
+
+To test the purified keyframe data path, start relocalization with both its
+normal configuration and `config/relocalization_static_admission.yaml`. This is
+an explicit opt-in overlay; the existing `/lio/local_map` default is preserved.
+The analogous `config/shared_mapping_static_admission.yaml` overlay makes the
+long-lived shared-map product consume only this confirmed snapshot; it does not
+alter the online source-aware map unless explicitly selected.
+
+The optional `/semantic/dynamic_evidence` PointCloud2 input expects fields
+`x/y/z/dynamic_confidence`. It is disabled by default and defaults to shadow
+mode when enabled. Geometry remains class-agnostic and fully functional when
+no camera semantic evidence is present.
+
+See `docs/DYN_MAP_006_LONG_TERM_STATIC_REFINEMENT.md` for the lifecycle,
+three-map validation matrix, runtime cost, and production blockers.
+
 The benchmark runs 18 low-altitude scenarios with three deterministic seeds and
 two repeats per seed. It compares TemporalVoxelFilter, frozen observer v1, and
 visibility-aware observer v2, reporting per-scenario detection, static

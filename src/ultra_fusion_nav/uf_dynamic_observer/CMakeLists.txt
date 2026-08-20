@@ -20,7 +20,8 @@ find_package(uf_dynamic_interfaces REQUIRED)
 add_library(dynamic_observer_core
   src/causal_imu_deskew.cpp
   src/clean_scan_admission.cpp
-  src/conservative_free_space.cpp)
+  src/conservative_free_space.cpp
+  src/long_term_static_map.cpp)
 target_compile_features(dynamic_observer_core PUBLIC cxx_std_17)
 target_include_directories(dynamic_observer_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -46,12 +47,25 @@ target_compile_features(dynamic_observer_benchmark PUBLIC cxx_std_17)
 target_include_directories(dynamic_observer_benchmark PRIVATE include)
 target_link_libraries(dynamic_observer_benchmark dynamic_observer_core)
 
+add_executable(long_term_static_map_node src/long_term_static_map_node.cpp)
+target_compile_features(long_term_static_map_node PUBLIC cxx_std_17)
+target_include_directories(long_term_static_map_node PRIVATE include)
+target_link_libraries(long_term_static_map_node dynamic_observer_core)
+ament_target_dependencies(long_term_static_map_node
+  diagnostic_msgs rclcpp sensor_msgs std_msgs uf_dynamic_interfaces)
+
+add_executable(long_term_static_map_benchmark src/long_term_static_map_benchmark.cpp)
+target_compile_features(long_term_static_map_benchmark PUBLIC cxx_std_17)
+target_include_directories(long_term_static_map_benchmark PRIVATE include)
+target_link_libraries(long_term_static_map_benchmark dynamic_observer_core)
+
 install(TARGETS dynamic_observer_core
   EXPORT export_dynamic_observer_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
 install(TARGETS dynamic_observer_node dynamic_observer_benchmark clean_scan_gateway_node
+  long_term_static_map_node long_term_static_map_benchmark
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(
@@ -68,6 +82,7 @@ install(PROGRAMS
   tools/evaluate_dynamic_observer_csv.py
   tools/fast_lio_latency_probe.py
   tools/generate_clean_gateway_frozen_replay.py
+  tools/long_term_static_map_ros_smoke.py
   tools/run_clean_gateway_ab_replay.py
   DESTINATION lib/${PROJECT_NAME})
 
@@ -79,6 +94,12 @@ if(BUILD_TESTING)
     target_compile_features(test_conservative_free_space PUBLIC cxx_std_17)
     target_include_directories(test_conservative_free_space PRIVATE include)
     target_link_libraries(test_conservative_free_space dynamic_observer_core)
+  endif()
+  ament_add_gtest(test_long_term_static_map test/test_long_term_static_map.cpp)
+  if(TARGET test_long_term_static_map)
+    target_compile_features(test_long_term_static_map PUBLIC cxx_std_17)
+    target_include_directories(test_long_term_static_map PRIVATE include)
+    target_link_libraries(test_long_term_static_map dynamic_observer_core)
   endif()
   ament_add_pytest_test(test_evaluator_contract test/test_evaluator_contract.py)
 endif()
