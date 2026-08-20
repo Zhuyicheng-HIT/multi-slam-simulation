@@ -132,6 +132,24 @@ void add_dynamic(const std::string & condition, bool session_a, int frame,
     condition == "c3_natural_multiview_reobservation") && session_a && frame < 100)
   {
     add_box(out, 1.5, 0.0, 1.05, 2.5, true, 0.25);
+  } else if (condition == "structural_hold_checkpoint4") {
+    if (session_a && active_a) add_box(out, 5.45, -1.8 + 0.04 * (frame - 42), 0.30, 1.8, true);
+    else if (!session_a) add_box(out, 5.45, 1.4, 0.30, 1.8, true);
+  } else if (condition == "fast_figure8_rotate_checkpoint4") {
+    if (session_a && active_a) {
+      add_box(out, -1.8, -1.3 + 0.05 * (frame - 42), 0.30, 1.7, true);
+      add_box(out, 2.1, 1.4 - 0.05 * (frame - 42), 0.30, 1.7, true);
+    } else if (!session_a) {
+      add_box(out, -1.6, 1.2, 0.30, 1.7, true);
+      add_box(out, 2.4, -1.2, 0.30, 1.7, true);
+    }
+  } else if (condition == "window_opening_passive_hold") {
+    if (session_a && frame >= 55 && frame < 125) {
+      add_box(out, 5.65, -0.9 + 0.025 * (frame - 55), 0.42, 2.1, true, 0.22);
+    }
+  } else if (condition == "fast_checkpoint8_pressure") {
+    if (session_a && active_a) add_box(out, 1.0, -1.5 + 0.04 * (frame - 42), 1.10, 2.5, true, 0.25);
+    else if (!session_a) add_box(out, -1.4, 0.8, 0.80, 2.2, true, 0.25);
   }
 }
 Point origin_a(int frame, int seed) {
@@ -141,6 +159,19 @@ Point origin_a(int frame, int seed) {
 Point condition_origin(const std::string & condition, int frame, int seed) {
   if (condition == "c2_same_view_reobservation" && frame >= 100) {
     return {-2.7, 0.05 * std::sin(frame * 0.1), 1.25, 0.0F};
+  }
+  if (condition == "structural_hold_checkpoint4" ||
+    condition == "window_opening_passive_hold")
+  {
+    return {-2.4, 0.03 * std::sin(frame * 0.08 + seed), 1.25, 0.0F};
+  }
+  if (condition == "fast_figure8_rotate_checkpoint4" ||
+    condition == "fast_checkpoint8_pressure")
+  {
+    const double rate = condition == "fast_checkpoint8_pressure" ? 0.13 : 0.085;
+    const double angle = rate * frame + seed * 0.02;
+    const double radius = condition == "fast_checkpoint8_pressure" ? 1.0 : 0.65;
+    return {radius * std::sin(angle), 0.5 * radius * std::sin(2.0 * angle), 1.25, 0.0F};
   }
   return origin_a(frame, seed);
 }
@@ -261,7 +292,9 @@ double dynamic_reference(const CloudWithTruth & source, const CloudWithTruth & t
   }
   return static_cast<double>(dynamic) / std::max(1, matches);
 }
-PoseResult register_query(const CellMap & map, const CloudWithTruth & query,
+PoseResult register_query(
+  const CellMap & candidate_map, const CellMap & registration_map,
+  const CloudWithTruth & query,
   const Eigen::Isometry3d & truth, int seed, int query_index)
 {
   uf_relocalization::KeyframeDatabaseConfig db_config;
@@ -273,12 +306,15 @@ PoseResult register_query(const CellMap & map, const CloudWithTruth & query,
   std::map<std::size_t, Eigen::Isometry3d> target_poses;
   uf_relocalization::KeyframeQuality quality{0.9, 0.95, 0.02, 0.2, true};
   for (std::size_t i = 0; i < poses.size(); ++i) {
-    auto target = local_map(map, poses[i]);
-    if (target.cloud->size() < 40) continue;
-    const auto admission = database.try_insert(i, poses[i], target.cloud,
-      uf_relocalization::compute_esf_descriptor(target.cloud), quality);
+    auto candidate_target = local_map(candidate_map, poses[i]);
+    auto registration_target = local_map(registration_map, poses[i]);
+    if (candidate_target.cloud->size() < 40 || registration_target.cloud->size() < 40) {
+      continue;
+    }
+    const auto admission = database.try_insert(i, poses[i], candidate_target.cloud,
+      uf_relocalization::compute_esf_descriptor(candidate_target.cloud), quality);
     if (admission.accepted) {
-      targets.emplace(admission.keyframe_id, std::move(target));
+      targets.emplace(admission.keyframe_id, std::move(registration_target));
       target_poses.emplace(admission.keyframe_id, poses[i]);
     }
   }
@@ -362,16 +398,22 @@ int main(int argc, char ** argv) {
   std::string path = "dynamic_localization_benchmark.json";
   for (int i = 1; i + 1 < argc; ++i) if (std::string(argv[i]) == "--output") path = argv[i + 1];
   const std::vector<std::string> conditions{
-    "person_left", "p1_to_p2", "a_empty_b_appears", "multiple_repositioned"};
+    "person_left", "p1_to_p2", "a_empty_b_appears", "multiple_repositioned",
+    "structural_hold_checkpoint4", "fast_figure8_rotate_checkpoint4",
+    "window_opening_passive_hold", "fast_checkpoint8_pressure"};
   std::map<std::string, Aggregate> aggregate;
   std::map<std::string, std::map<std::string, Aggregate>> per_condition;
   std::map<std::string, std::map<std::string, Aggregate>> occlusion;
   for (const auto & condition : conditions) for (int seed = 1; seed <= 3; ++seed) {
     const auto maps = build_session_a(condition, seed);
-    const std::map<std::string, const CellMap *> variants{
-      {"raw", &maps.raw}, {"clean", &maps.clean}, {"refined", &maps.refined}};
+    struct MapVariant {const CellMap * candidate; const CellMap * registration;};
+    const std::map<std::string, MapVariant> variants{
+      {"raw", {&maps.raw, &maps.raw}},
+      {"clean", {&maps.clean, &maps.clean}},
+      {"refined", {&maps.refined, &maps.refined}},
+      {"hybrid", {&maps.refined, &maps.clean}}};
     for (const auto & variant : variants) {
-      const auto metric = map_metric(*variant.second, maps.static_truth);
+      const auto metric = map_metric(*variant.second.candidate, maps.static_truth);
       aggregate[variant.first].contamination.push_back(metric.first);
       aggregate[variant.first].completeness.push_back(metric.second);
       per_condition[condition][variant.first].contamination.push_back(metric.first);
@@ -381,7 +423,9 @@ int main(int argc, char ** argv) {
         const auto truth = pose(0.05 * query, 0.03 * seed, 0.015 * query);
         const auto source = query_cloud(condition, seed, query, truth);
         const auto begin = std::chrono::steady_clock::now();
-        const auto result = register_query(*variant.second, source, truth, seed, query);
+        const auto result = register_query(
+          *variant.second.candidate, *variant.second.registration,
+          source, truth, seed, query);
         const double latency = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - begin).count();
         append(aggregate[variant.first], result, latency);
@@ -410,20 +454,22 @@ int main(int argc, char ** argv) {
     }
   }
   std::ofstream out(path); if (!out) return 2; out << std::fixed << std::setprecision(6);
-  out << "{\n  \"contract\": {\n    \"sessions\": 2,\n    \"conditions\": 4,\n"
+  out << "{\n  \"contract\": {\n    \"sessions\": 2,\n    \"conditions\": 8,\n"
       << "    \"seeds\": 3,\n    \"query_frames_per_trial\": 3,\n"
       << "    \"truth_use\": \"evaluator_only\",\n"
       << "    \"state_handoff\": \"strictly_previous_posterior\",\n"
       << "    \"full_online_loop_closure_claimed\": false\n  },\n  \"maps\": {\n";
   write(out, "raw", aggregate.at("raw")); out << ",\n";
   write(out, "clean", aggregate.at("clean")); out << ",\n";
-  write(out, "refined", aggregate.at("refined")); out << "\n  },\n  \"conditions\": {\n";
+  write(out, "refined", aggregate.at("refined")); out << ",\n";
+  write(out, "hybrid", aggregate.at("hybrid")); out << "\n  },\n  \"conditions\": {\n";
   for (std::size_t index = 0; index < conditions.size(); ++index) {
     const auto & condition = conditions[index];
     out << "    \"" << condition << "\": {\n";
     write(out, "raw", per_condition[condition].at("raw")); out << ",\n";
     write(out, "clean", per_condition[condition].at("clean")); out << ",\n";
-    write(out, "refined", per_condition[condition].at("refined")); out << "\n    }";
+    write(out, "refined", per_condition[condition].at("refined")); out << ",\n";
+    write(out, "hybrid", per_condition[condition].at("hybrid")); out << "\n    }";
     out << (index + 1U == conditions.size() ? "\n" : ",\n");
   }
   out << "  },\n  \"occlusion_refinement\": {\n";

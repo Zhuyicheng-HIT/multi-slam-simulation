@@ -52,6 +52,11 @@ struct VisibilityFilterConfig : public FilterConfig
   // A state transition is driven only by rays that were actually measured.
   // No angular inpainting is allowed for the non-repetitive MID360 pattern.
   std::uint16_t dynamic_confirmations{1U};
+  // A free-space contradiction is strong when the current ray direction was
+  // previously observed free, or when several independent view bins agree.
+  // This prevents active viewpoint changes from turning coarse voxel aliasing
+  // into false dynamic evidence while preserving same-view crossings.
+  std::uint8_t dynamic_free_view_bins{3U};
   std::uint16_t dynamic_hold_scans{12U};
   std::uint16_t vacated_hold_scans{8U};
   std::uint16_t static_vacate_confirmations{1U};
@@ -72,6 +77,10 @@ struct FilterStats
   std::size_t dynamic_points{0U};
   std::size_t unknown_points{0U};
   std::size_t dynamic_seed_voxels{0U};
+  std::size_t direct_free_dynamic_points{0U};
+  std::size_t articulated_dynamic_points{0U};
+  std::size_t growth_dynamic_points{0U};
+  std::size_t tracked_dynamic_points{0U};
   std::size_t observed_ray_voxels{0U};
   std::size_t vacated_surface_voxels{0U};
   std::size_t persistent_dynamic_voxels{0U};
@@ -157,6 +166,7 @@ private:
     std::uint16_t occupied_streak{0U};
     std::uint16_t occupied_observations{0U};
     std::uint16_t dynamic_streak{0U};
+    std::uint64_t free_view_mask{0U};
     bool confirmed_free{false};
     bool confirmed_static{false};
     std::uint64_t dynamic_until_scan{0U};
@@ -176,6 +186,7 @@ private:
     int radius) const;
   bool has_recent_dynamic_neighbor(const VoxelKey & key, int radius) const;
   bool has_recent_vacated_neighbor(const VoxelKey & key, int radius) const;
+  std::uint64_t view_bit(const Point & origin, const VoxelKey & voxel) const;
   void trace_ray(
     const Point & origin, const Point & endpoint,
     std::unordered_set<VoxelKey, VoxelKeyHash> & traversed) const;

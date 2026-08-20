@@ -24,7 +24,8 @@ configured IMU gap. Future pose/IMU samples, timestamp regressions, and larger
 gaps are rejected. No unified pose is consumed, so the contract does not form a
 future unified-backend feedback cycle.
 
-Outputs are in the configured world frame:
+Outputs are in the configured world frame. On the latest relocalization line
+this is the FAST-LIO-local `camera_init` frame, not unified `map`:
 
 - `/dynamic_observer/static_candidates`
 - `/dynamic_observer/dynamic_candidates`
@@ -34,6 +35,17 @@ Outputs are in the configured world frame:
 - `/dynamic_observer/latency_diagnostics`
 
 No TF is published. Truth labels are never subscribed by the node.
+
+## Relocalization and epoch ownership
+
+An accepted unified-backend `FusionEpoch` changes `map_from_lio` but does not
+reset FAST-LIO's `camera_init` frame. The observer, gateway, and long-term map
+therefore record that event diagnostically and retain their valid LIO-local
+history. A real increment of `PreviousFastLioState.reset_counter` is different:
+it denotes a new FAST-LIO local epoch. Pending scans then pass through exactly
+raw, short-term evidence is cleared, the long-term output is quarantined, and
+six healthy causal scans rebuild evidence before clean filtering resumes on
+the following scan. Failed, duplicate, or stale epochs do not mutate state.
 
 ## Clean Scan Gateway candidate
 
