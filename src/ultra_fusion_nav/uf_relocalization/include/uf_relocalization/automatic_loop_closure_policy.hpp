@@ -53,4 +53,10 @@ bool automatic_loop_correction_is_safe(
   double correction_translation_m,
   double correction_rotation_rad);
 
+bool relocalization_correction_is_safe(
+  double correction_translation_m,
+  double correction_rotation_rad,
+  double maximum_translation_m,
+  double maximum_rotation_rad);
+
 }  // namespace uf_relocalization

@@ -100,6 +100,20 @@ TEST(AutomaticLoopClosurePolicy, RoutineCorrectionHasIndependentSafetyBound)
     config, std::numeric_limits<double>::quiet_NaN(), 0.10));
 }
 
+TEST(AutomaticLoopClosurePolicy, RelocalizationCorrectionRejectsUnsafeEpochJump)
+{
+  EXPECT_TRUE(uf_relocalization::relocalization_correction_is_safe(
+    0.95, 0.49, 1.0, 0.5));
+  EXPECT_FALSE(uf_relocalization::relocalization_correction_is_safe(
+    9.97, 0.49, 1.0, 0.5));
+  EXPECT_FALSE(uf_relocalization::relocalization_correction_is_safe(
+    0.95, 1.568, 1.0, 0.5));
+  EXPECT_FALSE(uf_relocalization::relocalization_correction_is_safe(
+    -0.1, 0.1, 1.0, 0.5));
+  EXPECT_FALSE(uf_relocalization::relocalization_correction_is_safe(
+    0.1, 0.1, 0.0, 0.5));
+}
+
 TEST(AutomaticLoopClosurePolicy, SpatialPrefilterRejectsNovelAreas)
 {
   const uf_relocalization::AutomaticLoopClosureConfig config;

@@ -82,10 +82,25 @@ bool automatic_loop_correction_is_safe(
   const double correction_rotation_rad)
 {
   validate_config(config);
+  return relocalization_correction_is_safe(
+    correction_translation_m, correction_rotation_rad,
+    config.maximum_correction_translation_m,
+    config.maximum_correction_rotation_rad);
+}
+
+bool relocalization_correction_is_safe(
+  const double correction_translation_m,
+  const double correction_rotation_rad,
+  const double maximum_translation_m,
+  const double maximum_rotation_rad)
+{
   return std::isfinite(correction_translation_m) &&
          std::isfinite(correction_rotation_rad) &&
-         correction_translation_m <= config.maximum_correction_translation_m &&
-         correction_rotation_rad <= config.maximum_correction_rotation_rad;
+         correction_translation_m >= 0.0 && correction_rotation_rad >= 0.0 &&
+         std::isfinite(maximum_translation_m) && maximum_translation_m > 0.0 &&
+         std::isfinite(maximum_rotation_rad) && maximum_rotation_rad > 0.0 &&
+         correction_translation_m <= maximum_translation_m &&
+         correction_rotation_rad <= maximum_rotation_rad;
 }
 
 bool automatic_loop_candidate_is_spatially_near(

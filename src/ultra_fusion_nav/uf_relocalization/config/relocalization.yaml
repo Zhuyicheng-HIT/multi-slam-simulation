@@ -48,6 +48,10 @@ relocalization_node:
     maximum_registration_fitness: 0.25
     maximum_alignment_translation_m: 30.0
     maximum_alignment_rotation_rad: 1.6
+    # In-flight fault recovery cannot safely apply an abrupt kidnapped-robot
+    # jump. Larger corrections require a future staged alignment transaction.
+    maximum_relocalization_correction_translation_m: 1.0
+    maximum_relocalization_correction_rotation_rad: 0.5
     maximum_roll_pitch_correction_rad: 0.35
     minimum_registration_overlap_ratio: 0.35
     minimum_registration_correspondences: 120

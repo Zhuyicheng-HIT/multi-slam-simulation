@@ -150,6 +150,8 @@ public:
     declare_parameter("maximum_registration_fitness", 0.25);
     declare_parameter("maximum_alignment_translation_m", 30.0);
     declare_parameter("maximum_alignment_rotation_rad", 1.6);
+    declare_parameter("maximum_relocalization_correction_translation_m", 1.0);
+    declare_parameter("maximum_relocalization_correction_rotation_rad", 0.5);
     declare_parameter("maximum_cloud_points", 1800);
     declare_parameter("voxel_size_m", 0.25);
     declare_parameter("minimum_registration_points", 30);
@@ -191,6 +193,10 @@ public:
     maximum_registration_fitness_ = get_parameter("maximum_registration_fitness").as_double();
     maximum_alignment_translation_m_ = get_parameter("maximum_alignment_translation_m").as_double();
     maximum_alignment_rotation_rad_ = get_parameter("maximum_alignment_rotation_rad").as_double();
+    maximum_relocalization_correction_translation_m_ =
+      get_parameter("maximum_relocalization_correction_translation_m").as_double();
+    maximum_relocalization_correction_rotation_rad_ =
+      get_parameter("maximum_relocalization_correction_rotation_rad").as_double();
     maximum_cloud_points_ = std::max(
       30, static_cast<int>(get_parameter("maximum_cloud_points").as_int()));
     voxel_size_m_ = get_parameter("voxel_size_m").as_double();
@@ -285,6 +291,8 @@ public:
       maximum_descriptor_distance_ <= 0.0 ||
       maximum_registration_fitness_ <= 0.0 || maximum_alignment_translation_m_ <= 0.0 ||
       maximum_alignment_rotation_rad_ <= 0.0 || voxel_size_m_ <= 0.0 ||
+      maximum_relocalization_correction_translation_m_ <= 0.0 ||
+      maximum_relocalization_correction_rotation_rad_ <= 0.0 ||
       search_timeout_s_ <= 0.0 ||
       maximum_roll_pitch_correction_rad_ <= 0.0 ||
       minimum_registration_overlap_ratio_ <= 0.0 ||
@@ -1083,18 +1091,14 @@ private:
       return;
     }
     const auto source_pose = pose_to_isometry(source_pose_message->pose.pose);
-    std::optional<Eigen::Isometry3d> current_fused_pose;
-    std::optional<Eigen::Isometry3d> current_map_from_lio;
-    if (automatic_loop_search_active_) {
-      const auto fused_pose_message = nearest_pose(
-        fused_pose_history_, message->header.stamp, query_pose_tolerance_s_);
-      if (!fused_pose_message || !finite_pose(fused_pose_message->pose.pose)) {
-        search_failed_attempt("missing_time_aligned_current_fused_pose");
-        return;
-      }
-      current_fused_pose = pose_to_isometry(fused_pose_message->pose.pose);
-      current_map_from_lio = *current_fused_pose * source_pose.inverse();
+    const auto fused_pose_message = nearest_pose(
+      fused_pose_history_, message->header.stamp, query_pose_tolerance_s_);
+    if (!fused_pose_message || !finite_pose(fused_pose_message->pose.pose)) {
+      search_failed_attempt("missing_time_aligned_current_fused_pose");
+      return;
     }
+    const auto current_fused_pose = pose_to_isometry(fused_pose_message->pose.pose);
+    const auto current_map_from_lio = current_fused_pose * source_pose.inverse();
     const std::size_t retrieval_limit = automatic_loop_search_active_ ?
       database_.keyframes().size() : static_cast<std::size_t>(maximum_candidates_);
     auto candidates = database_.query(
@@ -1113,7 +1117,7 @@ private:
             }
             const double candidate_distance_m =
               (keyframe->world_from_sensor.translation() -
-              current_fused_pose->translation()).norm();
+              current_fused_pose.translation()).norm();
             return !automatic_loop_candidate_is_spatially_near(
               automatic_loop_config_, candidate_distance_m);
           }),
@@ -1159,7 +1163,7 @@ private:
     std::size_t reverse_registration_rejections = 0U;
     std::size_t cycle_rejections = 0U;
     std::size_t alignment_rejections = 0U;
-    std::size_t automatic_correction_rejections = 0U;
+    std::size_t epoch_correction_rejections = 0U;
     std::size_t registration_exceptions = 0U;
     struct CandidateDiagnostic
     {
@@ -1197,9 +1201,9 @@ private:
       double alignment_translation_m{std::numeric_limits<double>::infinity()};
       double alignment_rotation_rad{std::numeric_limits<double>::infinity()};
       double alignment_tilt_rad{std::numeric_limits<double>::infinity()};
-      double automatic_correction_translation_m{
+      double epoch_correction_translation_m{
         std::numeric_limits<double>::quiet_NaN()};
-      double automatic_correction_rotation_rad{
+      double epoch_correction_rotation_rad{
         std::numeric_limits<double>::quiet_NaN()};
       int stage_depth{0};
       std::string rejection_stage{"forward"};
@@ -1251,7 +1255,7 @@ private:
       };
       for (const double yaw_offset : yaw_offsets) {
         Eigen::Matrix4f initial = automatic_loop_search_active_ ?
-          current_fused_pose->matrix().cast<float>() : candidate_pose;
+          current_fused_pose.matrix().cast<float>() : candidate_pose;
         if (!automatic_loop_search_active_) {
           const Eigen::Matrix3d rotation =
             Eigen::AngleAxisd(
@@ -1383,23 +1387,27 @@ private:
             record_attempt(diagnostic);
             continue;
           }
-          if (automatic_loop_search_active_) {
-            const Eigen::Isometry3d epoch_correction =
-              map_from_lio * current_map_from_lio->inverse();
-            diagnostic.automatic_correction_translation_m =
-              epoch_correction.translation().norm();
-            diagnostic.automatic_correction_rotation_rad =
-              rotation_angle(epoch_correction.rotation());
-            if (!automatic_loop_correction_is_safe(
-                automatic_loop_config_,
-                diagnostic.automatic_correction_translation_m,
-                diagnostic.automatic_correction_rotation_rad))
-            {
-              ++automatic_correction_rejections;
-              diagnostic.rejection_stage = "automatic_correction";
-              record_attempt(diagnostic);
-              continue;
-            }
+          const Eigen::Isometry3d epoch_correction =
+            map_from_lio * current_map_from_lio.inverse();
+          diagnostic.epoch_correction_translation_m =
+            epoch_correction.translation().norm();
+          diagnostic.epoch_correction_rotation_rad =
+            rotation_angle(epoch_correction.rotation());
+          const bool correction_is_safe = automatic_loop_search_active_ ?
+            automatic_loop_correction_is_safe(
+            automatic_loop_config_,
+            diagnostic.epoch_correction_translation_m,
+            diagnostic.epoch_correction_rotation_rad) :
+            relocalization_correction_is_safe(
+            diagnostic.epoch_correction_translation_m,
+            diagnostic.epoch_correction_rotation_rad,
+            maximum_relocalization_correction_translation_m_,
+            maximum_relocalization_correction_rotation_rad_);
+          if (!correction_is_safe) {
+            ++epoch_correction_rejections;
+            diagnostic.rejection_stage = "epoch_correction";
+            record_attempt(diagnostic);
+            continue;
           }
           diagnostic.stage_depth = 4;
           diagnostic.rejection_stage = "verified";
@@ -1432,7 +1440,7 @@ private:
           "matches=%zu,fitness=%.6f,overlap=%.3f,objective_rmse=%.3f,euclidean_rmse=%.3f,"
           "rank=%d,condition=%.3g) cycle=(translation=%.3f,rotation=%.3f) "
           "alignment=(translation=%.3f,rotation=%.3f,tilt=%.3f) "
-          "automatic_correction=(translation=%.3f,rotation=%.3f) "
+          "epoch_correction=(translation=%.3f,rotation=%.3f) "
           "exceptions=%zu elapsed_ms=%.1f",
           best_attempt_for_keyframe->keyframe_id, registration_method_.c_str(),
           best_attempt_for_keyframe->descriptor_distance,
@@ -1469,8 +1477,8 @@ private:
           best_attempt_for_keyframe->alignment_translation_m,
           best_attempt_for_keyframe->alignment_rotation_rad,
           best_attempt_for_keyframe->alignment_tilt_rad,
-          best_attempt_for_keyframe->automatic_correction_translation_m,
-          best_attempt_for_keyframe->automatic_correction_rotation_rad,
+          best_attempt_for_keyframe->epoch_correction_translation_m,
+          best_attempt_for_keyframe->epoch_correction_rotation_rad,
           candidate_registration_exceptions, candidate_elapsed_ms);
       } else {
         RCLCPP_WARN(
@@ -1592,8 +1600,8 @@ private:
            << reciprocal_support_rejections << ",reverse_registration="
            << reverse_registration_rejections << ",cycle=" << cycle_rejections
            << ",alignment=" << alignment_rejections << ",exceptions="
-           << registration_exceptions << ",automatic_correction="
-           << automatic_correction_rejections;
+           << registration_exceptions << ",epoch_correction="
+           << epoch_correction_rejections;
     if (best_forward_attempt) {
       reason << ",best_candidate=" << best_forward_attempt->keyframe_id
              << ",registration_method=" << registration_method_
@@ -1708,6 +1716,8 @@ private:
   double maximum_registration_fitness_{0.25};
   double maximum_alignment_translation_m_{30.0};
   double maximum_alignment_rotation_rad_{1.6};
+  double maximum_relocalization_correction_translation_m_{1.0};
+  double maximum_relocalization_correction_rotation_rad_{0.5};
   double maximum_roll_pitch_correction_rad_{0.35};
   double minimum_registration_overlap_ratio_{0.35};
   int minimum_registration_correspondences_{120};

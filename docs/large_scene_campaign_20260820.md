@@ -131,8 +131,9 @@ against the time-aligned current epoch before publishing success or reset.
 Manual/active relocalization is bounded to `1.0 m` translation and `0.5 rad`
 rotation; routine automatic loop closure retains its existing stricter bounds.
 The observed 9.9703 m / 1.5681 rad false candidate is rejected by unit tests.
-The candidate remains uncommitted until a complete runtime run proves that the
-false epoch is rejected without breaking the route or EKF3 consumption.
+The fix is pushed as a review candidate but is not a stable campaign baseline
+until a complete runtime run proves that the false epoch is rejected without
+breaking the route or EKF3 consumption.
 
 ## Current runtime blocker
 
