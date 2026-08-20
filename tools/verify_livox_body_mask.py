@@ -23,7 +23,7 @@ def parse_args():
         "--bounds",
         type=float,
         nargs=6,
-        default=(-0.45, 0.45, -0.45, 0.45, -0.35, 0.15),
+        default=(-0.25, 0.25, -0.25, 0.25, -0.05, 0.05),
         metavar=("MIN_X", "MAX_X", "MIN_Y", "MAX_Y", "MIN_Z", "MAX_Z"),
     )
     parser.add_argument(

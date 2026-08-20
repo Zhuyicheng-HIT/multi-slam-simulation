@@ -76,12 +76,12 @@ public:
       1, 255));
     body_filter_enabled_ = declare_parameter<bool>("body_filter_enabled", true);
     body_bounds_ = {
-      declare_parameter<double>("body_min_x_m", -0.45),
-      declare_parameter<double>("body_max_x_m", 0.45),
-      declare_parameter<double>("body_min_y_m", -0.45),
-      declare_parameter<double>("body_max_y_m", 0.45),
-      declare_parameter<double>("body_min_z_m", -0.35),
-      declare_parameter<double>("body_max_z_m", 0.15)};
+      declare_parameter<double>("body_min_x_m", -0.25),
+      declare_parameter<double>("body_max_x_m", 0.25),
+      declare_parameter<double>("body_min_y_m", -0.25),
+      declare_parameter<double>("body_max_y_m", 0.25),
+      declare_parameter<double>("body_min_z_m", -0.05),
+      declare_parameter<double>("body_max_z_m", 0.05)};
     lidar_to_body_rotation_ = finite_parameter_array<9>(
       declare_parameter<std::vector<double>>(
         "lidar_to_body_rotation",

@@ -19,6 +19,11 @@ bash tools/apply_fast_lio_native_factor_patch.sh
 The script refuses a different commit or a dirty checkout. It never commits
 external source into this repository.
 
+The final patch in the series also removes LiDAR returns inside the configured
+aircraft body envelope. Points are transformed with `mapping.extrinsic_R/T`
+and filtered before they enter FAST-LIO deskew, matching, or map insertion.
+The default centered envelope is `0.50 x 0.50 x 0.10 m`.
+
 The patch series also carries the backend-owned deskew trajectory frontend.
 Its state inputs are deliberately separated:
 

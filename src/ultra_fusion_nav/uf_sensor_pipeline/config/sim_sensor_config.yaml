@@ -51,12 +51,13 @@ pointcloud_body_filter:
   ros__parameters:
     input_topic: /sim/mid360/points_raw
     output_topic: /sensors/lidar/points_body_filtered
-    body_min_x_m: -0.45
-    body_max_x_m: 0.45
-    body_min_y_m: -0.45
-    body_max_y_m: 0.45
-    body_min_z_m: -0.35
-    body_max_z_m: 0.15
+    # Vehicle self-return envelope: 0.50 m x 0.50 m x 0.10 m centered at body.
+    body_min_x_m: -0.25
+    body_max_x_m: 0.25
+    body_min_y_m: -0.25
+    body_max_y_m: 0.25
+    body_min_z_m: -0.05
+    body_max_z_m: 0.05
     # R_body_lidar: MID360 optical axis pitches 15 deg nose-down.
     lidar_to_body_rotation: [0.9659258263, 0.0, 0.2588190451, 0.0, 1.0, 0.0, -0.2588190451, 0.0, 0.9659258263]
     # Measured simulation mount: 5 cm forward and 10 cm above body origin.

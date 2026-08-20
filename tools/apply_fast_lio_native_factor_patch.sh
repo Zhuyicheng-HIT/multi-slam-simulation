@@ -13,6 +13,7 @@ PATCH_FILES=(
   "$PATCH_DIR/0003-relocalization-epoch-gate.patch"
   "$PATCH_DIR/0004-native-lidar-factor-epoch-contract.patch"
   "$PATCH_DIR/0005-reliable-native-factor-qos.patch"
+  "$PATCH_DIR/0006-body-envelope-filter.patch"
 )
 
 if ! git -C "$FAST_LIO_SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

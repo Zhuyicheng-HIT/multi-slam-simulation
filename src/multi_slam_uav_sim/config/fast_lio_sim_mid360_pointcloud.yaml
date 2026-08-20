@@ -24,6 +24,14 @@
             # PointCloud2 time field is seconds from the beginning of each scan.
             timestamp_unit: 0
             scan_rate: 10
+            body_filter:
+                enabled: true
+                min_x_m: -0.25
+                max_x_m: 0.25
+                min_y_m: -0.25
+                max_y_m: 0.25
+                min_z_m: -0.05
+                max_z_m: 0.05
 
         mapping:
             acc_cov: 0.1

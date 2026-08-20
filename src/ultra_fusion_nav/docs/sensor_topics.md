@@ -49,10 +49,12 @@ The LiDAR input boundary removes returns inside a configurable axis-aligned
 volume after transforming points from `mid360_link` to the aircraft body
 frame. The `direct_livox` C++ adapter performs this operation before publishing
 `/livox/lidar`; the legacy PointCloud2 path uses `pointcloud_body_filter`.
-The initial simulation bounds are `x,y=[-0.45,0.45] m` and
-`z=[-0.35,0.15] m`. These are conservative configuration values, not
-calibrated hardware geometry. `/sensors/lidar/body_removed_ratio` must be
-checked in each world before accepting them.
+The frozen body-frame envelope is centered on the aircraft and measures
+`0.50 x 0.50 x 0.10 m`: `x,y=[-0.25,0.25] m` and `z=[-0.05,0.05] m`.
+The patched FAST-LIO input applies the same transform-and-filter operation to
+both Livox `CustomMsg` and PointCloud2 before deskew, matching, and map
+insertion. `/sensors/lidar/body_removed_ratio` remains available on the legacy
+PointCloud2 pipeline for runtime inspection.
 
 ## Fault Injection
 

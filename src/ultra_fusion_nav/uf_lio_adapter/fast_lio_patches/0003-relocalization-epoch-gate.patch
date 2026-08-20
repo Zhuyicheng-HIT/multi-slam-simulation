@@ -79,7 +79,7 @@ index a64728f..2d5606e 100644
                  backend_activation_states_received,
                  backend_activation_states_rejected,
                  backend_trajectory_bootstrap_frames,
-@@ -1779,7 +1810,10 @@ public:
+@@ -1779,6 +1810,9 @@ public:
                  backend_trajectories_queued,
                  backend_trajectories_duplicate,
                  backend_trajectories_contract_rejected,

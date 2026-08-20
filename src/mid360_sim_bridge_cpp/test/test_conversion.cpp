@@ -99,12 +99,12 @@ TEST(Conversion, BodyExclusionUsesLidarToBodyExtrinsic)
 {
   constexpr double c = 0.984807753012208;
   constexpr double s = 0.173648177666930;
-  const std::array<double, 6> bounds{-0.45, 0.45, -0.45, 0.45, -0.35, 0.15};
+  const std::array<double, 6> bounds{-0.25, 0.25, -0.25, 0.25, -0.05, 0.05};
   const std::array<double, 9> rotation{c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c};
   const std::array<double, 3> translation{0.0, 0.0, 0.0};
 
   EXPECT_TRUE(point_in_body_exclusion_box(
-    0.40, 0.10, 0.20, bounds, rotation, translation));
+    0.20, 0.10, 0.00, bounds, rotation, translation));
   EXPECT_FALSE(point_in_body_exclusion_box(
     0.80, 0.10, 0.20, bounds, rotation, translation));
   EXPECT_FALSE(point_in_body_exclusion_box(

@@ -1,0 +1,80 @@
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -110,1 +110,8 @@
+ bool    is_first_lidar = true;
++bool body_envelope_filter_en = true;
++double body_envelope_min_x_m = -0.25;
++double body_envelope_max_x_m = 0.25;
++double body_envelope_min_y_m = -0.25;
++double body_envelope_max_y_m = 0.25;
++double body_envelope_min_z_m = -0.05;
++double body_envelope_max_z_m = 0.05;
+@@ -306,2 +313,25 @@
+     rclcpp::shutdown();
+ }
++void remove_body_envelope(PointCloudXYZI &cloud)
++{
++    if (!body_envelope_filter_en || cloud.empty())
++        return;
++
++    const auto first_removed = std::remove_if(
++        cloud.points.begin(), cloud.points.end(),
++        [](const PointType &point) {
++            const V3D point_lidar(point.x, point.y, point.z);
++            const V3D point_body =
++                Lidar_R_wrt_IMU * point_lidar + Lidar_T_wrt_IMU;
++            return point_body.x() >= body_envelope_min_x_m &&
++                point_body.x() <= body_envelope_max_x_m &&
++                point_body.y() >= body_envelope_min_y_m &&
++                point_body.y() <= body_envelope_max_y_m &&
++                point_body.z() >= body_envelope_min_z_m &&
++                point_body.z() <= body_envelope_max_z_m;
++        });
++    cloud.points.erase(first_removed, cloud.points.end());
++    cloud.width = static_cast<uint32_t>(cloud.points.size());
++    cloud.height = 1;
++}
++
+@@ -471,2 +501,3 @@
+     p_pre->process(msg, ptr);
++    remove_body_envelope(*ptr);
+     lidar_buffer.push_back(ptr);
+@@ -519,2 +550,3 @@
+     p_pre->process(msg, ptr);
++    remove_body_envelope(*ptr);
+     lidar_buffer.push_back(ptr);
+@@ -1436,2 +1468,9 @@
+         this->declare_parameter<int>("preprocess.scan_rate", 10);
++        this->declare_parameter<bool>("preprocess.body_filter.enabled", true);
++        this->declare_parameter<double>("preprocess.body_filter.min_x_m", -0.25);
++        this->declare_parameter<double>("preprocess.body_filter.max_x_m", 0.25);
++        this->declare_parameter<double>("preprocess.body_filter.min_y_m", -0.25);
++        this->declare_parameter<double>("preprocess.body_filter.max_y_m", 0.25);
++        this->declare_parameter<double>("preprocess.body_filter.min_z_m", -0.05);
++        this->declare_parameter<double>("preprocess.body_filter.max_z_m", 0.05);
+         this->declare_parameter<int>("point_filter_num", 2);
+@@ -1497,2 +1536,13 @@
+         this->get_parameter_or<int>("preprocess.scan_rate", p_pre->SCAN_RATE, 10);
++        this->get_parameter_or<bool>("preprocess.body_filter.enabled", body_envelope_filter_en, true);
++        this->get_parameter_or<double>("preprocess.body_filter.min_x_m", body_envelope_min_x_m, -0.25);
++        this->get_parameter_or<double>("preprocess.body_filter.max_x_m", body_envelope_max_x_m, 0.25);
++        this->get_parameter_or<double>("preprocess.body_filter.min_y_m", body_envelope_min_y_m, -0.25);
++        this->get_parameter_or<double>("preprocess.body_filter.max_y_m", body_envelope_max_y_m, 0.25);
++        this->get_parameter_or<double>("preprocess.body_filter.min_z_m", body_envelope_min_z_m, -0.05);
++        this->get_parameter_or<double>("preprocess.body_filter.max_z_m", body_envelope_max_z_m, 0.05);
++        if (body_envelope_min_x_m > body_envelope_max_x_m ||
++            body_envelope_min_y_m > body_envelope_max_y_m ||
++            body_envelope_min_z_m > body_envelope_max_z_m)
++            throw invalid_argument("invalid preprocess body filter bounds");
+         this->get_parameter_or<int>("point_filter_num", p_pre->point_filter_num, 2);
+@@ -1660,2 +1713,9 @@
+         p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
++        RCLCPP_INFO(
++            this->get_logger(),
++            "LiDAR body-envelope filter %s: body x=[%.3f, %.3f] y=[%.3f, %.3f] z=[%.3f, %.3f] m",
++            body_envelope_filter_en ? "enabled" : "disabled",
++            body_envelope_min_x_m, body_envelope_max_x_m,
++            body_envelope_min_y_m, body_envelope_max_y_m,
++            body_envelope_min_z_m, body_envelope_max_z_m);
+         p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));

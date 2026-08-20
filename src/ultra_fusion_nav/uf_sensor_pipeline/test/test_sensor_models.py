@@ -36,12 +36,26 @@ class SensorModelsTest(unittest.TestCase):
         msg = cloud([(0.2, 0.1, 0.0, 10.0), (1.0, 0.0, 0.0, 20.0)])
 
         output, removed_body, removed_range, total = filter_cloud(
-            msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15), 0.1, 40.0
+            msg, (-0.25, 0.25, -0.25, 0.25, -0.05, 0.05), 0.1, 40.0
         )
 
         self.assertEqual((removed_body, removed_range, total), (1, 0, 2))
         self.assertEqual(output.width, 1)
         self.assertEqual(struct.unpack("<ffff", output.data), (1.0, 0.0, 0.0, 20.0))
+
+    def test_body_filter_uses_closed_50_by_50_by_10_cm_envelope(self):
+        msg = cloud([
+            (0.25, 0.25, 0.0, 10.0),
+            (0.251, 0.0, 0.0, 20.0),
+            (0.20, 0.0, 0.051, 30.0),
+        ])
+
+        output, removed_body, removed_range, total = filter_cloud(
+            msg, (-0.25, 0.25, -0.25, 0.25, -0.05, 0.05), 0.1, 40.0
+        )
+
+        self.assertEqual((removed_body, removed_range, total), (1, 0, 3))
+        self.assertEqual(output.width, 2)
 
     def test_body_filter_applies_lidar_to_body_rotation(self):
         msg = cloud([(1.0, 0.0, 0.0, 10.0)])
