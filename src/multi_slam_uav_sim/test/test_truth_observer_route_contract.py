@@ -57,6 +57,53 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn("figure_eight_uses_requested_feedback", checker)
         self.assertNotIn("figure_eight_uses_unified_feedback", checker)
 
+    def test_validation_separates_world_file_profile_from_gazebo_name(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("VALIDATION_GAZEBO_WORLD_NAME", runner)
+        self.assertIn('WORLD_NAME="$VALIDATION_GAZEBO_WORLD_NAME"', runner)
+        self.assertIn('-p world_name:="$VALIDATION_GAZEBO_WORLD_NAME"', runner)
+
+    def test_dynamic_agents_are_explicit_and_owned_by_validation(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("VALIDATION_DYNAMIC_AGENTS_ENABLED", runner)
+        self.assertIn("VALIDATION_DYNAMIC_AGENTS_CONFIG", runner)
+        self.assertIn("ros2 run multi_slam_uav_sim people_motion", runner)
+        self.assertIn('pids+=("$dynamic_agents_pid")', runner)
+
+    def test_large_scene_runner_preserves_landing_stop_and_body_envelope(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_large_scene_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("VALIDATION_STOP_OBSERVERS_ON_LANDING", runner)
+        self.assertIn("body_envelope_m=0.50,0.50,0.10", runner)
+        self.assertIn("city_dynamic_relocalization", runner)
+        self.assertIn("tunnel_dynamic_relocalization", runner)
+
+    def test_validation_stops_collectors_when_route_fails(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("collector_stop_reason=route_failed", runner)
+        self.assertIn("route_terminated: stopping collectors", runner)
+        self.assertIn('stop_collector "$replay_bag_pid"', runner)
+
+    def test_validation_records_process_and_gpu_resources(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("collect_validation_resources.py", runner)
+        self.assertIn('stop_collector "$resource_pid"', runner)
+        self.assertIn("resource_metrics.json", runner)
+
     def test_truth_subscription_is_confined_to_route_controller(self):
         route = (
             SIM_ROOT

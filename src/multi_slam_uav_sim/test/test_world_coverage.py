@@ -12,6 +12,10 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
 WORLD = PACKAGE_ROOT / "worlds" / "simple_apm_rgbd_mid360.sdf"
 LOW_WORLD = PACKAGE_ROOT / "worlds" / "low_indoor_apm_rgbd_mid360.sdf"
+CITY_WORLD = PACKAGE_ROOT / "worlds" / "apm_city_rgbd_mid360.sdf"
+LARGE_TUNNEL_WORLD = (
+    PACKAGE_ROOT / "worlds" / "large_indoor_tunnel_apm_rgbd_mid360.sdf"
+)
 LANDMARKS = (
     PACKAGE_ROOT / "models" / "s_curve_lidar_landmarks" / "model.sdf"
 )
@@ -152,6 +156,50 @@ def test_optical_flow_camera_and_range_point_downward():
         assert forward_body_z < -0.999999
 
 
+def test_large_tunnel_has_long_clear_repetitive_core_and_full_sensor_aircraft():
+    root = ET.parse(LARGE_TUNNEL_WORLD).getroot()
+    assert root.find(".//world").get("name") == "large_indoor_tunnel"
+
+    collisions = {
+        collision.get("name"): collision
+        for collision in root.findall(".//collision")
+    }
+    floor_size = [
+        float(value)
+        for value in collisions["floor"].findtext("geometry/box/size").split()
+    ]
+    assert floor_size[1] >= 90.0
+    assert len([name for name in collisions if name.startswith("rib_")]) >= 9
+
+    includes = {
+        include.findtext("name"): include.findtext("uri")
+        for include in root.findall(".//include")
+    }
+    assert includes["apm_iris"] == "model://iris_apm_rgbd"
+    assert len([
+        name for name, uri in includes.items()
+        if name.startswith("tunnel_person_") and uri == "model://textured_person"
+    ]) == 3
+
+    route = generate_large_figure_eight(
+        70.0, 1.0, 2.2, 0.35, samples=961,
+        rotation_deg=90.0, altitude_power=4)
+    assert max(abs(point[0]) for point in route) <= 2.0
+    assert max(abs(point[1]) for point in route) <= 46.0
+    assert min(point[2] for point in route) >= 1.5
+    assert max(point[2] for point in route) <= 4.4
+
+
+def test_city_uses_only_the_aircraft_owned_sensor_rig():
+    root = ET.parse(CITY_WORLD).getroot()
+    includes = [
+        include.findtext("uri") for include in root.findall(".//include")
+    ]
+
+    assert includes.count("model://iris_apm_rgbd") == 1
+    assert not any(uri.endswith("sensor_only") for uri in includes)
+
+
 def test_mid360_mount_is_fifteen_degrees_nose_down():
     root = ET.parse(AIRCRAFT_MODEL).getroot()
     link = root.find(".//link[@name='mid360_link']")
@@ -181,7 +229,9 @@ def test_rgbd_cameras_run_at_fifteen_hz_without_throttling_optical_flow():
 
 def test_low_world_has_nonplanar_ground_for_range_facets():
     root = ET.parse(LOW_WORLD).getroot()
-    collisions = root.findall(".//collision")
+    relief_model = root.find(".//model[@name='range_facet_ground_relief']")
+    assert relief_model is not None
+    collisions = relief_model.findall(".//collision")
     reliefs = [
         collision for collision in collisions
         if collision.get("name", "").startswith("relief_")
@@ -284,16 +334,6 @@ def test_lidar_landmarks_cover_the_large_figure_eight_and_outer_area():
     )
     assert route_max_distance <= 4.5
 
-
-def test_low_figure_eight_stays_below_five_metres():
-    route = generate_large_figure_eight(
-        9.0, 1.5, 2.2, 0.8, samples=481,
-        rotation_deg=158.0, altitude_power=4)
-    altitudes = [point[2] for point in route]
-    assert min(altitudes) >= 2.2 - 1.0e-9
-    assert max(altitudes) <= 3.0 + 1.0e-9
-    assert sum(value <= 5.0 for value in altitudes) / len(altitudes) >= 0.50
-
     audit_grid = [
         (x, y)
         for x in (-16.0, -8.0, 0.0, 8.0, 16.0)
@@ -305,6 +345,15 @@ def test_low_figure_eight_stays_below_five_metres():
     )
     assert expanded_max_distance <= 8.5
 
+
+def test_low_figure_eight_stays_below_five_metres():
+    route = generate_large_figure_eight(
+        9.0, 1.5, 2.2, 0.8, samples=481,
+        rotation_deg=158.0, altitude_power=4)
+    altitudes = [point[2] for point in route]
+    assert min(altitudes) >= 2.2 - 1.0e-9
+    assert max(altitudes) <= 3.0 + 1.0e-9
+    assert sum(value <= 5.0 for value in altitudes) / len(altitudes) >= 0.50
 
 def test_urban_structures_are_loaded_and_replace_the_pillar_forest():
     world_root = ET.parse(WORLD).getroot()

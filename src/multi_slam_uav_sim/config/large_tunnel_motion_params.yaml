@@ -1,0 +1,6 @@
+/people_motion:
+  ros__parameters:
+    world_name: large_indoor_tunnel
+    rate_hz: 20.0
+    agents_json: >-
+      [{"name":"tunnel_person_a","path_type":"line","points":[[-1.6,-38,0.05],[-1.6,38,0.05]],"speed":1.0,"distance_offset":14.0},{"name":"tunnel_person_b","path_type":"line","points":[[1.4,38,0.05],[1.4,-38,0.05]],"speed":1.2,"start_delay":2.0,"distance_offset":34.0},{"name":"tunnel_person_c","path_type":"line","points":[[-1.2,-34,0.05],[-1.2,34,0.05]],"speed":0.8,"start_delay":5.0,"distance_offset":58.0}]

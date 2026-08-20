@@ -1224,20 +1224,5 @@
       <name>apm_iris</name>
       <pose>0 0 0.5 0 0 0</pose>
     </include>
-    <include>
-      <uri>model://d435i_downward_sensor_only</uri>
-      <name>apm_iris_d435i</name>
-      <pose>0.24 0 0.35 0 0 0</pose>
-    </include>
-    <include>
-      <uri>model://lidar_downward_sensor_only</uri>
-      <name>apm_iris_lidar</name>
-      <pose>0.0 0 0.45 0 0 0</pose>
-    </include>
-    <include>
-      <uri>model://mid360_3d_lidar_sensor_only</uri>
-      <name>apm_iris_mid360</name>
-      <pose>0.0 0 0.55 0 0 0</pose>
-    </include>
   </world>
 </sdf>

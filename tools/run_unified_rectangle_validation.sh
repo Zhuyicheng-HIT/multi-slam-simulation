@@ -18,6 +18,9 @@ export ROS_DOMAIN_ID="$VALIDATION_ROS_DOMAIN_ID"
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
 VALIDATION_WORLD_NAME=${VALIDATION_WORLD_NAME:-${WORLD_NAME:-low_indoor_apm_rgbd_mid360}}
 VALIDATION_WORLD_PATH=${VALIDATION_WORLD_PATH:-"$REPO_ROOT/install/multi_slam_uav_sim/share/multi_slam_uav_sim/worlds/${VALIDATION_WORLD_NAME}.sdf"}
+VALIDATION_GAZEBO_WORLD_NAME=${VALIDATION_GAZEBO_WORLD_NAME:-$VALIDATION_WORLD_NAME}
+VALIDATION_DYNAMIC_AGENTS_ENABLED=${VALIDATION_DYNAMIC_AGENTS_ENABLED:-false}
+VALIDATION_DYNAMIC_AGENTS_CONFIG=${VALIDATION_DYNAMIC_AGENTS_CONFIG:-}
 VALIDATION_TAKEOFF_ALT=${VALIDATION_TAKEOFF_ALT:-2.2}
 VALIDATION_RANGE_FACET_ENABLED=${VALIDATION_RANGE_FACET_ENABLED:-false}
 if [[ "$VALIDATION_ROUTE" == "s_curve" &&
@@ -105,6 +108,21 @@ case "${VALIDATION_STOP_AFTER_LANDING,,}" in
     exit 2
     ;;
 esac
+case "${VALIDATION_DYNAMIC_AGENTS_ENABLED,,}" in
+  1|true|yes|on) validation_dynamic_agents_enabled=true ;;
+  0|false|no|off) validation_dynamic_agents_enabled=false ;;
+  *)
+    printf 'VALIDATION_DYNAMIC_AGENTS_ENABLED must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
+if [[ "$validation_dynamic_agents_enabled" == "true" &&
+  ! -f "$VALIDATION_DYNAMIC_AGENTS_CONFIG" ]]
+then
+  printf 'Dynamic-agent configuration is unavailable: %s\n' \
+    "$VALIDATION_DYNAMIC_AGENTS_CONFIG" >&2
+  exit 2
+fi
 if ! [[ "$VALIDATION_LANDING_GRACE_S" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   printf 'VALIDATION_LANDING_GRACE_S must be a non-negative number.\n' >&2
   exit 2
@@ -289,6 +307,12 @@ printf 'Validation observer stop: on_landing=%s minimum_sim_duration=%s\n' \
 printf 'Validation figure-eight gates: minimum_distance_m=%s minimum_checkpoints=%s\n' \
   "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M" \
   "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS"
+printf 'Validation world: file_profile=%s gazebo_name=%s path=%s\n' \
+  "$VALIDATION_WORLD_NAME" "$VALIDATION_GAZEBO_WORLD_NAME" \
+  "$VALIDATION_WORLD_PATH"
+printf 'Validation dynamic agents: enabled=%s config=%s\n' \
+  "$validation_dynamic_agents_enabled" \
+  "${VALIDATION_DYNAMIC_AGENTS_CONFIG:-none}"
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
 if ! ros2 pkg prefix "$RMW_IMPLEMENTATION" >/dev/null 2>&1; then
@@ -379,7 +403,7 @@ trap cleanup EXIT INT TERM
 setsid env HEADLESS=1 REQUIRE_GAZEBO_GPU=1 ENABLE_D435_POINTCLOUD=false \
   USE_SIM_TIME=true \
   WORLD="$VALIDATION_WORLD_PATH" \
-  WORLD_NAME="$VALIDATION_WORLD_NAME" \
+  WORLD_NAME="$VALIDATION_GAZEBO_WORLD_NAME" \
   ENABLE_EXTERNALNAV_EKF3="$VALIDATION_ENABLE_EXTERNALNAV_EKF3" \
   ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=0 \
   MID360_SIM_BRIDGE_MODE="$VALIDATION_MID360_SIM_BRIDGE_MODE" \
@@ -406,6 +430,22 @@ case "$VALIDATION_MID360_SIM_BRIDGE_MODE" in
 esac
 wait_rate /mavros/imu/data_raw 20.0 40
 wait_rate /sim/barometer/pressure 5.0 40
+
+if [[ "$validation_dynamic_agents_enabled" == "true" ]]; then
+  setsid ros2 run multi_slam_uav_sim people_motion --ros-args \
+    --params-file "$VALIDATION_DYNAMIC_AGENTS_CONFIG" \
+    -p use_sim_time:=true \
+    -p world_name:="$VALIDATION_GAZEBO_WORLD_NAME" \
+    >"$LOG_DIR/dynamic_agents.log" 2>&1 &
+  dynamic_agents_pid=$!
+  pids+=("$dynamic_agents_pid")
+  sleep 2
+  if ! kill -0 "$dynamic_agents_pid" 2>/dev/null; then
+    printf 'Dynamic-agent controller exited during startup.\n' >&2
+    tail -n 80 "$LOG_DIR/dynamic_agents.log" >&2 || true
+    exit 1
+  fi
+fi
 
 if [[ "$validation_enable_vision_arg" == "true" ]]; then
   setsid ros2 run d435i_rgbd_bridge_cpp d435i_rgbd_bridge --ros-args \
@@ -520,7 +560,7 @@ esac
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   -p use_sim_time:=true \
-  -p world_name:="$VALIDATION_WORLD_NAME" \
+  -p world_name:="$VALIDATION_GAZEBO_WORLD_NAME" \
   -p odom_topic:=/Odometry \
   -p output_path:="$LOG_DIR/fastlio_accuracy.json" \
   >"$LOG_DIR/fastlio_accuracy.log" 2>&1 &
@@ -528,7 +568,7 @@ pids+=("$!")
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   -p use_sim_time:=true \
-  -p world_name:="$VALIDATION_WORLD_NAME" \
+  -p world_name:="$VALIDATION_GAZEBO_WORLD_NAME" \
   -p odom_topic:=/fusion/unified/odom \
   -p output_path:="$LOG_DIR/unified_accuracy.json" \
   >"$LOG_DIR/unified_accuracy.log" 2>&1 &
@@ -658,6 +698,14 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
     ;;
 esac
 
+setsid python3 "$REPO_ROOT/tools/collect_validation_resources.py" \
+  --root-pid "$$" \
+  --output "$LOG_DIR/resource_metrics.json" \
+  --samples-output "$LOG_DIR/resource_samples.csv" \
+  >"$LOG_DIR/resource_metrics.log" 2>&1 &
+resource_pid=$!
+pids+=("$resource_pid")
+
 case "$VALIDATION_ROUTE" in
   rectangle)
     route_script="$REPO_ROOT/tools/run_rectangle_state_machine.sh"
@@ -736,29 +784,46 @@ stop_collector() {
   kill -INT -- "-$pid" 2>/dev/null || true
   kill -INT "$pid" 2>/dev/null || true
 }
+collector_stop_reason=
 if [[ "$landing_seen" == "true" ]]; then
+  collector_stop_reason=early_landing
   sleep "$VALIDATION_LANDING_GRACE_S"
+elif (( route_status != 0 )); then
+  collector_stop_reason=route_failed
+  printf 'route_terminated: stopping collectors after route failure status %d\n' \
+    "$route_status" >&2
+fi
+if [[ -n "$collector_stop_reason" ]]; then
   stop_collector "$metrics_pid"
   stop_collector "$drift_pid"
   stop_collector "$reliability_pid"
   stop_collector "$replay_bag_pid"
+  stop_collector "$resource_pid"
 fi
 
 metrics_status=0
 wait "$metrics_pid" || metrics_status=$?
-if [[ "$landing_seen" == "true" &&
+if [[ -n "$collector_stop_reason" &&
   -s "$LOG_DIR/unified_runtime_metrics.json" ]]; then
   # Preserve the collector's partial sample report while making the stopping
   # reason explicit for scoring and downstream evidence review.
-  python3 - "$LOG_DIR/unified_runtime_metrics.json" <<'PY'
+  python3 - "$LOG_DIR/unified_runtime_metrics.json" \
+    "$collector_stop_reason" "$route_status" <<'PY'
 import json
 import sys
 
 path = sys.argv[1]
+reason = sys.argv[2]
+route_status = int(sys.argv[3])
 with open(path, encoding="utf-8") as stream:
     report = json.load(stream)
-report["termination_reason"] = "early_landing"
-report["early_stop_reason"] = "LAND completed and FCU disarm confirmed"
+report["termination_reason"] = reason
+if reason == "early_landing":
+    report["early_stop_reason"] = "LAND completed and FCU disarm confirmed"
+else:
+    report["early_stop_reason"] = (
+        f"route process exited with status {route_status}"
+    )
 with open(path, "w", encoding="utf-8") as stream:
     json.dump(report, stream, indent=2, sort_keys=True)
     stream.write("\n")
@@ -767,21 +832,38 @@ PY
 fi
 drift_status=0
 wait "$drift_pid" || drift_status=$?
-if [[ "$landing_seen" == "true" && -s "$LOG_DIR/slam_drift.json" ]]; then
+if [[ -n "$collector_stop_reason" && -s "$LOG_DIR/slam_drift.json" ]]; then
   drift_status=0
 fi
 if [[ -n "$relocalization_trigger_pid" ]]; then
   relocalization_status=0
   wait "$relocalization_trigger_pid" || relocalization_status=$?
-  if (( relocalization_status != 0 )); then
-    printf 'relocalization_transaction_failed: status %d\n' \
-      "$relocalization_status" >&2
-    exit "$relocalization_status"
-  fi
 fi
 if [[ -n "$reliability_pid" ]]; then
   reliability_status=0
   wait "$reliability_pid" || reliability_status=$?
+fi
+resource_status=0
+stop_collector "$resource_pid"
+wait "$resource_pid" || resource_status=$?
+bag_status=0
+if [[ -n "$replay_bag_pid" ]]; then
+  kill -INT -- "-$replay_bag_pid" 2>/dev/null || true
+  kill -INT "$replay_bag_pid" 2>/dev/null || true
+  for _ in {1..100}; do
+    if ! kill -0 "$replay_bag_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  wait "$replay_bag_pid" || bag_status=$?
+fi
+if [[ -n "$relocalization_trigger_pid" ]] &&
+  (( relocalization_status != 0 ))
+then
+  printf 'relocalization_transaction_failed: status %d\n' \
+    "$relocalization_status" >&2
+  exit "$relocalization_status"
 fi
 if (( route_status != 0 )); then
   printf 'route_failed: %s exited with status %d\n' \
@@ -807,17 +889,12 @@ if [[ -n "$reliability_pid" ]] && (( reliability_status != 0 )); then
     "$reliability_status" >&2
   exit "$reliability_status"
 fi
+if (( resource_status != 0 )) || [[ ! -s "$LOG_DIR/resource_metrics.json" ]]; then
+  printf 'resource_collection_failed: status=%d report=%s\n' \
+    "$resource_status" "$LOG_DIR/resource_metrics.json" >&2
+  exit 3
+fi
 if [[ -n "$replay_bag_pid" ]]; then
-  kill -INT -- "-$replay_bag_pid" 2>/dev/null || true
-  kill -INT "$replay_bag_pid" 2>/dev/null || true
-  for _ in {1..100}; do
-    if ! kill -0 "$replay_bag_pid" 2>/dev/null; then
-      break
-    fi
-    sleep 0.1
-  done
-  bag_status=0
-  wait "$replay_bag_pid" || bag_status=$?
   if (( bag_status != 0 )) || [[ ! -s "$LOG_DIR/replay_bag/metadata.yaml" ]]; then
     printf 'replay_bag_record_failed: status=%d metadata=%s\n' \
       "$bag_status" "$LOG_DIR/replay_bag/metadata.yaml" >&2
