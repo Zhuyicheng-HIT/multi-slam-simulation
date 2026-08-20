@@ -16,6 +16,7 @@ find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(uf_dynamic_observer REQUIRED)
 find_package(uf_interfaces REQUIRED)
 
 add_library(active_relocalization_policy src/active_relocalization_policy.cpp)
@@ -108,6 +109,18 @@ ament_target_dependencies(lidar_calibration_motion_node
 )
 target_compile_definitions(lidar_calibration_motion_node PRIVATE ${PCL_DEFINITIONS})
 
+add_executable(dynamic_localization_benchmark src/dynamic_localization_benchmark.cpp)
+target_compile_features(dynamic_localization_benchmark PUBLIC cxx_std_17)
+target_include_directories(dynamic_localization_benchmark PRIVATE
+  ${PCL_INCLUDE_DIRS}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(dynamic_localization_benchmark
+  registration_core keyframe_database descriptor_core
+  uf_dynamic_observer::dynamic_observer_core Eigen3::Eigen ${PCL_LIBRARIES}
+)
+target_compile_definitions(dynamic_localization_benchmark PRIVATE ${PCL_DEFINITIONS})
+
 install(TARGETS active_relocalization_policy automatic_loop_closure_policy
   registration_core keyframe_database descriptor_core
   multi_frame_consistency_gate keyframe_synchronization
@@ -117,6 +130,7 @@ install(TARGETS active_relocalization_policy automatic_loop_closure_policy
   RUNTIME DESTINATION bin
 )
 install(TARGETS relocalization_node lidar_calibration_motion_node
+  dynamic_localization_benchmark
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
