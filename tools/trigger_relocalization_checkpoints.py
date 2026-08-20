@@ -7,6 +7,7 @@ import sys
 import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
 from std_msgs.msg import Bool, String
@@ -302,11 +303,12 @@ def main():
                 break
             if now_wall_s - started_wall_s >= args.wall_timeout:
                 break
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         reason = "interrupted_after_route_end"
     finally:
-        node.publish_request(False)
-        rclpy.spin_once(node, timeout_sec=0.1)
+        if rclpy.ok():
+            node.publish_request(False)
+            rclpy.spin_once(node, timeout_sec=0.1)
         success = target_offset == len(indices)
         report = {
             "success": success,
@@ -324,7 +326,8 @@ def main():
             stream.write("\n")
         print(json.dumps(report, sort_keys=True))
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
     return 0 if success else 1
 

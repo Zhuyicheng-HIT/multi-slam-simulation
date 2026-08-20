@@ -19,6 +19,8 @@ class RelocalizationCheckpointTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('reason = "interrupted_after_route_end"', trigger)
+        self.assertIn("ExternalShutdownException", trigger)
+        self.assertIn("if rclpy.ok():", trigger)
 
     def test_checkpoint_indices_are_positive_unique_and_increasing(self):
         self.assertEqual(parse_checkpoint_indices("3, 7,11"), (3, 7, 11))
