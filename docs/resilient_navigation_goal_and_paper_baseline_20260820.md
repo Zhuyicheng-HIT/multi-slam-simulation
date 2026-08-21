@@ -305,6 +305,15 @@ the replay artifact is
 Increasing point density (`point_filter_num=1`) worsened the result to
 92.03 m RMSE and was reverted.
 
+An isolated A/B with the corrected flat cloud and `ENABLE_VISION=false`
+reduced the result further to 2.26 m 3-D RMSE, 3.31 m P95, and 3.42 m
+maximum error, with 141 native LiDAR factors and zero visual factors. This
+shows that the M2DGR RGB-D calibration/depth adaptation contributes additional
+drift, but LiDAR plus IMU alone still does not meet the paper-dataset gate.
+The remaining dataset work is therefore split into independent LiDAR/IMU
+geometry validation and camera/depth calibration validation; no backend gate
+was relaxed.
+
 MARS currently has approximately 10.98 m 3-D RMSE and 10.94 m Z RMSE. R3LIVE
 has no valid trajectory association. The detailed artifacts are kept under
 `/home/ld666/ultrafusion-datasets/reports/` and summarized in
