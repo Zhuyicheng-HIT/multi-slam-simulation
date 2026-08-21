@@ -80,6 +80,11 @@ def generate_launch_description():
             description="Use the APM-equivalent horizontal optical-flow velocity factor",
         ),
         DeclareLaunchArgument(
+            "flow_lever_arm_compensation_enabled",
+            default_value="true",
+            description="Apply IMU-based optical-flow sensor lever-arm compensation",
+        ),
+        DeclareLaunchArgument(
             "rgbd_depth_healthy_lidar_stride",
             default_value="1",
             description=(
@@ -303,6 +308,10 @@ def generate_launch_description():
                     ),
                     "optical_flow_velocity_factor_enabled": ParameterValue(
                         LaunchConfiguration("optical_flow_velocity_factor_enabled"),
+                        value_type=bool,
+                    ),
+                    "flow_lever_arm_compensation_enabled": ParameterValue(
+                        LaunchConfiguration("flow_lever_arm_compensation_enabled"),
                         value_type=bool,
                     ),
                     "rgbd_depth_healthy_lidar_stride": ParameterValue(
