@@ -51,6 +51,13 @@
             <ambient>0.68 0.72 0.70 1</ambient>
             <diffuse>0.68 0.72 0.70 1</diffuse>
             <specular>0.08 0.08 0.08 1</specular>
+            <pbr>
+              <metal>
+                <albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map>
+                <roughness>0.86</roughness>
+                <metalness>0.0</metalness>
+              </metal>
+            </pbr>
           </material>
         </visual>
       </link>

@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    plugin_allowlist:
+      - command
+      - distance_sensor
+      - global_position
+      - gps_status
+      - imu
+      - local_position
+      - odometry
+      - optical_flow
+      - param
+      - rangefinder
+      - setpoint_position
+      - sys_status
+      - sys_time
