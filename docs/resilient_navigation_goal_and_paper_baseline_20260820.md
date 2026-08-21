@@ -285,6 +285,35 @@ static/dynamic/uncertain visualization topics. Current-frame FAST-LIO native
 point-level dynamic filtering is not implemented; the dynamic result must not
 be advertised as a full dynamic-object solution.
 
+### MicoLink optical-flow gate
+
+The simulation optical-flow transport is now explicitly exercised through the
+MTF-01 MicoLink `0x51` frame (`0xEF` header, 20-byte payload, 27-byte frame),
+with the same parser used by the hardware bridge. The rich-texture IMU plus
+flow rectangle completed all four waypoints and landed, with 1,066/1,066 valid
+frames, zero checksum errors, and zero sequence gaps. The frozen displacement
+factor produced 1.66 m causal XY RMSE, 2.08 m P95, and 2.11 m maximum error.
+The APM-equivalent velocity factor improved this to 0.61 m RMSE, 0.98 m P95,
+and 1.07 m maximum; using Gazebo truth height only as the flow range input
+changed it to 0.54 m RMSE, 0.75 m P95, and 1.04 m maximum. None meets the
+20-cm absolute XY gate. This is expected for a velocity-only IMU/flow pair
+without an independent absolute XY source, and the result is retained as a
+failed single-sensor gate rather than being promoted as a pass.
+
+The rerun was nevertheless useful for the next fusion stage: MicoLink is not
+the source of the error, and the bridge reports valid wire frames. The explicit
+`FLOW_USE_GAZEBO_HEIGHT` switch is default-off and is only a simulation
+measurement-source A/B; Gazebo truth remains evaluation-only.
+
+The subsequent MicoLink five-source rectangle passed: 3.61 cm causal 3-D
+RMSE, 5.46 cm P95, 6.46 cm maximum, with GNSS 502, IMU 1,014, LiDAR 1,009,
+optical-flow 540, and RGB-D 263 accepted factors. ExternalNav ran at 19.93 Hz
+and EKF3 consumption was confirmed. Evidence:
+`logs/micolink_single_flow_rich_texture_20260822_020046`,
+`logs/micolink_single_flow_velocity_rich_texture_20260822_020744`,
+`logs/micolink_single_flow_velocity_truthheight_20260822_021551`, and
+`logs/five_source_micolink_rect_rerun_20260822_022258`.
+
 ### Paper-Dataset Evidence
 
 The M2DGR MCAP replay now terminates without the finite-rosbag `/clock` false

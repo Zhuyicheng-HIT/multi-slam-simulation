@@ -455,7 +455,11 @@ class Mtf01MicoLinkBridge(Node):
             path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     def close(self):
-        self._diagnostics()
+        # ExternalShutdownException can arrive after the ROS context has
+        # already become invalid. Do not publish a final diagnostic into a
+        # destroyed context during normal process teardown.
+        if rclpy.ok():
+            self._diagnostics()
         if self.tcp_socket is not None:
             self.tcp_socket.close()
             self.tcp_socket = None

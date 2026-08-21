@@ -262,7 +262,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     # for A/B tests, but do not hide geometry errors behind an empirical gain.
     -p translation_scale:=${FLOW_TRANSLATION_SCALE:-1.0}
     -p use_physics_flow:=${FLOW_USE_PHYSICS:-false}
-    -p use_gazebo_height:=false
+    -p use_gazebo_height:=${FLOW_USE_GAZEBO_HEIGHT:-false}
     -p gazebo_world_name:="$WORLD_NAME"
     -p gazebo_height_model:=apm_iris
     -p publish_to_fcu:="$publish_to_fcu"
