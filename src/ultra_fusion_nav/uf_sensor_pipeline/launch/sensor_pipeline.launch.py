@@ -28,16 +28,26 @@ def generate_launch_description():
     active_modalities = ParameterValue(
         LaunchConfiguration("active_modalities"), value_type=List[str]
     )
-    scheduled_fault_modality = os.environ.get("UF_FAULT_MODALITY", "").strip()
-    scheduled_fault = {}
-    if scheduled_fault_modality:
-        scheduled_fault = {
-            "fault_type": os.environ.get("UF_FAULT_TYPE", "none"),
-            "fault_start_s": float(os.environ.get("UF_FAULT_START_S", "0.0")),
-            "fault_duration_s": float(os.environ.get("UF_FAULT_DURATION_S", "0.0")),
-            "magnitude": float(os.environ.get("UF_FAULT_MAGNITUDE", "0.0")),
+    scheduled_faults = {}
+    for suffix in ("", "_2"):
+        modality = os.environ.get(f"UF_FAULT_MODALITY{suffix}", "").strip()
+        if not modality:
+            continue
+        scheduled_faults[modality] = {
+            "fault_type": os.environ.get(f"UF_FAULT_TYPE{suffix}", "none"),
+            "fault_start_s": float(
+                os.environ.get(f"UF_FAULT_START_S{suffix}", "0.0")
+            ),
+            "fault_duration_s": float(
+                os.environ.get(f"UF_FAULT_DURATION_S{suffix}", "0.0")
+            ),
+            "magnitude": float(
+                os.environ.get(f"UF_FAULT_MAGNITUDE{suffix}", "0.0")
+            ),
             "secondary_magnitude": float(
-                os.environ.get("UF_FAULT_SECONDARY_MAGNITUDE", "0.0")
+                os.environ.get(
+                    f"UF_FAULT_SECONDARY_MAGNITUDE{suffix}", "0.0"
+                )
             ),
         }
     nodes = [
@@ -113,7 +123,7 @@ def generate_launch_description():
         ),
     ]
     for modality in ("lidar", "imu", "gnss", "optical_flow", "depth", "color"):
-        fault_parameters = scheduled_fault if modality == scheduled_fault_modality else {}
+        fault_parameters = scheduled_faults.get(modality, {})
         source_parameters = {}
         if modality == "optical_flow":
             source_parameters = {"input_topic": optical_flow_input_topic}
