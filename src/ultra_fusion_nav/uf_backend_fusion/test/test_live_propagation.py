@@ -42,7 +42,7 @@ def measurement_with_covariance(covariance):
 
 
 class LivePropagationTest(unittest.TestCase):
-    def test_auxiliary_keyframe_requires_native_outage_and_fresh_imu(self):
+    def test_auxiliary_keyframe_requires_state_advance_and_fresh_imu(self):
         arguments = dict(
             now_s=10.0,
             latest_imu_stamp_s=9.98,
@@ -59,7 +59,13 @@ class LivePropagationTest(unittest.TestCase):
             auxiliary_keyframe_admission(
                 **{**arguments, "latest_native_arrival_s": 9.80}
             ),
-            (False, "lidar_recent"),
+            (True, "ready"),
+        )
+        self.assertEqual(
+            auxiliary_keyframe_admission(
+                **{**arguments, "latest_native_arrival_s": None}
+            ),
+            (True, "ready"),
         )
         self.assertEqual(
             auxiliary_keyframe_admission(

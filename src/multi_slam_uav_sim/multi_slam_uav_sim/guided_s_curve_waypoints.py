@@ -608,6 +608,18 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
     def _route_feedback_state(self):
         if self.route_feedback_source == "gazebo_truth":
             return self._gazebo_truth_state()
+        if self.route_feedback_source == "fcu_local":
+            if self.pose is None:
+                raise RuntimeError("FCU-local route feedback is unavailable")
+            pose = self.pose.pose
+            return (
+                (
+                    float(pose.position.x),
+                    float(pose.position.y),
+                    float(pose.position.z),
+                ),
+                self._pose_yaw(pose),
+            )
         return self._backend_state()
 
     def wait_unified_route_ready(self):
@@ -643,6 +655,10 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         if self.route_feedback_source == "unified_backend":
             self.wait_unified_route_ready()
             return
+        if self.route_feedback_source == "fcu_local":
+            if self.pose is None:
+                raise RuntimeError("FCU-local route feedback is unavailable")
+            return
         deadline = self._now_s() + self.preflight_wait_s
         stable_since = None
         while rclpy.ok() and self._now_s() < deadline:
@@ -673,6 +689,13 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.route_origin_fcu_z = float(self.pose.pose.position.z)
         self.feedback_to_fcu_yaw = normalize_angle(fcu_yaw - feedback_yaw)
         self.route_control_active = True
+        if self.route_feedback_source == "fcu_local":
+            self.get_logger().warning(
+                "ESTIMATOR-ONLY ROUTE ISOLATION ENABLED: target/error/"
+                "convergence use MAVROS FCU-local position; unified SLAM is "
+                "observer-only and cannot hold, advance, or correct the route."
+            )
+            return
         if self.route_feedback_source == "gazebo_truth":
             self.get_logger().warning(
                 "DIAGNOSTIC CONTROL ISOLATION ENABLED: target/error/convergence "
@@ -1471,7 +1494,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         # route while unified odometry is recorded independently, so requiring
         # it here would prevent the diagnostic flight from starting whenever
         # the backend is temporarily stale.
-        if self.route_feedback_source != "gazebo_truth":
+        if self.route_feedback_source in {"unified_backend", "fcu_local"}:
             self.wait_unified_route_ready()
         self.wait_localization_safety_ready()
         start = (self.home_x, self.home_y, self.takeoff_alt)

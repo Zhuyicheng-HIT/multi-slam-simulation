@@ -10,7 +10,7 @@ from typing import Iterable, Sequence
 Point3 = tuple[float, float, float]
 
 
-ROUTE_FEEDBACK_SOURCES = ("unified_backend", "gazebo_truth")
+ROUTE_FEEDBACK_SOURCES = ("unified_backend", "fcu_local", "gazebo_truth")
 
 
 def normalize_route_feedback_source(value: str) -> str:

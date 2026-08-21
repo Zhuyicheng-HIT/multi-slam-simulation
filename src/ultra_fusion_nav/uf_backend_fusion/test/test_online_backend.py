@@ -36,6 +36,7 @@ from uf_backend_fusion.online_backend import (
     combine_visual_reliability_decisions,
     committed_state_missing_imu_factor,
     consume_timestamped_reliability_score,
+    select_causal_reliability_record,
     covariance_update_due,
     flow_los_observation,
     flow_observation_delta,
@@ -59,13 +60,15 @@ from uf_backend_fusion.online_backend import (
     imu_samples_for_interval,
     imu_samples_covering_interval,
     estimate_stationary_imu_bias,
+    stationary_gravity_orientation,
+    ObservabilityBootstrapEvidence,
+    select_observability_aware_bootstrap,
     initialize_relocalization_state,
     enqueue_latest,
     reanchor_imu_samples,
     delayed_frontend_map_commit_candidate,
     frontend_map_commit_decision,
     inflate_manifold_imu_covariance,
-    lidar_bypass_allowed,
     lidar_calibration_motion_from_message,
     lidar_prediction_factor_admission,
     lidar_prediction_gate,
@@ -101,6 +104,88 @@ from uf_reliability.flow_rotation_gate import FlowRotationGateResult
 
 
 class OnlineBackendHelpersTest(unittest.TestCase):
+    @staticmethod
+    def _bootstrap(evidence):
+        return select_observability_aware_bootstrap(
+            evidence,
+            rotational_excitation_threshold=0.1,
+            translational_excitation_threshold=0.2,
+            visual_minimum_features=40,
+            visual_minimum_spatial_support=0.5,
+            gyro_covariance_threshold=0.02,
+            accel_covariance_threshold=0.10,
+            lidar_minimum_support=30,
+        )
+
+    def test_observability_bootstrap_uses_paper_d_s_m_priority(self):
+        dynamic = ObservabilityBootstrapEvidence(
+            0.2, 0.0, 60, 0.8, 100, 0.0, 0.0,
+            visual_alignment_ready=True,
+            stationary_alignment_ready=True,
+            lidar_map_ready=True,
+            mcc_consistent=True,
+        )
+        stationary = ObservabilityBootstrapEvidence(
+            0.01, 0.02, 0, 0.0, 100, 0.01, 0.05,
+            stationary_alignment_ready=True,
+            lidar_map_ready=True,
+            mcc_consistent=True,
+        )
+        lidar = ObservabilityBootstrapEvidence(
+            0.05, 0.5, 0, 0.0, 100, 0.01, 0.05,
+            lidar_map_ready=True,
+            mcc_consistent=True,
+        )
+
+        self.assertEqual(self._bootstrap(dynamic).mode, "D")
+        self.assertEqual(self._bootstrap(stationary).mode, "S")
+        self.assertEqual(self._bootstrap(lidar).mode, "M")
+
+    def test_observability_bootstrap_defers_unready_or_unobservable_branch(self):
+        unready_visual = ObservabilityBootstrapEvidence(
+            0.2, 0.0, 60, 0.8, 100, 0.0, 0.0,
+            lidar_map_ready=True,
+            mcc_consistent=True,
+        )
+        unobservable = ObservabilityBootstrapEvidence(
+            0.05, 0.5, 0, 0.0, 10, 0.03, 0.2,
+            mcc_consistent=True,
+        )
+
+        self.assertEqual(self._bootstrap(unready_visual).mode, "A")
+        self.assertEqual(
+            self._bootstrap(unobservable).reason,
+            "insufficient_observability",
+        )
+
+    def test_observability_bootstrap_requires_mcc_consistency(self):
+        evidence = ObservabilityBootstrapEvidence(
+            0.01, 0.02, 0, 0.0, 100, 0.01, 0.05,
+            stationary_alignment_ready=True,
+            mcc_consistent=False,
+        )
+
+        decision = self._bootstrap(evidence)
+        self.assertEqual(decision.mode, "S")
+        self.assertFalse(decision.admitted)
+        self.assertEqual(
+            decision.reason,
+            "stationary_inertial_alignment_mcc_rejected",
+        )
+
+    def test_observability_bootstrap_rejects_invalid_thresholds(self):
+        with self.assertRaises(ValueError):
+            select_observability_aware_bootstrap(
+                ObservabilityBootstrapEvidence(0.0, 0.0),
+                rotational_excitation_threshold=0.1,
+                translational_excitation_threshold=0.2,
+                visual_minimum_features=0,
+                visual_minimum_spatial_support=0.5,
+                gyro_covariance_threshold=0.02,
+                accel_covariance_threshold=0.10,
+                lidar_minimum_support=30,
+            )
+
     def test_relocalization_initialization_preserves_frozen_policy(self):
         current = np.asarray([
             1.0, 2.0, 3.0, 0.1, -0.2, 0.3,
@@ -1734,8 +1819,8 @@ class OnlineBackendHelpersTest(unittest.TestCase):
 
         np.testing.assert_allclose(covariance, [0.04, 0.25, 1.0])
 
-    def test_gnss_prefit_nis_uses_prediction_covariance_plus_measurement(self):
-        residual, innovation_covariance, nis = gnss_prefit_statistics(
+    def test_gnss_prefit_nis_uses_eq23_measurement_covariance_only(self):
+        residual, scoring_covariance, nis = gnss_prefit_statistics(
             predicted_position=[2.0, 0.0, 0.0],
             predicted_position_covariance=np.eye(3) * 4.0,
             measured_position=[0.0, 0.0, 0.0],
@@ -1743,9 +1828,16 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         )
 
         np.testing.assert_allclose(residual, [2.0, 0.0, 0.0])
-        np.testing.assert_allclose(innovation_covariance, np.eye(3) * 5.0)
-        self.assertAlmostEqual(nis, 0.8)
-        self.assertNotAlmostEqual(nis, 4.0)
+        np.testing.assert_allclose(scoring_covariance, np.eye(3))
+        self.assertAlmostEqual(nis, 4.0)
+
+        _, _, uncertain_prediction_nis = gnss_prefit_statistics(
+            predicted_position=[2.0, 0.0, 0.0],
+            predicted_position_covariance=np.eye(3) * 1.0e6,
+            measured_position=[0.0, 0.0, 0.0],
+            measurement_covariance=[1.0, 1.0, 1.0],
+        )
+        self.assertAlmostEqual(uncertain_prediction_nis, nis)
 
     def test_gnss_prefit_axis_nis_uses_marginal_xy_and_z_blocks(self):
         xy_nis, z_nis = gnss_prefit_axis_nis(
@@ -1821,12 +1913,12 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             prefit_xy_nis=9.211,
             prefit_z_nis=6.636,
         )
-        self.assertTrue(recovery["factor_enabled"])
-        self.assertTrue(recovery["gnss_recovery_floor"])
-        self.assertAlmostEqual(recovery["reliability_weight"], 0.8)
-        self.assertAlmostEqual(recovery["covariance_inflation"], 1.25)
+        self.assertFalse(recovery["factor_enabled"])
+        self.assertFalse(recovery["gnss_recovery_floor"])
+        self.assertEqual(recovery["reliability_weight"], 0.0)
+        self.assertEqual(recovery["covariance_inflation"], 20.0)
         self.assertEqual(
-            recovery["admission_reason"], "admitted_robust_all_axes"
+            recovery["admission_reason"], "all_axes_inconsistent"
         )
 
         scheduler_disabled = apply_gnss_prefit_gate(
@@ -2073,20 +2165,13 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         recovery._gnss_factor(
             10.0, [10.0, 0.0, 10.0], 3, np.eye(3) * 0.01
         )
-        self.assertEqual(recovery.counts["gnss_factor_records"], 1)
-        self.assertEqual(recovery.counts["gnss_rejected_nis"], 0)
+        self.assertEqual(recovery.counts["gnss_factor_records"], 0)
+        self.assertEqual(recovery.counts["gnss_rejected_nis"], 1)
         self.assertEqual(recovery.counts["gnss_all_axes_inconsistent"], 1)
-        self.assertEqual(recovery.counts["gnss_prefit_recovery_floor"], 1)
-        recovery_decision = recovery.backend.calls[0][3]
-        self.assertLess(recovery_decision["gnss_xy_information_scale"], 1.0)
-        self.assertLess(recovery_decision["gnss_z_information_scale"], 1.0)
-        self.assertTrue(np.all(np.isfinite(recovery.backend.calls[0][2])))
-        self.assertAlmostEqual(
-            recovery_decision["reliability_weight"], 1.0
-        )
-        self.assertAlmostEqual(
-            recovery_decision["covariance_inflation"], 1.0
-        )
+        self.assertEqual(recovery.counts["gnss_prefit_recovery_floor"], 0)
+        self.assertEqual(recovery.counts["gnss_xy_rejected_nis"], 1)
+        self.assertEqual(recovery.counts["gnss_z_rejected_nis"], 1)
+        self.assertFalse(recovery.backend.calls)
 
         low_weight = node_with_decision(
             scheduler_decision(0.04, enabled=True, inflation=20.0)
@@ -2195,6 +2280,67 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         np.testing.assert_allclose(result.gyro_bias, [0.01, -0.02, 0.005])
         self.assertEqual(result.sample_count, 151)
         self.assertAlmostEqual(result.span_s, 1.5)
+
+    def test_stationary_gravity_alignment_recovers_roll_pitch_without_lidar(self):
+        orientation = np.asarray([0.25, -0.18, 0.7])
+        samples = self._stationary_samples(
+            orientation=orientation, accel_bias=(0.0, 0.0, 0.0)
+        )
+
+        aligned = stationary_gravity_orientation(samples, end_stamp_s=1.5)
+
+        np.testing.assert_allclose(aligned[:2], orientation[:2], atol=1.0e-12)
+        self.assertEqual(aligned[2], 0.0)
+
+    def test_auxiliary_worker_can_bootstrap_from_imu_without_lidar_arrival(self):
+        class EmptyBackend:
+            state_count = 0
+
+        node = object.__new__(UnifiedBackendNode)
+        node.auxiliary_keyframe_enabled = True
+        node.input_trigger_mode = "native_factor"
+        node.backend = EmptyBackend()
+        node.last_lio_stamp = None
+        node.last_native_input_arrival_s = None
+        node.last_auxiliary_attempt_stamp_s = None
+        node.auxiliary_keyframe_minimum_interval_s = 0.2
+        node.auxiliary_keyframe_lidar_silence_timeout_s = 0.35
+        node.auxiliary_keyframe_maximum_imu_age_s = 0.2
+        node.map_frame = "map"
+        node.body_frame = "base_link"
+        node.last_reason = "not_attempted"
+        node.last_state_trigger_source = "none"
+        node.maximum_auxiliary_position_variance_m2 = 0.0
+        node.last_output_position_variance_m2 = 0.0
+        node.counts = {
+            "auxiliary_keyframe_attempts": 0,
+            "auxiliary_keyframe_committed": 0,
+            "auxiliary_keyframe_rejected": 0,
+            "auxiliary_keyframe_errors": 0,
+            "optimization_rollbacks": 0,
+        }
+        samples = self._stationary_samples()
+        node._imu_snapshot = lambda: samples
+        node._now_s = lambda: 1.5
+        observed = []
+
+        def process(message, native_factor):
+            stamp_s = (
+                float(message.header.stamp.sec)
+                + float(message.header.stamp.nanosec) * 1.0e-9
+            )
+            observed.append((stamp_s, native_factor))
+            node.last_lio_stamp = observed[-1][0]
+            node.last_reason = "ok"
+
+        node._process_lio = process
+        node.active_transaction_snapshot = None
+
+        node._process_auxiliary_keyframe_if_due()
+
+        self.assertEqual(observed, [(1.5, None)])
+        self.assertEqual(node.counts["auxiliary_keyframe_committed"], 1)
+        self.assertEqual(node.last_state_trigger_source, "auxiliary_bootstrap")
 
     def test_startup_bias_rejects_rotation_and_acceleration_variation(self):
         rotating = [
@@ -2313,8 +2459,8 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             last_reason="none",
         )
         consumed = []
-        owner._consume_native_sequence = lambda sequence, state_committed, intentional_latest_skip=False: consumed.append(
-            (sequence, state_committed, intentional_latest_skip)
+        owner._consume_native_sequence = lambda sequence, state_committed, intentional_skip=False: consumed.append(
+            (sequence, state_committed, intentional_skip)
         )
         owner.native_work_queue.put_nowait(
             (Header(), SimpleNamespace(scan_sequence=12))
@@ -2665,12 +2811,20 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(decision["reliability_weight"], 0.0)
         self.assertEqual(decision["covariance_inflation"], 20.0)
 
-    def test_lidar_bypass_requires_explicit_mode_and_live_imu_backup(self):
-        self.assertTrue(lidar_bypass_allowed(False, True, True, True))
-        self.assertFalse(lidar_bypass_allowed(True, True, True, True))
-        self.assertFalse(lidar_bypass_allowed(False, False, True, True))
-        self.assertFalse(lidar_bypass_allowed(False, True, False, True))
-        self.assertFalse(lidar_bypass_allowed(False, True, True, False))
+    def test_causal_reliability_selection_never_uses_future_state(self):
+        records = [
+            {"stamp_s": 9.8, "weight": 1.0},
+            {"stamp_s": 10.2, "weight": 0.0},
+            {"stamp_s": 10.6, "weight": 0.5},
+        ]
+        selected = select_causal_reliability_record(records, 10.3, 1.0)
+        self.assertEqual(selected["stamp_s"], 10.2)
+        self.assertIsNone(
+            select_causal_reliability_record(records, 9.7, 1.0)
+        )
+        self.assertIsNone(
+            select_causal_reliability_record(records, 11.7, 1.0)
+        )
 
     def test_gnss_jump_gate_rejects_large_innovation(self):
         self.assertFalse(gnss_jump_rejected([1.0, 2.0, 0.0], [3.0, 4.0, 0.0]))
@@ -2745,7 +2899,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertFalse(admission["recovered"])
         self.assertFalse(admission["recovery_floor"])
 
-    def test_lidar_prediction_gate_uses_geometry_checked_recovery_floor(self):
+    def test_lidar_prediction_gate_never_overrides_failed_consistency(self):
         admission = lidar_prediction_factor_admission(
             {"position_m": 1.2, "yaw_rad": 0.1},
             1.0,
@@ -2755,14 +2909,11 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             recovery_geometry_usable=True,
         )
 
-        self.assertTrue(admission["factor_enabled"])
-        self.assertEqual(
-            admission["reason"],
-            "lidar_prediction_position_gate_recovery_floor",
-        )
+        self.assertFalse(admission["factor_enabled"])
+        self.assertEqual(admission["reason"], "lidar_prediction_position_gate")
         self.assertEqual(admission["consecutive_rejections"], 3)
         self.assertFalse(admission["recovered"])
-        self.assertTrue(admission["recovery_floor"])
+        self.assertFalse(admission["recovery_floor"])
 
     def test_lidar_prediction_recovery_requires_usable_geometry(self):
         admission = lidar_prediction_factor_admission(

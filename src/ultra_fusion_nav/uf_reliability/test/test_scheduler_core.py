@@ -67,7 +67,7 @@ class SchedulerCoreTest(unittest.TestCase):
         self.assertEqual(result.health_state, "NORMAL")
         self.assertTrue(result.factor_enabled["gnss"])
         self.assertAlmostEqual(result.reliability_weights["gnss"], 0.90)
-        self.assertAlmostEqual(result.covariance_inflation["gnss"], 1.0 / 0.90)
+        self.assertEqual(result.covariance_inflation["gnss"], 1.0)
 
     def test_inactive_modalities_are_neutral_and_cannot_enable_factors(self):
         result = self.core.update({
@@ -212,7 +212,7 @@ class SchedulerCoreTest(unittest.TestCase):
         }, 0.1)
         self.assertTrue(result.factor_enabled["imu"])
         self.assertAlmostEqual(result.reliability_weights["imu"], 0.20)
-        self.assertLess(result.covariance_inflation["imu"], 20.0)
+        self.assertEqual(result.covariance_inflation["imu"], 1.0)
         self.assertNotEqual(result.health_state, "FAILSAFE")
 
     def test_saturated_imu_is_hard_disabled(self):
@@ -333,9 +333,7 @@ class SchedulerCoreTest(unittest.TestCase):
         self.assertAlmostEqual(
             result.reliability_weights["gnss"], 0.44745302
         )
-        self.assertAlmostEqual(
-            result.covariance_inflation["gnss"], 1.0 / 0.44745302
-        )
+        self.assertEqual(result.covariance_inflation["gnss"], 1.0)
         self.assertIn(
             "gnss_provisional_bootstrap", result.reasons["gnss"]
         )
@@ -366,7 +364,7 @@ class SchedulerCoreTest(unittest.TestCase):
         }, 0.2)
 
         self.assertTrue(degraded.factor_enabled["gnss"])
-        self.assertAlmostEqual(degraded.covariance_inflation["gnss"], 20.0)
+        self.assertEqual(degraded.covariance_inflation["gnss"], 1.0)
         self.assertIn(
             "hard_gate_blocked_by_evidence_policy",
             degraded.reasons["gnss"],

@@ -158,8 +158,12 @@ class SCurvePathTest(unittest.TestCase):
             normalize_route_feedback_source("unified_backend"),
             "unified_backend",
         )
+        self.assertEqual(
+            normalize_route_feedback_source("fcu_local"),
+            "fcu_local",
+        )
         with self.assertRaises(ValueError):
-            normalize_route_feedback_source("fcu_local")
+            normalize_route_feedback_source("implicit_fallback")
 
     def test_backend_setpoint_rejects_invalid_limits(self):
         with self.assertRaises(ValueError):

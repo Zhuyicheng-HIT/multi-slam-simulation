@@ -51,7 +51,8 @@ case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
 esac
 VALIDATION_MID360_SIM_BRIDGE_MODE=${VALIDATION_MID360_SIM_BRIDGE_MODE:-direct_livox}
 VALIDATION_PRESERVE_LIO_ANCHOR=${VALIDATION_PRESERVE_LIO_ANCHOR:-false}
-VALIDATION_PERFORMANCE_PROFILING=${VALIDATION_PERFORMANCE_PROFILING:-true}
+VALIDATION_PERFORMANCE_PROFILING=${VALIDATION_PERFORMANCE_PROFILING:-false}
+VALIDATION_ENABLE_LIDAR_CALIBRATION_MOTION=${VALIDATION_ENABLE_LIDAR_CALIBRATION_MOTION:-false}
 VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED=${VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED:-false}
 VALIDATION_AXIS_HANDOFF_ENABLE_X=${VALIDATION_AXIS_HANDOFF_ENABLE_X:-false}
 VALIDATION_AXIS_HANDOFF_ENABLE_Y=${VALIDATION_AXIS_HANDOFF_ENABLE_Y:-false}
@@ -67,6 +68,27 @@ case "$VALIDATION_RELIABILITY_MODE" in
     exit 2
     ;;
 esac
+VALIDATION_FACTOR_PROFILE=${VALIDATION_FACTOR_PROFILE:-all}
+case "$VALIDATION_FACTOR_PROFILE" in
+  all|lidar|gnss|optical_flow|vision) ;;
+  *)
+    printf 'VALIDATION_FACTOR_PROFILE must be all, lidar, gnss, optical_flow, or vision.\n' >&2
+    exit 2
+    ;;
+esac
+if [[ -z "${VALIDATION_ENABLE_FLOW_ACCURACY+x}" ]]; then
+  [[ "$VALIDATION_FACTOR_PROFILE" == "optical_flow" ]] && \
+    VALIDATION_ENABLE_FLOW_ACCURACY=1 || VALIDATION_ENABLE_FLOW_ACCURACY=0
+fi
+if [[ -z "${VALIDATION_ENABLE_GAZEBO_FLOW+x}" ]]; then
+  [[ "$VALIDATION_FACTOR_PROFILE" == "all" || \
+    "$VALIDATION_FACTOR_PROFILE" == "optical_flow" ]] && \
+    VALIDATION_ENABLE_GAZEBO_FLOW=1 || VALIDATION_ENABLE_GAZEBO_FLOW=0
+fi
+VALIDATION_RECORD_FASTLIO_ACCURACY=${VALIDATION_RECORD_FASTLIO_ACCURACY:-true}
+VALIDATION_RECORD_RELIABILITY_TIMELINE=${VALIDATION_RECORD_RELIABILITY_TIMELINE:-false}
+VALIDATION_RECORD_SLAM_DRIFT=${VALIDATION_RECORD_SLAM_DRIFT:-true}
+VALIDATION_RESOURCE_INTERVAL_S=${VALIDATION_RESOURCE_INTERVAL_S:-2.0}
 VALIDATION_START_FASTLIO_CLOUD_MAPPER=${VALIDATION_START_FASTLIO_CLOUD_MAPPER:-0}
 VALIDATION_START_FASTLIO_OCCUPANCY_GRID=${VALIDATION_START_FASTLIO_OCCUPANCY_GRID:-0}
 VALIDATION_LOCALIZATION_SAFETY_ENABLED=${VALIDATION_LOCALIZATION_SAFETY_ENABLED:-true}
@@ -138,6 +160,14 @@ if [[ -z "${VALIDATION_ROUTE_FEEDBACK_SOURCE:-}" ]]; then
     VALIDATION_ROUTE_FEEDBACK_SOURCE=unified_backend
   fi
 fi
+case "$VALIDATION_ROUTE:$VALIDATION_ROUTE_FEEDBACK_SOURCE" in
+  rectangle:fcu_local|rectangle:gazebo_truth|s_curve:unified_backend|s_curve:fcu_local|s_curve:gazebo_truth) ;;
+  *)
+    printf 'Unsupported route/feedback pair: %s/%s\n' \
+      "$VALIDATION_ROUTE" "$VALIDATION_ROUTE_FEEDBACK_SOURCE" >&2
+    exit 2
+    ;;
+esac
 VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED=${VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED:-false}
@@ -295,6 +325,12 @@ printf 'Validation reliability: mode=%s lidar=%s imu=%s gnss=%s flow=%s vision=%
   "${FIXED_GNSS_WEIGHT:-1.0}" \
   "${FIXED_OPTICAL_FLOW_WEIGHT:-1.0}" \
   "${FIXED_VISION_WEIGHT:-1.0}"
+printf 'Validation factor profile: %s\n' "$VALIDATION_FACTOR_PROFILE"
+printf 'Validation lightweight observers: flow_bridge=%s flow_accuracy=%s fastlio_accuracy=%s reliability_timeline=%s slam_drift=%s replay_bag=%s resource_interval=%ss\n' \
+  "$VALIDATION_ENABLE_GAZEBO_FLOW" "$VALIDATION_ENABLE_FLOW_ACCURACY" \
+  "$VALIDATION_RECORD_FASTLIO_ACCURACY" \
+  "$VALIDATION_RECORD_RELIABILITY_TIMELINE" "$VALIDATION_RECORD_SLAM_DRIFT" \
+  "$VALIDATION_RECORD_REPLAY_BAG" "$VALIDATION_RESOURCE_INTERVAL_S"
 printf 'Validation visual cadence: profile=%s\n' \
   "$VALIDATION_VISUAL_KEYFRAME_PROFILE"
 printf 'Validation axis recovery: lidar_axis_handoff=%s mask=%s,%s,%s gnss_z_reanchor=%s barometer=%s\n' \
@@ -412,6 +448,8 @@ setsid env HEADLESS=1 REQUIRE_GAZEBO_GPU=1 ENABLE_D435_POINTCLOUD=false \
   WORLD="$VALIDATION_WORLD_PATH" \
   WORLD_NAME="$VALIDATION_GAZEBO_WORLD_NAME" \
   ENABLE_EXTERNALNAV_EKF3="$VALIDATION_ENABLE_EXTERNALNAV_EKF3" \
+  ENABLE_GAZEBO_FLOW="$VALIDATION_ENABLE_GAZEBO_FLOW" \
+  MAVROS_PLUGINLISTS_FILE="$REPO_ROOT/install/multi_slam_uav_sim/share/multi_slam_uav_sim/config/mavros_validation_pluginlists.yaml" \
   ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=0 \
   MID360_SIM_BRIDGE_MODE="$VALIDATION_MID360_SIM_BRIDGE_MODE" \
   LOG_DIR="$LOG_DIR/sim" bash "$REPO_ROOT/tools/run_sim_with_unified_externalnav.sh" \
@@ -518,6 +556,7 @@ setsid env ENABLE_VISION="$validation_enable_vision_arg" \
   RELOCALIZATION_STATIONARY_MAXIMUM_SPEED_MPS="$VALIDATION_RELOCALIZATION_STATIONARY_MAXIMUM_SPEED_MPS" \
   EXTERNAL_NAV_OUTPUT_TOPIC="$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
   PERFORMANCE_PROFILING_ENABLED="$VALIDATION_PERFORMANCE_PROFILING" \
+  ENABLE_LIDAR_CALIBRATION_MOTION="$VALIDATION_ENABLE_LIDAR_CALIBRATION_MOTION" \
   AXIS_INFORMATION_HANDOFF_ENABLED="$VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED" \
   AXIS_HANDOFF_ENABLE_X="$VALIDATION_AXIS_HANDOFF_ENABLE_X" \
   AXIS_HANDOFF_ENABLE_Y="$VALIDATION_AXIS_HANDOFF_ENABLE_Y" \
@@ -581,16 +620,25 @@ case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   *) printf 'ExternalNav FCU consumption disabled; output continuity is metrics-only.\n' ;;
 esac
 
-setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
-  -p use_sim_time:=true \
-  -p world_name:="$VALIDATION_GAZEBO_WORLD_NAME" \
-  -p odom_topic:=/Odometry \
-  -p output_path:="$LOG_DIR/fastlio_accuracy.json" \
-  >"$LOG_DIR/fastlio_accuracy.log" 2>&1 &
-pids+=("$!")
+case "${VALIDATION_RECORD_FASTLIO_ACCURACY,,}" in
+  1|true|yes|on)
+    setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
+      -p use_sim_time:=false \
+      -p world_name:="$VALIDATION_GAZEBO_WORLD_NAME" \
+      -p odom_topic:=/Odometry \
+      -p output_path:="$LOG_DIR/fastlio_accuracy.json" \
+      >"$LOG_DIR/fastlio_accuracy.log" 2>&1 &
+    pids+=("$!")
+    ;;
+  0|false|no|off) ;;
+  *)
+    printf 'VALIDATION_RECORD_FASTLIO_ACCURACY must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
-  -p use_sim_time:=true \
+  -p use_sim_time:=false \
   -p world_name:="$VALIDATION_GAZEBO_WORLD_NAME" \
   -p odom_topic:=/fusion/unified/odom \
   -p output_path:="$LOG_DIR/unified_accuracy.json" \
@@ -611,13 +659,23 @@ python3 "$REPO_ROOT/tools/unified_runtime_metrics.py" --duration "$METRICS_DURAT
 metrics_pid=$!
 pids+=("$metrics_pid")
 
-setsid python3 \
-  "$REPO_ROOT/src/ultra_fusion_nav/scripts/record_reliability_timeline.py" \
-  --duration "$METRICS_DURATION" \
-  --output "$LOG_DIR/reliability_timeline.json" \
-  >"$LOG_DIR/reliability_timeline.log" 2>&1 &
-timeline_pid=$!
-pids+=("$timeline_pid")
+timeline_pid=""
+case "${VALIDATION_RECORD_RELIABILITY_TIMELINE,,}" in
+  1|true|yes|on)
+    setsid python3 \
+      "$REPO_ROOT/src/ultra_fusion_nav/scripts/record_reliability_timeline.py" \
+      --duration "$METRICS_DURATION" \
+      --output "$LOG_DIR/reliability_timeline.json" \
+      >"$LOG_DIR/reliability_timeline.log" 2>&1 &
+    timeline_pid=$!
+    pids+=("$timeline_pid")
+    ;;
+  0|false|no|off) ;;
+  *)
+    printf 'VALIDATION_RECORD_RELIABILITY_TIMELINE must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 
 relocalization_trigger_pid=""
 if [[ -n "$VALIDATION_RELOCALIZATION_TRIGGER_SIM_S" ||
@@ -736,6 +794,7 @@ setsid python3 "$REPO_ROOT/tools/collect_validation_resources.py" \
   --root-pid "$$" \
   --output "$LOG_DIR/resource_metrics.json" \
   --samples-output "$LOG_DIR/resource_samples.csv" \
+  --interval "$VALIDATION_RESOURCE_INTERVAL_S" \
   >"$LOG_DIR/resource_metrics.log" 2>&1 &
 resource_pid=$!
 pids+=("$resource_pid")
@@ -756,6 +815,7 @@ case "$VALIDATION_ROUTE" in
     ;;
 esac
 env ROUTE_FEEDBACK_SOURCE="$VALIDATION_ROUTE_FEEDBACK_SOURCE" \
+  ENABLE_FLOW_ACCURACY="$VALIDATION_ENABLE_FLOW_ACCURACY" \
   TAKEOFF_ALT="$VALIDATION_TAKEOFF_ALT" \
   LOCALIZATION_SAFETY_ENABLED="$VALIDATION_LOCALIZATION_SAFETY_ENABLED" \
   POST_TAKEOFF_HOLD_TIME="$VALIDATION_POST_TAKEOFF_HOLD_TIME" \
@@ -779,14 +839,23 @@ pids+=("$route_pid")
 # route confirms LAND and FCU disarm, stop them after a short grace period so
 # their finally blocks write partial-but-valid reports instead of waiting for
 # the nominal 280 s duration.
-drift_status=0
-setsid python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
-  --output "$LOG_DIR/slam_drift.json" \
-  "${observer_stop_args[@]}" \
-  --ros-args -p use_sim_time:=true \
-  >"$LOG_DIR/slam_drift.log" 2>&1 &
-drift_pid=$!
-pids+=("$drift_pid")
+drift_pid=""
+case "${VALIDATION_RECORD_SLAM_DRIFT,,}" in
+  1|true|yes|on)
+    setsid python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
+      --output "$LOG_DIR/slam_drift.json" \
+      "${observer_stop_args[@]}" \
+      --ros-args -p use_sim_time:=true \
+      >"$LOG_DIR/slam_drift.log" 2>&1 &
+    drift_pid=$!
+    pids+=("$drift_pid")
+    ;;
+  0|false|no|off) ;;
+  *)
+    printf 'VALIDATION_RECORD_SLAM_DRIFT must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 
 landing_seen=false
 while kill -0 "$route_pid" 2>/dev/null; do
@@ -869,11 +938,15 @@ PY
   metrics_status=0
 fi
 timeline_status=0
-wait "$timeline_pid" || timeline_status=$?
+if [[ -n "$timeline_pid" ]]; then
+  wait "$timeline_pid" || timeline_status=$?
+fi
 drift_status=0
-wait "$drift_pid" || drift_status=$?
-if [[ -n "$collector_stop_reason" && -s "$LOG_DIR/slam_drift.json" ]]; then
-  drift_status=0
+if [[ -n "$drift_pid" ]]; then
+  wait "$drift_pid" || drift_status=$?
+  if [[ -n "$collector_stop_reason" && -s "$LOG_DIR/slam_drift.json" ]]; then
+    drift_status=0
+  fi
 fi
 if [[ -n "$relocalization_trigger_pid" ]]; then
   relocalization_status=0
@@ -915,14 +988,16 @@ if (( metrics_status != 0 )); then
     "$metrics_status" >&2
   exit 3
 fi
-if (( timeline_status != 0 )) ||
-  [[ ! -s "$LOG_DIR/reliability_timeline.json" ]]
-then
-  printf 'timeline_collection_failed: status=%d report=%s\n' \
-    "$timeline_status" "$LOG_DIR/reliability_timeline.json" >&2
-  exit 3
+if [[ -n "$timeline_pid" ]]; then
+  if (( timeline_status != 0 )) ||
+    [[ ! -s "$LOG_DIR/reliability_timeline.json" ]]
+  then
+    printf 'timeline_collection_failed: status=%d report=%s\n' \
+      "$timeline_status" "$LOG_DIR/reliability_timeline.json" >&2
+    exit 3
+  fi
 fi
-if (( drift_status != 0 )); then
+if [[ -n "$drift_pid" ]] && (( drift_status != 0 )); then
   if [[ "$validation_require_fastlio_drift" == "true" ]]; then
     printf 'metric_collection_failed: drift=%d runtime=%d\n' \
       "$drift_status" "$metrics_status" >&2
@@ -959,6 +1034,7 @@ validation_gate_args=(
   --expected-route-feedback "$VALIDATION_ROUTE_FEEDBACK_SOURCE"
   --minimum-figure-eight-distance "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M"
   --minimum-figure-eight-checkpoints "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS"
+  --factor-profile "$VALIDATION_FACTOR_PROFILE"
 )
 if [[ "$landing_seen" == "true" ]]; then
   for ((i=0; i<${#validation_gate_args[@]}; i++)); do

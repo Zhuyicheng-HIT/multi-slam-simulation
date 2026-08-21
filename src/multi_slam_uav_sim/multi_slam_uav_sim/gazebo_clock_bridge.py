@@ -20,10 +20,19 @@ class GazeboClockBridge(Node):
         self.declare_parameter("world_name", "simple_apm_rgbd_mid360")
         self.declare_parameter("gz_topic", "")
         self.declare_parameter("ros_topic", "/clock")
+        self.declare_parameter("maximum_publish_rate_hz", 100.0)
         world_name = str(self.get_parameter("world_name").value)
         gz_topic = str(self.get_parameter("gz_topic").value).strip()
         self.gz_topic = gz_topic or f"/world/{world_name}/clock"
         self.ros_topic = str(self.get_parameter("ros_topic").value)
+        maximum_publish_rate_hz = float(
+            self.get_parameter("maximum_publish_rate_hz").value
+        )
+        if maximum_publish_rate_hz <= 0.0:
+            raise ValueError("maximum_publish_rate_hz must be positive")
+        self.minimum_publish_period_ns = int(
+            round(1_000_000_000 / maximum_publish_rate_hz)
+        )
         qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -35,8 +44,10 @@ class GazeboClockBridge(Node):
         # setup is intentionally not used as a boolean status check here.
         self.gz_node.subscribe(GazeboClock, self.gz_topic, self._clock_cb)
         self.last_sim_ns = None
+        self.last_published_sim_ns = None
         self.get_logger().info(
-            f"Gazebo clock bridge active: {self.gz_topic} -> {self.ros_topic}"
+            f"Gazebo clock bridge active: {self.gz_topic} -> {self.ros_topic} "
+            f"at <= {maximum_publish_rate_hz:.1f} Hz"
         )
 
     def _clock_cb(self, message):
@@ -48,15 +59,24 @@ class GazeboClockBridge(Node):
         if sec < 0 or nanosec < 0:
             return
         stamp_ns = sec * 1_000_000_000 + nanosec
-        if self.last_sim_ns is not None and stamp_ns < self.last_sim_ns:
+        rewound = self.last_sim_ns is not None and stamp_ns < self.last_sim_ns
+        if rewound:
             self.get_logger().warning(
                 f"Gazebo clock rewind: {self.last_sim_ns} -> {stamp_ns}"
             )
         self.last_sim_ns = stamp_ns
+        if (
+            not rewound
+            and self.last_published_sim_ns is not None
+            and stamp_ns - self.last_published_sim_ns
+            < self.minimum_publish_period_ns
+        ):
+            return
         output = RosClock()
         output.clock.sec = sec
         output.clock.nanosec = nanosec
         self.publisher.publish(output)
+        self.last_published_sim_ns = stamp_ns
 
     def destroy_node(self):
         try:

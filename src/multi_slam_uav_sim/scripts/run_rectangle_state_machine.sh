@@ -130,7 +130,7 @@ EOF
 
 accuracy_pid=""
 if [[ "$ENABLE_FLOW_ACCURACY" == "1" ]]; then
-  ros2 run multi_slam_uav_sim flow_gazebo_accuracy --ros-args \
+  setsid ros2 run multi_slam_uav_sim flow_gazebo_accuracy --ros-args \
     -p use_sim_time:=true \
     -p flow_topic:=/sim/optical_flow/rad \
     -p gazebo_world_name:="$WORLD_NAME" \
@@ -175,8 +175,13 @@ ros2 run multi_slam_uav_sim "$rectangle_executable" --ros-args \
 state_status="${PIPESTATUS[0]}"
 
 if [[ -n "$accuracy_pid" ]] && kill -0 "$accuracy_pid" 2>/dev/null; then
-  printf '\nWaiting for optical-flow accuracy summary...\n'
-  wait "$accuracy_pid"
+  # The route is the terminal condition for this observer. SIGINT makes the
+  # node summarize the samples already collected instead of keeping Gazebo,
+  # SITL, and all validation monitors alive until duration_s expires.
+  printf '\nFinalizing optical-flow accuracy at route completion...\n'
+  kill -INT -- "-$accuracy_pid" 2>/dev/null || true
+  kill -INT "$accuracy_pid" 2>/dev/null || true
+  wait "$accuracy_pid" || true
 fi
 
 if [[ "$ENABLE_FLOW_ACCURACY" == "1" ]] && grep -q 'FLOW_ACCURACY' "$LOG_DIR/flow_gazebo_accuracy.log" 2>/dev/null; then

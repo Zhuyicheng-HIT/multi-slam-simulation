@@ -56,10 +56,12 @@ public:
     pose_topic_ = declare_parameter<std::string>(
       "pose_topic", "/world/" + gazebo_world_name_ + "/pose/info");
     world_stats_topic_ = declare_parameter<std::string>(
-      "world_stats_topic", "/world/simple_apm_rgbd_mid360/stats");
+      "world_stats_topic", "/world/" + gazebo_world_name_ + "/stats");
     rtf_topic_ = declare_parameter<std::string>("rtf_topic", "/simulation/rtf");
     publish_ground_truth_odom_ =
       declare_parameter<bool>("publish_ground_truth_odom", true);
+    allow_scan_pose_truth_fallback_ =
+      declare_parameter<bool>("allow_scan_pose_truth_fallback", false);
     restamp_lidar_ = declare_parameter<bool>("restamp_lidar", true);
     stamp_lidar_from_latest_imu_ =
       declare_parameter<bool>("stamp_lidar_from_latest_imu", false);
@@ -383,7 +385,7 @@ private:
   void publish_ground_truth_odom(
     const gz::msgs::LaserScan & msg, const std::int64_t stamp_ns)
   {
-    if (!ground_truth_odom_pub_ || !msg.has_world_pose()) {
+    if (!ground_truth_odom_pub_) {
       return;
     }
     nav_msgs::msg::Odometry odom;
@@ -409,7 +411,7 @@ private:
     }
     if (model_pose_available) {
       ground_truth_model_pose_count_.fetch_add(1, std::memory_order_relaxed);
-    } else {
+    } else if (allow_scan_pose_truth_fallback_ && msg.has_world_pose()) {
       const auto & pose = msg.world_pose();
       odom.pose.pose.position.x = pose.position().x();
       odom.pose.pose.position.y = pose.position().y();
@@ -419,6 +421,9 @@ private:
       odom.pose.pose.orientation.z = pose.orientation().z();
       odom.pose.pose.orientation.w = pose.orientation().w();
       ground_truth_scan_pose_fallback_count_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      ground_truth_unavailable_count_.fetch_add(1, std::memory_order_relaxed);
+      return;
     }
     ground_truth_odom_pub_->publish(std::move(odom));
   }
@@ -527,7 +532,8 @@ private:
       "direct bridge clouds=%lu points=%u input_valid=%u body_removed=%u "
       "body_removed_ratio=%.5f cloud_hz=%.2f imu_hz=%.2f "
       "cloud_minus_imu_ms=%.1f adjusted_lidar=%lu adjusted_imu=%lu "
-      "truth_model_pose=%lu truth_scan_pose_fallback=%lu dropped_invalid=%lu",
+      "truth_model_pose=%lu truth_scan_pose_fallback=%lu truth_unavailable=%lu "
+      "dropped_invalid=%lu",
       static_cast<unsigned long>(clouds), last_point_count_.load(std::memory_order_relaxed),
       last_valid_input_point_count_.load(std::memory_order_relaxed),
       last_body_removed_point_count_.load(std::memory_order_relaxed),
@@ -541,6 +547,8 @@ private:
         ground_truth_model_pose_count_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
         ground_truth_scan_pose_fallback_count_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(
+        ground_truth_unavailable_count_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
         dropped_invalid_stamps_.load(std::memory_order_relaxed)));
     last_status_time_ = current_time;
@@ -564,6 +572,7 @@ private:
   std::string rtf_topic_;
   std::string body_removed_ratio_topic_;
   bool publish_ground_truth_odom_{true};
+  bool allow_scan_pose_truth_fallback_{false};
   bool restamp_lidar_{true};
   bool stamp_lidar_from_latest_imu_{false};
   bool preserve_sim_scan_clock_{false};
@@ -609,6 +618,7 @@ private:
   std::atomic<std::uint64_t> dropped_invalid_stamps_{0U};
   std::atomic<std::uint64_t> ground_truth_model_pose_count_{0U};
   std::atomic<std::uint64_t> ground_truth_scan_pose_fallback_count_{0U};
+  std::atomic<std::uint64_t> ground_truth_unavailable_count_{0U};
   std::atomic<std::uint32_t> last_point_count_{0U};
   std::atomic<std::uint32_t> last_valid_input_point_count_{0U};
   std::atomic<std::uint32_t> last_body_removed_point_count_{0U};

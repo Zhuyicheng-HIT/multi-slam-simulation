@@ -77,6 +77,20 @@ def _valid_inputs():
 
 
 class UnifiedValidationResultCheckerTest(unittest.TestCase):
+    def test_legacy_backend_without_lidar_disabled_counts_all_lidar_factors(self):
+        self.assertEqual(
+            MODULE._accepted_factor_counts(
+                {
+                    "lidar_factors": "7",
+                    "imu_factors": "6",
+                    "gnss_factors": "2",
+                    "flow_factors": "3",
+                    "visual_factors": "1",
+                }
+            )["lidar"],
+            7,
+        )
+
     def test_accepts_complete_externalnav_run(self):
         report = MODULE.evaluate_validation(
             *_valid_inputs(),

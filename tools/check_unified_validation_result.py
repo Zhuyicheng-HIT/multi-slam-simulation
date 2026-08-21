@@ -56,6 +56,20 @@ def _empty_violation(value):
     return value in (None, False, 0, "", [], {})
 
 
+def _accepted_factor_counts(backend):
+    lidar_records = _integer(backend.get("lidar_factors"), "lidar_factors")
+    lidar_disabled = _integer(backend.get("lidar_disabled", 0), "lidar_disabled")
+    if lidar_disabled < 0 or lidar_disabled > lidar_records:
+        raise ValueError("lidar_disabled must be within lidar_factors")
+    return {
+        "lidar": lidar_records - lidar_disabled,
+        "imu": _integer(backend.get("imu_factors"), "imu_factors"),
+        "gnss": _integer(backend.get("gnss_factors"), "gnss_factors"),
+        "optical_flow": _integer(backend.get("flow_factors"), "flow_factors"),
+        "vision": _integer(backend.get("visual_factors"), "visual_factors"),
+    }
+
+
 def _stream_gates(stream, prefix, minimum_rate_hz, minimum_count):
     if not isinstance(stream, dict):
         return {f"{prefix}_stream_present": False}, {}
@@ -104,6 +118,7 @@ def evaluate_validation(
     require_time_applied=False,
     require_visual_factors=False,
     require_automatic_loop_closure=False,
+    factor_profile="all",
     mission_profile="rectangle",
     expected_route_feedback="unified_backend",
     expected_waypoints=4,
@@ -120,6 +135,10 @@ def evaluate_validation(
     initial_alignment = accuracy.get("initial_alignment", {})
     streams = runtime.get("streams", {})
     backend = runtime.get("backend_latest", {})
+    if factor_profile not in {
+        "all", "lidar", "gnss", "optical_flow", "vision"
+    }:
+        raise ValueError(f"unsupported factor profile: {factor_profile}")
 
     matched_samples = _integer(accuracy.get("matched_samples"), "matched_samples")
     motion_samples = _integer(accuracy.get("motion_samples"), "motion_samples")
@@ -337,13 +356,27 @@ def evaluate_validation(
     )
     for field in zero_backend_fields:
         gates[f"backend_{field}_zero"] = _integer(backend.get(field), field) == 0
-    required_factors = ("lidar_factors", "imu_factors", "gnss_factors", "flow_factors")
-    for field in required_factors:
-        gates[f"backend_{field}_active"] = _integer(backend.get(field), field) > 0
-    if require_visual_factors:
-        gates["backend_visual_factors_active"] = (
-            _integer(backend.get("visual_factors"), "visual_factors") > 0
+    accepted_factors = _accepted_factor_counts(backend)
+    if factor_profile == "all":
+        for modality in ("lidar", "imu", "gnss", "optical_flow"):
+            gates[f"backend_{modality}_factors_active"] = (
+                accepted_factors[modality] > 0
+            )
+        if require_visual_factors:
+            gates["backend_visual_factors_active"] = (
+                accepted_factors["vision"] > 0
+            )
+    else:
+        gates["backend_imu_factors_active"] = accepted_factors["imu"] > 0
+        gates[f"backend_{factor_profile}_factors_active"] = (
+            accepted_factors[factor_profile] > 0
         )
+        for modality in ("lidar", "gnss", "optical_flow", "vision"):
+            if modality == factor_profile:
+                continue
+            gates[f"backend_{modality}_factors_inactive"] = (
+                accepted_factors[modality] == 0
+            )
     automatic_loop_observed = {}
     if require_automatic_loop_closure:
         automatic_searches = _integer(
@@ -449,6 +482,7 @@ def evaluate_validation(
         "calibration_mode": backend.get("calibration_mode"),
         "calibration_time_locked": _boolean(backend.get("calibration_time_locked")),
         "calibration_time_offset_s": backend.get("calibration_time_offset_s"),
+        "accepted_factor_counts": accepted_factors,
     }
     failed = sorted(name for name, passed in gates.items() if not passed)
     return {
@@ -463,6 +497,7 @@ def evaluate_validation(
             "require_automatic_loop_closure": bool(
                 require_automatic_loop_closure
             ),
+            "factor_profile": str(factor_profile),
             "mission_profile": str(mission_profile),
             "expected_route_feedback": str(expected_route_feedback),
             "expected_waypoints": int(expected_waypoints),
@@ -498,6 +533,12 @@ def main():
     parser.add_argument("--require-visual-factors", action="store_true")
     parser.add_argument(
         "--require-automatic-loop-closure", action="store_true"
+    )
+    parser.add_argument(
+        "--factor-profile",
+        choices=("all", "lidar", "gnss", "optical_flow", "vision"),
+        default="all",
+        help="Require IMU plus exactly this aiding factor, or all legacy factors.",
     )
     parser.add_argument("--expected-waypoints", type=int, default=4)
     parser.add_argument(
@@ -539,6 +580,7 @@ def main():
             require_time_applied=args.require_time_applied,
             require_visual_factors=args.require_visual_factors,
             require_automatic_loop_closure=args.require_automatic_loop_closure,
+            factor_profile=args.factor_profile,
             mission_profile=args.mission_profile,
             expected_route_feedback=args.expected_route_feedback,
             expected_waypoints=args.expected_waypoints,

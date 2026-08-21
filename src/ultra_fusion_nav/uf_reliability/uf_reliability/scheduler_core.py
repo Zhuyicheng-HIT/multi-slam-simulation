@@ -312,10 +312,13 @@ class ReliabilitySchedulerCore:
                         )
             elif valid and value <= self.config.factor_enable_threshold:
                 self.factor_enabled[name] = True
+            # The backend already multiplies factor information by
+            # reliability_weight. Applying reciprocal covariance inflation
+            # here as well would square the attenuation, (1 - D)^2, which is
+            # not part of Eq. (15)-(16). Keep the two output fields for the
+            # factor contract, but apply continuous reliability exactly once.
             inflation[name] = (
-                min(self.config.maximum_covariance_inflation,
-                    1.0 / max(self.config.minimum_weight, weights[name]))
-                if self.factor_enabled[name]
+                1.0 if self.factor_enabled[name]
                 else self.config.maximum_covariance_inflation
             )
             reasons[name] = tuple(sample_reasons)

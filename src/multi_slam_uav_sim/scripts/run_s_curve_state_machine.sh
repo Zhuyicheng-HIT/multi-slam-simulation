@@ -16,9 +16,9 @@ source "$WS_INSTALL/setup.bash"
 ROUTE_FEEDBACK_SOURCE=${ROUTE_FEEDBACK_SOURCE:-unified_backend}
 GAZEBO_TRUTH_ODOM_TOPIC=${GAZEBO_TRUTH_ODOM_TOPIC:-/sim/mid360/ground_truth_odom}
 case "$ROUTE_FEEDBACK_SOURCE" in
-  unified_backend|gazebo_truth) ;;
+  unified_backend|fcu_local|gazebo_truth) ;;
   *)
-    printf 'ROUTE_FEEDBACK_SOURCE must be unified_backend or gazebo_truth.\n' >&2
+    printf 'ROUTE_FEEDBACK_SOURCE must be unified_backend, fcu_local, or gazebo_truth.\n' >&2
     exit 2
     ;;
 esac
@@ -34,6 +34,12 @@ for _attempt in $(seq 1 10); do
 done
 if [[ "$mavros_ready" != true ]]; then
   printf 'MAVROS topics are not visible yet; continuing to the node bounded FCU wait.\n' >&2
+fi
+
+if [[ "$ROUTE_FEEDBACK_SOURCE" == "fcu_local" ]]; then
+  # Estimator-only dataset generation must not let unified-backend health
+  # alter the FCU-controlled reference trajectory.
+  LOCALIZATION_SAFETY_ENABLED=false
 fi
 if ! python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
     --topic /clock --timeout 24 --reliability best_effort \

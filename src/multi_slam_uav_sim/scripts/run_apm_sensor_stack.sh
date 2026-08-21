@@ -378,10 +378,15 @@ if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
 fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
+  MAVROS_PLUGINLISTS_FILE=${MAVROS_PLUGINLISTS_FILE:-/opt/ros/humble/share/mavros/launch/apm_pluginlists.yaml}
+  if [[ ! -f "$MAVROS_PLUGINLISTS_FILE" ]]; then
+    printf 'MAVROS plugin list is missing: %s\n' "$MAVROS_PLUGINLISTS_FILE" >&2
+    exit 2
+  fi
   setsid ros2 run mavros mavros_node --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     --params-file /opt/ros/humble/share/mavros/launch/apm_config.yaml \
-    --params-file /opt/ros/humble/share/mavros/launch/apm_pluginlists.yaml \
+    --params-file "$MAVROS_PLUGINLISTS_FILE" \
     --params-file "$PKG_SHARE/config/mavros_apm_rgbd.yaml" \
     >"$LOG_DIR/mavros.log" 2>&1 &
   pids+=("$!")
@@ -457,6 +462,8 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
     -p odom_topic:=/sim/mid360/ground_truth_odom \
     -p sensor_frame:=mid360_link \
     -p map_frame:=camera_init \
+    -p gazebo_world_name:="$WORLD_NAME" \
+    -p gazebo_model:=apm_iris \
     -p point_stride:=${MID360_POINT_STRIDE:-1} \
     -p publish_registered:=${MID360_PUBLISH_REGISTERED:-true} \
     -p publish_tf:=${MID360_PUBLISH_TF:-true} \
@@ -474,6 +481,8 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \
     -p imu_frame_id:=base_link \
+    -p gazebo_world_name:="$WORLD_NAME" \
+    -p gazebo_model:=apm_iris \
     -p point_stride:=${MID360_POINT_STRIDE:-1} \
     -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
     -p body_min_x_m:="$MID360_BODY_MIN_X_M" \

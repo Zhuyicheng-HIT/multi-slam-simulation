@@ -130,6 +130,116 @@ from uf_reliability.flow_rotation_gate import (
     interval_mean_vector,
 )
 
+
+@dataclass(frozen=True)
+class ObservabilityBootstrapEvidence:
+    """Precomputed evidence used by Ultra-Fusion Algorithm 1."""
+
+    rotational_excitation: float
+    translational_excitation: float
+    visual_feature_count: int = 0
+    visual_spatial_support: float = 0.0
+    lidar_support_count: int = 0
+    gyro_covariance_norm: float = math.inf
+    accel_covariance_norm: float = math.inf
+    visual_alignment_ready: bool = False
+    stationary_alignment_ready: bool = False
+    lidar_map_ready: bool = False
+    mcc_consistent: bool = False
+
+
+@dataclass(frozen=True)
+class ObservabilityBootstrapDecision:
+    mode: str
+    admitted: bool
+    reason: str
+
+
+def select_observability_aware_bootstrap(
+    evidence,
+    *,
+    rotational_excitation_threshold,
+    translational_excitation_threshold,
+    visual_minimum_features,
+    visual_minimum_spatial_support,
+    gyro_covariance_threshold,
+    accel_covariance_threshold,
+    lidar_minimum_support,
+):
+    """Select D/S/M/A in the exact priority order of paper Algorithm 1."""
+
+    if not isinstance(evidence, ObservabilityBootstrapEvidence):
+        raise TypeError("bootstrap evidence has an invalid type")
+    thresholds = (
+        rotational_excitation_threshold,
+        translational_excitation_threshold,
+        visual_minimum_spatial_support,
+        gyro_covariance_threshold,
+        accel_covariance_threshold,
+    )
+    if (
+        any(not math.isfinite(float(value)) or float(value) < 0.0
+            for value in thresholds)
+        or float(visual_minimum_spatial_support) > 1.0
+        or int(visual_minimum_features) < 1
+        or int(lidar_minimum_support) < 1
+    ):
+        raise ValueError("bootstrap thresholds are invalid")
+    finite_nonnegative = (
+        evidence.rotational_excitation,
+        evidence.translational_excitation,
+        evidence.visual_spatial_support,
+        evidence.gyro_covariance_norm,
+        evidence.accel_covariance_norm,
+    )
+    if any(
+        not math.isfinite(value) or value < 0.0
+        for value in finite_nonnegative
+    ):
+        return ObservabilityBootstrapDecision("A", False, "invalid_evidence")
+
+    dynamic_visual = bool(
+        evidence.rotational_excitation > float(rotational_excitation_threshold)
+        and evidence.visual_feature_count >= int(visual_minimum_features)
+        and evidence.visual_spatial_support
+        >= float(visual_minimum_spatial_support)
+    )
+    stationary = bool(
+        evidence.rotational_excitation <= float(rotational_excitation_threshold)
+        and evidence.translational_excitation
+        <= float(translational_excitation_threshold)
+        and evidence.gyro_covariance_norm <= float(gyro_covariance_threshold)
+        and evidence.accel_covariance_norm <= float(accel_covariance_threshold)
+    )
+    lidar_map = evidence.lidar_support_count >= int(lidar_minimum_support)
+
+    if dynamic_visual:
+        mode = "D"
+        branch_ready = evidence.visual_alignment_ready
+        reason = "dynamic_visual_alignment"
+    elif stationary:
+        mode = "S"
+        branch_ready = evidence.stationary_alignment_ready
+        reason = "stationary_inertial_alignment"
+    elif lidar_map:
+        mode = "M"
+        branch_ready = evidence.lidar_map_ready
+        reason = "lidar_short_window_map"
+    else:
+        return ObservabilityBootstrapDecision(
+            "A", False, "insufficient_observability"
+        )
+
+    if not branch_ready:
+        return ObservabilityBootstrapDecision(
+            "A", False, f"{reason}_not_ready"
+        )
+    if not evidence.mcc_consistent:
+        return ObservabilityBootstrapDecision(
+            mode, False, f"{reason}_mcc_rejected"
+        )
+    return ObservabilityBootstrapDecision(mode, True, reason)
+
 try:
     from fast_lio.msg import (
         BackendDeskewTrajectory,
@@ -1035,6 +1145,23 @@ def select_timestamped_reliability_score(records, source_stamp_s, tolerance_s):
     )
 
 
+def select_causal_reliability_record(records, source_stamp_s, maximum_age_s):
+    """Select the newest reliability state available at an observation time."""
+    target = float(source_stamp_s)
+    maximum_age = max(0.0, float(maximum_age_s))
+    if not math.isfinite(target):
+        return None
+    eligible = [
+        record for record in records
+        if math.isfinite(float(record.get("stamp_s", math.nan)))
+        and float(record["stamp_s"]) <= target + 1.0e-9
+        and target - float(record["stamp_s"]) <= maximum_age
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda record: float(record["stamp_s"]))
+
+
 def consume_timestamped_reliability_score(
     records, source_stamp_s, tolerance_s,
 ):
@@ -1241,18 +1368,6 @@ def apply_lidar_anchor_floor(
     return protected
 
 
-def lidar_bypass_allowed(
-        preserve_lio_anchor, lidar_score_fresh,
-        imu_score_fresh, imu_factor_enabled):
-    """Require explicit opt-in plus a live inertial orientation backup."""
-    return bool(
-        not preserve_lio_anchor
-        and lidar_score_fresh
-        and imu_score_fresh
-        and imu_factor_enabled
-    )
-
-
 def gnss_jump_rejected(current_position, gnss_position, gate_m=20.0):
     current = np.asarray(current_position, dtype=float)
     measurement = np.asarray(gnss_position, dtype=float)
@@ -1421,11 +1536,12 @@ def gnss_prefit_statistics(
     measured_position,
     measurement_covariance,
 ):
-    """Return the GNSS prefit residual, innovation covariance, and NIS.
+    """Return the Eq. (23) GNSS residual, scoring covariance, and NIS.
 
-    The innovation covariance is S = P_position_predicted + R_gnss. Using R
-    alone makes a valid fix look inconsistent whenever the propagated state is
-    uncertain, which is exactly when an aiding factor is most valuable.
+    Ultra-Fusion evaluates the GNSS innovation with the measurement
+    covariance, ``||nu_g||^2_{Sigma_g^-1}``.  The propagated covariance is
+    still validated here and remains available to observation transport, but
+    it must not make an estimator drift look like a healthy GNSS innovation.
     """
     predicted = np.asarray(predicted_position, dtype=float)
     measured = np.asarray(measured_position, dtype=float)
@@ -1447,22 +1563,14 @@ def gnss_prefit_statistics(
         or np.any(measurement_variance <= 0.0)
     ):
         raise ValueError("GNSS prefit inputs must be finite and positive")
-    predicted_covariance = 0.5 * (
-        predicted_covariance + predicted_covariance.T
-    )
-    innovation_covariance = (
-        predicted_covariance + np.diag(measurement_variance)
-    )
-    innovation_covariance = 0.5 * (
-        innovation_covariance + innovation_covariance.T
-    )
+    scoring_covariance = np.diag(measurement_variance)
     residual = predicted - measured
-    cholesky = np.linalg.cholesky(innovation_covariance)
+    cholesky = np.linalg.cholesky(scoring_covariance)
     whitened = np.linalg.solve(cholesky, residual)
     nis = float(whitened @ whitened)
     if not math.isfinite(nis) or nis < 0.0:
         raise ValueError("GNSS prefit NIS is invalid")
-    return residual, innovation_covariance, nis
+    return residual, scoring_covariance, nis
 
 
 def gnss_prefit_axis_nis(residual, innovation_covariance):
@@ -1780,8 +1888,9 @@ def apply_gnss_prefit_gate(
 
     The scheduler remains authoritative for sensor health. Current-observation
     innovation is applied once here as a per-axis robust information scale.
-    This avoids the self-locking failure where an estimator drift causes GNSS
-    to be removed precisely when it is needed to recover absolute position.
+    A factor is excluded when both position blocks fail their consistency
+    tests; one healthy block may still admit the factor with the other block
+    robustly downweighted.
     """
     xy_nis_gate = float(xy_nis_gate)
     z_nis_gate = float(z_nis_gate)
@@ -1858,11 +1967,12 @@ def apply_gnss_prefit_gate(
         })
         return decision
 
+    all_axes_inconsistent = not xy_admitted and not z_admitted
     decision.update({
-        "factor_enabled": True,
+        "factor_enabled": not all_axes_inconsistent,
         "reliability_weight": scheduler_weight,
         "covariance_inflation": scheduler_inflation,
-        "gnss_recovery_floor": not xy_admitted and not z_admitted,
+        "gnss_recovery_floor": False,
         "admission_reason": (
             "admitted_all_axes"
             if xy_admitted and z_admitted
@@ -1870,9 +1980,12 @@ def apply_gnss_prefit_gate(
             if xy_admitted
             else "admitted_z_with_xy_robust"
             if z_admitted
-            else "admitted_robust_all_axes"
+            else "all_axes_inconsistent"
         ),
     })
+    if all_axes_inconsistent:
+        decision["reliability_weight"] = 0.0
+        decision["covariance_inflation"] = MAX_COVARIANCE_INFLATION
     return decision
 
 
@@ -2201,6 +2314,39 @@ def estimate_stationary_imu_bias(
     )
 
 
+def stationary_gravity_orientation(samples, end_stamp_s, window_s=1.5):
+    """Return the zero-yaw body-to-world attitude supported by static IMU data."""
+    end_stamp_s = float(end_stamp_s)
+    window_s = float(window_s)
+    if (
+        not math.isfinite(end_stamp_s)
+        or not math.isfinite(window_s)
+        or window_s <= 0.0
+    ):
+        raise ValueError("invalid stationary gravity alignment interval")
+    start_stamp_s = end_stamp_s - window_s
+    accelerations = []
+    for sample in samples:
+        stamp_s = float(sample.stamp_s)
+        acceleration = np.asarray(sample.acceleration, dtype=float)
+        if (
+            start_stamp_s <= stamp_s <= end_stamp_s
+            and acceleration.shape == (3,)
+            and np.all(np.isfinite(acceleration))
+        ):
+            accelerations.append(acceleration)
+    if not accelerations:
+        return None
+    mean_acceleration = np.mean(np.stack(accelerations), axis=0)
+    norm = float(np.linalg.norm(mean_acceleration))
+    if not math.isfinite(norm) or norm <= 1.0e-9:
+        return None
+    unit = mean_acceleration / norm
+    pitch = -math.asin(float(np.clip(unit[0], -1.0, 1.0)))
+    roll = math.atan2(float(unit[1]), float(unit[2]))
+    return np.asarray([roll, pitch, 0.0], dtype=float)
+
+
 def inflate_manifold_imu_covariance(
     covariance, motion_scale, minimum_bias_variance,
 ):
@@ -2299,11 +2445,9 @@ def lidar_prediction_factor_admission(
     A rejected local-map factor must not stop IMU propagation or prevent GNSS
     and optical-flow factors at the same timestamp from updating the window.
     The next LiDAR packet is evaluated independently so a transient mismatch
-    can recover without waiting for a relocalization reset. A persistent
-    mismatch may admit a separately downweighted recovery factor, but only
-    when the caller has verified the native point-plane geometry. The caller
-    must still enforce sensor-health scheduling and keep recovery observations
-    out of map insertion and calibration.
+    can recover without waiting for a relocalization reset. Repeated failure
+    never overrides the current factor's consistency gate: Eq. (15) remains
+    authoritative and recovery requires a later independently healthy frame.
     """
     allowed, reason = lidar_prediction_gate(
         innovation, maximum_position_m, maximum_yaw_rad
@@ -2321,17 +2465,12 @@ def lidar_prediction_factor_admission(
             "recovery_floor": False,
         }
     consecutive = previous + 1
-    recovery_floor = bool(
-        recovery_geometry_usable and consecutive >= recovery_after
-    )
     return {
-        "factor_enabled": recovery_floor,
-        "reason": (
-            f"{reason}_recovery_floor" if recovery_floor else reason
-        ),
+        "factor_enabled": False,
+        "reason": reason,
         "consecutive_rejections": consecutive,
         "recovered": False,
-        "recovery_floor": recovery_floor,
+        "recovery_floor": False,
     }
 
 
@@ -2646,6 +2785,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("nonlinear_initialization_max_iterations", 4)
         self.declare_parameter("nonlinear_recovery_max_iterations", 4)
         self.declare_parameter("nonlinear_reintegration_max_iterations", 1)
+        self.declare_parameter("nonlinear_solver_time_budget_ms", 40.0)
         self.declare_parameter("nonlinear_damping", 1.0e-6)
         self.declare_parameter("nonlinear_convergence_threshold", 1.0e-5)
         self.declare_parameter("lidar_huber_delta", 2.5)
@@ -4052,6 +4192,9 @@ class UnifiedBackendNode(Node):
         self.nonlinear_reintegration_max_iterations = int(
             self.get_parameter("nonlinear_reintegration_max_iterations").value
         )
+        self.nonlinear_solver_time_budget_ms = float(
+            self.get_parameter("nonlinear_solver_time_budget_ms").value
+        )
         select_nonlinear_iteration_budget(
             self.nonlinear_max_iterations,
             self.nonlinear_initialization_max_iterations,
@@ -4062,6 +4205,11 @@ class UnifiedBackendNode(Node):
             raise ValueError(
                 "nonlinear_reintegration_max_iterations must be positive"
             )
+        if (
+            not math.isfinite(self.nonlinear_solver_time_budget_ms)
+            or self.nonlinear_solver_time_budget_ms <= 0.0
+        ):
+            raise ValueError("nonlinear_solver_time_budget_ms must be positive")
         if self.frontend_map_commit_delay_states >= self.window_size:
             raise ValueError(
                 "front-end map commit delay must be smaller than window_size"
@@ -4150,6 +4298,8 @@ class UnifiedBackendNode(Node):
         self.last_lio_stamp = None
         self.last_lio_position = None
         self.last_lio_yaw = 0.0
+        self.last_observability_bootstrap_mode = "A"
+        self.last_observability_bootstrap_reason = "not_attempted"
         self.optimization_anchor = None
         self.optimization_anchor_generation = 0
         self.last_unified_output_stamp_s = None
@@ -4157,9 +4307,14 @@ class UnifiedBackendNode(Node):
         self.imu_max_positive_arrival_gap_s = 0.0
         self.scheduler = {}
         self.scheduler_reasons = {}
+        self.scheduler_history = deque(maxlen=512)
         self.scheduler_arrival = None
         self.scheduler_health = "UNAVAILABLE"
         self.scores = {}
+        self.score_history = {
+            name: deque(maxlen=512)
+            for name in ("lidar", "gnss", "imu", "optical_flow", "vision")
+        }
         self.visual_lock = threading.Lock()
         self.visual_tracks = deque(maxlen=64)
         self.rgbd_geometry_lock = threading.Lock()
@@ -4343,6 +4498,7 @@ class UnifiedBackendNode(Node):
             "flow_range_facet_accepted": 0,
             "flow_range_facet_rejected": 0,
             "imu_factors": 0, "imu_invalid": 0, "optimization_errors": 0,
+            "nonlinear_solver_budget_exhausted": 0,
             "imu_reintegrations": 0,
             "imu_reintegrations_deferred": 0,
             "calibration_updates": 0, "calibration_accepted": 0,
@@ -4386,6 +4542,7 @@ class UnifiedBackendNode(Node):
             "auxiliary_keyframe_committed": 0,
             "auxiliary_keyframe_rejected": 0,
             "auxiliary_keyframe_errors": 0,
+            "empty_keyframes_skipped": 0,
             "lio_pose_inputs_ignored": 0,
             "imu_propagated_initializations": 0,
             "imu_pair_timeouts": 0,
@@ -4545,6 +4702,7 @@ class UnifiedBackendNode(Node):
         self.last_scan_request_arrival_s = None
         self.last_live_propagation_reason = "not_attempted"
         self.last_auxiliary_keyframe_reason = "not_attempted"
+        self.last_auxiliary_attempt_stamp_s = None
         self.last_output_source = "none"
         self.last_state_trigger_source = "none"
         self.last_native_factor_reset_counter = 0
@@ -5649,7 +5807,12 @@ class UnifiedBackendNode(Node):
             self.last_visual_reason = "paper_factor_requires_manifold_backend"
             return False
         decision = combine_visual_reliability_decisions(
-            self._decision("vision", default_enabled=True), factor_score
+            self._decision(
+                "vision",
+                default_enabled=True,
+                source_stamp_s=stamp_seconds(message.header.stamp),
+            ),
+            factor_score,
         )
         self.last_visual_combined_reasons = tuple(decision.get("reasons", ()))
         if (
@@ -6090,13 +6253,16 @@ class UnifiedBackendNode(Node):
         return staged
 
     def _score(self, modality, msg):
-        self.scores[modality] = {
+        record = {
             "degradation_score": float(msg.degradation_score),
             "weight": float(msg.reliability_weight) if msg.valid else 0.0,
             "valid": bool(msg.valid),
             "reasons": tuple(msg.reasons),
             "received_ros_s": stamp_seconds(msg.header.stamp),
+            "stamp_s": stamp_seconds(msg.header.stamp),
         }
+        self.scores[modality] = record
+        self.score_history[modality].append(dict(record))
 
     def _scheduler(self, msg):
         lengths = (
@@ -6130,6 +6296,11 @@ class UnifiedBackendNode(Node):
         self.scheduler_health = str(msg.health_state)
         self.scheduler_estimator_support = float(msg.estimator_support)
         self.scheduler_arrival = stamp_seconds(msg.header.stamp)
+        self.scheduler_history.append({
+            "stamp_s": self.scheduler_arrival,
+            "scheduler": dict(self.scheduler),
+            "reasons": dict(self.scheduler_reasons),
+        })
 
     def _lidar_calibration_motion(self, msg):
         self.counts["calibration_motion_received"] += 1
@@ -6647,7 +6818,9 @@ class UnifiedBackendNode(Node):
             self.frontend_map_eligibility_order.clear()
         self.last_relocalization_reset_stats = stats
 
-    def _decision(self, modality, default_enabled=False):
+    def _decision(
+        self, modality, default_enabled=False, source_stamp_s=None
+    ):
         if self.reliability_mode == "fixed":
             weight = self.fixed_weights.get(modality, 1.0)
             decision = scheduler_decision(
@@ -6658,31 +6831,35 @@ class UnifiedBackendNode(Node):
             decision["reasons"] = ("fixed_reliability_mode",)
             return decision
         now = self._now_s()
-        # LIO is the local estimator anchor. A missing/stale diagnostic must
-        # not silently remove its pose factor and leave rotation unobservable.
-        score_fresh = self._score_is_fresh(modality, now)
-        if modality == "lidar" and not score_fresh:
-            decision = scheduler_decision(1.0, default_enabled, 1.0)
-            decision["reasons"] = ("lidar_anchor_without_fresh_score",)
-            return decision
-        if self._age_s(
-                now,
-                self.scheduler_arrival) <= self.scheduler_timeout_s:
-            item = self.scheduler.get(modality)
+        decision_stamp = (
+            now if source_stamp_s is None else float(source_stamp_s)
+        )
+        scheduler_record = select_causal_reliability_record(
+            getattr(self, "scheduler_history", ()),
+            decision_stamp,
+            self.scheduler_timeout_s,
+        )
+        if scheduler_record is not None:
+            item = scheduler_record["scheduler"].get(modality)
             if item is not None:
                 decision = scheduler_decision(item[0], item[1], item[2])
-                decision["reasons"] = self.scheduler_reasons.get(modality, ())
-                return self._protect_lidar_anchor(
-                    modality, decision, now, score_fresh
+                decision["reasons"] = scheduler_record["reasons"].get(
+                    modality, ()
                 )
-        item = self.scores.get(modality)
-        if item is not None and self._age_s(
-            now, item["received_ros_s"]
-        ) <= self.scheduler_timeout_s:
+                return self._protect_lidar_anchor(
+                    modality, decision, decision_stamp, True
+                )
+        score_record = select_causal_reliability_record(
+            getattr(self, "score_history", {}).get(modality, ()),
+            decision_stamp,
+            self.scheduler_timeout_s,
+        )
+        if score_record is not None:
+            item = score_record
             decision = scheduler_decision(item["weight"], item["valid"], 1.0)
             decision["reasons"] = item.get("reasons", ())
             return self._protect_lidar_anchor(
-                modality, decision, now, score_fresh
+                modality, decision, decision_stamp, True
             )
         decision = scheduler_decision(1.0, default_enabled, 1.0)
         decision["reasons"] = ("scheduler_unavailable_default",)
@@ -6695,7 +6872,9 @@ class UnifiedBackendNode(Node):
         gnss_information = np.zeros(3, dtype=float)
         rgbd_information = np.zeros(3, dtype=float)
         prefit_age = float(stamp_s) - self.last_gnss_prefit_stamp_s
-        decision = self._decision("gnss", default_enabled=True)
+        decision = self._decision(
+            "gnss", default_enabled=True, source_stamp_s=stamp_s
+        )
         covariance = np.asarray(
             self.last_gnss_factor_covariance, dtype=float
         )
@@ -6805,7 +6984,9 @@ class UnifiedBackendNode(Node):
         rgbd_fresh = bool(
             0.0 <= rgbd_age_s <= self.axis_handoff_rgbd_freshness_s
         )
-        vision_decision = self._decision("vision", default_enabled=True)
+        vision_decision = self._decision(
+            "vision", default_enabled=True, source_stamp_s=stamp_s
+        )
         rgbd_health = (
             float(vision_decision.get("reliability_weight", 0.0))
             / max(
@@ -6825,7 +7006,7 @@ class UnifiedBackendNode(Node):
         ))
 
         flow_decision = self._decision(
-            "optical_flow", default_enabled=True
+            "optical_flow", default_enabled=True, source_stamp_s=stamp_s
         )
         flow_fresh = self._score_is_fresh("optical_flow", now_s)
         flow_health = (
@@ -6920,22 +7101,9 @@ class UnifiedBackendNode(Node):
                 self.lidar_anchor_minimum_effective_weight,
                 self.lidar_anchor_maximum_covariance_inflation,
             )
-        if decision["factor_enabled"]:
-            return decision
-        imu_score_fresh, imu_factor_enabled = self._imu_backup_ready(now)
-        if lidar_bypass_allowed(
-            self.preserve_lio_anchor, score_fresh,
-            imu_score_fresh, imu_factor_enabled,
-        ):
-            return decision
-        decision["factor_enabled"] = True
-        decision["reliability_weight"] = max(
-            0.05, decision["reliability_weight"])
-        decision["anchor_override"] = True
-        decision["covariance_inflation"] = max(
-            1.0,
-            min(MAX_COVARIANCE_INFLATION, decision["covariance_inflation"]),
-        )
+        # Equation (15) is authoritative: an FRS-disabled LiDAR factor must
+        # stay disabled. The legacy floor is available only through the
+        # explicit preserve_lio_anchor compatibility option above.
         return decision
 
     def _imu_snapshot(self):
@@ -7340,7 +7508,9 @@ class UnifiedBackendNode(Node):
         bias_random_walk_covariance = np.full(
             6, self.imu_bias_random_walk_variance
         )
-        decision = self._decision("imu", default_enabled=True)
+        decision = self._decision(
+            "imu", default_enabled=True, source_stamp_s=current_stamp
+        )
         self.backend.add_bias_aware_imu(
             previous_index, current_index, result.dt_s,
             delta_position, delta_velocity, delta_rotation,
@@ -7404,14 +7574,19 @@ class UnifiedBackendNode(Node):
             self,
             previous_index,
             current_index,
-            measurement):
+            measurement,
+            source_stamp_s):
         if measurement is None:
             return None
         self.backend.add_imu_preintegrated(
             previous_index,
             current_index,
             measurement,
-            decision=self._decision("imu", default_enabled=True),
+            decision=self._decision(
+                "imu",
+                default_enabled=True,
+                source_stamp_s=source_stamp_s,
+            ),
         )
         self.counts["imu_factors"] += 1
         return np.asarray(measurement.covariance, dtype=float)
@@ -7845,9 +8020,15 @@ class UnifiedBackendNode(Node):
             self.counts["gnss_invalid_fix_rejected"] += 1
             self.last_gnss_admission_reason = "invalid_fix_gate"
             return
-        if scheduler_factor_decision is None:
+        has_reliability_history = bool(
+            getattr(self, "scheduler_history", ())
+            or getattr(self, "score_history", {}).get("gnss", ())
+        )
+        if scheduler_factor_decision is None or has_reliability_history:
             scheduler_factor_decision = self._decision(
-                "gnss", default_enabled=True
+                "gnss",
+                default_enabled=True,
+                source_stamp_s=observation["stamp_s"],
             )
         if not bool(scheduler_factor_decision.get("factor_enabled", False)):
             self.counts["gnss_disabled_scheduler"] += 1
@@ -7985,6 +8166,11 @@ class UnifiedBackendNode(Node):
                 self.counts["gnss_disabled_scheduler"] += 1
             elif decision["admission_reason"] == "reliability_below_minimum":
                 self.counts["gnss_rejected_low_weight"] += 1
+            elif decision["admission_reason"] == "all_axes_inconsistent":
+                self.counts["gnss_rejected_nis"] += 1
+                self.counts["gnss_xy_rejected_nis"] += 1
+                self.counts["gnss_z_rejected_nis"] += 1
+                self.counts["gnss_all_axes_inconsistent"] += 1
             return
         if decision["gnss_xy_admitted"]:
             self.counts["gnss_xy_admitted"] += 1
@@ -8692,8 +8878,11 @@ class UnifiedBackendNode(Node):
         if not records:
             self.last_flow_reason = "no_samples"
             return
+        factor_stamp_s = max(float(record["stamp_s"]) for record in records)
         scheduler_factor_decision = self._decision(
-            "optical_flow", default_enabled=True
+            "optical_flow",
+            default_enabled=True,
+            source_stamp_s=factor_stamp_s,
         )
         if not bool(scheduler_factor_decision.get("factor_enabled", False)):
             self.counts["flow_disabled_scheduler"] += 1
@@ -9078,6 +9267,7 @@ class UnifiedBackendNode(Node):
                 )
             finally:
                 self.native_work_queue.task_done()
+                self._process_auxiliary_keyframe_if_due()
 
     def _native_worker_frame_superseded(self, factor):
         """Return true when a newer native frame is already queued.
@@ -9104,7 +9294,7 @@ class UnifiedBackendNode(Node):
                 self._consume_native_sequence(
                     current_sequence,
                     state_committed=False,
-                    intentional_latest_skip=True,
+                    intentional_skip=True,
                 )
                 return True
         return False
@@ -9113,30 +9303,50 @@ class UnifiedBackendNode(Node):
         if (
             not self.auxiliary_keyframe_enabled
             or self.input_trigger_mode != "native_factor"
-            or self.backend.state_count == 0
-            or self.last_lio_stamp is None
         ):
-            self.last_auxiliary_keyframe_reason = "disabled_or_uninitialized"
+            self.last_auxiliary_keyframe_reason = "disabled_or_wrong_trigger"
             return
         imu_samples = self._imu_snapshot()
         latest_imu_stamp_s = (
             float(imu_samples[-1].stamp_s) if imu_samples else None
         )
+        if self.backend.state_count == 0 or self.last_lio_stamp is None:
+            if latest_imu_stamp_s is None:
+                self.last_auxiliary_keyframe_reason = "imu_unavailable"
+                return
+            if (
+                self.last_auxiliary_attempt_stamp_s is not None
+                and latest_imu_stamp_s
+                <= self.last_auxiliary_attempt_stamp_s
+                + self.auxiliary_keyframe_minimum_interval_s
+            ):
+                self.last_auxiliary_keyframe_reason = "bootstrap_throttled"
+                return
+            admitted = True
+            reason = "bootstrap_candidate"
+        else:
+            admitted, reason = auxiliary_keyframe_admission(
+                self._now_s(),
+                latest_imu_stamp_s,
+                self.last_lio_stamp,
+                self.last_native_input_arrival_s,
+                self.auxiliary_keyframe_lidar_silence_timeout_s,
+                self.auxiliary_keyframe_minimum_interval_s,
+                self.auxiliary_keyframe_maximum_imu_age_s,
+            )
         now_s = self._now_s()
-        admitted, reason = auxiliary_keyframe_admission(
-            now_s,
-            latest_imu_stamp_s,
-            self.last_lio_stamp,
-            self.last_native_input_arrival_s,
-            self.auxiliary_keyframe_lidar_silence_timeout_s,
-            self.auxiliary_keyframe_minimum_interval_s,
-            self.auxiliary_keyframe_maximum_imu_age_s,
-        )
         self.last_auxiliary_keyframe_reason = reason
         if not admitted:
             return
         self.counts["auxiliary_keyframe_attempts"] += 1
-        state = np.asarray(self.backend.state(-1), dtype=float)
+        self.last_auxiliary_attempt_stamp_s = latest_imu_stamp_s
+        was_initialized = bool(
+            self.backend.state_count > 0 and self.last_lio_stamp is not None
+        )
+        state = (
+            np.asarray(self.backend.state(-1), dtype=float)
+            if was_initialized else np.zeros(15, dtype=float)
+        )
         message = Odometry()
         message.header.stamp = ros_time_from_seconds(latest_imu_stamp_s)
         message.header.frame_id = self.map_frame
@@ -9150,15 +9360,23 @@ class UnifiedBackendNode(Node):
         message.pose.pose.orientation.z = qz
         message.pose.pose.orientation.w = qw
         try:
-            previous_stamp_s = float(self.last_lio_stamp)
+            previous_stamp_s = (
+                float(self.last_lio_stamp) if was_initialized else None
+            )
             self._process_lio(message, None)
             if (
                 self.last_reason == "ok"
                 and self.last_lio_stamp is not None
-                and self.last_lio_stamp > previous_stamp_s
+                and (
+                    previous_stamp_s is None
+                    or self.last_lio_stamp > previous_stamp_s
+                )
             ):
                 self.counts["auxiliary_keyframe_committed"] += 1
-                self.last_state_trigger_source = "auxiliary_keyframe"
+                self.last_state_trigger_source = (
+                    "auxiliary_keyframe"
+                    if was_initialized else "auxiliary_bootstrap"
+                )
                 self.last_auxiliary_keyframe_reason = "ok"
                 self.maximum_auxiliary_position_variance_m2 = max(
                     self.maximum_auxiliary_position_variance_m2,
@@ -9227,13 +9445,17 @@ class UnifiedBackendNode(Node):
                 ):
                     self.counts["imu_pair_timeouts"] += 1
             self._consume_native_sequence(
-                int(factor.scan_sequence), state_committed=state_committed
+                int(factor.scan_sequence),
+                state_committed=state_committed,
+                intentional_skip=(
+                    self.last_reason == "empty_keyframe_deferred"
+                ),
             )
 
     def _consume_native_sequence(
-            self, sequence, state_committed, intentional_latest_skip=False):
+            self, sequence, state_committed, intentional_skip=False):
         """Release the next scan after this factor reaches a terminal outcome."""
-        if not state_committed and not intentional_latest_skip:
+        if not state_committed and not intentional_skip:
             self.counts["native_consumed_without_state_commit"] += 1
         self.last_native_consumed_sequence = max(
             self.last_native_consumed_sequence, int(sequence)
@@ -9437,14 +9659,6 @@ class UnifiedBackendNode(Node):
         if self.last_lio_stamp is not None and stamp <= self.last_lio_stamp:
             self.last_reason = "nonmonotonic_lio_stamp"
             return
-        if (
-            self.backend.state_count == 0
-            and native_factor is not None
-            and not native_factor.correspondences_valid
-        ):
-            self.counts["native_trigger_waiting_for_initial_factor"] += 1
-            self.last_reason = "waiting_for_initial_native_lidar_factor"
-            return
         pose = msg.pose.pose
         position = np.asarray([float(pose.position.x), float(
             pose.position.y), float(pose.position.z)], dtype=float, )
@@ -9496,15 +9710,18 @@ class UnifiedBackendNode(Node):
         scan_prediction = None
         if previous_state is None:
             initial_state = np.zeros(15, dtype=float)
-            initial_state[:3] = position
-            initial_state[3:6] = orientation
+            startup_orientation = stationary_gravity_orientation(
+                cycle_imu_samples, stamp, self.imu_startup_window_s
+            )
+            startup = None
             if (
                 self.backend_solver_mode == "manifold"
                 and self.imu_startup_bias_initialization_enabled
+                and startup_orientation is not None
             ):
                 startup = estimate_stationary_imu_bias(
                     cycle_imu_samples,
-                    orientation,
+                    startup_orientation,
                     stamp,
                     window_s=self.imu_startup_window_s,
                     minimum_samples=self.imu_startup_minimum_samples,
@@ -9525,24 +9742,123 @@ class UnifiedBackendNode(Node):
                 self.last_imu_startup_reason = startup.reason
                 self.last_imu_startup_sample_count = startup.sample_count
                 self.last_imu_startup_span_s = startup.span_s
-                if startup.reason == "insufficient_observation_span":
-                    self.counts["imu_startup_waits"] += 1
-                    self.last_reason = "waiting_for_stationary_imu_window"
-                    return
-                if startup.valid:
-                    initial_state[9:12] = startup.accel_bias
-                    initial_state[12:15] = startup.gyro_bias
-                    self.last_imu_startup_accel_bias = np.asarray(
-                        startup.accel_bias, dtype=float
-                    )
-                    self.last_imu_startup_gyro_bias = np.asarray(
-                        startup.gyro_bias, dtype=float
-                    )
-                    self.counts["imu_startup_bias_accepted"] += 1
-                else:
-                    self.counts["imu_startup_bias_rejected"] += 1
             elif self.backend_solver_mode == "manifold":
-                self.last_imu_startup_reason = "disabled"
+                self.last_imu_startup_reason = (
+                    "gravity_alignment_unavailable"
+                    if startup_orientation is None else "disabled"
+                )
+
+            lidar_bootstrap_decision = self._decision(
+                "lidar", default_enabled=True, source_stamp_s=stamp
+            )
+            lidar_bootstrap_ready = bool(
+                native_factor is not None
+                and native_factor.correspondences_valid
+                and native_factor.matched_points
+                >= self.native_lidar_minimum_matches
+                and lidar_bootstrap_decision.get("factor_enabled", False)
+            )
+            if lidar_bootstrap_ready:
+                bootstrap_observability = lidar_pose_observability(
+                    native_factor
+                )
+                lidar_geometry_ready = bool(
+                    bootstrap_observability.effective_rank == 6
+                    and bootstrap_observability.translation_rank == 3
+                    and bootstrap_observability.rotation_rank == 3
+                )
+                # Algorithm 1 mode M requires a short-window MAP solution for
+                # velocity and both IMU biases. A single scan-matching pose is
+                # geometry evidence, not an initialization result.
+                lidar_bootstrap_ready = False
+            else:
+                lidar_geometry_ready = False
+            startup_valid = bool(startup is not None and startup.valid)
+            startup_evidence_available = startup_valid
+            bootstrap = select_observability_aware_bootstrap(
+                ObservabilityBootstrapEvidence(
+                    rotational_excitation=(
+                        startup.gyro_norm_radps
+                        if startup_evidence_available
+                        else 2.0 * self.imu_startup_maximum_mean_gyro_radps
+                    ),
+                    translational_excitation=(
+                        abs(startup.accel_norm_mps2 - 9.81)
+                        if startup_evidence_available
+                        else 2.0 * self.imu_startup_gravity_tolerance_mps2
+                    ),
+                    lidar_support_count=(
+                        int(native_factor.matched_points)
+                        if native_factor is not None else 0
+                    ),
+                    gyro_covariance_norm=(
+                        startup.gyro_residual_rms_radps ** 2
+                        if startup_evidence_available
+                        else 2.0
+                        * self.imu_startup_maximum_gyro_residual_rms_radps ** 2
+                    ),
+                    accel_covariance_norm=(
+                        startup.accel_residual_rms_mps2 ** 2
+                        if startup_evidence_available
+                        else 2.0
+                        * self.imu_startup_maximum_accel_residual_rms_mps2 ** 2
+                    ),
+                    stationary_alignment_ready=startup_valid,
+                    lidar_map_ready=lidar_bootstrap_ready,
+                    mcc_consistent=startup_valid or lidar_bootstrap_ready,
+                ),
+                rotational_excitation_threshold=(
+                    self.imu_startup_maximum_mean_gyro_radps
+                ),
+                translational_excitation_threshold=(
+                    self.imu_startup_gravity_tolerance_mps2
+                ),
+                visual_minimum_features=1,
+                visual_minimum_spatial_support=0.0,
+                gyro_covariance_threshold=(
+                    self.imu_startup_maximum_gyro_residual_rms_radps ** 2
+                ),
+                accel_covariance_threshold=(
+                    self.imu_startup_maximum_accel_residual_rms_mps2 ** 2
+                ),
+                lidar_minimum_support=self.native_lidar_minimum_matches,
+            )
+            self.last_observability_bootstrap_mode = bootstrap.mode
+            self.last_observability_bootstrap_reason = bootstrap.reason
+            if (
+                not bootstrap.admitted
+                and lidar_geometry_ready
+                and bootstrap.reason == "lidar_short_window_map_not_ready"
+            ):
+                self.last_observability_bootstrap_reason = (
+                    "lidar_short_window_map_solver_unavailable"
+                )
+            if not bootstrap.admitted:
+                self.counts["imu_startup_waits"] += 1
+                self.last_reason = (
+                    "bootstrap_deferred:"
+                    f"{self.last_observability_bootstrap_reason}"
+                )
+                return
+            if bootstrap.mode == "S":
+                initial_state[3:6] = startup_orientation
+                initial_state[9:12] = startup.accel_bias
+                initial_state[12:15] = startup.gyro_bias
+                self.last_imu_startup_accel_bias = np.asarray(
+                    startup.accel_bias, dtype=float
+                )
+                self.last_imu_startup_gyro_bias = np.asarray(
+                    startup.gyro_bias, dtype=float
+                )
+                self.counts["imu_startup_bias_accepted"] += 1
+            elif bootstrap.mode == "M":
+                initial_state[:3] = position
+                initial_state[3:6] = orientation
+                if startup is not None:
+                    self.counts["imu_startup_bias_rejected"] += 1
+            else:
+                self.last_reason = f"bootstrap_mode_unimplemented:{bootstrap.mode}"
+                return
         elif (
             self.frontend_scan_prediction_enabled
             and native_factor is not None
@@ -9781,7 +10097,7 @@ class UnifiedBackendNode(Node):
         staged_visual_candidates = []
         self._record_phase_timing("add_state", add_state_started)
         if self.last_lio_stamp is None:
-            self.lio_origin = position.copy()
+            self.lio_origin = initial_state[:3].copy()
             prior_covariance = np.full(15, 1.0e-4)
             if self.backend_solver_mode == "manifold":
                 startup_bias_accepted = (
@@ -9823,16 +10139,9 @@ class UnifiedBackendNode(Node):
         if self.last_lio_stamp is not None:
             previous_index = current_index - 1
             gnss_started = time.perf_counter_ns()
-            gnss_factor_decision = self._decision(
-                "gnss", default_enabled=True
+            gnss_prediction, gnss_prediction_reason = (
+                self._gnss_prefit_prediction(stamp, manifold_measurement)
             )
-            if bool(gnss_factor_decision.get("factor_enabled", False)):
-                gnss_prediction, gnss_prediction_reason = (
-                    self._gnss_prefit_prediction(stamp, manifold_measurement)
-                )
-            else:
-                gnss_prediction = None
-                gnss_prediction_reason = "scheduler_disabled_before_prediction"
             if gnss_prediction is None:
                 gnss_position_prediction = reference["position"]
                 gnss_position_covariance = None
@@ -9846,13 +10155,15 @@ class UnifiedBackendNode(Node):
                 current_index,
                 gnss_position_covariance,
                 gnss_prediction_reason,
-                gnss_factor_decision,
+                None,
                 initial_state[6:9],
             )
             self._record_phase_timing("gnss_factor", gnss_started)
 
         lidar_factor_started = time.perf_counter_ns()
-        lidar_decision = self._decision("lidar", default_enabled=True)
+        lidar_decision = self._decision(
+            "lidar", default_enabled=True, source_stamp_s=stamp
+        )
         if native_prediction_recovery_floor:
             scheduler_weight = float(
                 lidar_decision.get("reliability_weight", 0.0)
@@ -10209,7 +10520,10 @@ class UnifiedBackendNode(Node):
             imu_factor_started = time.perf_counter_ns()
             if self.backend_solver_mode == "manifold":
                 imu_diagnostic_covariance = self._add_manifold_imu_factor(
-                    previous_index, current_index, manifold_measurement
+                    previous_index,
+                    current_index,
+                    manifold_measurement,
+                    stamp,
                 )
             else:
                 imu_diagnostic_covariance = self._imu_factor(
@@ -10222,6 +10536,27 @@ class UnifiedBackendNode(Node):
         post_optimize_started = time.perf_counter_ns()
         state_committed = False
         commit_started = None
+        if (
+            transaction_snapshot is not None
+            and
+            self.last_lio_stamp is not None
+            and not self.backend.enabled_aiding_factors_for_state(
+                current_index
+            )
+        ):
+            self.backend.restore(transaction_snapshot)
+            self.active_transaction_snapshot = None
+            self.counts["empty_keyframes_skipped"] += 1
+            self.last_reason = "empty_keyframe_deferred"
+            self.last_callback_ms = (
+                time.perf_counter_ns() - started
+            ) * 1.0e-6
+            self._finish_performance_cycle(
+                performance_context,
+                staged_visual_candidates,
+                state_committed,
+            )
+            return
         try:
             optimize_started = time.perf_counter_ns()
             nonlinear_iteration_budget = select_nonlinear_iteration_budget(
@@ -10240,7 +10575,10 @@ class UnifiedBackendNode(Node):
                     nonlinear_iteration_budget
                 )
             if self.backend_solver_mode == "manifold":
-                self.backend.optimize(max_iterations=nonlinear_iteration_budget)
+                self.backend.optimize(
+                    max_iterations=nonlinear_iteration_budget,
+                    max_duration_ms=self.nonlinear_solver_time_budget_ms,
+                )
             else:
                 self.backend.optimize()
             self._record_phase_timing("optimize", optimize_started)
@@ -10249,6 +10587,9 @@ class UnifiedBackendNode(Node):
             self.backend_solve_ms_total += solve_ms
             self.backend_solve_ms_max = max(
                 self.backend_solve_ms_max, solve_ms)
+            if bool(getattr(
+                    self.backend, "last_solve_budget_exhausted", False)):
+                self.counts["nonlinear_solver_budget_exhausted"] += 1
             # A preintegrated delta is linearized at the start-state bias. The
             # first nonlinear solve can move that bias enough to invalidate the
             # delta, especially after a long or dynamic interval. Recompute it
@@ -10277,6 +10618,7 @@ class UnifiedBackendNode(Node):
                     current_index - 1, manifold_measurement
                 )
                 and not reintegration_deferred
+                and solve_ms < self.nonlinear_solver_time_budget_ms
             ):
                 updated_measurement = self._manifold_imu_measurement(
                     self.last_lio_stamp,
@@ -10293,10 +10635,15 @@ class UnifiedBackendNode(Node):
                     self.counts["imu_reintegrations"] += 1
                     reintegration_started = time.perf_counter_ns()
                     if self.backend_solver_mode == "manifold":
+                        remaining_solver_budget_ms = max(
+                            1.0e-6,
+                            self.nonlinear_solver_time_budget_ms - solve_ms,
+                        )
                         self.backend.optimize(
                             max_iterations=(
                                 self.nonlinear_reintegration_max_iterations
-                            )
+                            ),
+                            max_duration_ms=remaining_solver_budget_ms,
                         )
                     else:
                         self.backend.optimize()
@@ -11082,6 +11429,8 @@ class UnifiedBackendNode(Node):
             f"{self.counts['auxiliary_keyframe_rejected']};"
             "auxiliary_keyframe_errors="
             f"{self.counts['auxiliary_keyframe_errors']};"
+            "empty_keyframes_skipped="
+            f"{self.counts['empty_keyframes_skipped']};"
             "output_position_variance_m2="
             f"{self.last_output_position_variance_m2:.9g};"
             "output_orientation_variance_rad2="
@@ -11107,6 +11456,10 @@ class UnifiedBackendNode(Node):
             f"imu_invalid_reasons={invalid_reasons};"
             f"imu_received={self.counts['imu_received']};"
             f"imu_startup_reason={self.last_imu_startup_reason};"
+            "observability_bootstrap_mode="
+            f"{self.last_observability_bootstrap_mode};"
+            "observability_bootstrap_reason="
+            f"{self.last_observability_bootstrap_reason};"
             "imu_startup_samples="
             f"{self.last_imu_startup_sample_count};"
             f"imu_startup_span_s={self.last_imu_startup_span_s:.6f};"
@@ -11838,6 +12191,14 @@ class UnifiedBackendNode(Node):
             ),
             self._key("lidar_factor_source", self.last_lidar_source),
             self._key("state_trigger_source", self.last_state_trigger_source),
+            self._key(
+                "observability_bootstrap_mode",
+                self.last_observability_bootstrap_mode,
+            ),
+            self._key(
+                "observability_bootstrap_reason",
+                self.last_observability_bootstrap_reason,
+            ),
             self._key(
                 "live_propagation_reason",
                 self.last_live_propagation_reason,

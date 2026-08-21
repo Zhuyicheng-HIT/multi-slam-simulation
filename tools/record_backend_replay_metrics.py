@@ -16,6 +16,30 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
 
+SAMPLE_VALUE_KEYS = (
+    "backend_solve_ms",
+    "callback_ms",
+    "optimized_states_committed",
+    "optimization_rollbacks",
+    "native_worker_queue_discarded",
+    "native_lidar_factors",
+    "lidar_disabled",
+    "gnss_factors",
+    "gnss_prefit_residual_norm_m",
+    "flow_factors",
+    "visual_factors",
+    "output_source_age_s",
+)
+SAMPLE_VALUE_KEY_SET = frozenset(SAMPLE_VALUE_KEYS)
+
+
+def parse_diagnostic_value(value):
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
 def stats(values):
     values = [float(value) for value in values]
     if not values:
@@ -50,6 +74,7 @@ class Recorder(Node):
     def __init__(self):
         super().__init__("backend_replay_metrics_recorder")
         self.samples = []
+        self.last_values_raw = {}
         self.odom_count = 0
         self.trajectory = []
         self.create_subscription(
@@ -66,12 +91,13 @@ class Recorder(Node):
         for status in message.status:
             if status.name != "unified_backend_fusion":
                 continue
+            raw_values = {}
             values = {}
             for item in status.values:
-                try:
-                    values[item.key] = float(item.value)
-                except ValueError:
-                    values[item.key] = item.value
+                raw_values[item.key] = item.value
+                if item.key in SAMPLE_VALUE_KEY_SET:
+                    values[item.key] = parse_diagnostic_value(item.value)
+            self.last_values_raw = raw_values
             self.samples.append({
                 "wall_monotonic_s": time.monotonic(),
                 "ros_time_s": self.get_clock().now().nanoseconds * 1.0e-9,
@@ -127,7 +153,10 @@ def main():
             for sample in node.samples
             if isinstance(sample["values"].get("callback_ms"), (int, float))
         ]
-        last = node.samples[-1]["values"] if node.samples else {}
+        last = {
+            key: parse_diagnostic_value(value)
+            for key, value in node.last_values_raw.items()
+        }
         report = {
             "schema_version": 1,
             "diagnostic_samples": len(node.samples),

@@ -136,7 +136,7 @@ class GzMid360PointCloudBridge(RosNode):
         with self.pose_lock:
             pose = self.latest_model_pose
         if pose is None:
-            pose = msg.world_pose
+            return None
         q = (
             float(pose.orientation.x),
             float(pose.orientation.y),
@@ -241,11 +241,14 @@ class GzMid360PointCloudBridge(RosNode):
     def _scan_cb(self, msg):
         stamp = self._stamp(msg)
         sensor_points = self._points_from_scan(msg)
-        pose_p, pose_q = self._pose(msg)
+        pose = self._pose(msg)
 
         if self.publish_raw:
             self.raw_pub.publish(self._cloud_msg(sensor_points, stamp, self.sensor_frame))
 
+        if pose is None:
+            return
+        pose_p, pose_q = pose
         self._publish_pose(stamp, pose_p, pose_q)
 
         if self.publish_registered:

@@ -26,6 +26,23 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn('-p route_feedback_source:="$ROUTE_FEEDBACK_SOURCE"', runner)
         self.assertIn('-p gazebo_truth_odom_topic:="$GAZEBO_TRUTH_ODOM_TOPIC"', runner)
 
+    def test_s_curve_supports_isolated_fcu_local_dataset_control(self):
+        runner = (
+            SIM_ROOT / "scripts" / "run_s_curve_state_machine.sh"
+        ).read_text(encoding="utf-8")
+        controller = (
+            SIM_ROOT / "multi_slam_uav_sim" / "guided_s_curve_waypoints.py"
+        ).read_text(encoding="utf-8")
+        validation = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("unified_backend|fcu_local|gazebo_truth", runner)
+        self.assertIn('LOCALIZATION_SAFETY_ENABLED=false', runner)
+        self.assertIn('self.route_feedback_source == "fcu_local"', controller)
+        self.assertIn("ESTIMATOR-ONLY ROUTE ISOLATION ENABLED", controller)
+        self.assertIn("s_curve:fcu_local", validation)
+
     def test_rectangle_runner_selects_truth_adapter(self):
         runner = (
             SIM_ROOT / "scripts" / "run_rectangle_state_machine.sh"
@@ -66,6 +83,41 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn('WORLD_NAME="$VALIDATION_GAZEBO_WORLD_NAME"', runner)
         self.assertIn('-p world_name:="$VALIDATION_GAZEBO_WORLD_NAME"', runner)
 
+    def test_mid360_bridges_receive_actual_gazebo_world(self):
+        runner = (
+            SIM_ROOT / "scripts" / "run_apm_sensor_stack.sh"
+        ).read_text(encoding="utf-8")
+
+        python_block = runner.split(
+            "ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge", 1
+        )[1].split("pids+=(\"$!\")", 1)[0]
+        direct_block = runner.split(
+            "ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node", 1
+        )[1].split("pids+=(\"$!\")", 1)[0]
+        for block in (python_block, direct_block):
+            self.assertIn('-p gazebo_world_name:="$WORLD_NAME"', block)
+            self.assertIn("-p gazebo_model:=apm_iris", block)
+
+    def test_mid360_truth_fails_closed_without_model_pose(self):
+        cpp_bridge = (
+            REPO_ROOT
+            / "src"
+            / "mid360_sim_bridge_cpp"
+            / "src"
+            / "gz_livox_bridge_node.cpp"
+        ).read_text(encoding="utf-8")
+        python_bridge = (
+            SIM_ROOT / "multi_slam_uav_sim" / "gz_mid360_pointcloud_bridge.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            '"world_stats_topic", "/world/" + gazebo_world_name_ + "/stats"',
+            cpp_bridge,
+        )
+        self.assertIn('"allow_scan_pose_truth_fallback", false', cpp_bridge)
+        self.assertIn("ground_truth_unavailable_count_", cpp_bridge)
+        self.assertNotIn("pose = msg.world_pose", python_bridge)
+
     def test_dynamic_agents_are_explicit_and_owned_by_validation(self):
         runner = (
             REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
@@ -102,6 +154,48 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("collect_validation_resources.py", runner)
+
+    def test_accuracy_observers_use_wall_time_without_clock_subscription(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+        replay = (
+            REPO_ROOT / "tools" / "run_full_online_backend_replay.sh"
+        ).read_text(encoding="utf-8")
+
+        for script in (runner, replay):
+            blocks = script.split("external_nav_accuracy --ros-args")[1:]
+            self.assertTrue(blocks)
+            for block in blocks:
+                self.assertIn("-p use_sim_time:=false", block[:300])
+
+    def test_replay_metrics_monitor_keeps_compact_timeline_and_full_last_state(self):
+        recorder = (
+            REPO_ROOT / "tools" / "record_backend_replay_metrics.py"
+        ).read_text(encoding="utf-8")
+        replay = (
+            REPO_ROOT / "tools" / "run_full_online_backend_replay.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("SAMPLE_VALUE_KEYS", recorder)
+        self.assertIn("self.last_values_raw = raw_values", recorder)
+        self.assertIn("SAMPLE_VALUE_KEY_SET = frozenset(SAMPLE_VALUE_KEYS)", recorder)
+        self.assertIn("if item.key in SAMPLE_VALUE_KEY_SET", recorder)
+        self.assertIn("for key, value in node.last_values_raw.items()", recorder)
+        self.assertNotIn('cat "$OUTPUT_DIR/replay_metrics.json"', replay)
+
+    def test_replay_can_regenerate_current_reliability_decisions(self):
+        replay = (
+            REPO_ROOT / "tools" / "run_full_online_backend_replay.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("REGENERATE_RELIABILITY_STACK", replay)
+        self.assertIn("reliability_monitor", replay)
+        self.assertIn("reliability_scheduler", replay)
+        self.assertIn("play_command+=(/lio/diagnostics /lio/odom)", replay)
+        self.assertIn('--clock "$REPLAY_CLOCK_HZ"', replay)
+        self.assertIn("[lidar,gnss,imu,optical_flow,vision]", replay)
+        self.assertIn("vision_health_provenance=recorded_missing_source_images", replay)
+        self.assertIn('"native_worker_queue_discarded"', replay)
 
     def test_large_scene_rejects_low_rtf_before_flight(self):
         runner = (

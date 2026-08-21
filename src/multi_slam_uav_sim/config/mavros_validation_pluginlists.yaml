@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    # Validation needs flight control, estimator sensor inputs, and the
+    # ExternalNav ODOMETRY bridge. Loading every MAVROS plugin adds substantial
+    # callback and discovery load without contributing to these contracts.
+    plugin_allowlist:
+      - command
+      - global_position
+      - gps_status
+      - imu
+      - local_position
+      - odometry
+      - param
+      - setpoint_position
+      - sys_status
+      - sys_time

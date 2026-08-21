@@ -23,6 +23,9 @@ def generate_launch_description():
     relocalization_config = relocalization_share + "/config/relocalization.yaml"
     use_sim_time = LaunchConfiguration("use_sim_time")
     enable_vision = LaunchConfiguration("enable_vision")
+    enable_lidar_calibration_motion = LaunchConfiguration(
+        "enable_lidar_calibration_motion"
+    )
     external_nav_output_topic = LaunchConfiguration("external_nav_output_topic")
     publish_mavros_frame_transforms = LaunchConfiguration(
         "publish_mavros_frame_transforms"
@@ -42,6 +45,14 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
+        DeclareLaunchArgument(
+            "enable_lidar_calibration_motion",
+            default_value="true",
+            description=(
+                "Run the raw-LiDAR motion extractor used by shadow online "
+                "spatiotemporal calibration"
+            ),
+        ),
         DeclareLaunchArgument(
             "active_modalities",
             default_value="[lidar, gnss, imu, optical_flow]",
@@ -263,6 +274,7 @@ def generate_launch_description():
             executable="lidar_calibration_motion_node",
             name="lidar_calibration_motion_node",
             parameters=[calibration_motion_config, {"use_sim_time": use_sim_time}],
+            condition=IfCondition(enable_lidar_calibration_motion),
             output="screen",
         ),
         Node(

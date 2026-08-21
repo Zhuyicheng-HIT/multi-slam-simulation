@@ -180,12 +180,17 @@ def auxiliary_keyframe_admission(
     minimum_state_interval_s,
     maximum_imu_age_s,
 ):
-    """Admit one non-LiDAR graph state after a real native-factor outage."""
+    """Admit a common-window state when IMU time advanced past the anchor.
+
+    Native-factor arrival is deliberately not an admission condition. A
+    degraded LiDAR may continue publishing trigger packets while contributing
+    no accepted factor; those packets must not block healthy asynchronous
+    factors from advancing the common window.
+    """
     required = (
         now_s,
         latest_imu_stamp_s,
         last_state_stamp_s,
-        latest_native_arrival_s,
         lidar_silence_timeout_s,
         minimum_state_interval_s,
         maximum_imu_age_s,
@@ -195,7 +200,6 @@ def auxiliary_keyframe_admission(
     now_s = float(now_s)
     latest_imu_stamp_s = float(latest_imu_stamp_s)
     last_state_stamp_s = float(last_state_stamp_s)
-    latest_native_arrival_s = float(latest_native_arrival_s)
     if min(now_s, latest_imu_stamp_s, last_state_stamp_s) <= 0.0:
         return False, "clock_unavailable"
     if (
@@ -204,10 +208,6 @@ def auxiliary_keyframe_admission(
         or float(maximum_imu_age_s) <= 0.0
     ):
         raise ValueError("auxiliary keyframe timing limits are invalid")
-    if latest_native_arrival_s > now_s:
-        return False, "lidar_from_future"
-    if now_s - latest_native_arrival_s <= float(lidar_silence_timeout_s):
-        return False, "lidar_recent"
     imu_age_s = now_s - latest_imu_stamp_s
     if imu_age_s < -0.05:
         return False, "imu_from_future"

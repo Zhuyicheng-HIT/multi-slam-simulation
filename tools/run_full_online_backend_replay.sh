@@ -10,6 +10,7 @@ LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 BAG_DIR=${BAG_DIR:?Set BAG_DIR to the frozen full-online rosbag directory}
 OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/logs/tmp/full_online_replay_$(date +%Y%m%d_%H%M%S)}
 REPLAY_RATE=${REPLAY_RATE:-0.5}
+REPLAY_CLOCK_HZ=${REPLAY_CLOCK_HZ:-100.0}
 REPLAY_START_OFFSET=${REPLAY_START_OFFSET:-0.0}
 REPLAY_READ_AHEAD_QUEUE_SIZE=${REPLAY_READ_AHEAD_QUEUE_SIZE:-5000}
 REPLAY_DISCOVERY_DELAY_S=${REPLAY_DISCOVERY_DELAY_S:-3.0}
@@ -20,6 +21,7 @@ ENABLE_CYCLE_TRACE=${ENABLE_CYCLE_TRACE:-1}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 BACKEND_EXECUTOR_THREADS=${BACKEND_EXECUTOR_THREADS:-2}
+BACKEND_WINDOW_SIZE=${BACKEND_WINDOW_SIZE:-8}
 NONLINEAR_MAX_ITERATIONS=${NONLINEAR_MAX_ITERATIONS:-2}
 NONLINEAR_INITIALIZATION_MAX_ITERATIONS=${NONLINEAR_INITIALIZATION_MAX_ITERATIONS:-4}
 NONLINEAR_RECOVERY_MAX_ITERATIONS=${NONLINEAR_RECOVERY_MAX_ITERATIONS:-4}
@@ -40,6 +42,8 @@ AXIS_HANDOFF_ENABLE_Y=${AXIS_HANDOFF_ENABLE_Y:-false}
 AXIS_HANDOFF_ENABLE_Z=${AXIS_HANDOFF_ENABLE_Z:-true}
 RANGE_FACET_ENABLED=${RANGE_FACET_ENABLED:-false}
 GNSS_Z_REANCHOR_ENABLED=${GNSS_Z_REANCHOR_ENABLED:-false}
+GNSS_MINIMUM_AXIS_INFORMATION_SCALE=${GNSS_MINIMUM_AXIS_INFORMATION_SCALE:-0.01}
+GNSS_Z_RECOVERY_INFORMATION_SCALE=${GNSS_Z_RECOVERY_INFORMATION_SCALE:-0.50}
 BAROMETER_FALLBACK_ENABLED=${BAROMETER_FALLBACK_ENABLED:-false}
 BAROMETER_TOPIC=${BAROMETER_TOPIC:-/mavros/imu/static_pressure}
 BACKEND_RELIABILITY_MODE=${BACKEND_RELIABILITY_MODE:-dynamic}
@@ -60,6 +64,8 @@ REPLAY_EXTERNAL_NAV_GATE_ENABLED=${REPLAY_EXTERNAL_NAV_GATE_ENABLED:-false}
 REPLAY_EXTERNAL_NAV_METRICS_DURATION_S=${REPLAY_EXTERNAL_NAV_METRICS_DURATION_S:-120}
 MISSING_VISION_FACTOR_SCORE_POLICY=${MISSING_VISION_FACTOR_SCORE_POLICY:-error}
 REGENERATE_VISION_FACTOR_SCORE=${REGENERATE_VISION_FACTOR_SCORE:-auto}
+REGENERATE_RELIABILITY_STACK=${REGENERATE_RELIABILITY_STACK:-false}
+REPLAY_ACTIVE_MODALITIES=${REPLAY_ACTIVE_MODALITIES:-auto}
 REPLAY_VISION_FACTOR_SCORE_TOPIC=${REPLAY_VISION_FACTOR_SCORE_TOPIC:-/replay/reliability/vision_factor_score}
 REPLAY_RGBD_MAX_DEPTH_M=${REPLAY_RGBD_MAX_DEPTH_M:-10.0}
 REPLAY_REQUIRE_RGBD_GEOMETRY=${REPLAY_REQUIRE_RGBD_GEOMETRY:-auto}
@@ -122,6 +128,12 @@ for value in \
     exit 2
   fi
 done
+if ! python3 -c 'import math,sys; values=[float(v) for v in sys.argv[1:]]; raise SystemExit(not all(math.isfinite(v) and 0.0 < v <= 1.0 for v in values) or values[1] < values[0])' \
+    "$GNSS_MINIMUM_AXIS_INFORMATION_SCALE" \
+    "$GNSS_Z_RECOVERY_INFORMATION_SCALE"; then
+  printf 'GNSS information scales must be in (0, 1], with Z recovery no smaller than the axis minimum.\n' >&2
+  exit 2
+fi
 if ! python3 -c \
     'import math,sys; values=[float(v) for v in sys.argv[1:]]; raise SystemExit(not all(math.isfinite(v) and v>0 for v in values))' \
     "$LIDAR_PREDICTION_GATE_MAX_POSITION_M" \
@@ -133,6 +145,11 @@ if ! python3 -c \
 fi
 if ! [[ "$LIDAR_PREDICTION_GATE_RECOVERY_AFTER" =~ ^[1-9][0-9]*$ ]]; then
   printf 'LIDAR_PREDICTION_GATE_RECOVERY_AFTER must be a positive integer.\n' >&2
+  exit 2
+fi
+if ! [[ "$BACKEND_WINDOW_SIZE" =~ ^[0-9]+$ ]] || \
+    (( BACKEND_WINDOW_SIZE < 2 )); then
+  printf 'BACKEND_WINDOW_SIZE must be an integer of at least 2.\n' >&2
   exit 2
 fi
 if ! [[ "$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" =~ ^[1-9][0-9]*$ ]]; then
@@ -151,6 +168,17 @@ for value in \
     exit 2
   fi
 done
+if [[ "$REGENERATE_RELIABILITY_STACK" != true && \
+      "$REGENERATE_RELIABILITY_STACK" != false ]]; then
+  printf 'REGENERATE_RELIABILITY_STACK must be true or false.\n' >&2
+  exit 2
+fi
+if ! python3 -c \
+    'import math,sys; value=float(sys.argv[1]); raise SystemExit(not math.isfinite(value) or value<=0)' \
+    "$REPLAY_CLOCK_HZ"; then
+  printf 'REPLAY_CLOCK_HZ must be positive and finite.\n' >&2
+  exit 2
+fi
 case "$REPLAY_ACCURACY_POLICY" in
   strict|rmse) ;;
   *)
@@ -295,6 +323,13 @@ backend_visual_factor_score_topic=/reliability/vision_factor_score
 if (( regenerate_visual_factor_score == 1 )); then
   backend_visual_factor_score_topic=$REPLAY_VISION_FACTOR_SCORE_TOPIC
 fi
+if [[ "$REPLAY_ACTIVE_MODALITIES" == auto ]]; then
+  if [[ "$VISUAL_FACTOR_MODE" == disabled ]]; then
+    REPLAY_ACTIVE_MODALITIES='[lidar,gnss,imu,optical_flow]'
+  else
+    REPLAY_ACTIVE_MODALITIES='[lidar,gnss,imu,optical_flow,vision]'
+  fi
+fi
 if [[ "$NATIVE_LIDAR_QOS_DEPTH" == auto ]]; then
   # The backend is deliberately latest-only. A bag replay must exercise the
   # same bounded-latency contract as live ExternalNav; buffering every native
@@ -336,6 +371,7 @@ backend_command=(
   --ros-args
   --params-file "$WORKSPACE_ROOT/install/uf_backend_fusion/share/uf_backend_fusion/config/online_backend.yaml"
   -p use_sim_time:=true
+  -p window_size:="$BACKEND_WINDOW_SIZE"
   -p cpp_math_core_enabled:="$CPP_MATH_CORE_ENABLED"
   -p cpp_math_core_required:="$CPP_MATH_CORE_ENABLED"
   -p visual_factor_mode:="$VISUAL_FACTOR_MODE"
@@ -351,6 +387,8 @@ backend_command=(
   -p axis_handoff_enable_z:="$AXIS_HANDOFF_ENABLE_Z"
   -p range_facet_enabled:="$RANGE_FACET_ENABLED"
   -p gnss_z_reanchor_enabled:="$GNSS_Z_REANCHOR_ENABLED"
+  -p gnss_minimum_axis_information_scale:="$GNSS_MINIMUM_AXIS_INFORMATION_SCALE"
+  -p gnss_z_recovery_information_scale:="$GNSS_Z_RECOVERY_INFORMATION_SCALE"
   -p barometer_fallback_enabled:="$BAROMETER_FALLBACK_ENABLED"
   -p barometer_topic:="$BAROMETER_TOPIC"
   -p reliability_mode:="$BACKEND_RELIABILITY_MODE"
@@ -394,7 +432,8 @@ setsid env OMP_NUM_THREADS="$BACKEND_NUMERIC_THREADS" \
   MKL_NUM_THREADS="$BACKEND_NUMERIC_THREADS" \
   NUMEXPR_NUM_THREADS="$BACKEND_NUMERIC_THREADS" "${backend_command[@]}" \
   >"$OUTPUT_DIR/backend.log" 2>&1 &
-pids+=("$!")
+backend_pid=$!
+pids+=("$backend_pid")
 
 if [[ "$REPLAY_EXTERNAL_NAV_GATE_ENABLED" == true ]]; then
   setsid ros2 run uf_sensor_pipeline external_nav_gate --ros-args \
@@ -413,7 +452,7 @@ if [[ "$REPLAY_EXTERNAL_NAV_GATE_ENABLED" == true ]]; then
     >"$OUTPUT_DIR/external_nav_gate.log" 2>&1 &
   pids+=("$!")
   setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
-    -p use_sim_time:=true \
+    -p use_sim_time:=false \
     -p odom_topic:=/fusion/replay_external_nav \
     -p truth_odom_topic:=/sim/mid360/ground_truth_odom \
     -p output_path:="$OUTPUT_DIR/external_nav_gate_accuracy.json" \
@@ -430,7 +469,28 @@ if [[ "$REPLAY_EXTERNAL_NAV_GATE_ENABLED" == true ]]; then
   pids+=("$!")
 fi
 
-if (( regenerate_visual_factor_score == 1 )); then
+if [[ "$REGENERATE_RELIABILITY_STACK" == true ]]; then
+  reliability_factor_score_topic=/replay/reliability/unused_vision_factor_score
+  if (( regenerate_visual_factor_score == 1 )); then
+    reliability_factor_score_topic=$backend_visual_factor_score_topic
+  fi
+  setsid ros2 run uf_reliability reliability_monitor --ros-args \
+    --params-file "$WORKSPACE_ROOT/install/uf_reliability/share/uf_reliability/config/reliability.yaml" \
+    -p use_sim_time:=true \
+    -p vision.factor_mode:="$VISUAL_FACTOR_MODE" \
+    -p vision.factor_score_topic:="$reliability_factor_score_topic" \
+    -p vision.maximum_depth_m:="$REPLAY_RGBD_MAX_DEPTH_M" \
+    -r /reliability/vision_score:=/replay/reliability/vision_score \
+    >"$OUTPUT_DIR/reliability_monitor.log" 2>&1 &
+  pids+=("$!")
+  setsid ros2 run uf_reliability reliability_scheduler --ros-args \
+    --params-file "$WORKSPACE_ROOT/install/uf_reliability/share/uf_reliability/config/scheduler_config.yaml" \
+    -p use_sim_time:=true \
+    -p active_modalities:="$REPLAY_ACTIVE_MODALITIES" \
+    -p automatic_relocalization_enabled:=false \
+    >"$OUTPUT_DIR/reliability_scheduler.log" 2>&1 &
+  pids+=("$!")
+elif (( regenerate_visual_factor_score == 1 )); then
   setsid ros2 run uf_reliability reliability_monitor --ros-args \
     --params-file "$WORKSPACE_ROOT/install/uf_reliability/share/uf_reliability/config/reliability.yaml" \
     -p use_sim_time:=true \
@@ -455,7 +515,7 @@ pids+=("$recorder_pid")
 
 if [[ "$ACCURACY_ENABLED" == 1 ]]; then
   setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
-    -p use_sim_time:=true \
+    -p use_sim_time:=false \
     -p odom_topic:=/fusion/unified/odom \
     -p truth_odom_topic:=/sim/mid360/ground_truth_odom \
     -p output_path:="$OUTPUT_DIR/external_nav_accuracy.json" \
@@ -464,10 +524,16 @@ if [[ "$ACCURACY_ENABLED" == 1 ]]; then
   pids+=("$!")
 fi
 sleep 4
+if ! kill -0 "$backend_pid" 2>/dev/null; then
+  printf 'Unified backend exited during replay startup; see %s.\n' \
+    "$OUTPUT_DIR/backend.log" >&2
+  exit 3
+fi
 
 play_command=(
   ros2 bag play "$BAG_DIR"
   --rate "$REPLAY_RATE"
+  --clock "$REPLAY_CLOCK_HZ"
   --start-offset "$REPLAY_START_OFFSET"
   --read-ahead-queue-size "$REPLAY_READ_AHEAD_QUEUE_SIZE"
   --delay "$REPLAY_DISCOVERY_DELAY_S"
@@ -475,7 +541,6 @@ play_command=(
   --disable-keyboard-controls
   --qos-profile-overrides-path "$REPLAY_QOS_OVERRIDES"
   --topics
-  /clock
   /fast_lio/frontend_scan_request
   /fast_lio/native_lidar_factor
   /sensors/imu
@@ -487,18 +552,32 @@ play_command=(
   /vision/feature_tracks
   /vision/rgbd_geometry_tracks
   /vision/rgbd_direct_tracks
-  /reliability/scheduler_state
-  /reliability/lidar_score
-  /reliability/imu_score
-  /reliability/gnss_score
-  /reliability/optical_flow_score
-  /reliability/vision_score
-  /reliability/vision_factor_score
   /calibration/lidar_relative_motion
   /sim/mid360/ground_truth_odom
   /mission/phase
   /mission/checkpoint
 )
+if [[ "$REGENERATE_RELIABILITY_STACK" == true ]]; then
+  play_command+=(/lio/diagnostics /lio/odom)
+  # Frozen estimator bags retain tracks and per-factor visual evidence but not
+  # the source RGB/depth images needed to recompute camera-health Eq. (20).
+  # Keep that independent recorded health score while regenerating every
+  # other modality and the scheduler from current code.
+  play_command+=(/reliability/vision_score)
+  if (( regenerate_visual_factor_score == 0 )); then
+    play_command+=(/reliability/vision_factor_score)
+  fi
+else
+  play_command+=(
+    /reliability/scheduler_state
+    /reliability/lidar_score
+    /reliability/imu_score
+    /reliability/gnss_score
+    /reliability/optical_flow_score
+    /reliability/vision_score
+    /reliability/vision_factor_score
+  )
+fi
 set +e
 timeout "${REPLAY_WALL_TIMEOUT_S}s" "${play_command[@]}" \
   </dev/null >"$OUTPUT_DIR/rosbag_play.log" 2>&1
@@ -560,14 +639,17 @@ printf 'numeric_threads=%s\ncpp_math_core_enabled=%s\nvisual_factor_mode_request
   "$VISUAL_PENDING_ENABLED" \
   "$VISUAL_REQUIRE_TIME_LOCK" "$BACKEND_RELIABILITY_MODE" \
   >>"$OUTPUT_DIR/replay_result.env"
-printf 'executor_threads=%s\nnative_lidar_qos_depth=%s\nnative_worker_queue_size=%s\n' \
-  "$BACKEND_EXECUTOR_THREADS" "$NATIVE_LIDAR_QOS_DEPTH" \
+printf 'executor_threads=%s\nwindow_size=%s\nnative_lidar_qos_depth=%s\nnative_worker_queue_size=%s\n' \
+  "$BACKEND_EXECUTOR_THREADS" "$BACKEND_WINDOW_SIZE" "$NATIVE_LIDAR_QOS_DEPTH" \
   "$NATIVE_WORKER_QUEUE_SIZE" >>"$OUTPUT_DIR/replay_result.env"
 printf 'qos_overrides=%s\n' "$REPLAY_QOS_OVERRIDES" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'read_ahead_queue_size=%s\ndiscovery_delay_s=%s\nack_timeout_ms=%s\npost_replay_drain_wall_s=%s\n' \
   "$REPLAY_READ_AHEAD_QUEUE_SIZE" "$REPLAY_DISCOVERY_DELAY_S" \
   "$REPLAY_ACK_TIMEOUT_MS" "$POST_REPLAY_DRAIN_WALL_S" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'replay_clock_hz=%s\nreplay_active_modalities=%s\n' \
+  "$REPLAY_CLOCK_HZ" "$REPLAY_ACTIVE_MODALITIES" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'expected_native_factor_count=%s\nstrict_replay_acceptance=%s\nacceptance_status=%s\n' \
   "$expected_native_factor_count" "$STRICT_REPLAY_ACCEPTANCE" \
@@ -595,6 +677,9 @@ printf 'range_facet_enabled=%s\n' \
 printf 'gnss_z_reanchor_enabled=%s\nbarometer_fallback_enabled=%s\nbarometer_topic=%s\n' \
   "$GNSS_Z_REANCHOR_ENABLED" "$BAROMETER_FALLBACK_ENABLED" \
   "$BAROMETER_TOPIC" >>"$OUTPUT_DIR/replay_result.env"
+printf 'gnss_minimum_axis_information_scale=%s\ngnss_z_recovery_information_scale=%s\n' \
+  "$GNSS_MINIMUM_AXIS_INFORMATION_SCALE" \
+  "$GNSS_Z_RECOVERY_INFORMATION_SCALE" >>"$OUTPUT_DIR/replay_result.env"
 printf 'require_rgbd_geometry=%s\n' "$require_rgbd_geometry" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'calibration_apply_locked_time_offset=%s\ncalibration_apply_locked_rotation=%s\n' \
@@ -609,11 +694,35 @@ printf 'missing_vision_factor_score_policy=%s\nvisual_factor_score_count=%s\nvis
 printf 'regenerate_visual_factor_score=%s\nbackend_visual_factor_score_topic=%s\nreplay_rgbd_max_depth_m=%s\n' \
   "$regenerate_visual_factor_score" "$backend_visual_factor_score_topic" \
   "$REPLAY_RGBD_MAX_DEPTH_M" >>"$OUTPUT_DIR/replay_result.env"
+printf 'regenerate_reliability_stack=%s\n' \
+  "$REGENERATE_RELIABILITY_STACK" >>"$OUTPUT_DIR/replay_result.env"
+if [[ "$REGENERATE_RELIABILITY_STACK" == true ]]; then
+  printf 'vision_health_provenance=recorded_missing_source_images\n' \
+    >>"$OUTPUT_DIR/replay_result.env"
+fi
 if [[ ! -s "$OUTPUT_DIR/replay_metrics.json" ]]; then
   printf 'Replay metrics were not written.\n' >&2
   exit 3
 fi
-cat "$OUTPUT_DIR/replay_metrics.json"
+python3 - "$OUTPUT_DIR/replay_metrics.json" <<'PY'
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+last = report.get("last_values", {})
+summary = {
+    "diagnostic_samples": report.get("diagnostic_samples", 0),
+    "odom_count": report.get("odom_count", 0),
+    "solver_ms": report.get("solver_ms", {}),
+    "callback_ms": report.get("callback_ms", {}),
+    "optimized_states_committed": last.get("optimized_states_committed"),
+    "optimization_rollbacks": last.get("optimization_rollbacks"),
+    "native_worker_queue_discarded": last.get(
+        "native_worker_queue_discarded"
+    ),
+}
+print(json.dumps(summary, indent=2, sort_keys=True))
+PY
 if [[ "$STRICT_REPLAY_ACCEPTANCE" == 1 ]]; then
   cat "$OUTPUT_DIR/replay_acceptance.json"
 fi

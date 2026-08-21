@@ -84,6 +84,19 @@ def plane_factor(point, normal, plane_point):
     )
 
 
+def conditional_translation_step(pose_hessian, pose_gradient):
+    rotation = pose_hessian[3:, 3:]
+    coupling = pose_hessian[:3, 3:]
+    rotation_inverse = np.linalg.pinv(rotation, rcond=1.0e-9)
+    schur = pose_hessian[:3, :3] - (
+        coupling @ rotation_inverse @ coupling.T
+    )
+    gradient = pose_gradient[:3] - (
+        coupling @ rotation_inverse @ pose_gradient[3:]
+    )
+    return np.linalg.pinv(schur, rcond=1.0e-9) @ gradient, schur
+
+
 class ManifoldWindowTest(unittest.TestCase):
     @unittest.skipIf(
         cpp_state_plus_batch is None, "C++ backend core is not installed"
@@ -275,7 +288,7 @@ class ManifoldWindowTest(unittest.TestCase):
         "axis-scaled batched C++ LiDAR backend core is not installed",
     )
     def test_axis_scaled_lidar_graph_matches_scalar_and_python_paths(self):
-        scaled = np.asarray([0.16, 0.0, 0.49])
+        scaled = np.asarray([0.16, 1.0e-5, 0.49])
         backend = ManifoldSlidingWindowBackend(max_states=3)
         state = np.asarray([
             0.1, -0.2, 0.3, 0.02, -0.03, 0.04,
@@ -311,6 +324,57 @@ class ManifoldWindowTest(unittest.TestCase):
         np.testing.assert_allclose(hessian, python_hessian, atol=1.0e-12)
         np.testing.assert_allclose(gradient, python_gradient, atol=1.0e-12)
         self.assertAlmostEqual(cost, python_cost, places=12)
+
+    def test_axis_handoff_reduces_information_without_amplifying_lidar_step(self):
+        generator = np.random.default_rng(20260820)
+        points = generator.normal(size=(40, 3))
+        normals = generator.normal(size=(40, 3))
+        normals /= np.linalg.norm(normals, axis=1)[:, None]
+        target_translation = np.asarray([0.10, -0.20, 0.30])
+        factor = replace(
+            plane_factor([0, 0, 0], [1, 0, 0], [0, 0, 0]),
+            matched_points=len(points),
+            candidate_points=len(points),
+            measurement_variance=0.01,
+            lidar_points=points,
+            plane_normals=normals,
+            plane_points=points + target_translation,
+        )
+
+        base = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=False
+        )
+        base.add_state(np.zeros(15))
+        base.add_native_lidar_correspondences(0, factor)
+        base_hessian, base_gradient, _ = base._normal()
+
+        scaled = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=False
+        )
+        scaled.add_state(np.zeros(15))
+        scaled.add_native_lidar_correspondences(
+            0, factor, axis_information_scale=[1.0, 0.01, 1.0]
+        )
+        scaled_hessian, scaled_gradient, _ = scaled._normal()
+
+        base_step, base_schur = conditional_translation_step(
+            base_hessian[:6, :6], base_gradient[:6]
+        )
+        scaled_step, scaled_schur = conditional_translation_step(
+            scaled_hessian[:6, :6], scaled_gradient[:6]
+        )
+        np.testing.assert_allclose(scaled_step, base_step, atol=1.0e-10)
+        self.assertAlmostEqual(
+            scaled_schur[1, 1] / base_schur[1, 1], 0.01, places=10
+        )
+
+        root_scale = np.diag([1.0, 0.1, 1.0, 1.0, 1.0, 1.0])
+        old_hessian = root_scale @ base_hessian[:6, :6] @ root_scale
+        old_gradient = root_scale @ base_gradient[:6]
+        old_step, _ = conditional_translation_step(
+            old_hessian, old_gradient
+        )
+        self.assertGreater(abs(old_step[1]), 5.0 * abs(base_step[1]))
 
     def test_barometer_factor_constrains_only_vertical_position(self):
         backend = ManifoldSlidingWindowBackend(max_states=2)
@@ -387,6 +451,23 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertLessEqual(backend.last_iterations, 1)
         with self.assertRaises(ValueError):
             backend.optimize(max_iterations=0)
+
+    def test_optimize_stops_at_cooperative_wall_time_budget(self):
+        backend = ManifoldSlidingWindowBackend(max_states=3, max_iterations=8)
+        index = backend.add_state(np.zeros(15))
+        backend.add_gnss(index, [1.0, 0.0, 0.0], covariance=0.2)
+
+        backend.optimize(max_duration_ms=1.0e-9)
+
+        self.assertTrue(backend.last_solve_budget_exhausted)
+        self.assertEqual(backend.last_iterations, 0)
+
+    def test_optimize_rejects_invalid_wall_time_budget(self):
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        backend.add_state(np.zeros(15))
+
+        with self.assertRaises(ValueError):
+            backend.optimize(max_duration_ms=0.0)
 
     def test_cost_only_and_shared_normal_accumulation_are_equivalent(self):
         measurement = stationary_measurement(duration=0.1)
@@ -850,6 +931,137 @@ class ManifoldWindowTest(unittest.TestCase):
         np.testing.assert_allclose(
             np.diag(information), 1.0 / variances, rtol=1.0e-10
         )
+
+    def test_enabled_observation_factors_excludes_priors_and_disabled_factors(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        previous = backend.add_state(np.zeros(15))
+        backend.add_prior(previous, np.zeros(15), covariance=np.ones(15))
+        current = backend.add_state(np.zeros(15))
+        backend.add_optical_flow(
+            previous,
+            current,
+            [0.1, 0.0],
+            covariance=[0.1, 0.1],
+            decision={
+                "factor_enabled": False,
+                "reliability_weight": 0.0,
+                "covariance_inflation": 1.0e6,
+            },
+        )
+        self.assertEqual(
+            backend.enabled_observation_factors_for_state(current), ()
+        )
+
+        backend.add_optical_flow(
+            previous,
+            current,
+            [0.1, 0.0],
+            covariance=[0.1, 0.1],
+        )
+        self.assertEqual(
+            backend.enabled_observation_factors_for_state(current),
+            ("optical_flow",),
+        )
+
+    def test_enabled_aiding_factors_excludes_imu_bridge(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        previous = backend.add_state(np.zeros(15))
+        current = backend.add_state(np.zeros(15))
+        backend.add_imu_preintegrated(
+            previous, current, stationary_measurement(duration=0.1)
+        )
+
+        self.assertEqual(
+            backend.enabled_observation_factors_for_state(current),
+            ("imu_preintegrated",),
+        )
+        self.assertEqual(backend.enabled_aiding_factors_for_state(current), ())
+
+        backend.add_optical_flow(
+            previous, current, [0.0, 0.0], covariance=[0.1, 0.1]
+        )
+        self.assertEqual(
+            backend.enabled_aiding_factors_for_state(current),
+            ("optical_flow",),
+        )
+
+    def test_disabled_degraded_factors_cannot_pull_healthy_window_solution(self):
+        def make_backend(include_degraded):
+            backend = ManifoldSlidingWindowBackend(max_states=3)
+            first = backend.add_state(np.zeros(15))
+            second_state = np.zeros(15)
+            second_state[0] = 0.2
+            second = backend.add_state(second_state)
+            backend.add_prior(first, np.zeros(15), covariance=np.ones(15) * 0.1)
+            backend.add_imu_preintegrated(
+                first, second, stationary_measurement(duration=0.1)
+            )
+            backend.add_gnss(
+                second, [0.1, -0.05, 0.02], covariance=[0.02] * 3
+            )
+            backend.add_optical_flow(
+                first, second, [0.1, -0.05], covariance=[0.03, 0.03]
+            )
+            if include_degraded:
+                disabled = {
+                    "factor_enabled": False,
+                    "reliability_weight": 0.0,
+                    "covariance_inflation": 20.0,
+                }
+                backend.add_gnss(
+                    second, [1.0e6, -1.0e6, 1.0e6],
+                    covariance=[1.0e-8] * 3, decision=disabled,
+                )
+                backend.add_native_lidar_correspondences(
+                    second,
+                    plane_factor(
+                        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+                        [1.0e6, 0.0, 0.0],
+                    ),
+                    decision=disabled,
+                )
+            backend.optimize(max_iterations=8)
+            return backend
+
+        reference = make_backend(False)
+        degraded = make_backend(True)
+
+        np.testing.assert_allclose(
+            degraded.state(-1), reference.state(-1), atol=1.0e-12, rtol=0.0
+        )
+        self.assertAlmostEqual(degraded.last_cost, reference.last_cost, places=12)
+
+    def test_new_degradation_decision_does_not_rewrite_past_factor_weight(self):
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        first = backend.add_state(np.zeros(15))
+        backend.add_gnss(
+            first,
+            [0.0, 0.0, 0.0],
+            covariance=[0.2] * 3,
+            decision={
+                "factor_enabled": True,
+                "reliability_weight": 0.8,
+                "covariance_inflation": 1.25,
+            },
+        )
+        past = backend.factor_summary()[-1]
+        second = backend.add_state(np.zeros(15))
+        backend.add_gnss(
+            second,
+            [100.0, 100.0, 100.0],
+            covariance=[0.2] * 3,
+            decision={
+                "factor_enabled": False,
+                "reliability_weight": 0.0,
+                "covariance_inflation": 20.0,
+            },
+        )
+
+        summaries = backend.factor_summary()
+        self.assertTrue(summaries[0].enabled)
+        self.assertEqual(summaries[0].effective_weight, past.effective_weight)
+        self.assertFalse(summaries[1].enabled)
+        self.assertEqual(summaries[1].effective_weight, 0.0)
 
     def test_opt_in_profiler_is_bounded_and_reports_solver_stages(self):
         disabled = ManifoldSlidingWindowBackend(max_states=2)

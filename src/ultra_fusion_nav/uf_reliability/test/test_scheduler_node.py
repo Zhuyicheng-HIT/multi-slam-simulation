@@ -169,14 +169,13 @@ class SchedulerNodeTest(unittest.TestCase):
         self.assertEqual(risk.health_state, "DEGRADED")
         gnss_index = list(risk.modality_names).index("gnss")
         self.assertTrue(risk.factor_enabled[gnss_index])
-        self.assertGreater(risk.covariance_inflation[gnss_index], 3.0)
+        self.assertEqual(risk.covariance_inflation[gnss_index], 1.0)
 
         high_dynamic = self.drive({"imu": 0.90}, 0.25)
         self.assertEqual(high_dynamic.health_state, "RISK")
         imu_index = list(high_dynamic.modality_names).index("imu")
         self.assertTrue(high_dynamic.factor_enabled[imu_index])
-        self.assertAlmostEqual(
-            high_dynamic.covariance_inflation[imu_index], 5.0, places=4)
+        self.assertEqual(high_dynamic.covariance_inflation[imu_index], 1.0)
 
         recovered = self.drive_until_state({}, "RECOVERED")
         self.assertEqual(recovered.health_state, "RECOVERED")

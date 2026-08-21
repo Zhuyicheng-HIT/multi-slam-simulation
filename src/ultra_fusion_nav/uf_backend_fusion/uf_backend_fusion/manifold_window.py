@@ -206,6 +206,66 @@ def huber_loss_and_weight(standardized_residual, delta):
     return loss, weight
 
 
+def scale_lidar_conditional_translation_normal(
+    pose_hessian,
+    pose_gradient,
+    translation_information_scale,
+    maximum_conditional_step_m=0.5,
+):
+    """Reduce translation information without rescaling state coordinates."""
+    information = np.asarray(pose_hessian, dtype=float)
+    gradient = np.asarray(pose_gradient, dtype=float).reshape(-1)
+    scales = np.asarray(translation_information_scale, dtype=float)
+    maximum_step = float(maximum_conditional_step_m)
+    if information.shape != (6, 6) or gradient.shape != (6,):
+        raise ValueError("conditional LiDAR normal requires 6-DoF inputs")
+    if (
+        np.any(~np.isfinite(information))
+        or np.any(~np.isfinite(gradient))
+        or scales.shape != (3,)
+        or np.any(~np.isfinite(scales))
+        or np.any(scales <= 0.0)
+        or np.any(scales > 1.0)
+        or not math.isfinite(maximum_step)
+        or maximum_step <= 0.0
+    ):
+        raise ValueError("conditional LiDAR scaling inputs are invalid")
+    information = 0.5 * (information + information.T)
+    coupling = information[:3, 3:]
+    rotation = information[3:, 3:]
+    rotation_inverse = np.linalg.pinv(rotation, rcond=1.0e-9)
+    schur = information[:3, :3] - (
+        coupling @ rotation_inverse @ coupling.T
+    )
+    schur = 0.5 * (schur + schur.T)
+    conditional_gradient = gradient[:3] - (
+        coupling @ rotation_inverse @ gradient[3:]
+    )
+    root_scale = np.diag(np.sqrt(scales))
+    scaled_schur = root_scale @ schur @ root_scale
+    conditional_delta = np.linalg.pinv(schur, rcond=1.0e-9) @ (
+        conditional_gradient
+    )
+    conditional_delta = np.clip(
+        conditional_delta, -maximum_step, maximum_step
+    )
+    scaled_conditional_gradient = scaled_schur @ conditional_delta
+
+    scaled_information = information.copy()
+    scaled_information[:3, :3] = (
+        scaled_schur + coupling @ rotation_inverse @ coupling.T
+    )
+    scaled_information = 0.5 * (
+        scaled_information + scaled_information.T
+    )
+    scaled_gradient = gradient.copy()
+    scaled_gradient[:3] = (
+        scaled_conditional_gradient
+        + coupling @ rotation_inverse @ gradient[3:]
+    )
+    return scaled_information, scaled_gradient
+
+
 def _quaternion_wxyz_to_rotation(quaternion):
     w, x, y, z = np.asarray(quaternion, dtype=float)
     norm = float(np.linalg.norm([w, x, y, z]))
@@ -670,6 +730,7 @@ class ManifoldSlidingWindowBackend:
         self._last_cost = 0.0
         self._last_iterations = 0
         self._last_iteration_budget = int(max_iterations)
+        self._last_solve_budget_exhausted = False
         self._last_solve_ms = 0.0
         self._last_rejected_steps = 0
         self._last_hessian = None
@@ -809,6 +870,34 @@ class ManifoldSlidingWindowBackend:
         block = np.asarray(hessian[-STATE_SIZE:, -STATE_SIZE:], dtype=float)
         return 0.5 * (block + block.T)
 
+    def enabled_observation_factors_for_state(self, index):
+        """Return admitted non-prior factors connected to one state."""
+        resolved = int(index)
+        if resolved < 0:
+            resolved += len(self._states)
+        if resolved < 0 or resolved >= len(self._states):
+            raise IndexError("state is outside the active window")
+        return tuple(
+            factor["name"]
+            for factor in self._factors
+            if (
+                factor["enabled"]
+                and factor["name"] not in {"prior", "marginal_prior"}
+                and resolved in factor["indices"]
+            )
+        )
+
+    def enabled_aiding_factors_for_state(self, index):
+        """Return admitted non-inertial observations connected to a state.
+
+        IMU preintegration is the bridge between admitted keyframes in the
+        paper objective; it is not by itself an observable keyframe source.
+        """
+        return tuple(
+            name for name in self.enabled_observation_factors_for_state(index)
+            if name != "imu_preintegrated"
+        )
+
     @property
     def last_initial_cost(self):
         return self._last_initial_cost
@@ -824,6 +913,10 @@ class ManifoldSlidingWindowBackend:
     @property
     def last_iteration_budget(self):
         return self._last_iteration_budget
+
+    @property
+    def last_solve_budget_exhausted(self):
+        return self._last_solve_budget_exhausted
 
     @property
     def last_solve_ms(self):
@@ -1373,44 +1466,32 @@ class ManifoldSlidingWindowBackend:
             axis_scaled = not np.allclose(
                 translation_information_scale, 1.0, atol=0.0, rtol=0.0
             )
-            if (
-                self.cpp_math_core_enabled
-                and (
-                    not axis_scaled
-                    or CPP_LIDAR_AXIS_SCALED_CORE_AVAILABLE
-                )
-            ):
+            if self.cpp_math_core_enabled and CPP_MATH_CORE_AVAILABLE:
                 measurement = factor["measurement"]
-                if axis_scaled:
-                    kernel = cpp_lidar_point_plane_normal_axis_scaled
-                    kernel_arguments = (
-                        states[index][:6],
-                        measurement.lidar_points,
-                        measurement.plane_normals,
-                        measurement.plane_points,
-                        measurement.lidar_to_body_rotation,
-                        measurement.lidar_to_body_translation,
-                        translation_information_scale,
-                        factor["variance"],
-                        factor["effective_weight"],
-                        self.lidar_huber_delta,
-                    )
-                else:
-                    kernel = cpp_lidar_point_plane_normal
-                    kernel_arguments = (
-                        states[index][:6],
-                        measurement.lidar_points,
-                        measurement.plane_normals,
-                        measurement.plane_points,
-                        measurement.lidar_to_body_rotation,
-                        measurement.lidar_to_body_translation,
-                        factor["variance"],
-                        factor["effective_weight"],
-                        self.lidar_huber_delta,
-                    )
-                local_hessian, local_gradient, cost = kernel(
-                    *kernel_arguments
+                kernel_arguments = (
+                    states[index][:6],
+                    measurement.lidar_points,
+                    measurement.plane_normals,
+                    measurement.plane_points,
+                    measurement.lidar_to_body_rotation,
+                    measurement.lidar_to_body_translation,
+                    factor["variance"],
+                    factor["effective_weight"],
+                    self.lidar_huber_delta,
                 )
+                local_hessian, local_gradient, cost = (
+                    cpp_lidar_point_plane_normal(
+                        *kernel_arguments
+                    )
+                )
+                if axis_scaled:
+                    local_hessian, local_gradient = (
+                        scale_lidar_conditional_translation_normal(
+                            local_hessian,
+                            local_gradient,
+                            translation_information_scale,
+                        )
+                    )
                 start = index * STATE_SIZE
                 pose = slice(start, start + 6)
                 hessian[pose, pose] += local_hessian
@@ -1419,10 +1500,6 @@ class ManifoldSlidingWindowBackend:
             residual, pose_jacobian = point_plane_residual_jacobian(
                 factor["measurement"], states[index][:6]
             )
-            pose_jacobian = pose_jacobian.copy()
-            pose_jacobian[:, :3] *= np.sqrt(
-                translation_information_scale
-            )[None, :]
             standardized = residual / np.sqrt(factor["variance"])
             loss, robust_weight = huber_loss_and_weight(
                 standardized, self.lidar_huber_delta
@@ -1434,10 +1511,20 @@ class ManifoldSlidingWindowBackend:
             )
             start = index * STATE_SIZE
             pose = slice(start, start + 6)
-            hessian[pose, pose] += (
+            local_hessian = (
                 pose_jacobian.T @ (information[:, None] * pose_jacobian)
             )
-            gradient[pose] += pose_jacobian.T @ (information * residual)
+            local_gradient = pose_jacobian.T @ (information * residual)
+            if axis_scaled:
+                local_hessian, local_gradient = (
+                    scale_lidar_conditional_translation_normal(
+                        local_hessian,
+                        local_gradient,
+                        translation_information_scale,
+                    )
+                )
+            hessian[pose, pose] += local_hessian
+            gradient[pose] += local_gradient
             return (
                 hessian,
                 gradient,
@@ -2009,29 +2096,16 @@ class ManifoldSlidingWindowBackend:
                     )
                     for factor in lidar_factors
                 )
-                if (
-                    not has_axis_scaled_factor
-                    or CPP_LIDAR_AXIS_SCALED_GRAPH_CORE_AVAILABLE
-                ):
+                if not has_axis_scaled_factor:
                     factor_started = self._profile_start()
-                    if has_axis_scaled_factor:
-                        lidar_hessian, lidar_gradient, lidar_cost = (
-                            cpp_lidar_point_plane_graph_normal_axis_scaled(
-                                *_cpp_lidar_axis_scaled_graph_arguments(
-                                    lidar_factors, states
-                                ),
-                                self.lidar_huber_delta,
-                            )
+                    lidar_hessian, lidar_gradient, lidar_cost = (
+                        cpp_lidar_point_plane_graph_normal(
+                            *_cpp_lidar_graph_arguments(
+                                lidar_factors, states
+                            ),
+                            self.lidar_huber_delta,
                         )
-                    else:
-                        lidar_hessian, lidar_gradient, lidar_cost = (
-                            cpp_lidar_point_plane_graph_normal(
-                                *_cpp_lidar_graph_arguments(
-                                    lidar_factors, states
-                                ),
-                                self.lidar_huber_delta,
-                            )
-                        )
+                    )
                     hessian += lidar_hessian
                     gradient += lidar_gradient
                     cost += float(lidar_cost)
@@ -2057,7 +2131,7 @@ class ManifoldSlidingWindowBackend:
         self._profile_stop("factor_graph_linearization", normal_started)
         return hessian, gradient, cost
 
-    def optimize(self, max_iterations=None):
+    def optimize(self, max_iterations=None, max_duration_ms=None):
         if not self._states:
             return []
         iteration_budget = (
@@ -2067,13 +2141,23 @@ class ManifoldSlidingWindowBackend:
         )
         if iteration_budget < 1:
             raise ValueError("max_iterations must be positive")
+        if max_duration_ms is not None and (
+            not math.isfinite(float(max_duration_ms))
+            or float(max_duration_ms) <= 0.0
+        ):
+            raise ValueError("max_duration_ms must be positive and finite")
         self._last_iteration_budget = iteration_budget
+        self._last_solve_budget_exhausted = False
         automatic_profile_cycle = (
             self.profiling_enabled and self._profile_cycle is None
         )
         if automatic_profile_cycle:
             self.begin_profile_cycle()
         started = time.perf_counter()
+        deadline = (
+            started + float(max_duration_ms) * 1.0e-3
+            if max_duration_ms is not None else None
+        )
         profile_started = self._profile_start()
         accepted_iterations = 0
         rejected_steps = 0
@@ -2082,12 +2166,18 @@ class ManifoldSlidingWindowBackend:
         self._last_initial_cost = float(current_cost)
         damping = self._lm_damping
         for _ in range(iteration_budget):
+            if deadline is not None and time.perf_counter() >= deadline:
+                self._last_solve_budget_exhausted = True
+                break
             if float(np.max(np.abs(gradient))) < 1.0e-10:
                 break
             diagonal_scale = np.maximum(np.abs(np.diag(hessian)), 1.0)
             accepted = False
             converged = False
             for trial_index in range(self.lm_max_trials):
+                if deadline is not None and time.perf_counter() >= deadline:
+                    self._last_solve_budget_exhausted = True
+                    break
                 system = hessian + damping * np.diag(diagonal_scale)
                 solve_started = self._profile_start()
                 try:
@@ -2131,6 +2221,9 @@ class ManifoldSlidingWindowBackend:
                     # Damping-only retries need the actual objective value but
                     # no Hessian or Jacobians until the step is accepted.
                     candidate_cost = self._cost(states=candidate)
+                if deadline is not None and time.perf_counter() >= deadline:
+                    self._last_solve_budget_exhausted = True
+                    break
                 predicted = float(
                     -gradient @ increment
                     - 0.5 * increment @ hessian @ increment
@@ -2168,7 +2261,7 @@ class ManifoldSlidingWindowBackend:
                     self.lm_max_damping,
                     damping * self.lm_damping_up)
                 rejected_steps += 1
-            if not accepted or converged:
+            if self._last_solve_budget_exhausted or not accepted or converged:
                 break
         self._states = states
         self._last_cost = current_cost
