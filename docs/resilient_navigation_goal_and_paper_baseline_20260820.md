@@ -302,8 +302,8 @@ end. The adapter lives in the external WSL dataset workspace
 `/home/ld666/ultrafusion-datasets/adapters_ws`, which is not a Git checkout;
 the replay artifact is
 `/home/ld666/ultrafusion-datasets/reports/m2dgr_plus_flat_cloud_20260822_013617`.
-Increasing point density (`point_filter_num=1`) worsened the result to
-92.03 m RMSE and was reverted.
+Increasing point density (`point_filter_num=1`) worsened the causal result to
+4.09 m 3-D RMSE, 6.19 m P95, and 7.02 m maximum error, so it was reverted.
 
 An isolated A/B with the corrected flat cloud and `ENABLE_VISION=false`
 reduced the result further to 2.26 m 3-D RMSE, 3.31 m P95, and 3.42 m
@@ -313,6 +313,17 @@ drift, but LiDAR plus IMU alone still does not meet the paper-dataset gate.
 The remaining dataset work is therefore split into independent LiDAR/IMU
 geometry validation and camera/depth calibration validation; no backend gate
 was relaxed.
+
+The no-vision replay still explicitly used the legacy `PRESERVE_LIO_ANCHOR`
+compatibility mode. A single-variable run with that anchor disabled produced
+37.38 m causal 3-D RMSE, 103.00 m P95, and 138.37 m maximum error; backend
+position variance reached 127,509 m^2 while native prediction-gate rejections
+remained zero. This is evidence that the current M2DGR input/FAST-LIO chain is
+not yet compatible with the strict backend-owned trajectory mode. The result
+was not promoted and the external evaluation script defaults back to the
+legacy anchor for reproducible diagnostics. Artifacts are
+`m2dgr_plus_flat_cloud_no_vision_filter1_20260822_015035` and
+`m2dgr_plus_flat_cloud_no_vision_no_anchor_20260822_015335`.
 
 MARS currently has approximately 10.98 m 3-D RMSE and 10.94 m Z RMSE. R3LIVE
 has no valid trajectory association. The detailed artifacts are kept under
