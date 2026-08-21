@@ -98,6 +98,17 @@ class TruthObserverRouteContractTest(unittest.TestCase):
             self.assertIn('-p gazebo_world_name:="$WORLD_NAME"', block)
             self.assertIn("-p gazebo_model:=apm_iris", block)
 
+    def test_temporal_dynamic_filter_is_explicit_and_default_off(self):
+        runner = (
+            SIM_ROOT / "scripts" / "run_apm_sensor_stack.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "TEMPORAL_DYNAMIC_FILTER_ENABLED=${TEMPORAL_DYNAMIC_FILTER_ENABLED:-false}",
+            runner,
+        )
+        self.assertIn("livox_temporal_dynamic_filter", runner)
+        self.assertIn("/livox/lidar_raw", runner)
+
     def test_mid360_truth_fails_closed_without_model_pose(self):
         cpp_bridge = (
             REPO_ROOT

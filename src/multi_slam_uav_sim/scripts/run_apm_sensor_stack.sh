@@ -62,6 +62,15 @@ MID360_BODY_MAX_Z_M=${MID360_BODY_MAX_Z_M:-0.05}
 MID360_LIDAR_TO_BODY_X_M=${MID360_LIDAR_TO_BODY_X_M:-0.05}
 MID360_LIDAR_TO_BODY_Y_M=${MID360_LIDAR_TO_BODY_Y_M:-0.0}
 MID360_LIDAR_TO_BODY_Z_M=${MID360_LIDAR_TO_BODY_Z_M:-0.10}
+TEMPORAL_DYNAMIC_FILTER_ENABLED=${TEMPORAL_DYNAMIC_FILTER_ENABLED:-false}
+TEMPORAL_DYNAMIC_FILTER_VOXEL_SIZE_M=${TEMPORAL_DYNAMIC_FILTER_VOXEL_SIZE_M:-0.50}
+TEMPORAL_DYNAMIC_FILTER_HISTORY_FRAMES=${TEMPORAL_DYNAMIC_FILTER_HISTORY_FRAMES:-5}
+TEMPORAL_DYNAMIC_FILTER_MIN_SUPPORT=${TEMPORAL_DYNAMIC_FILTER_MIN_SUPPORT:-2}
+case "${TEMPORAL_DYNAMIC_FILTER_ENABLED,,}" in
+  1|true|yes|on) temporal_dynamic_filter_enabled=true ;;
+  0|false|no|off) temporal_dynamic_filter_enabled=false ;;
+  *) printf 'TEMPORAL_DYNAMIC_FILTER_ENABLED must be true/false or 1/0.\n' >&2; exit 2 ;;
+esac
 
 if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
   if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
@@ -507,10 +516,14 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
   # The simulation FCU timestamp can regress when Gazebo RTF drops. Keep raw
   # timestamps as the default for hardware, but align the simulation Livox
   # adapter to the ROS clock when explicitly requested.
+  livox_bridge_output_topic=/livox/lidar
+  if [[ "$temporal_dynamic_filter_enabled" == "true" ]]; then
+    livox_bridge_output_topic=/livox/lidar_raw
+  fi
   setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
-    -p livox_lidar_topic:=/livox/lidar \
+    -p livox_lidar_topic:="$livox_bridge_output_topic" \
     -p input_imu_topic:=/mavros/imu/data_raw \
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \
@@ -530,6 +543,19 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p publish_ground_truth_odom:=true \
     >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")
+  if [[ "$temporal_dynamic_filter_enabled" == "true" ]]; then
+    setsid ros2 run multi_slam_uav_sim livox_temporal_dynamic_filter --ros-args \
+      -p use_sim_time:="$USE_SIM_TIME" \
+      -p input_topic:=/livox/lidar_raw \
+      -p output_topic:=/livox/lidar \
+      -p odom_topic:=/mavros/local_position/odom \
+      -p voxel_size_m:="$TEMPORAL_DYNAMIC_FILTER_VOXEL_SIZE_M" \
+      -p history_frames:="$TEMPORAL_DYNAMIC_FILTER_HISTORY_FRAMES" \
+      -p minimum_support:="$TEMPORAL_DYNAMIC_FILTER_MIN_SUPPORT" \
+      -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
+      >"$LOG_DIR/livox_temporal_dynamic_filter.log" 2>&1 &
+    pids+=("$!")
+  fi
 fi
 
 if [[ "$ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV" == "1" ]]; then

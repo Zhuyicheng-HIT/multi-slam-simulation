@@ -63,6 +63,7 @@ setup(
             "guided_truth_rectangle_waypoints = multi_slam_uav_sim.guided_truth_rectangle_waypoints:main",
             "guided_vertical_profile = multi_slam_uav_sim.guided_vertical_profile:main",
             "livox_mid360_bridge = multi_slam_uav_sim.livox_mid360_bridge:main",
+            "livox_temporal_dynamic_filter = multi_slam_uav_sim.livox_temporal_dynamic_filter:main",
             "flow_gazebo_accuracy = multi_slam_uav_sim.flow_gazebo_accuracy:main",
             "mavros_stream_requester = multi_slam_uav_sim.mavros_stream_requester:main",
             "mtf01_micolink_bridge = multi_slam_uav_sim.mtf01_micolink_bridge:main",

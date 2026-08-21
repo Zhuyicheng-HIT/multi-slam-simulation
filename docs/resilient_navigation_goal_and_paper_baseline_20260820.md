@@ -145,7 +145,7 @@ without regressing healthy scenes, recovery, runtime, or factor accounting.
 
 ## Current Evidence Status
 
-As of commit `a37539a`, none of the three phases is complete:
+As of the current branch baseline, none of the three phases is complete:
 
 - Historical five-source and four-source runs do not prove each IMU-plus-one
   configuration independently.
@@ -166,6 +166,30 @@ As of commit `a37539a`, none of the three phases is complete:
 The next gate is therefore Phase 1 inventory and execution, beginning with
 repeatable healthy IMU-plus-one runs before any scheduler threshold or source
 factor is tuned.
+
+## Dynamic LiDAR Upstream Filter A/B - 2026-08-22
+
+The first LiDAR-visible dynamic city rectangle is the valid dynamic baseline.
+The upstream temporal voxel filter was then enabled as a single-variable A/B:
+
+| Run | 3D RMSE | 3D P95 | 3D max | Endpoint | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `logs/dynamic_city_rect_collision_20260822_042505` | 15.14 cm | 29.17 cm | 36.83 cm | 20.48 cm | fail: max/P95/endpoint |
+| `logs/dynamic_city_rect_temporal_filter_20260822_044111` | 17.58 cm | 41.36 cm | 55.98 cm | 41.62 cm | fail: max/P95/endpoint |
+
+The A/B completed takeoff, all four rectangle waypoints, landing, and disarm.
+All five-source factor paths remained active (GNSS 427, IMU 853, LiDAR 843,
+optical flow 69, vision 0 accepted). The filter ran before FAST-LIO and removed
+approximately 5.9% of points by the end of the run. It is therefore retained
+as an explicit, default-off experiment only; it is not part of the stable
+dynamic baseline.
+
+The regression is consistent with the current filter using FCU local odometry
+to transform each scan into a historical voxel frame. That pose is not yet a
+sufficiently accurate registration source for point-level deletion during
+motion, so static structure can be classified as transient. A future attempt
+ must use FAST-LIO motion compensation/registered geometry or a conservative
+ multi-frame occupancy test, with a no-dynamic control before promotion.
 
 ## Tunnel Evidence Correction - 2026-08-21
 
