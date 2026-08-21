@@ -2,18 +2,22 @@
 
 All estimator-facing sensor messages carry a nonzero `header.stamp` and a nonempty sensor-frame `frame_id`. Algorithms subscribe to the normalized `/sensors/*` topics so normal, injected, and replayed data use the same interface.
 
-Gazebo camera, flow-module IMU, and flow-module pose use simulation source time for one internally consistent integration window. Gazebo first publishes `/sim/optical_flow/rad_native`; the active MTF-01P adapter encodes and decodes the MAVLink(APM) `OPTICAL_FLOW` and `DISTANCE_SENSOR` wire messages before publishing `/sim/optical_flow/rad`. The simulation path is intentionally limited to 15 Hz to control rendering and bridge load. A directly connected MTF-01P keeps its 100 Hz source cadence: the first device timestamp is anchored to ROS time and subsequent device intervals are preserved. Cross-modal algorithms must check timestamp-domain overlap and monotonicity. RGB-D cross-modal time normalization remains an open visual-front-end task.
+Gazebo camera, flow-module IMU, and flow-module pose use simulation source time for one internally consistent integration window. Gazebo first publishes `/sim/optical_flow/rad_native`; the active MTF-01P adapter encodes and decodes the MicoLink `0x51` range-flow frame before publishing `/sim/optical_flow/rad`. The simulation path is intentionally limited to 15 Hz to control rendering and bridge load; its sensor-gap acceptance is 150 ms so the 66 ms source interval is retained rather than repaired. A directly connected MTF-01P keeps its 100 Hz source cadence: the first device timestamp is anchored to ROS time and subsequent device intervals are preserved. Cross-modal algorithms must check timestamp-domain overlap and monotonicity. RGB-D cross-modal time normalization remains an open visual-front-end task.
 
 | Modality | Simulator/source topic | Estimator-facing topic | Type | Expected frame |
 |---|---|---|---|---|
 | LiDAR | `/sim/mid360/points_raw` | `/sensors/lidar/points` | `sensor_msgs/PointCloud2` | `mid360_link` |
 | FCU IMU | `/mavros/imu/data_raw` via `/livox/imu` | `/sensors/imu` | `sensor_msgs/Imu` | `base_link` |
 | GNSS/BDS-compatible fix | `/uav/global_fix` | `/sensors/gnss/fix` | `sensor_msgs/NavSatFix` | companion-side default 5 Hz (measured target link), source header stamp preserved; fresh `/sensors/gnss/raw` metadata is paired when available but never blocks a fix |
-| Optical flow | `/sim/optical_flow/rad_native` -> MAVLink(APM) -> `/sim/optical_flow/rad` | `/sensors/optical_flow/rad` | `mavros_msgs/OpticalFlowRad` | `mtf01_flow_frd` |
+| Optical flow | `/sim/optical_flow/rad_native` -> MicoLink -> `/sim/optical_flow/rad` | `/sensors/optical_flow/rad` | `mavros_msgs/OpticalFlowRad` | `mtf01_flow_frd` |
 | RGB-D color | `/front/d435i/color/image_raw` | `/sensors/rgbd/color` | `sensor_msgs/Image` | D435i color optical frame |
 | RGB-D aligned depth | `/front/d435i/aligned_depth_to_color/image_raw` | `/sensors/rgbd/depth` | `sensor_msgs/Image` | D435i color optical frame |
 
 `/sensor_contract/diagnostics` reports count, rate, stamp regression/duplication, zero stamps, empty frames, and staleness for every normalized stream. `/fault/state` labels active injected faults and is recorded with every experiment.
+
+MicoLink is the default companion-computer transport. Set `FLOW_PROTOCOL=mavlink_apm`
+when the APM FCU itself must consume optical flow; the startup script also selects
+that route automatically when `ENABLE_FCU_FLOW=1` or `ENABLE_FCU_FLOW_ROUTER=1`.
 
 For a directly connected physical MTF-01P in MAVLink(APM) mode, the corresponding
 source topics are `/hardware/mtf01/mavlink_frame`,

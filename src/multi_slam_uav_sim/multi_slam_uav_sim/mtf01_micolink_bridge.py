@@ -150,6 +150,14 @@ class Mtf01MicoLinkBridge(Node):
 
     def _imu(self, msg):
         arrival_s = self.get_clock().now().nanoseconds * 1.0e-9
+        # Simulation messages already share the Gazebo/ROS clock. Hardware
+        # MicoLink frames do not carry a ROS timestamp, so TCP mode keeps the
+        # host-arrival clock for the gyro compensation window.
+        gyro_time_s = (
+            self._stamp_seconds(msg.header.stamp)
+            if self.mode == "sim" and msg.header.stamp.sec != 0
+            else arrival_s
+        )
         gyro_frd = ros_flu_gyro_to_sensor_frd(
             (
                 msg.angular_velocity.x,
@@ -157,7 +165,7 @@ class Mtf01MicoLinkBridge(Node):
                 msg.angular_velocity.z,
             )
         )
-        self.imu_arrival_samples.append((arrival_s, *gyro_frd))
+        self.imu_arrival_samples.append((gyro_time_s, *gyro_frd))
 
     def _sim_flow(self, msg):
         self.counts["sim_inputs"] += 1
@@ -298,10 +306,15 @@ class Mtf01MicoLinkBridge(Node):
             observation.flow_velocity_y,
             integration_s,
         )
+        gyro_end_s = (
+            self._stamp_seconds(stamp)
+            if self.mode == "sim" and stamp.sec != 0
+            else arrival_s
+        )
         gyro = integrate_gyro(
             list(self.imu_arrival_samples),
-            arrival_s - integration_s,
-            arrival_s,
+            gyro_end_s - integration_s,
+            gyro_end_s,
             max_gap_s=self.maximum_imu_gap,
         )
         if gyro is None:

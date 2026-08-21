@@ -24,6 +24,17 @@ ENABLE_EXTERNALNAV_EKF3=${ENABLE_EXTERNALNAV_EKF3:-${ENABLE_EXTERNALNAV_FUSION:-
 ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=${ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV:-${ENABLE_EXTERNALNAV_FUSION:-0}}
 LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 USE_SIM_TIME=${USE_SIM_TIME:-true}
+# MicoLink is the canonical companion-computer transport. APM's MAVLink
+# transport remains available when the FCU itself must consume optical flow.
+FLOW_PROTOCOL=${FLOW_PROTOCOL:-micolink}
+case "$FLOW_PROTOCOL" in
+  micolink|mavlink_apm) ;;
+  *)
+    printf 'Unsupported FLOW_PROTOCOL=%s. Use micolink or mavlink_apm.\n' \
+      "$FLOW_PROTOCOL" >&2
+    exit 2
+    ;;
+esac
 if [[ -z "${MID360_SIM_BRIDGE_MODE+x}" ]]; then
   if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
     # Keep simulation on the same Livox CustomMsg boundary as hardware.  The
@@ -267,21 +278,44 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
   pids+=("$!")
 
-  # The MTF device clock is kept in raw MAVLink frames. Its ROS observations
-  # must share MAVROS IMU's time domain for the companion fusion pipeline.
-  setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
-    -p use_sim_time:="$USE_SIM_TIME" \
-    -p mode:=sim \
-    -p input_topic:=/sim/optical_flow/rad_native \
-    -p flow_topic:=/sim/optical_flow/rad \
-    -p range_topic:=/sim/optical_flow/range \
-    -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
-    -p imu_topic:=/mavros/imu/data_raw \
-    -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
-    -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
-    -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
-    >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
+  effective_flow_protocol="$FLOW_PROTOCOL"
+  if [[ "${ENABLE_FCU_FLOW:-0}" == "1" \
+        || "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
+    # ArduPilot consumes MAVLink optical-flow messages on this route.
+    effective_flow_protocol=mavlink_apm
+  fi
+  if [[ "$effective_flow_protocol" == "micolink" ]]; then
+    setsid ros2 run multi_slam_uav_sim mtf01_micolink_bridge --ros-args \
+      -p use_sim_time:="$USE_SIM_TIME" \
+      -p mode:=sim \
+      -p input_topic:=/sim/optical_flow/rad_native \
+      -p flow_topic:=/sim/optical_flow/rad \
+      -p range_topic:=/sim/optical_flow/range \
+      -p raw_frame_topic:=/sim/mtf01/micolink_frame \
+      -p imu_topic:=/mavros/imu/data_raw \
+      -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
+      -p maximum_sensor_gap_s:=${MTF_MAX_SENSOR_GAP_S:-0.15} \
+      -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
+      -p report_path:="$LOG_DIR/mtf01_micolink_bridge.json" \
+      >"$LOG_DIR/mtf01_micolink_bridge.log" 2>&1 &
+  else
+    setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
+      -p use_sim_time:="$USE_SIM_TIME" \
+      -p mode:=sim \
+      -p input_topic:=/sim/optical_flow/rad_native \
+      -p flow_topic:=/sim/optical_flow/rad \
+      -p range_topic:=/sim/optical_flow/range \
+      -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
+      -p imu_topic:=/mavros/imu/data_raw \
+      -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
+      -p maximum_sensor_gap_s:=${MTF_MAX_SENSOR_GAP_S:-0.15} \
+      -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
+      -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
+      >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
+  fi
   pids+=("$!")
+  printf 'Optical-flow companion transport: %s\n' "$effective_flow_protocol" \
+    >>"$LOG_DIR/stack_config.txt"
 
   if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
     setsid ros2 run multi_slam_uav_sim optical_flow_viewer --ros-args \
