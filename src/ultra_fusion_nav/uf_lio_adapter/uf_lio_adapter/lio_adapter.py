@@ -14,7 +14,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
 from uf_interfaces.msg import LioDiagnostics
 
@@ -91,6 +91,8 @@ class LioAdapter(Node):
         self.last_diagnostic_ns = None
         self.last_native_diagnostic_ns = None
         self.last_native_arrival = None
+        self.registered_frames = 0
+        self.deskewed_frames = 0
         self.prefer_native_factor_diagnostics = bool(
             self.get_parameter("prefer_native_factor_diagnostics").value
         )
@@ -121,6 +123,11 @@ class LioAdapter(Node):
         # one score timeout under a loaded simulator.
         self.native_diagnostic_group = MutuallyExclusiveCallbackGroup()
         self.registered_cloud_group = MutuallyExclusiveCallbackGroup()
+        # FAST-LIO publishes registered clouds with RELIABLE QoS. A best-effort
+        # sensor subscription is not compatible with that publisher in all DDS
+        # implementations, which can silently leave the temporal map empty.
+        self.registered_cloud_qos = QoSProfile(depth=20)
+        self.registered_cloud_qos.reliability = ReliabilityPolicy.RELIABLE
 
         self.odom_pub = self.create_publisher(Odometry, str(self.get_parameter("odom_output_topic").value), 20)
         self.path_pub = self.create_publisher(Path, str(self.get_parameter("path_output_topic").value), 10)
@@ -155,14 +162,14 @@ class LioAdapter(Node):
             PointCloud2,
             str(self.get_parameter("registered_cloud_topic").value),
             self._registered,
-            qos_profile_sensor_data,
+            self.registered_cloud_qos,
             callback_group=self.registered_cloud_group,
         )
         self.create_subscription(
             PointCloud2,
             str(self.get_parameter("deskewed_cloud_topic").value),
             self._deskewed,
-            qos_profile_sensor_data,
+            self.registered_cloud_qos,
         )
         native_factor_topic = str(self.get_parameter("native_factor_topic").value)
         if self.prefer_native_factor_diagnostics and native_factor_topic:
@@ -199,6 +206,7 @@ class LioAdapter(Node):
             self.path_pub.publish(self.path)
 
     def _deskewed(self, msg):
+        self.deskewed_frames += 1
         self.deskewed_pub.publish(msg)
 
     def _native_factor(self, msg):
@@ -248,6 +256,7 @@ class LioAdapter(Node):
         self.diagnostic_pub.publish(diagnostic)
 
     def _registered(self, msg):
+        self.registered_frames += 1
         stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
         if self.last_diagnostic_ns is not None:
             elapsed_ns = stamp_ns - self.last_diagnostic_ns
@@ -325,6 +334,11 @@ class LioAdapter(Node):
             self.last_cloud_header = copy.deepcopy(msg.header)
 
     def _publish_map(self):
+        if self.registered_frames == 0:
+            self.get_logger().warn(
+                "no registered LiDAR frames received yet; check /cloud_registered "
+                "publisher and QoS"
+            )
         if not self.map_frames or self.last_cloud_header is None:
             return
         points = np.concatenate(tuple(self.map_frames), axis=0)
@@ -340,12 +354,12 @@ class LioAdapter(Node):
         self.map_publish_count += 1
         if self.map_publish_count % 5 == 0:
             self.get_logger().info(
-                "historical_map_filter frames=%d raw_points=%d published_points=%d "
-                "removed_points=%d dynamic_voxels=%d enabled=%s",
-                len(self.map_frames), before_filter, len(points),
-                self.historical_map_removed_points,
-                len(self.historical_dynamic_voxels),
-                self.historical_dynamic_removal_enabled,
+                "historical_map_filter "
+                f"frames={len(self.map_frames)} raw_points={before_filter} "
+                f"published_points={len(points)} "
+                f"removed_points={self.historical_map_removed_points} "
+                f"dynamic_voxels={len(self.historical_dynamic_voxels)} "
+                f"enabled={self.historical_dynamic_removal_enabled}"
             )
         if len(points) == 0:
             return
