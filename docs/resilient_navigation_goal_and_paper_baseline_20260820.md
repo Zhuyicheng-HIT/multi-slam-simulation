@@ -288,12 +288,22 @@ be advertised as a full dynamic-object solution.
 ### Paper-Dataset Evidence
 
 The M2DGR MCAP replay now terminates without the finite-rosbag `/clock` false
-positive. At `PLAYBACK_RATE=0.5`, its best recent result is 12.89 m 3-D RMSE,
-34.97 m P95, and 47.98 m maximum error. The native factor stream has valid
-scan-end timestamps and approximately 0-100 ms source age, but 79 LiDAR
-prediction-gate rejections leave only 24 accepted native LiDAR factors. The
-result is therefore not a pass. Increasing point density (`point_filter_num=1`)
-worsened the result to 92.03 m RMSE and was reverted.
+positive. The dataset adapter was corrected after inspecting the serialized
+cloud: the 16 x N storage tiling is not 16 rings, and per-row time reset was
+causing FAST-LIO to deskew one scan repeatedly. The adapter now publishes a
+flat height-1 stream, assigns one monotonic relative time over the whole scan,
+and restores the interleaved 16-channel ring sequence. At
+`PLAYBACK_RATE=0.5`, this improved the best recent result to 5.41 m 3-D RMSE,
+12.15 m P95, and 20.13 m maximum error. Native LiDAR factors increased from
+24 to 82 and prediction-gate rejections fell from 79 to 15. The result is
+still not a pass: the trajectory drifts after the first several seconds and
+the backend reports nonmonotonic auxiliary/LiDAR state timestamps near the
+end. The adapter lives in the external WSL dataset workspace
+`/home/ld666/ultrafusion-datasets/adapters_ws`, which is not a Git checkout;
+the replay artifact is
+`/home/ld666/ultrafusion-datasets/reports/m2dgr_plus_flat_cloud_20260822_013617`.
+Increasing point density (`point_filter_num=1`) worsened the result to
+92.03 m RMSE and was reverted.
 
 MARS currently has approximately 10.98 m 3-D RMSE and 10.94 m Z RMSE. R3LIVE
 has no valid trajectory association. The detailed artifacts are kept under
