@@ -171,6 +171,9 @@ unified_backend_fusion:
     gnss_max_age_s: 2.0
     gnss_future_tolerance_s: 0.05
     flow_max_age_s: 1.0
+    # Relative flow constrains two states only when valid exposure windows
+    # cover most of that exact state interval.
+    flow_minimum_interval_coverage: 0.70
     # Cover the complete 12 s visual calibration window and search margin.
     imu_buffer_s: 15.0
     # Cross-topic callbacks may deliver LIO before the final FCU IMU sample.
@@ -349,6 +352,9 @@ unified_backend_fusion:
     # creates low-rate graph states so fresh GNSS/flow/vision observations can
     # still be consumed. No FAST-LIO pose or synthetic LiDAR factor is added.
     auxiliary_keyframe_enabled: true
+    # Preserve the state clock through temporary exteroceptive outages using
+    # only the existing IMU preintegration bridge.
+    commit_inertial_bridge_states: true
     auxiliary_keyframe_lidar_silence_timeout_s: 0.35
     auxiliary_keyframe_minimum_interval_s: 0.20
     auxiliary_keyframe_maximum_imu_age_s: 0.20
@@ -446,6 +452,8 @@ unified_backend_fusion:
     lidar_prediction_gate_recovery_after_rejections: 3
     lidar_prediction_recovery_weight: 0.20
     lidar_prediction_recovery_inflation: 5.0
+    # Fixed post-solve integrity bounds prevent an invalid optimization from
+    # entering the published trajectory or the frontend map.
     optimization_max_translation_correction_m: 1.0
     optimization_max_rotation_correction_rad: 0.50
     optimization_max_velocity_correction_mps: 5.0

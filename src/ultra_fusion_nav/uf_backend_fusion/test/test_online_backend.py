@@ -39,6 +39,7 @@ from uf_backend_fusion.online_backend import (
     select_causal_reliability_record,
     covariance_update_due,
     flow_los_observation,
+    flow_exposure_coverage,
     flow_observation_delta,
     mtf01p_flow_speed_gate,
     mtf01p_range_sigma_m,
@@ -90,6 +91,10 @@ from uf_backend_fusion.online_backend import (
     select_nonlinear_iteration_budget,
     select_gnss_observation,
     retain_stamped_records_after,
+    restore_transaction_factor_counters,
+    rebuild_inertial_bridge_transaction,
+    transaction_factor_counter_snapshot,
+    TRANSACTION_FACTOR_COUNTERS,
     visual_factor_score_wait_status,
     visual_factor_score_for_mode,
     visual_factor_score_source_stamp,
@@ -1447,12 +1452,81 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         initial = np.zeros(15)
         estimate = initial.copy()
         estimate[0] = 1.01
+        information = np.zeros((15, 15))
+        information[1, 1] = 1.0
         result = validate_optimized_state(
-            initial, estimate, np.eye(15), 10.0, 5.0,
+            initial, estimate, information, 10.0, 5.0,
             **self._integrity_limits(),
         )
         self.assertFalse(result.valid)
         self.assertEqual(result.reason, "excessive_translation_correction")
+
+    def test_optimization_integrity_rejects_observable_large_correction(self):
+        estimate = np.zeros(15)
+        estimate[0] = 2.0
+        information = np.zeros((15, 15))
+        information[0, 0] = 10.0
+        result = validate_optimized_state(
+            np.zeros(15), estimate, information, 100.0, 5.0,
+            **self._integrity_limits(),
+        )
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "excessive_translation_correction")
+
+    def test_optimization_integrity_rejects_large_nullspace_correction(self):
+        estimate = np.zeros(15)
+        estimate[1] = 2.0
+        information = np.zeros((15, 15))
+        information[0, 0] = 10.0
+        result = validate_optimized_state(
+            np.zeros(15), estimate, information, 10.0, 5.0,
+            **self._integrity_limits(),
+        )
+        self.assertFalse(result.valid)
+        self.assertEqual(result.reason, "excessive_translation_correction")
+
+    def test_transaction_factor_counters_restore_only_admissions(self):
+        counts = {name: 1 for name in TRANSACTION_FACTOR_COUNTERS}
+        counts["flow_received"] = 10
+        snapshot = transaction_factor_counter_snapshot(counts)
+        counts["flow_factors"] += 1
+        counts["imu_factors"] += 1
+        counts["flow_received"] += 1
+        restore_transaction_factor_counters(counts, snapshot)
+        self.assertEqual(counts["flow_factors"], 1)
+        self.assertEqual(counts["imu_factors"], 1)
+        self.assertEqual(counts["flow_received"], 11)
+
+    def test_rejected_aiding_transaction_rebuilds_only_imu_bridge(self):
+        from uf_backend_fusion.imu_preintegration import (
+            ImuSample, preintegrate_manifold,
+        )
+
+        backend = ManifoldSlidingWindowBackend(max_states=3)
+        first_state = np.zeros(15)
+        first = backend.add_state(first_state)
+        backend.add_prior(first, first_state, covariance=np.ones(15))
+        snapshot = backend.snapshot()
+        samples = [
+            ImuSample(0.0, (0.0, 0.0, 9.80665), (0.0, 0.0, 0.0)),
+            ImuSample(0.1, (0.0, 0.0, 9.80665), (0.0, 0.0, 0.0)),
+        ]
+        measurement = preintegrate_manifold(
+            samples, 0.0, 0.1, np.zeros(3), np.zeros(3), 0.2
+        )
+        candidate = np.zeros(15)
+        backend.add_state(candidate)
+        backend.add_gnss(1, [100.0, 0.0, 0.0], covariance=0.01)
+
+        recovery = rebuild_inertial_bridge_transaction(
+            backend, snapshot, candidate, measurement, None, 4, 100.0
+        )
+
+        self.assertIsNotNone(recovery)
+        self.assertEqual(backend.state_count, 2)
+        names = [factor.name for factor in backend.factor_summary()]
+        self.assertIn("imu_preintegrated", names)
+        self.assertNotIn("gnss", names)
 
     def test_optimization_integrity_identifies_nonfinite_state_source(self):
         estimate = np.zeros(15)
@@ -2682,6 +2756,63 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(observation["sample_count"], 1)
         self.assertAlmostEqual(observation["integration_s"], 0.01)
 
+    def test_flow_aggregation_excludes_each_low_quality_packet(self):
+        records = [
+            {
+                "stamp_s": 1.05, "integration_time_s": 0.05,
+                "integrated_x": 0.0, "integrated_y": 0.10,
+                "integrated_xgyro": 0.0, "integrated_ygyro": 0.0,
+                "quality": 0, "distance_m": 1.0,
+            },
+            {
+                "stamp_s": 1.10, "integration_time_s": 0.05,
+                "integrated_x": 0.0, "integrated_y": 0.02,
+                "integrated_xgyro": 0.0, "integrated_ygyro": 0.0,
+                "quality": 160, "distance_m": 1.0,
+            },
+        ]
+        observation = flow_observation_delta(
+            records, 0.0, minimum_quality=20,
+            minimum_distance_m=0.08, maximum_distance_m=12.0,
+        )
+        np.testing.assert_allclose(
+            observation["delta_body"], [0.02, 0.0, 0.0]
+        )
+        self.assertEqual(observation["sample_count"], 1)
+        self.assertEqual(observation["received_sample_count"], 2)
+
+    def test_flow_coverage_uses_exposure_union_without_double_counting(self):
+        records = [
+            {"stamp_s": 1.06, "integration_time_s": 0.06},
+            {"stamp_s": 1.10, "integration_time_s": 0.06},
+        ]
+        covered, ratio = flow_exposure_coverage(records, 1.0, 1.10)
+        self.assertAlmostEqual(covered, 0.10)
+        self.assertAlmostEqual(ratio, 1.0)
+
+    def test_flow_aggregation_rotates_each_increment_to_interval_start_body(self):
+        quarter_turn_frd = -math.pi / 2.0
+        records = [
+            {
+                "stamp_s": 1.05, "integration_time_s": 0.05,
+                "integrated_x": 0.0, "integrated_y": 1.0,
+                "integrated_xgyro": 0.0, "integrated_ygyro": 0.0,
+                "integrated_zgyro": quarter_turn_frd,
+                "quality": 160, "distance_m": 1.0,
+            },
+            {
+                "stamp_s": 1.10, "integration_time_s": 0.05,
+                "integrated_x": 0.0, "integrated_y": 1.0,
+                "integrated_xgyro": 0.0, "integrated_ygyro": 0.0,
+                "integrated_zgyro": 0.0,
+                "quality": 160, "distance_m": 1.0,
+            },
+        ]
+        observation = flow_observation_delta(records, 0.0)
+        np.testing.assert_allclose(
+            observation["delta_body"], [1.0, 1.0, 0.0], atol=1.0e-12
+        )
+
     def test_flow_los_observation_is_exposure_weighted(self):
         observation = flow_los_observation([
             {
@@ -2734,7 +2865,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual([item["stamp_s"] for item in remaining], [1.25])
         self.assertTrue(delayed)
 
-    def test_disabled_flow_consumes_interval_without_geometry_work(self):
+    def test_disabled_flow_is_not_consumed_before_transaction_commit(self):
         node = object.__new__(UnifiedBackendNode)
         node.flow_buffer_lock = threading.Lock()
         node.flow_buffer = deque([
@@ -2760,7 +2891,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(node.counts["flow_disabled_scheduler"], 1)
         self.assertEqual(node.last_flow_reason, "scheduler_disabled")
         self.assertEqual(
-            [item["stamp_s"] for item in node.flow_buffer], [10.20]
+            [item["stamp_s"] for item in node.flow_buffer], [10.05, 10.20]
         )
 
     def test_flow_lever_arm_reuses_cycle_imu_samples(self):

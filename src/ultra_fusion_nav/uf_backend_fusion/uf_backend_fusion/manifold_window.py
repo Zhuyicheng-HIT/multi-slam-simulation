@@ -860,15 +860,47 @@ class ManifoldSlidingWindowBackend:
         self._lm_damping = float(snapshot.lm_damping)
 
     def latest_state_information(self):
-        """Return the undamped information block for the newest state."""
+        """Return newest-state marginal information after eliminating history.
+
+        The diagonal Hessian block is conditional information with every old
+        state held fixed. It overstates observability for relative factors and
+        must not drive integrity decisions for the fixed-lag estimate.
+        """
         if not self._states:
             raise IndexError("cannot inspect an empty window")
         hessian = self._last_hessian
         expected = len(self._states) * STATE_SIZE
         if hessian is None or hessian.shape != (expected, expected):
             hessian, _, _ = self._normal()
-        block = np.asarray(hessian[-STATE_SIZE:, -STATE_SIZE:], dtype=float)
-        return 0.5 * (block + block.T)
+        hessian = 0.5 * (hessian + hessian.T)
+        latest = np.asarray(
+            hessian[-STATE_SIZE:, -STATE_SIZE:], dtype=float
+        )
+        if len(self._states) == 1:
+            return 0.5 * (latest + latest.T)
+        history = np.asarray(
+            hessian[:-STATE_SIZE, :-STATE_SIZE], dtype=float
+        )
+        cross = np.asarray(
+            hessian[:-STATE_SIZE, -STATE_SIZE:], dtype=float
+        )
+        eigenvalues, eigenvectors = np.linalg.eigh(history)
+        scale = max(1.0, float(np.max(np.abs(eigenvalues))))
+        active = eigenvalues > self.marginal_rank_tolerance * scale
+        if np.any(active):
+            inverse = (
+                eigenvectors[:, active]
+                @ np.diag(1.0 / eigenvalues[active])
+                @ eigenvectors[:, active].T
+            )
+            latest = latest - cross.T @ inverse @ cross
+        latest = 0.5 * (latest + latest.T)
+        values, vectors = np.linalg.eigh(latest)
+        latest_scale = max(1.0, float(np.max(np.abs(values))))
+        retained = values > self.marginal_rank_tolerance * latest_scale
+        if not np.any(retained):
+            return np.zeros((STATE_SIZE, STATE_SIZE), dtype=float)
+        return (vectors[:, retained] * values[retained]) @ vectors[:, retained].T
 
     def enabled_observation_factors_for_state(self, index):
         """Return admitted non-prior factors connected to one state."""

@@ -932,6 +932,31 @@ class ManifoldWindowTest(unittest.TestCase):
             np.diag(information), 1.0 / variances, rtol=1.0e-10
         )
 
+    def test_latest_state_information_eliminates_historical_coupling(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        first = backend.add_state(np.zeros(15))
+        second = backend.add_state(np.zeros(15))
+        backend.add_optical_flow(first, second, [0.0, 0.0], covariance=0.25)
+
+        information = backend.latest_state_information()
+
+        # A relative factor alone has no global XY information after the old
+        # state is eliminated. The old diagonal-block implementation returned
+        # four units on both axes and falsely classified the gauge as fixed.
+        self.assertLess(float(np.linalg.norm(information[:2, :2])), 1.0e-9)
+
+    def test_latest_state_information_retains_absolute_anchor(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        first = backend.add_state(np.zeros(15))
+        backend.add_prior(first, np.zeros(15), covariance=np.ones(15))
+        second = backend.add_state(np.zeros(15))
+        backend.add_optical_flow(first, second, [0.0, 0.0], covariance=0.25)
+
+        information = backend.latest_state_information()
+
+        self.assertGreater(information[0, 0], 0.0)
+        self.assertGreater(information[1, 1], 0.0)
+
     def test_enabled_observation_factors_excludes_priors_and_disabled_factors(self):
         backend = ManifoldSlidingWindowBackend(max_states=2)
         previous = backend.add_state(np.zeros(15))

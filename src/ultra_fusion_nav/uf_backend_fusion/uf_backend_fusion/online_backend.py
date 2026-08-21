@@ -688,11 +688,16 @@ def validate_optimized_state(
         pose_vector_to_matrix(optimized[:6])
     )
     relative = matrix_to_pose_vector(relative_pose)
-    translation = float(np.linalg.norm(optimized[:3] - initial[:3]))
+    local_correction = np.r_[
+        optimized[:3] - initial[:3],
+        relative[3:6],
+        optimized[6:] - initial[6:],
+    ]
+    translation = float(np.linalg.norm(local_correction[:3]))
     rotation = float(np.linalg.norm(relative[3:6]))
-    velocity = float(np.linalg.norm(optimized[6:9] - initial[6:9]))
-    accel_bias = float(np.linalg.norm(optimized[9:12] - initial[9:12]))
-    gyro_bias = float(np.linalg.norm(optimized[12:15] - initial[12:15]))
+    velocity = float(np.linalg.norm(local_correction[6:9]))
+    accel_bias = float(np.linalg.norm(local_correction[9:12]))
+    gyro_bias = float(np.linalg.norm(local_correction[12:15]))
 
     symmetric_information = 0.5 * (information + information.T)
     eigenvalues = np.linalg.eigvalsh(symmetric_information)
@@ -711,7 +716,8 @@ def validate_optimized_state(
         reason = "ok"
 
     limits = (
-        (translation, maximum_translation_correction_m, "translation_correction"),
+        (translation, maximum_translation_correction_m,
+         "translation_correction"),
         (rotation, maximum_rotation_correction_rad, "rotation_correction"),
         (velocity, maximum_velocity_correction_mps, "velocity_correction"),
         (accel_bias, maximum_accel_bias_correction_mps2, "accel_bias_correction"),
@@ -735,6 +741,66 @@ def validate_optimized_state(
         accel_bias, gyro_bias, initial_cost_value, final_cost_value,
         rank, condition,
     )
+
+
+TRANSACTION_FACTOR_COUNTERS = (
+    "lidar_factors", "lidar_disabled", "gnss_factors",
+    "barometer_factors", "flow_factors", "visual_factors",
+    "rgbd_direct_factors", "rgbd_depth_factors", "native_lidar_factors",
+    "native_lidar_relinearized", "native_lidar_condensed_fallbacks",
+    "native_lidar_pose_fallbacks", "imu_factors",
+    "flow_range_facet_accepted",
+)
+
+
+def transaction_factor_counter_snapshot(counts):
+    """Capture counters whose meaning is successful graph admission."""
+    return {name: int(counts[name]) for name in TRANSACTION_FACTOR_COUNTERS}
+
+
+def restore_transaction_factor_counters(counts, snapshot):
+    """Undo admission counters when the graph transaction rolls back."""
+    for name, value in snapshot.items():
+        counts[name] = int(value)
+
+
+def rebuild_inertial_bridge_transaction(
+        backend, snapshot, initial_state, measurement, decision,
+        max_iterations, max_duration_ms):
+    """Replace a rejected aiding transaction with its causal IMU bridge."""
+    if snapshot is None or measurement is None:
+        return None
+    backend.restore(snapshot)
+    current = backend.add_state(np.asarray(initial_state, dtype=float))
+    if current < 1:
+        backend.restore(snapshot)
+        return None
+    backend.add_imu_preintegrated(
+        current - 1, current, measurement, decision=decision
+    )
+    backend.optimize(
+        max_iterations=max_iterations,
+        max_duration_ms=max_duration_ms,
+    )
+    estimate = np.asarray(backend.state(current), dtype=float)
+    information = np.asarray(
+        backend.latest_state_information(), dtype=float
+    )
+    cost_tolerance = 1.0e-10 * max(
+        1.0, abs(float(backend.last_initial_cost))
+    )
+    if (
+        estimate.shape != (15,)
+        or np.any(~np.isfinite(estimate))
+        or information.shape != (15, 15)
+        or np.any(~np.isfinite(information))
+        or not math.isfinite(float(backend.last_cost))
+        or float(backend.last_cost)
+        > float(backend.last_initial_cost) + cost_tolerance
+    ):
+        backend.restore(snapshot)
+        return None
+    return current, estimate.copy()
 
 
 def stamp_seconds(stamp):
@@ -2571,16 +2637,68 @@ def mtf01p_flow_speed_gate(
     return speed_mps <= limit_mps, speed_mps, limit_mps
 
 
-def flow_observation_delta(flow_records, yaw):
-    """Aggregate valid MAVLink optical-flow increments into map ENU."""
-    delta = np.zeros(2, dtype=float)
+def flow_exposure_coverage(flow_records, start_stamp, end_stamp):
+    """Return the union of valid exposure time inside one state interval."""
+    start_stamp = float(start_stamp)
+    end_stamp = float(end_stamp)
+    if (
+        not math.isfinite(start_stamp)
+        or not math.isfinite(end_stamp)
+        or end_stamp <= start_stamp
+    ):
+        raise ValueError("flow coverage requires an increasing finite interval")
+    intervals = []
+    for flow in flow_records:
+        try:
+            exposure_end = float(flow["stamp_s"])
+            duration = float(flow["integration_time_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            not math.isfinite(exposure_end)
+            or not math.isfinite(duration)
+            or duration <= 0.0
+        ):
+            continue
+        overlap_start = max(start_stamp, exposure_end - duration)
+        overlap_end = min(end_stamp, exposure_end)
+        if overlap_end > overlap_start:
+            intervals.append((overlap_start, overlap_end))
+    if not intervals:
+        return 0.0, 0.0
+    intervals.sort()
+    covered = 0.0
+    merged_start, merged_end = intervals[0]
+    for interval_start, interval_end in intervals[1:]:
+        if interval_start <= merged_end:
+            merged_end = max(merged_end, interval_end)
+        else:
+            covered += merged_end - merged_start
+            merged_start, merged_end = interval_start, interval_end
+    covered += merged_end - merged_start
+    interval_s = end_stamp - start_stamp
+    return covered, min(1.0, covered / interval_s)
+
+
+def flow_observation_delta(
+        flow_records, yaw, minimum_quality=0,
+        minimum_distance_m=0.0, maximum_distance_m=math.inf):
+    """Aggregate individually valid MAVLink flow increments into map ENU."""
     delta_body = np.zeros(3, dtype=float)
     qualities = []
     distances = []
     total_integration_s = 0.0
-    for flow in flow_records:
+    valid_records = []
+    accumulated_yaw_flu = 0.0
+    for flow in sorted(
+            flow_records, key=lambda item: float(item.get("stamp_s", 0.0))):
         distance = float(flow["distance_m"])
-        if distance <= 0.0 or not math.isfinite(distance):
+        quality = int(flow["quality"])
+        if (
+            quality < int(minimum_quality)
+            or not math.isfinite(distance)
+            or not float(minimum_distance_m) <= distance <= float(maximum_distance_m)
+        ):
             continue
         displacement = optical_flow_displacement_frd(
             flow["integrated_x"], flow["integrated_y"],
@@ -2589,28 +2707,42 @@ def flow_observation_delta(flow_records, yaw):
         )
         if displacement is None:
             continue
-        delta += np.asarray(
-            frd_to_enu_delta(displacement[0], displacement[1], yaw),
-            dtype=float,
-        )
-        delta_body += np.asarray(
+        increment_body = np.asarray(
             [float(displacement[0]), -float(displacement[1]), 0.0],
             dtype=float,
         )
-        qualities.append(float(flow["quality"]))
+        cosine = math.cos(accumulated_yaw_flu)
+        sine = math.sin(accumulated_yaw_flu)
+        delta_body += np.asarray([
+            cosine * increment_body[0] - sine * increment_body[1],
+            sine * increment_body[0] + cosine * increment_body[1],
+            0.0,
+        ])
+        qualities.append(float(quality))
         distances.append(distance)
+        valid_records.append(flow)
         integration_s = float(flow.get("integration_time_s", 0.0))
         if math.isfinite(integration_s) and integration_s > 0.0:
             total_integration_s += integration_s
+        # MAVLink optical flow uses FRD (+Z down); ROS FLU yaw has the
+        # opposite sign. The displacement belongs to the exposure start frame.
+        gyro_z_frd = float(flow.get("integrated_zgyro", 0.0))
+        if math.isfinite(gyro_z_frd):
+            accumulated_yaw_flu -= gyro_z_frd
     if not qualities:
         return None
+    delta = np.asarray(
+        rotate_planar(delta_body[0], delta_body[1], yaw), dtype=float
+    )
     return {
         "delta_position": [float(delta[0]), float(delta[1]), 0.0],
         "delta_body": [float(value) for value in delta_body],
         "quality": float(np.mean(qualities)),
         "distance_m": float(np.mean(distances)),
         "sample_count": len(qualities),
+        "received_sample_count": len(flow_records),
         "integration_s": total_integration_s,
+        "valid_records": valid_records,
     }
 
 
@@ -2796,6 +2928,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("gnss_max_age_s", 2.0)
         self.declare_parameter("gnss_future_tolerance_s", 0.05)
         self.declare_parameter("flow_max_age_s", 1.0)
+        self.declare_parameter("flow_minimum_interval_coverage", 0.70)
         self.declare_parameter("maximum_sensor_clock_skew_s", 5.0)
         self.declare_parameter("imu_buffer_s", 15.0)
         self.declare_parameter("imu_factor_wait_s", 0.080)
@@ -2914,6 +3047,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("live_propagation_minimum_interval_s", 0.08)
         self.declare_parameter("live_propagation_maximum_imu_age_s", 0.20)
         self.declare_parameter("auxiliary_keyframe_enabled", True)
+        self.declare_parameter("commit_inertial_bridge_states", True)
         self.declare_parameter(
             "auxiliary_keyframe_lidar_silence_timeout_s", 0.35)
         self.declare_parameter("auxiliary_keyframe_minimum_interval_s", 0.20)
@@ -3202,6 +3336,9 @@ class UnifiedBackendNode(Node):
         if self.gnss_max_age_s <= 0.0 or self.gnss_future_tolerance_s < 0.0:
             raise ValueError("GNSS timing limits are invalid")
         self.flow_max_age_s = float(self.get_parameter("flow_max_age_s").value)
+        self.flow_minimum_interval_coverage = float(
+            self.get_parameter("flow_minimum_interval_coverage").value
+        )
         self.imu_buffer_s = float(self.get_parameter("imu_buffer_s").value)
         self.imu_factor_wait_s = float(
             self.get_parameter("imu_factor_wait_s").value
@@ -3262,6 +3399,8 @@ class UnifiedBackendNode(Node):
             self.get_parameter("minimum_flow_distance_m").value)
         self.maximum_flow_distance_m = float(
             self.get_parameter("maximum_flow_distance_m").value)
+        if not 0.0 < self.flow_minimum_interval_coverage <= 1.0:
+            raise ValueError("flow interval coverage must be in (0, 1]")
         self.flow_base_displacement_sigma_m = float(
             self.get_parameter("flow_base_displacement_sigma_m").value)
         self.flow_range_near_limit_m = float(
@@ -3531,6 +3670,9 @@ class UnifiedBackendNode(Node):
         )
         self.auxiliary_keyframe_enabled = bool(
             self.get_parameter("auxiliary_keyframe_enabled").value
+        )
+        self.commit_inertial_bridge_states = bool(
+            self.get_parameter("commit_inertial_bridge_states").value
         )
         self.auxiliary_keyframe_lidar_silence_timeout_s = float(
             self.get_parameter(
@@ -4429,6 +4571,9 @@ class UnifiedBackendNode(Node):
             "flow_disabled_quality": 0,
             "flow_disabled_speed": 0,
             "flow_disabled_rotation": 0,
+            "flow_disabled_coverage": 0,
+            "flow_packets_invalid": 0,
+            "flow_packets_transaction_committed": 0,
             "visual_received": 0, "visual_factor_attempts": 0,
             "visual_factors": 0, "visual_rejected_time": 0,
             "visual_rejected_tracks": 0,
@@ -4565,6 +4710,9 @@ class UnifiedBackendNode(Node):
             "path_messages": 0,
             "optimization_rejected": 0,
             "optimization_rollbacks": 0,
+            "aiding_transaction_rejected": 0,
+            "aiding_transaction_recovered": 0,
+            "aiding_transaction_recovery_failed": 0,
             "frontend_state_seeds": 0,
             "scan_prediction_requests": 0,
             "scan_prediction_published": 0,
@@ -4679,6 +4827,7 @@ class UnifiedBackendNode(Node):
         self.last_flow_speed_limit_mps = -1.0
         self.last_flow_range_sigma_m = -1.0
         self.last_flow_covariance_m2 = math.inf
+        self.last_flow_interval_coverage = 0.0
         self.flow_los_residual_no_lever_norms = deque(maxlen=5000)
         self.flow_los_residual_norms = deque(maxlen=5000)
         self.flow_los_lever_arm_norms = deque(maxlen=5000)
@@ -4744,6 +4893,7 @@ class UnifiedBackendNode(Node):
             0.0, 0.0, 0, math.inf
         )
         self.optimization_integrity_reason_counts = Counter()
+        self.last_aiding_transaction_rejection_reason = "none"
         self.native_lidar_prediction_gate_latched = False
         self.native_lidar_prediction_gate_consecutive_rejections = 0
         self.last_native_lidar_prediction_gate_reason = "not_evaluated"
@@ -8868,13 +9018,12 @@ class UnifiedBackendNode(Node):
                      native_factor=None, current_state=None):
         self.counts["flow_factor_attempts"] += 1
         with self.flow_buffer_lock:
-            records, remaining, delayed = select_flow_records(
+            records, _remaining, delayed = select_flow_records(
                 self.flow_buffer,
                 previous_stamp,
                 current_stamp,
                 self.flow_max_age_s,
             )
-            self.flow_buffer = deque(remaining, maxlen=3000)
         if not records:
             self.last_flow_reason = "no_samples"
             return
@@ -8888,10 +9037,25 @@ class UnifiedBackendNode(Node):
             self.counts["flow_disabled_scheduler"] += 1
             self.last_flow_reason = "scheduler_disabled"
             return
-        observation = flow_observation_delta(records, previous_yaw)
+        observation = flow_observation_delta(
+            records,
+            previous_yaw,
+            minimum_quality=self.minimum_flow_quality,
+            minimum_distance_m=self.minimum_flow_distance_m,
+            maximum_distance_m=self.maximum_flow_distance_m,
+        )
         if observation is None:
+            self.counts["flow_packets_invalid"] += len(records)
             self.last_flow_reason = "no_valid_observation"
             return
+        valid_records = observation["valid_records"]
+        self.counts["flow_packets_invalid"] += (
+            len(records) - len(valid_records)
+        )
+        covered_s, coverage = flow_exposure_coverage(
+            valid_records, previous_stamp, current_stamp
+        )
+        self.last_flow_interval_coverage = coverage
         if ordered_imu is None:
             ordered_imu = ordered_imu_samples(self._imu_snapshot())
         flow_interval_start = float(previous_stamp)
@@ -8921,7 +9085,7 @@ class UnifiedBackendNode(Node):
         flow_delta_body_sensor = np.asarray(
             observation["delta_body"], dtype=float)
         lever_correction, lever_evidence = self._flow_lever_arm_correction(
-            records, previous_stamp, current_stamp, previous_state,
+            valid_records, previous_stamp, current_stamp, previous_state,
             angular_samples,
         )
         flow_delta_body = flow_delta_body_sensor - lever_correction
@@ -8941,7 +9105,7 @@ class UnifiedBackendNode(Node):
         )
         flow_displacement = [float(value) for value in flow_delta_position]
         los_diagnostic = self._flow_los_diagnostic(
-            records, previous_state, previous_stamp, current_stamp,
+            valid_records, previous_state, previous_stamp, current_stamp,
             angular_samples,
         )
         score, evidence, reasons = optical_flow_score(
@@ -9008,7 +9172,11 @@ class UnifiedBackendNode(Node):
         self.last_flow_covariance_m2 = float(flow_covariance[0])
         decision["evidence"].update({
             "flow_sample_count": observation["sample_count"],
+            "flow_received_sample_count": observation["received_sample_count"],
             "flow_total_integration_s": observation["integration_s"],
+            "flow_interval_s": float(current_stamp - previous_stamp),
+            "flow_interval_covered_s": covered_s,
+            "flow_interval_coverage": coverage,
             "flow_speed_mps": flow_speed_mps,
             "flow_speed_limit_mps": flow_speed_limit_mps,
             "flow_speed_limit_valid": 1.0 if speed_ok else 0.0,
@@ -9042,12 +9210,9 @@ class UnifiedBackendNode(Node):
                 "flow_los_distance_m": los_diagnostic["distance_m"],
                 "flow_los_integration_s": los_diagnostic["integration_s"],
             })
-        quality_or_distance_invalid = (
-            observation["quality"] < self.minimum_flow_quality
-            or not self.minimum_flow_distance_m
-            <= observation["distance_m"]
-            <= self.maximum_flow_distance_m
-            or not speed_ok
+        quality_or_distance_invalid = not speed_ok
+        coverage_invalid = (
+            delayed or coverage < self.flow_minimum_interval_coverage
         )
         imu_yaw_samples = [
             (stamp_s, float(angular_velocity[2]))
@@ -9066,7 +9231,9 @@ class UnifiedBackendNode(Node):
             current_stamp,
             yaw_rate,
             translation_norm,
-            flow_displacement is not None and not quality_or_distance_invalid,
+            flow_displacement is not None
+            and not quality_or_distance_invalid
+            and not coverage_invalid,
             rotation_compensated=flow_displacement is not None,
         )
         decision["evidence"].update({
@@ -9083,7 +9250,14 @@ class UnifiedBackendNode(Node):
         self.last_flow_rotation_phase = rotation_gate.phase
         self.last_flow_rotation_weight = rotation_gate.weight
         self.last_flow_yaw_rate_abs_radps = rotation_gate.yaw_rate_abs_radps
-        if quality_or_distance_invalid:
+        if coverage_invalid:
+            decision["factor_enabled"] = False
+            decision["reliability_weight"] = 0.0
+            decision["covariance_inflation"] = MAX_COVARIANCE_INFLATION
+            decision["reasons"].append("flow_interval_coverage")
+            self.counts["flow_disabled_coverage"] += 1
+            self.last_flow_reason = "interval_coverage_gate"
+        elif quality_or_distance_invalid:
             decision["factor_enabled"] = False
             decision["reliability_weight"] = 0.0
             decision["covariance_inflation"] = MAX_COVARIANCE_INFLATION
@@ -9105,7 +9279,7 @@ class UnifiedBackendNode(Node):
         if self.range_facet_enabled and current_state is not None:
             range_observation, range_result = (
                 self._build_range_facet_observation(
-                    records, observation, native_factor, current_state,
+                    valid_records, observation, native_factor, current_state,
                     current_stamp
                 )
             )
@@ -9169,6 +9343,14 @@ class UnifiedBackendNode(Node):
             and float(decision.get("reliability_weight", 1.0)) > 0.0
         ):
             self.counts["flow_factors"] += 1
+
+    def _commit_flow_records_through(self, stamp_s):
+        """Advance flow input only after the matching state transaction commits."""
+        with self.flow_buffer_lock:
+            before = len(self.flow_buffer)
+            retained = retain_stamped_records_after(self.flow_buffer, stamp_s)
+            self.flow_buffer = deque(retained, maxlen=3000)
+        self.counts["flow_packets_transaction_committed"] += before - len(retained)
 
     def _native_lidar(self, msg):
         self.counts["native_lidar_received"] += 1
@@ -9449,6 +9631,7 @@ class UnifiedBackendNode(Node):
                 state_committed=state_committed,
                 intentional_skip=(
                     self.last_reason == "empty_keyframe_deferred"
+                    or self.last_reason.startswith("bootstrap_deferred:")
                 ),
             )
 
@@ -10073,6 +10256,9 @@ class UnifiedBackendNode(Node):
         snapshot_started = time.perf_counter_ns()
         transaction_snapshot = (self.backend.snapshot(
         ) if self.transactional_update_enabled else None)
+        transaction_factor_counts = transaction_factor_counter_snapshot(
+            self.counts
+        )
         self._record_phase_timing("snapshot", snapshot_started)
         self.active_transaction_snapshot = transaction_snapshot
         frontend_map_candidate = None
@@ -10543,8 +10729,15 @@ class UnifiedBackendNode(Node):
             and not self.backend.enabled_aiding_factors_for_state(
                 current_index
             )
+            and not (
+                self.commit_inertial_bridge_states
+                and manifold_measurement is not None
+            )
         ):
             self.backend.restore(transaction_snapshot)
+            restore_transaction_factor_counters(
+                self.counts, transaction_factor_counts
+            )
             self.active_transaction_snapshot = None
             self.counts["empty_keyframes_skipped"] += 1
             self.last_reason = "empty_keyframe_deferred"
@@ -10707,25 +10900,58 @@ class UnifiedBackendNode(Node):
                 ] += 1
                 if not self.last_optimization_integrity.valid:
                     self.backend.restore(transaction_snapshot)
+                    restore_transaction_factor_counters(
+                        self.counts, transaction_factor_counts
+                    )
                     self.active_transaction_snapshot = None
                     self.counts["visual_solver_rejected"] += len(
                         staged_visual_candidates
                     )
                     self.counts["optimization_rejected"] += 1
-                    self.counts["optimization_rollbacks"] += 1
-                    self.last_reason = (
-                        "optimization_rejected:"
+                    self.counts["aiding_transaction_rejected"] += 1
+                    self.last_aiding_transaction_rejection_reason = (
+                        self.last_optimization_integrity.reason
+                    )
+                    recovery = rebuild_inertial_bridge_transaction(
+                        self.backend,
+                        transaction_snapshot,
+                        initial_state,
+                        manifold_measurement,
+                        self._decision(
+                            "imu", default_enabled=True,
+                            source_stamp_s=stamp,
+                        ),
+                        nonlinear_iteration_budget,
+                        self.nonlinear_solver_time_budget_ms,
+                    ) if self.commit_inertial_bridge_states else None
+                    if recovery is None:
+                        self.counts["optimization_rollbacks"] += 1
+                        self.counts[
+                            "aiding_transaction_recovery_failed"
+                        ] += 1
+                        self.last_reason = (
+                            "optimization_rejected:"
+                            f"{self.last_optimization_integrity.reason}"
+                        )
+                        self.last_callback_ms = (
+                            time.perf_counter_ns() - started
+                        ) * 1.0e-6
+                        self._finish_performance_cycle(
+                            performance_context,
+                            staged_visual_candidates,
+                            state_committed,
+                        )
+                        return
+                    current_index, estimate = recovery
+                    self.counts["imu_factors"] += 1
+                    self.counts["aiding_transaction_recovered"] += 1
+                    staged_visual_candidates = []
+                    frontend_map_candidate = None
+                    self.last_lidar_map_eligible = False
+                    self.last_lidar_map_reason = (
+                        "aiding_transaction_rejected:"
                         f"{self.last_optimization_integrity.reason}"
                     )
-                    self.last_callback_ms = (
-                        time.perf_counter_ns() - started
-                    ) * 1.0e-6
-                    self._finish_performance_cycle(
-                        performance_context,
-                        staged_visual_candidates,
-                        state_committed,
-                    )
-                    return
             commit_started = time.perf_counter_ns()
             publish_started = time.perf_counter_ns()
             self._publish(
@@ -10761,6 +10987,9 @@ class UnifiedBackendNode(Node):
         except (np.linalg.LinAlgError, ValueError, IndexError) as error:
             if transaction_snapshot is not None:
                 self.backend.restore(transaction_snapshot)
+                restore_transaction_factor_counters(
+                    self.counts, transaction_factor_counts
+                )
                 self.active_transaction_snapshot = None
                 self.counts["visual_solver_rejected"] += len(
                     staged_visual_candidates
@@ -10771,6 +11000,7 @@ class UnifiedBackendNode(Node):
             self.last_exception = f"{type(error).__name__}:{error}"
         self._record_phase_timing("post_optimize", post_optimize_started)
         if state_committed:
+            self._commit_flow_records_through(stamp)
             self.last_lio_stamp = stamp
             self.last_lio_position = np.asarray(
                 estimate[:3], dtype=float).copy()
@@ -11448,6 +11678,14 @@ class UnifiedBackendNode(Node):
             f"optimization_errors={self.counts['optimization_errors']};"
             f"optimization_rejected={self.counts['optimization_rejected']};"
             f"optimization_rollbacks={self.counts['optimization_rollbacks']};"
+            "aiding_transaction_rejected="
+            f"{self.counts['aiding_transaction_rejected']};"
+            "aiding_transaction_recovered="
+            f"{self.counts['aiding_transaction_recovered']};"
+            "aiding_transaction_recovery_failed="
+            f"{self.counts['aiding_transaction_recovery_failed']};"
+            "last_aiding_transaction_rejection_reason="
+            f"{self.last_aiding_transaction_rejection_reason};"
             f"optimization_integrity_counts={integrity_reasons};"
             f"frontend_state_seeds={self.counts['frontend_state_seeds']};"
             f"solve_mean_ms={average_solve_ms:.3f};"
@@ -11573,6 +11811,10 @@ class UnifiedBackendNode(Node):
             f"flow_disabled_quality={self.counts['flow_disabled_quality']};"
             f"flow_disabled_speed={self.counts['flow_disabled_speed']};"
             f"flow_disabled_rotation={self.counts['flow_disabled_rotation']};"
+            f"flow_disabled_coverage={self.counts['flow_disabled_coverage']};"
+            f"flow_packets_invalid={self.counts['flow_packets_invalid']};"
+            "flow_packets_transaction_committed="
+            f"{self.counts['flow_packets_transaction_committed']};"
             f"flow_clock_mismatch={self.counts['flow_clock_mismatch']};"
             f"visual_received={self.counts['visual_received']};"
             f"visual_attempts={self.counts['visual_factor_attempts']};"
@@ -11797,6 +12039,22 @@ class UnifiedBackendNode(Node):
             self._key(
                 "optimization_integrity_reason",
                 self.last_optimization_integrity.reason,
+            ),
+            self._key(
+                "aiding_transaction_rejected",
+                self.counts["aiding_transaction_rejected"],
+            ),
+            self._key(
+                "aiding_transaction_recovered",
+                self.counts["aiding_transaction_recovered"],
+            ),
+            self._key(
+                "aiding_transaction_recovery_failed",
+                self.counts["aiding_transaction_recovery_failed"],
+            ),
+            self._key(
+                "last_aiding_transaction_rejection_reason",
+                self.last_aiding_transaction_rejection_reason,
             ),
             self._key(
                 "optimization_integrity_counts",
@@ -12536,6 +12794,26 @@ class UnifiedBackendNode(Node):
             self._key(
                 "flow_factor_variance_m2",
                 f"{self.last_flow_covariance_m2:.9g}",
+            ),
+            self._key(
+                "flow_interval_coverage",
+                f"{self.last_flow_interval_coverage:.9g}",
+            ),
+            self._key(
+                "flow_minimum_interval_coverage",
+                f"{self.flow_minimum_interval_coverage:.9g}",
+            ),
+            self._key(
+                "flow_disabled_coverage",
+                self.counts["flow_disabled_coverage"],
+            ),
+            self._key(
+                "flow_packets_invalid",
+                self.counts["flow_packets_invalid"],
+            ),
+            self._key(
+                "flow_packets_transaction_committed",
+                self.counts["flow_packets_transaction_committed"],
             ),
             self._key(
                 "flow_los_diagnostic_valid",
