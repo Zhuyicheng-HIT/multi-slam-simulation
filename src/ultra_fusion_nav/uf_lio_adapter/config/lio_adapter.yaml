@@ -22,6 +22,7 @@ lio_adapter:
     temporal_window_frames: 5
     temporal_min_static_support: 2
     temporal_neighbor_radius: 1
+    historical_dynamic_removal_enabled: true
     static_cloud_output_topic: /lidar/static_cloud
     dynamic_cloud_output_topic: /lidar/dynamic_cloud
     uncertain_cloud_output_topic: /lidar/uncertain_cloud

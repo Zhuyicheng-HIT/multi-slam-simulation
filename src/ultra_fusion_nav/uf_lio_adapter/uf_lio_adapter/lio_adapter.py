@@ -63,6 +63,7 @@ class LioAdapter(Node):
         self.declare_parameter("temporal_window_frames", 5)
         self.declare_parameter("temporal_min_static_support", 2)
         self.declare_parameter("temporal_neighbor_radius", 1)
+        self.declare_parameter("historical_dynamic_removal_enabled", True)
         self.declare_parameter("path_publish_period_s", 1.0)
         self.declare_parameter("max_path_poses", 3000)
 
@@ -80,6 +81,12 @@ class LioAdapter(Node):
         self.path = Path()
         self.previous_cloud = None
         self.map_frames = deque(maxlen=int(self.get_parameter("local_map_frames").value))
+        self.historical_dynamic_removal_enabled = bool(
+            self.get_parameter("historical_dynamic_removal_enabled").value
+        )
+        self.historical_dynamic_voxels = set()
+        self.map_publish_count = 0
+        self.historical_map_removed_points = 0
         self.last_cloud_header = None
         self.last_diagnostic_ns = None
         self.last_native_diagnostic_ns = None
@@ -98,6 +105,7 @@ class LioAdapter(Node):
             "dynamic_points": 0,
             "uncertain_points": 0,
             "map_quality": 0.0,
+            "historical_dynamic_voxels": 0,
         }
         self.temporal_filter = TemporalVoxelFilter(
             window_frames=int(self.get_parameter("temporal_window_frames").value),
@@ -279,6 +287,12 @@ class LioAdapter(Node):
         diagnostic.uncertain_points = uncertain_count
         temporal_quality = (1.0 - dynamic_ratio) * (0.5 + 0.5 * repeatability)
         diagnostic.map_quality = float(metrics["map_quality"] * temporal_quality)
+        if self.historical_dynamic_removal_enabled and dynamic_count:
+            dynamic_keys = {
+                tuple(np.floor(point / self.voxel_size).astype(np.int64))
+                for point in temporal["dynamic_points"]
+            }
+            self.historical_dynamic_voxels.update(dynamic_keys)
         diagnostic.approximate = True
         diagnostic.source = "external_voxel_point_to_plane_temporal_persistence_proxy"
         self.latest_map_metrics = {
@@ -289,6 +303,7 @@ class LioAdapter(Node):
             "dynamic_points": dynamic_count,
             "uncertain_points": uncertain_count,
             "map_quality": diagnostic.map_quality,
+            "historical_dynamic_voxels": len(self.historical_dynamic_voxels),
         }
         native_recent = (
             self.prefer_native_factor_diagnostics
@@ -305,13 +320,35 @@ class LioAdapter(Node):
         self.uncertain_cloud_pub.publish(xyz_cloud(temporal["uncertain_points"], msg.header))
         self.previous_cloud = points
         if static_count:
-            self.map_frames.append(temporal["static_points"])
+            static_points = temporal["static_points"]
+            self.map_frames.append(static_points)
             self.last_cloud_header = copy.deepcopy(msg.header)
 
     def _publish_map(self):
         if not self.map_frames or self.last_cloud_header is None:
             return
         points = np.concatenate(tuple(self.map_frames), axis=0)
+        before_filter = len(points)
+        if self.historical_dynamic_removal_enabled and self.historical_dynamic_voxels:
+            keys = np.floor(points / self.voxel_size).astype(np.int64)
+            keep = np.asarray(
+                [tuple(key) not in self.historical_dynamic_voxels for key in keys],
+                dtype=bool,
+            )
+            points = points[keep]
+        self.historical_map_removed_points = before_filter - len(points)
+        self.map_publish_count += 1
+        if self.map_publish_count % 5 == 0:
+            self.get_logger().info(
+                "historical_map_filter frames=%d raw_points=%d published_points=%d "
+                "removed_points=%d dynamic_voxels=%d enabled=%s",
+                len(self.map_frames), before_filter, len(points),
+                self.historical_map_removed_points,
+                len(self.historical_dynamic_voxels),
+                self.historical_dynamic_removal_enabled,
+            )
+        if len(points) == 0:
+            return
         centroids = voxel_centroids(points, self.voxel_size)
         self.map_pub.publish(xyz_cloud(np.asarray(list(centroids.values())), self.last_cloud_header))
 
