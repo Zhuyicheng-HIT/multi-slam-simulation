@@ -276,7 +276,21 @@ the original acceptance thresholds and do not use Gazebo truth in estimation.
 | LiDAR 75% sparse degradation | 3.05 cm | 4.02 cm | 4.57 cm | pass |
 | GNSS + LiDAR dual degradation | 2.95 cm | 3.87 cm | 4.54 cm | pass |
 | Relocalization short rectangle | 3.24 cm | 4.36 cm | 5.13 cm | pass |
-| Dynamic city rectangle | 16.68 cm | 33.45 cm | 37.83 cm | fail 30 cm P95/max gate |
+| Dynamic city rectangle (visual-only actors, invalid LiDAR stress case) | 16.68 cm | 33.45 cm | 37.83 cm | invalid: actors had no collision geometry |
+| Dynamic city rectangle (LiDAR-visible collision actors) | 15.14 cm | 29.17 cm | 36.83 cm | fail strict 30 cm maximum gate |
+
+The dynamic-city baseline was corrected on 2026-08-22. The original
+`textured_person` and `textured_vehicle` models contained visual meshes but no
+collision geometry, so the moving actors could not appear in the Gazebo LiDAR
+ray returns. They now have lightweight kinematic collision envelopes and a
+model contract test. In the corrected short rectangle, the direct MID360
+bridge reported a transient increase from roughly 2,800 to 9,900 valid input
+points when agents entered the scan, proving that dynamic returns were present.
+The historical map filter removed 2,956 points across 1,322 dynamic voxels,
+but FAST-LIO still consumed the unfiltered dynamic returns and the strict
+30-cm maximum-error gate failed. This is valid evidence for the remaining
+front-end task: dynamic classification must affect FAST-LIO correspondences
+before NativeLidarFactor export, not only downstream historical-map output.
 
 Relocalization logs show automatic loop transactions, accepted candidates, a
 manual candidate acceptance, and two backend window resets. Dynamic-map logs

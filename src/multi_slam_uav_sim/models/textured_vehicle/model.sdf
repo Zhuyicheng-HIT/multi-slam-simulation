@@ -6,6 +6,10 @@
     <link name="visual_link">
       <gravity>false</gravity>
       <kinematic>true</kinematic>
+      <collision name="lidar_collision">
+        <pose>-0.02 0 0.45 0 0 0</pose>
+        <geometry><box><size>1.90 0.92 0.90</size></box></geometry>
+      </collision>
       <visual name="body">
         <pose>0 0 0.36 0 0 0</pose>
         <geometry><box><size>1.85 0.86 0.42</size></box></geometry>

@@ -130,7 +130,10 @@ class PeopleMotion(Node):
         self.last_ros_time = None
         self.warned = False
         self.failed_requests = 0
-        self.get_logger().info(f'Controlling {len(self.agents)} visual-only actors in [{self.world_name}]')
+        self.get_logger().info(
+            f'Controlling {len(self.agents)} kinematic LiDAR-visible agents '
+            f'in [{self.world_name}]'
+        )
         for agent in self.agents:
             self.get_logger().info(
                 f'{agent.name}: {agent.path_type}, speed={agent.speed}, '

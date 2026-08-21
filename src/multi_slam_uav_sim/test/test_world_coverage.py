@@ -156,6 +156,22 @@ def test_optical_flow_camera_and_range_point_downward():
         assert forward_body_z < -0.999999
 
 
+def test_dynamic_agents_have_lidar_visible_collision_envelopes():
+    for model_name, minimum_size in (
+        ("textured_person", (0.30, 0.25, 1.20)),
+        ("textured_vehicle", (1.80, 0.85, 0.80)),
+    ):
+        model = PACKAGE_ROOT / "models" / model_name / "model.sdf"
+        root = ET.parse(model).getroot()
+        collision = root.find(".//collision[@name='lidar_collision']")
+        assert collision is not None
+        size = [
+            float(value)
+            for value in collision.findtext("geometry/box/size").split()
+        ]
+        assert all(actual >= required for actual, required in zip(size, minimum_size))
+
+
 def test_large_tunnel_has_long_clear_repetitive_core_and_full_sensor_aircraft():
     root = ET.parse(LARGE_TUNNEL_WORLD).getroot()
     assert root.find(".//world").get("name") == "large_indoor_tunnel"
