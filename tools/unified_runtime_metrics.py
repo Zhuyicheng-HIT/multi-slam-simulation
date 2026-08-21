@@ -806,6 +806,10 @@ class Metrics(Node):
     def __init__(self):
         super().__init__("unified_externalnav_metrics")
         self.declare_parameter("external_nav_topic", "/mavros/odometry/out")
+        self.declare_parameter("allow_clock_publisher_drop", False)
+        self.allow_clock_publisher_drop = bool(
+            self.get_parameter("allow_clock_publisher_drop").value
+        )
         external_nav_topic = self.get_parameter("external_nav_topic").value
         self.streams = {"unified_odom": StreamStats(), "externalnav_out": StreamStats()}
         self.sensor_streams = {
@@ -860,6 +864,7 @@ class Metrics(Node):
         self.ros_clock_regression_examples = []
         self.graph_contract_violations = []
         self.last_graph_contract_check_wall_s = None
+        self.clock_publisher_seen = False
         self.create_subscription(
             Odometry, "/fusion/unified/odom",
             lambda m: self.odom_stream("unified_odom", m), 50
@@ -1093,6 +1098,19 @@ class Metrics(Node):
         for topic, expected_count in contracts.items():
             endpoints = self.get_publishers_info_by_topic(topic)
             if len(endpoints) == expected_count:
+                if topic == "/clock":
+                    self.clock_publisher_seen = True
+                continue
+            # A finite rosbag withdraws its /clock publisher immediately at
+            # EOF.  Offline replay may still give this observer one spin
+            # before the launcher tears it down; once /clock was observed,
+            # that shutdown edge is not a graph-contract failure.
+            if (
+                topic == "/clock"
+                and self.allow_clock_publisher_drop
+                and self.clock_publisher_seen
+                and len(endpoints) == 0
+            ):
                 continue
             if len(self.graph_contract_violations) < 8:
                 self.graph_contract_violations.append({
