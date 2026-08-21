@@ -75,6 +75,11 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "optical_flow_velocity_factor_enabled",
+            default_value="false",
+            description="Use the APM-equivalent horizontal optical-flow velocity factor",
+        ),
+        DeclareLaunchArgument(
             "rgbd_depth_healthy_lidar_stride",
             default_value="1",
             description=(
@@ -294,6 +299,10 @@ def generate_launch_description():
                     ),
                     "range_facet_enabled": ParameterValue(
                         LaunchConfiguration("range_facet_enabled"),
+                        value_type=bool,
+                    ),
+                    "optical_flow_velocity_factor_enabled": ParameterValue(
+                        LaunchConfiguration("optical_flow_velocity_factor_enabled"),
                         value_type=bool,
                     ),
                     "rgbd_depth_healthy_lidar_stride": ParameterValue(

@@ -1229,6 +1229,20 @@ class ManifoldSlidingWindowBackend:
             variance=_positive_diagonal(covariance, 2),
         )
 
+    def add_optical_flow_velocity_body(
+        self, current, velocity_body, linearization_yaw=None,
+        covariance=1.0, decision=None,
+    ):
+        """Add an APM-equivalent horizontal body-velocity observation."""
+        measurement = np.asarray(velocity_body, dtype=float)
+        if measurement.shape not in ((2,), (3,)) or np.any(~np.isfinite(measurement)):
+            raise ValueError("body optical-flow velocity must be finite and planar")
+        self._append(
+            "optical_flow_velocity_body", (int(current),), 2, decision,
+            measurement=measurement[:2].copy(),
+            variance=_positive_diagonal(covariance, 2),
+        )
+
     def add_optical_flow_range_body(
             self,
             previous,
@@ -1352,6 +1366,12 @@ class ManifoldSlidingWindowBackend:
                 - rpy_to_rotation_matrix(states[indices[0]][ROTATION])
                 @ factor["measurement"]
             )[:2]
+        if name == "optical_flow_velocity_body":
+            velocity_body = (
+                rpy_to_rotation_matrix(states[indices[0]][ROTATION]).T
+                @ states[indices[0]][VELOCITY]
+            )
+            return velocity_body[:2] - factor["measurement"]
         if name == "optical_flow_range_body":
             previous, current = indices
             flow = factor["measurement"]["delta_body"]
@@ -1712,6 +1732,41 @@ class ManifoldSlidingWindowBackend:
             hessian[previous_rotation, current_position] += weighted_rotation.T
             hessian[current_position, previous_rotation] += weighted_rotation
             hessian[current_position, current_position] += information_matrix
+            cost = 0.5 * float(np.sum(information * residual ** 2))
+            return hessian, gradient, cost
+
+        if name == "optical_flow_velocity_body":
+            index = factor["indices"][0]
+            state = states[index]
+            rotation = rpy_to_rotation_matrix(state[ROTATION])
+            velocity_body = rotation.T @ state[VELOCITY]
+            residual = velocity_body[:2] - factor["measurement"]
+            information = factor["effective_weight"] / factor["variance"]
+            information_matrix = np.diag(information)
+            velocity_jacobian = rotation.T[:2, :]
+            # State orientation uses a right-local SO(3) perturbation. For
+            # v_body = R^T v_map, the local rotation derivative is -skew(v_body).
+            rotation_jacobian = (-skew(velocity_body))[:2, :]
+            start = index * STATE_SIZE
+            velocity_slice = slice(start + VELOCITY.start, start + VELOCITY.stop)
+            rotation_slice = slice(start + ROTATION.start, start + ROTATION.stop)
+            weighted_residual = information * residual
+            weighted_velocity = information[:, None] * velocity_jacobian
+            weighted_rotation = information[:, None] * rotation_jacobian
+            gradient[velocity_slice] += velocity_jacobian.T @ weighted_residual
+            gradient[rotation_slice] += rotation_jacobian.T @ weighted_residual
+            hessian[velocity_slice, velocity_slice] += (
+                velocity_jacobian.T @ weighted_velocity
+            )
+            hessian[velocity_slice, rotation_slice] += (
+                velocity_jacobian.T @ weighted_rotation
+            )
+            hessian[rotation_slice, velocity_slice] += (
+                rotation_jacobian.T @ weighted_velocity
+            )
+            hessian[rotation_slice, rotation_slice] += (
+                rotation_jacobian.T @ weighted_rotation
+            )
             cost = 0.5 * float(np.sum(information * residual ** 2))
             return hessian, gradient, cost
 

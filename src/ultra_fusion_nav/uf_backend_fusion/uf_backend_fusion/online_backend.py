@@ -3018,6 +3018,7 @@ class UnifiedBackendNode(Node):
             "barometer_activate_on_gnss_z_inconsistency", True
         )
         self.declare_parameter("optical_flow_yaw_coupling_enabled", True)
+        self.declare_parameter("optical_flow_velocity_factor_enabled", False)
         self.declare_parameter("flow_rotation_lower_yaw_rate_radps", 0.08)
         self.declare_parameter("flow_rotation_upper_yaw_rate_radps", 0.30)
         self.declare_parameter("flow_rotation_recovery_dwell_s", 0.8)
@@ -3599,6 +3600,8 @@ class UnifiedBackendNode(Node):
         )
         self.optical_flow_yaw_coupling_enabled = bool(
             self.get_parameter("optical_flow_yaw_coupling_enabled").value)
+        self.optical_flow_velocity_factor_enabled = bool(
+            self.get_parameter("optical_flow_velocity_factor_enabled").value)
         self.flow_rotation_allow_compensated = bool(
             self.get_parameter("flow_rotation_allow_compensated").value)
         self.flow_rotation_recovery_max_base_score = float(
@@ -9108,10 +9111,14 @@ class UnifiedBackendNode(Node):
             valid_records, previous_state, previous_stamp, current_stamp,
             angular_samples,
         )
+        velocity_baseline = bool(self.optical_flow_velocity_factor_enabled)
         score, evidence, reasons = optical_flow_score(
             flow_displacement,
-            [float(lio_delta[0]), float(lio_delta[1])],
+            None if velocity_baseline else [
+                float(lio_delta[0]), float(lio_delta[1])
+            ],
             observation["quality"], observation["distance_m"],
+            allow_prediction_fallback=velocity_baseline,
         )
         decision = scheduler_factor_decision
         decision["degradation_score"] = float(score)
@@ -9212,7 +9219,8 @@ class UnifiedBackendNode(Node):
             })
         quality_or_distance_invalid = not speed_ok
         coverage_invalid = (
-            delayed or coverage < self.flow_minimum_interval_coverage
+            not velocity_baseline
+            and (delayed or coverage < self.flow_minimum_interval_coverage)
         )
         imu_yaw_samples = [
             (stamp_s, float(angular_velocity[2]))
@@ -9314,7 +9322,18 @@ class UnifiedBackendNode(Node):
                         range_result.predicted_range_m
                     ),
                 })
-        if self.optical_flow_yaw_coupling_enabled:
+        if velocity_baseline:
+            integration_s = max(float(observation["integration_s"]), 1.0e-4)
+            velocity_body = flow_delta_body / integration_s
+            velocity_covariance = np.asarray(flow_covariance, dtype=float) / (
+                integration_s * integration_s
+            )
+            self.backend.add_optical_flow_velocity_body(
+                current_index, velocity_body[:2], previous_yaw,
+                covariance=velocity_covariance, decision=decision,
+            )
+            self.last_flow_factor_type = "body_horizontal_velocity_apm"
+        elif self.optical_flow_yaw_coupling_enabled:
             if range_observation is not None:
                 self.backend.add_optical_flow_range_body(
                     previous_index, current_index, flow_delta_body.tolist(),

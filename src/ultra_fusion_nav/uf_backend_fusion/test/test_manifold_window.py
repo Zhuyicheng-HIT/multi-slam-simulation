@@ -619,6 +619,30 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertAlmostEqual(float(gradient[2]), 0.0)
         self.assertAlmostEqual(float(gradient[STATE_SIZE + 2]), 0.0)
 
+    def test_optical_flow_velocity_factor_is_planar_and_uses_current_velocity(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        state = np.zeros(15)
+        state[5] = 0.35
+        state[6:9] = [1.2, -0.4, 2.0]
+        index = backend.add_state(state)
+        backend.add_optical_flow_velocity_body(
+            index, [1.0, -0.7], covariance=[0.04, 0.04]
+        )
+
+        factor = backend._factors[-1]
+        residual = backend._residual(factor, backend._states)
+        hessian, gradient, _ = backend._factor_normal(
+            factor, backend._states
+        )
+
+        self.assertEqual(factor["residual_dimension"], 2)
+        self.assertEqual(residual.shape, (2,))
+        self.assertAlmostEqual(float(hessian[2, 2]), 0.0)
+        self.assertAlmostEqual(float(hessian[9, 9]), 0.0)
+        self.assertAlmostEqual(float(hessian[12, 12]), 0.0)
+        self.assertGreater(float(hessian[6, 6]), 0.0)
+        self.assertGreater(float(hessian[7, 7]), 0.0)
+
     def test_analytic_imu_jacobians_match_right_local_finite_difference(self):
         samples = [
             ImuSample(
