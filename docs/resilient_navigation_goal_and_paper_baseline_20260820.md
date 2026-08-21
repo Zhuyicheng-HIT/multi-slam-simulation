@@ -258,8 +258,61 @@ The first simulation pass will consequently be labeled a transitional seeded
 ablation: FAST-LIO may define the initial local gauge, but its subsequent
 factor weight is zero. It can validate whether each aiding factor sustains the
 trajectory after startup, but it cannot satisfy the final source-independent
-navigation objective. A source-independent OAI/bootstrap and sensor-neutral
-keyframe clock are required before Phase 1 can be closed.
+single-sensor acceptance requirement. A source-independent OAI/bootstrap and
+sensor-neutral keyframe clock are required before Phase 1 can be closed.
+
+## Current Frozen-Baseline Audit - 2026-08-22
+
+The following evidence is from branch `feat/core-algorithm-cleanup-20260817`.
+The current remote HEAD is `2721492`; the worktree is clean. These results keep
+the original acceptance thresholds and do not use Gazebo truth in estimation.
+
+### Passed Simulation Gates
+
+| Case | 3-D RMSE | 3-D P95 | Maximum | Decision |
+| --- | ---: | ---: | ---: | --- |
+| MicoLink five-source rich-texture rectangle | 2.92 cm | 3.83 cm | 4.32 cm | pass |
+| GNSS outage | 2.98 cm | 3.91 cm | 4.48 cm | accuracy pass; one integrity gate failed |
+| LiDAR 75% sparse degradation | 3.05 cm | 4.02 cm | 4.57 cm | pass |
+| GNSS + LiDAR dual degradation | 2.95 cm | 3.87 cm | 4.54 cm | pass |
+| Relocalization short rectangle | 3.24 cm | 4.36 cm | 5.13 cm | pass |
+| Dynamic city rectangle | 16.68 cm | 33.45 cm | 37.83 cm | fail 30 cm P95/max gate |
+
+Relocalization logs show automatic loop transactions, accepted candidates, a
+manual candidate acceptance, and two backend window resets. Dynamic-map logs
+show historical voxel removal from `/cloud_registered` output and separate
+static/dynamic/uncertain visualization topics. Current-frame FAST-LIO native
+point-level dynamic filtering is not implemented; the dynamic result must not
+be advertised as a full dynamic-object solution.
+
+### Paper-Dataset Evidence
+
+The M2DGR MCAP replay now terminates without the finite-rosbag `/clock` false
+positive. At `PLAYBACK_RATE=0.5`, its best recent result is 12.89 m 3-D RMSE,
+34.97 m P95, and 47.98 m maximum error. The native factor stream has valid
+scan-end timestamps and approximately 0-100 ms source age, but 79 LiDAR
+prediction-gate rejections leave only 24 accepted native LiDAR factors. The
+result is therefore not a pass. Increasing point density (`point_filter_num=1`)
+worsened the result to 92.03 m RMSE and was reverted.
+
+MARS currently has approximately 10.98 m 3-D RMSE and 10.94 m Z RMSE. R3LIVE
+has no valid trajectory association. The detailed artifacts are kept under
+`/home/ld666/ultrafusion-datasets/reports/` and summarized in
+`/home/ld666/ultrafusion-datasets/reports/dataset_summary_current_20260822.md`.
+
+### Implementation Status
+
+- MicoLink `0x51` companion optical-flow framing is enabled in the simulation
+  chain and covered by protocol tests.
+- The unified backend, per-factor reliability decisions, loop/relocalization
+  components, historical dynamic-voxel removal, and visualization topics are
+  present and tested.
+- The full objective is not yet accepted: M2DGR/MARS/R3LIVE do not provide a
+  passing paper-dataset score, and the dynamic-scene P95/max gate is still
+  above 30 cm.
+- The next engineering action is dataset-specific point-cloud/FAST-LIO
+  geometry compatibility work. Backend gates must remain unchanged until that
+  input contract is corrected and independently verified.
 
 ### Transitional IMU + GNSS run
 
