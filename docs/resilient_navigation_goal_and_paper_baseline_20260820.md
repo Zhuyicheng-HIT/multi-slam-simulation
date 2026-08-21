@@ -264,14 +264,14 @@ sensor-neutral keyframe clock are required before Phase 1 can be closed.
 ## Current Frozen-Baseline Audit - 2026-08-22
 
 The following evidence is from branch `feat/core-algorithm-cleanup-20260817`.
-The current remote HEAD is `2721492`; the worktree is clean. These results keep
+The current remote HEAD is `b27ce8e`; the worktree is clean. These results keep
 the original acceptance thresholds and do not use Gazebo truth in estimation.
 
 ### Passed Simulation Gates
 
 | Case | 3-D RMSE | 3-D P95 | Maximum | Decision |
 | --- | ---: | ---: | ---: | --- |
-| MicoLink five-source rich-texture rectangle | 2.92 cm | 3.83 cm | 4.32 cm | pass |
+| MicoLink five-source rich-texture rectangle | 3.61 cm | 5.46 cm | 6.46 cm | pass |
 | GNSS outage | 2.98 cm | 3.91 cm | 4.48 cm | accuracy pass; one integrity gate failed |
 | LiDAR 75% sparse degradation | 3.05 cm | 4.02 cm | 4.57 cm | pass |
 | GNSS + LiDAR dual degradation | 2.95 cm | 3.87 cm | 4.54 cm | pass |
@@ -281,9 +281,13 @@ the original acceptance thresholds and do not use Gazebo truth in estimation.
 Relocalization logs show automatic loop transactions, accepted candidates, a
 manual candidate acceptance, and two backend window resets. Dynamic-map logs
 show historical voxel removal from `/cloud_registered` output and separate
-static/dynamic/uncertain visualization topics. Current-frame FAST-LIO native
-point-level dynamic filtering is not implemented; the dynamic result must not
-be advertised as a full dynamic-object solution.
+static/dynamic/uncertain visualization topics. This filtering is downstream of
+FAST-LIO matching: current-frame FAST-LIO native point-level dynamic rejection
+is not implemented, and the dynamic result must not be advertised as a full
+dynamic-object solution. In the final dynamic run the LiDAR factor remained
+enabled while the error rose after dynamic agents entered the route; the
+historical-map visualization therefore proves map cleanup only, not estimator
+immunity.
 
 ### MicoLink optical-flow gate
 
