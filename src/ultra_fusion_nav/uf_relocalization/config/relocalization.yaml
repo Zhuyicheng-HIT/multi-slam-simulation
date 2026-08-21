@@ -5,9 +5,10 @@ relocalization_node:
     # safe cross-yaw relocalization.
     keyframe_cloud_topic: /lio/local_map
     query_cloud_topic: /lidar/points_deskewed
-    # LiDAR-gated optimized poses preserve the cloud timestamp contract.
-    # Generic unified odometry also contains asynchronous IMU/GNSS/flow states.
-    fused_pose_topic: /fusion/unified/map_pose
+    # Use the continuous unified state for query/keyframe time association.
+    # The map_pose stream is intentionally delayed by the backend's irreversible
+    # map-commit lag and cannot represent the current query timestamp.
+    fused_pose_topic: /fusion/unified/odom
     source_lio_pose_topic: /lio/odom
     diagnostics_topic: /lio/diagnostics
     lidar_score_topic: /reliability/lidar_score
@@ -69,7 +70,11 @@ relocalization_node:
     success_consistency_translation_m: 0.15
     success_consistency_rotation_rad: 0.05
     keyframe_pose_tolerance_s: 0.12
-    query_pose_tolerance_s: 0.08
+    # The unified backend publishes map_pose on the native-factor clock. On
+    # headless WSL runs the measured source-age P95 is about 60 ms; retain a
+    # bounded nearest-stamp match without falling back to an unrelated latest
+    # pose.
+    query_pose_tolerance_s: 0.15
     # Uses ROS time; a missing synchronization stream cannot retain one stale
     # map cloud indefinitely, even when wall time is dilated by Gazebo RTF.
     keyframe_sync_timeout_s: 0.5
