@@ -594,7 +594,20 @@ case "${FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0}" in
     fi
     ;;
 esac
-wait_rate /fusion/unified/odom 2.0 60
+if [[ ( "$VALIDATION_FACTOR_PROFILE" == "optical_flow" ||
+  "$VALIDATION_FACTOR_PROFILE" == "vision" ) &&
+  "$VALIDATION_ROUTE_FEEDBACK_SOURCE" == "gazebo_truth" ]]
+then
+  # A stationary single-aiding estimator has no visual displacement to commit.
+  # In addition, the simulated MTF-01 sits 0.35 m below the body origin, so its
+  # landed physical range rays correctly report no return. Truth-guided takeoff
+  # supplies motion without feeding truth to the estimator; post-flight gates
+  # still require real target factors and their corresponding accuracy metrics.
+  printf '%s preflight: backend is alive; deferring continuous odometry gate until truth-guided takeoff.\n' \
+    "$VALIDATION_FACTOR_PROFILE"
+else
+  wait_rate /fusion/unified/odom 2.0 60
+fi
 case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   # The backend first accumulates a stationary IMU bias window and initializes
   # its first native LiDAR state. Preserve the 10 Hz continuity requirement,

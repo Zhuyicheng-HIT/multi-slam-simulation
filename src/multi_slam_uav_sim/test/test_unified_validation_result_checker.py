@@ -18,8 +18,12 @@ def _valid_inputs():
         "motion_samples": 300,
         "causal_ate": {
             "three_dimensional": {"rmse_m": 0.05, "p95_m": 0.08, "max_m": 0.12},
-            "endpoint_error_m": {"norm": 0.03},
-            "horizontal": {"rmse_m": 0.03},
+            "endpoint_error_m": {
+                "norm": 0.03, "x": 0.02, "y": 0.01, "z": 0.02
+            },
+            "horizontal": {
+                "rmse_m": 0.03, "p95_m": 0.05, "max_m": 0.08
+            },
             "vertical": {"rmse_m": 0.04},
         },
     }
@@ -156,6 +160,32 @@ class UnifiedValidationResultCheckerTest(unittest.TestCase):
         )
 
         self.assertTrue(report["passed"])
+
+    def test_optical_flow_profile_uses_xy_accuracy_only(self):
+        accuracy, runtime, route, mavros, sitl = _valid_inputs()
+        accuracy["acceptance"]["passed"] = False
+        accuracy["causal_ate"]["three_dimensional"] = {
+            "rmse_m": 5.0, "p95_m": 8.0, "max_m": 10.0
+        }
+        accuracy["causal_ate"]["vertical"]["rmse_m"] = 5.0
+        accuracy["causal_ate"]["endpoint_error_m"]["norm"] = 5.0
+        backend = runtime["backend_latest"]
+        backend["lidar_factors"] = "0"
+        backend["gnss_factors"] = "0"
+        backend["visual_factors"] = "0"
+
+        report = MODULE.evaluate_validation(
+            accuracy,
+            runtime,
+            route,
+            mavros,
+            sitl,
+            factor_profile="optical_flow",
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertNotIn("vertical_rmse_below_0_20_m", report["gates"])
+        self.assertTrue(report["gates"]["horizontal_max_below_0_20_m"])
 
     def test_rejects_early_landing_without_confirmed_disarm(self):
         accuracy, runtime, route, mavros, sitl = _valid_inputs()

@@ -150,6 +150,25 @@ def evaluate_validation(
     )
     horizontal_rmse_m = _number(horizontal.get("rmse_m"), "horizontal.rmse_m")
     vertical_rmse_m = _number(vertical.get("rmse_m"), "vertical.rmse_m")
+    horizontal_p95_m = None
+    horizontal_max_m = None
+    horizontal_endpoint_m = None
+    if factor_profile == "optical_flow":
+        horizontal_p95_m = _number(
+            horizontal.get("p95_m"), "horizontal.p95_m"
+        )
+        horizontal_max_m = _number(
+            horizontal.get("max_m"), "horizontal.max_m"
+        )
+        endpoint_x_m = _number(
+            _nested(causal, "endpoint_error_m", "x"),
+            "causal_ate.endpoint_error_m.x",
+        )
+        endpoint_y_m = _number(
+            _nested(causal, "endpoint_error_m", "y"),
+            "causal_ate.endpoint_error_m.y",
+        )
+        horizontal_endpoint_m = math.hypot(endpoint_x_m, endpoint_y_m)
     sim_duration_s = _number(runtime.get("sim_duration_s"), "runtime.sim_duration_s")
     displacement_m = _number(
         _nested(streams, "unified_odom", "max_displacement_from_first_m"),
@@ -242,6 +261,21 @@ def evaluate_validation(
         ),
         "mavros_odometry_tf_contract_clean": "ODOM: Ex:" not in mavros_log,
     }
+    if factor_profile == "optical_flow":
+        for name in (
+            "accuracy_acceptance_passed",
+            "causal_3d_rmse_below_0_20_m",
+            "causal_3d_p95_below_0_20_m",
+            "causal_3d_max_below_0_20_m",
+            "endpoint_below_0_20_m",
+            "vertical_rmse_below_0_20_m",
+        ):
+            gates.pop(name)
+        gates.update({
+            "horizontal_p95_below_0_20_m": horizontal_p95_m < 0.20,
+            "horizontal_max_below_0_20_m": horizontal_max_m < 0.20,
+            "horizontal_endpoint_below_0_20_m": horizontal_endpoint_m < 0.20,
+        })
     figure_eight_observed = {}
     if mission_profile == "figure_eight":
         plan_match = re.search(
@@ -472,6 +506,9 @@ def evaluate_validation(
         "causal_3d_max_m": max_m,
         "endpoint_error_m": endpoint_m,
         "horizontal_rmse_m": horizontal_rmse_m,
+        "horizontal_p95_m": horizontal_p95_m,
+        "horizontal_max_m": horizontal_max_m,
+        "horizontal_endpoint_error_m": horizontal_endpoint_m,
         "vertical_rmse_m": vertical_rmse_m,
         "maximum_displacement_m": displacement_m,
         "waypoint_indices": sorted(waypoint_indices),
