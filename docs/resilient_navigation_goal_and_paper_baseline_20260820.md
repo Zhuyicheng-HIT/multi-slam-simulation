@@ -264,7 +264,7 @@ sensor-neutral keyframe clock are required before Phase 1 can be closed.
 ## Current Frozen-Baseline Audit - 2026-08-22
 
 The following evidence is from branch `feat/core-algorithm-cleanup-20260817`.
-The current remote HEAD is `b27ce8e`; the worktree is clean. These results keep
+The current remote HEAD is `e8b732e`; the worktree is clean. These results keep
 the original acceptance thresholds and do not use Gazebo truth in estimation.
 
 ### Passed Simulation Gates
