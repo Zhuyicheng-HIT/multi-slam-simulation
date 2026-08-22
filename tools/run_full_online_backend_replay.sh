@@ -37,6 +37,7 @@ RGBD_DEPTH_HEALTHY_LIDAR_STRIDE=${RGBD_DEPTH_HEALTHY_LIDAR_STRIDE:-1}
 RGBD_DIRECT_DEPTH_INFORMATION_SCALE=${RGBD_DIRECT_DEPTH_INFORMATION_SCALE:-0.25}
 RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE=${RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE:-0.10}
 AXIS_INFORMATION_HANDOFF_ENABLED=${AXIS_INFORMATION_HANDOFF_ENABLED:-false}
+SUBSPACE_INFORMATION_HANDOFF_ENABLED=${SUBSPACE_INFORMATION_HANDOFF_ENABLED:-false}
 AXIS_HANDOFF_ENABLE_X=${AXIS_HANDOFF_ENABLE_X:-false}
 AXIS_HANDOFF_ENABLE_Y=${AXIS_HANDOFF_ENABLE_Y:-false}
 AXIS_HANDOFF_ENABLE_Z=${AXIS_HANDOFF_ENABLE_Z:-true}
@@ -86,6 +87,7 @@ if [[ "$CPP_MATH_CORE_ENABLED" != true && "$CPP_MATH_CORE_ENABLED" != false ]]; 
 fi
 for toggle_name in \
   AXIS_INFORMATION_HANDOFF_ENABLED \
+  SUBSPACE_INFORMATION_HANDOFF_ENABLED \
   AXIS_HANDOFF_ENABLE_X \
   AXIS_HANDOFF_ENABLE_Y \
   AXIS_HANDOFF_ENABLE_Z; do
@@ -382,6 +384,7 @@ backend_command=(
   -p rgbd_direct_depth_information_scale:="$RGBD_DIRECT_DEPTH_INFORMATION_SCALE"
   -p rgbd_direct_photometric_information_scale:="$RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE"
   -p axis_information_handoff_enabled:="$AXIS_INFORMATION_HANDOFF_ENABLED"
+  -p subspace_information_handoff_enabled:="$SUBSPACE_INFORMATION_HANDOFF_ENABLED"
   -p axis_handoff_enable_x:="$AXIS_HANDOFF_ENABLE_X"
   -p axis_handoff_enable_y:="$AXIS_HANDOFF_ENABLE_Y"
   -p axis_handoff_enable_z:="$AXIS_HANDOFF_ENABLE_Z"
@@ -682,6 +685,8 @@ printf 'gnss_minimum_axis_information_scale=%s\ngnss_z_recovery_information_scal
   "$GNSS_Z_RECOVERY_INFORMATION_SCALE" >>"$OUTPUT_DIR/replay_result.env"
 printf 'require_rgbd_geometry=%s\n' "$require_rgbd_geometry" \
   >>"$OUTPUT_DIR/replay_result.env"
+printf 'subspace_information_handoff_enabled=%s\n' \
+  "$SUBSPACE_INFORMATION_HANDOFF_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
 printf 'calibration_apply_locked_time_offset=%s\ncalibration_apply_locked_rotation=%s\n' \
   "$CALIBRATION_APPLY_LOCKED_TIME_OFFSET" \
   "$CALIBRATION_APPLY_LOCKED_ROTATION" >>"$OUTPUT_DIR/replay_result.env"

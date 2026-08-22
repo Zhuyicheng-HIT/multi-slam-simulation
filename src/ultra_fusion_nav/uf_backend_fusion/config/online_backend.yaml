@@ -240,6 +240,7 @@ unified_backend_fusion:
     # the condensed normal remains consistent with map relinearization and the
     # marginal prior. Direct per-axis point residual edits are forbidden.
     axis_information_handoff_enabled: false
+    subspace_information_handoff_enabled: false
     # First production trial is deliberately Z-only. X/Y remain observable
     # through LiDAR and must not be weakened by a vertical recovery policy.
     axis_handoff_enable_x: false

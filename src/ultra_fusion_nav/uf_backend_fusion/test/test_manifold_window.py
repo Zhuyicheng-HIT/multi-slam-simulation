@@ -11,6 +11,7 @@ try:
         imu_preintegrated_graph_normal as cpp_imu_preintegrated_graph_normal,
         lidar_point_plane_graph_normal as cpp_lidar_point_plane_graph_normal,
         lidar_point_plane_graph_normal_axis_scaled as cpp_lidar_point_plane_graph_normal_axis_scaled,
+        lidar_point_plane_graph_normal_subspace as cpp_lidar_point_plane_graph_normal_subspace,
         lidar_point_plane_normal as cpp_lidar_point_plane_normal,
         lidar_point_plane_normal_axis_scaled as cpp_lidar_point_plane_normal_axis_scaled,
         state_plus_batch as cpp_state_plus_batch,
@@ -19,6 +20,7 @@ except ImportError:
     cpp_imu_preintegrated_graph_normal = None
     cpp_lidar_point_plane_graph_normal = None
     cpp_lidar_point_plane_graph_normal_axis_scaled = None
+    cpp_lidar_point_plane_graph_normal_subspace = None
     cpp_lidar_point_plane_normal = None
     cpp_lidar_point_plane_normal_axis_scaled = None
     cpp_state_plus_batch = None
@@ -33,6 +35,7 @@ from uf_backend_fusion.manifold_window import (
     imu_residual,
     imu_residual_jacobians,
     propagate_state,
+    scale_lidar_conditional_translation_normal,
 )
 from uf_backend_fusion.manifold import (
     STATE_SIZE,
@@ -98,6 +101,143 @@ def conditional_translation_step(pose_hessian, pose_gradient):
 
 
 class ManifoldWindowTest(unittest.TestCase):
+    def test_rotated_subspace_scaling_preserves_lidar_conditional_optimum(self):
+        angle = np.deg2rad(32.0)
+        directions = np.asarray([
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        schur = directions @ np.diag([0.2, 30.0, 80.0]) @ directions.T
+        rotation = np.diag([15.0, 20.0, 25.0])
+        coupling = np.asarray([
+            [0.4, -0.2, 0.1],
+            [0.1, 0.3, -0.2],
+            [-0.1, 0.2, 0.5],
+        ])
+        information = np.zeros((6, 6))
+        information[:3, :3] = (
+            schur + coupling @ np.linalg.inv(rotation) @ coupling.T
+        )
+        information[:3, 3:] = coupling
+        information[3:, :3] = coupling.T
+        information[3:, 3:] = rotation
+        target_delta = np.asarray([0.08, -0.12, 0.05])
+        rotation_gradient = np.asarray([0.2, -0.1, 0.3])
+        gradient = np.r_[
+            schur @ target_delta
+            + coupling @ np.linalg.inv(rotation) @ rotation_gradient,
+            rotation_gradient,
+        ]
+        scales = np.asarray([0.002, 1.0, 1.0])
+        transform = directions @ np.diag(np.sqrt(scales)) @ directions.T
+
+        shaped_hessian, shaped_gradient = (
+            scale_lidar_conditional_translation_normal(
+                information, gradient, transform
+            )
+        )
+        original_delta, original_schur = conditional_translation_step(
+            information, gradient
+        )
+        shaped_delta, shaped_schur = conditional_translation_step(
+            shaped_hessian, shaped_gradient
+        )
+
+        np.testing.assert_allclose(shaped_delta, original_delta, atol=1.0e-10)
+        original_directional = directions.T @ original_schur @ directions
+        shaped_directional = directions.T @ shaped_schur @ directions
+        self.assertAlmostEqual(
+            shaped_directional[0, 0] / original_directional[0, 0],
+            scales[0], places=10,
+        )
+        np.testing.assert_allclose(
+            np.diag(shaped_directional)[1:],
+            np.diag(original_directional)[1:],
+            atol=1.0e-10,
+        )
+        self.assertGreaterEqual(
+            np.min(np.linalg.eigvalsh(shaped_hessian)), -1.0e-10
+        )
+
+    @unittest.skipIf(
+        cpp_lidar_point_plane_graph_normal_subspace is None,
+        "subspace-aware C++ LiDAR backend core is not installed",
+    )
+    def test_cpp_batched_rotated_subspace_matches_python_scalar_path(self):
+        generator = np.random.default_rng(20260822)
+        points = generator.normal(size=(48, 3))
+        normals = generator.normal(size=(48, 3))
+        normals /= np.linalg.norm(normals, axis=1)[:, None]
+        factor = replace(
+            plane_factor([0, 0, 0], [1, 0, 0], [0, 0, 0]),
+            matched_points=len(points),
+            candidate_points=len(points),
+            lidar_points=points,
+            plane_normals=normals,
+            plane_points=points + np.asarray([0.12, -0.08, 0.04]),
+        )
+        angle = np.deg2rad(29.0)
+        directions = np.asarray([
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        transform = directions @ np.diag([0.05, 1.0, 1.0]) @ directions.T
+        state = np.asarray([
+            0.1, -0.2, 0.3, 0.02, -0.03, 0.04,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ])
+        cpp_backend = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=True
+        )
+        cpp_backend.add_state(state)
+        cpp_backend.add_native_lidar_correspondences(
+            0, factor, translation_information_transform=transform
+        )
+        cpp_hessian, cpp_gradient, cpp_cost = cpp_backend._normal()
+
+        python_backend = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=False
+        )
+        python_backend.add_state(state)
+        python_backend.add_native_lidar_correspondences(
+            0, factor, translation_information_transform=transform
+        )
+        python_hessian, python_gradient, python_cost = python_backend._normal()
+
+        np.testing.assert_allclose(
+            cpp_hessian, python_hessian, atol=1.0e-9, rtol=1.0e-9
+        )
+        np.testing.assert_allclose(
+            cpp_gradient, python_gradient, atol=1.0e-9, rtol=1.0e-9
+        )
+        self.assertAlmostEqual(cpp_cost, python_cost, places=9)
+
+    def test_healthy_absolute_factor_naturally_owns_shaped_weak_subspace(self):
+        lidar_information = np.diag([100.0, 10000.0, 10000.0, 10.0, 10.0, 10.0])
+        lidar_optimum = np.asarray([10.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        lidar_gradient = lidar_information @ lidar_optimum
+        transform = np.diag([np.sqrt(0.001), 1.0, 1.0])
+        shaped_hessian, shaped_gradient = (
+            scale_lidar_conditional_translation_normal(
+                lidar_information, lidar_gradient, transform,
+                maximum_conditional_step_m=20.0,
+            )
+        )
+        gnss_information = np.diag([4.0, 4.0, 4.0])
+        fused_hessian = shaped_hessian.copy()
+        fused_hessian[:3, :3] += gnss_information
+        fused_step = np.linalg.solve(fused_hessian, shaped_gradient)
+        raw_fused = np.linalg.solve(
+            lidar_information + np.diag([4.0, 4.0, 4.0, 0.0, 0.0, 0.0]),
+            lidar_gradient,
+        )
+
+        self.assertGreater(raw_fused[0], 9.0)
+        self.assertLess(fused_step[0], 0.3)
+        np.testing.assert_allclose(fused_step[1:3], [0.0, 0.0])
+
     @unittest.skipIf(
         cpp_state_plus_batch is None, "C++ backend core is not installed"
     )
@@ -451,6 +591,29 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertLessEqual(backend.last_iterations, 1)
         with self.assertRaises(ValueError):
             backend.optimize(max_iterations=0)
+
+    def test_gnss_accepts_rotated_full_information_matrix(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        index = backend.add_state(np.zeros(15))
+        information = np.asarray([
+            [2.0, 0.5, 0.0],
+            [0.5, 1.0, 0.0],
+            [0.0, 0.0, 0.25],
+        ])
+        backend.add_gnss(
+            index,
+            [1.0, -2.0, 3.0],
+            covariance=np.ones(3),
+            information_matrix=information,
+        )
+
+        hessian, gradient, cost = backend._normal()
+
+        np.testing.assert_allclose(hessian[:3, :3], information)
+        np.testing.assert_allclose(
+            gradient[:3], information @ np.asarray([-1.0, 2.0, -3.0])
+        )
+        self.assertGreater(cost, 0.0)
 
     def test_optimize_stops_at_cooperative_wall_time_budget(self):
         backend = ManifoldSlidingWindowBackend(max_states=3, max_iterations=8)

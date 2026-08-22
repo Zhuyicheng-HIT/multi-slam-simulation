@@ -29,6 +29,7 @@ from uf_backend_fusion.online_backend import (
     axis_map_protection,
     axis_observability_latch,
     axis_information_handoff,
+    subspace_information_handoff,
     apply_flow_rotation_gate,
     apply_gnss_prefit_gate,
     apply_lidar_anchor_floor,
@@ -53,6 +54,7 @@ from uf_backend_fusion.online_backend import (
     gnss_axis_information_scale,
     gnss_prefit_axis_nis,
     gnss_prefit_statistics,
+    gnss_lidar_weak_subspace_recovery,
     bounded_axis_reanchor_target,
     time_compensate_gnss_observation,
     gnss_temporal_jump_rejected,
@@ -109,6 +111,44 @@ from uf_reliability.flow_rotation_gate import FlowRotationGateResult
 
 
 class OnlineBackendHelpersTest(unittest.TestCase):
+    def test_subspace_handoff_scales_only_covered_weak_direction(self):
+        angle = np.deg2rad(37.0)
+        directions = np.asarray([
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        lidar = directions @ np.diag([0.1, 5.0, 10.0]) @ directions.T
+        transform, scales, recovered, support, latched = (
+            subspace_information_handoff(
+                lidar, np.diag([2.0, 2.0, 0.0]),
+                [False, False, False],
+                enter_support=0.30,
+                exit_support=0.35,
+                minimum_lidar_information_scale=1.0e-5,
+            )
+        )
+        np.testing.assert_allclose(support, [0.01, 0.5, 1.0])
+        self.assertAlmostEqual(scales[0], 0.01 / 0.35)
+        np.testing.assert_allclose(scales[1:], [1.0, 1.0])
+        np.testing.assert_array_equal(latched, [True, False, False])
+        np.testing.assert_allclose(
+            np.abs(recovered), np.abs(directions), atol=1.0e-12
+        )
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(transform),
+            np.sqrt(scales), atol=1.0e-12,
+        )
+
+    def test_subspace_handoff_does_not_invent_missing_constraint(self):
+        transform, scales, _, _, latched = subspace_information_handoff(
+            np.diag([0.01, 5.0, 10.0]), np.zeros((3, 3)),
+            [True, False, False],
+        )
+        np.testing.assert_allclose(transform, np.eye(3))
+        np.testing.assert_allclose(scales, np.ones(3))
+        np.testing.assert_array_equal(latched, [False, False, False])
+
     @staticmethod
     def _bootstrap(evidence):
         return select_observability_aware_bootstrap(
@@ -2005,6 +2045,76 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             scheduler_disabled["admission_reason"], "scheduler_disabled"
         )
 
+    def test_gnss_recovers_only_lidar_weak_subspace(self):
+        weak_direction = np.asarray([0.0, 1.0, 1.0]) / math.sqrt(2.0)
+        strong_one = np.asarray([1.0, 0.0, 0.0])
+        strong_two = np.asarray([0.0, 1.0, -1.0]) / math.sqrt(2.0)
+        directions = np.column_stack((
+            weak_direction, strong_one, strong_two
+        ))
+        lidar_information = directions @ np.diag(
+            [1.0, 100.0, 100.0]
+        ) @ directions.T
+        scheduler = scheduler_decision(
+            0.8, enabled=True, inflation=1.25
+        )
+        gated = apply_gnss_prefit_gate(
+            scheduler, prefit_xy_nis=200.0, prefit_z_nis=200.0
+        )
+
+        recovered, information = gnss_lidar_weak_subspace_recovery(
+            scheduler,
+            gated,
+            innovation=20.0 * weak_direction,
+            innovation_covariance=np.eye(3),
+            measurement_covariance=[1.0, 1.0, 1.0],
+            lidar_translation_information=lidar_information,
+        )
+
+        self.assertTrue(recovered["factor_enabled"])
+        self.assertTrue(recovered["gnss_subspace_recovery"])
+        self.assertEqual(
+            recovered["admission_reason"],
+            "admitted_lidar_weak_subspace_recovery",
+        )
+        self.assertAlmostEqual(
+            weak_direction @ information @ weak_direction, 1.0
+        )
+        self.assertLess(
+            strong_one @ information @ strong_one, 1.0
+        )
+
+    def test_gnss_weak_subspace_recovery_projects_away_strong_disagreement(self):
+        weak_direction = np.asarray([0.0, 1.0, 1.0]) / math.sqrt(2.0)
+        strong_direction = np.asarray([1.0, 0.0, 0.0])
+        orthogonal = np.asarray([0.0, 1.0, -1.0]) / math.sqrt(2.0)
+        directions = np.column_stack((
+            weak_direction, strong_direction, orthogonal
+        ))
+        scheduler = scheduler_decision(1.0, enabled=True, inflation=1.0)
+        gated = apply_gnss_prefit_gate(
+            scheduler, prefit_xy_nis=200.0, prefit_z_nis=200.0
+        )
+
+        recovered, information = gnss_lidar_weak_subspace_recovery(
+            scheduler,
+            gated,
+            innovation=20.0 * weak_direction + 4.0 * strong_direction,
+            innovation_covariance=np.eye(3),
+            measurement_covariance=[1.0, 1.0, 1.0],
+            lidar_translation_information=(
+                directions @ np.diag([1.0, 100.0, 100.0]) @ directions.T
+            ),
+        )
+
+        self.assertTrue(recovered["factor_enabled"])
+        self.assertAlmostEqual(
+            weak_direction @ information @ weak_direction, 1.0
+        )
+        self.assertAlmostEqual(
+            strong_direction @ information @ strong_direction, 0.0
+        )
+
     def test_gnss_prefit_prediction_propagates_anchor_covariance(self):
         samples = [
             ImuSample(stamp, (0.0, 0.0, 9.81), (0.0, 0.0, 0.0))
@@ -2054,8 +2164,12 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def add_gnss(self, index, position, covariance, decision):
-                self.calls.append((index, position, covariance, decision))
+            def add_gnss(
+                    self, index, position, covariance, decision,
+                    information_matrix=None):
+                self.calls.append((
+                    index, position, covariance, decision, information_matrix
+                ))
 
         def node_with_decision(decision):
             node = object.__new__(UnifiedBackendNode)
@@ -2246,6 +2360,30 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertEqual(recovery.counts["gnss_xy_rejected_nis"], 1)
         self.assertEqual(recovery.counts["gnss_z_rejected_nis"], 1)
         self.assertFalse(recovery.backend.calls)
+
+        subspace_recovery = node_with_decision(
+            scheduler_decision(1.0, enabled=True, inflation=1.0)
+        )
+        weak = np.asarray([1.0, 0.0, 1.0]) / math.sqrt(2.0)
+        strong_one = np.asarray([0.0, 1.0, 0.0])
+        strong_two = np.asarray([1.0, 0.0, -1.0]) / math.sqrt(2.0)
+        directions = np.column_stack((weak, strong_one, strong_two))
+        subspace_recovery.subspace_information_handoff_enabled = True
+        subspace_recovery.axis_handoff_enter_support = 0.30
+        subspace_recovery.last_native_translation_profile_information = (
+            directions @ np.diag([1.0, 100.0, 100.0]) @ directions.T
+        )
+        subspace_recovery._gnss_factor(
+            10.0, [10.0, 0.0, 10.0], 3, np.eye(3) * 0.01
+        )
+        self.assertEqual(
+            subspace_recovery.counts["gnss_subspace_recovery_factors"], 1
+        )
+        self.assertEqual(
+            subspace_recovery.backend.calls[0][3]["admission_reason"],
+            "admitted_lidar_weak_subspace_recovery",
+        )
+        self.assertIsNotNone(subspace_recovery.backend.calls[0][4])
 
         low_weight = node_with_decision(
             scheduler_decision(0.04, enabled=True, inflation=20.0)

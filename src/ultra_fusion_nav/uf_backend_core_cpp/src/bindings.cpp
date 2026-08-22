@@ -28,6 +28,50 @@ Matrix3d skew(const Vector3d &value) {
   return matrix;
 }
 
+Matrix3d symmetric_pseudoinverse(const Matrix3d &matrix) {
+  const Matrix3d symmetric = 0.5 * (matrix + matrix.transpose());
+  Eigen::SelfAdjointEigenSolver<Matrix3d> solver(symmetric);
+  if (solver.info() != Eigen::Success) {
+    throw std::runtime_error("symmetric eigendecomposition failed");
+  }
+  const Vector3d values = solver.eigenvalues();
+  const double threshold = std::max(1.0e-12, values.cwiseAbs().maxCoeff() * 1.0e-9);
+  Vector3d inverse = Vector3d::Zero();
+  for (int index = 0; index < 3; ++index) {
+    if (std::abs(values(index)) > threshold) {
+      inverse(index) = 1.0 / values(index);
+    }
+  }
+  return solver.eigenvectors() * inverse.asDiagonal()
+      * solver.eigenvectors().transpose();
+}
+
+void shape_conditional_translation_normal(
+    Eigen::Matrix<double, 6, 6> &information,
+    Eigen::Matrix<double, 6, 1> &gradient,
+    const Matrix3d &information_transform) {
+  const Matrix3d coupling = information.block<3, 3>(0, 3);
+  const Matrix3d rotation = information.block<3, 3>(3, 3);
+  const Matrix3d rotation_inverse = symmetric_pseudoinverse(rotation);
+  const Matrix3d schur = 0.5 * (
+      information.block<3, 3>(0, 0)
+      - coupling * rotation_inverse * coupling.transpose()
+      + (information.block<3, 3>(0, 0)
+      - coupling * rotation_inverse * coupling.transpose()).transpose());
+  const Vector3d conditional_gradient = gradient.head<3>()
+      - coupling * rotation_inverse * gradient.tail<3>();
+  Vector3d conditional_delta = symmetric_pseudoinverse(schur)
+      * conditional_gradient;
+  conditional_delta = conditional_delta.cwiseMax(-0.5).cwiseMin(0.5);
+  const Matrix3d shaped_schur = information_transform * schur
+      * information_transform;
+  information.block<3, 3>(0, 0) = shaped_schur
+      + coupling * rotation_inverse * coupling.transpose();
+  information = 0.5 * (information + information.transpose());
+  gradient.head<3>() = shaped_schur * conditional_delta
+      + coupling * rotation_inverse * gradient.tail<3>();
+}
+
 Matrix3d rpy_to_rotation(const Vector3d &rpy) {
   const double cr = std::cos(rpy.x());
   const double sr = std::sin(rpy.x());
@@ -756,6 +800,128 @@ std::tuple<MatrixXd, VectorXd, double> lidar_point_plane_graph_normal(
       huber_delta);
 }
 
+std::tuple<MatrixXd, VectorXd, double>
+lidar_point_plane_graph_normal_subspace(
+    const Eigen::Ref<const MatrixXd> &states,
+    const Eigen::Ref<const Eigen::VectorXi> &state_indices,
+    const Eigen::Ref<const Eigen::VectorXi> &factor_offsets,
+    const Eigen::Ref<const MatrixXd> &lidar_points,
+    const Eigen::Ref<const MatrixXd> &plane_normals,
+    const Eigen::Ref<const MatrixXd> &plane_points,
+    const Eigen::Ref<const MatrixXd> &lidar_to_body_rotations,
+    const Eigen::Ref<const MatrixXd> &lidar_to_body_translations,
+    const Eigen::Ref<const MatrixXd> &translation_information_transforms,
+    const Eigen::Ref<const VectorXd> &variance,
+    const Eigen::Ref<const VectorXd> &effective_weights,
+    double huber_delta) {
+  const Eigen::Index factor_count = state_indices.size();
+  const Eigen::Index point_count = lidar_points.rows();
+  if (states.rows() < 1 || states.cols() != kStateSize
+      || factor_count < 1 || factor_offsets.size() != factor_count + 1
+      || point_count < 1 || lidar_points.cols() != 3
+      || plane_normals.rows() != point_count || plane_normals.cols() != 3
+      || plane_points.rows() != point_count || plane_points.cols() != 3
+      || lidar_to_body_rotations.rows() != factor_count
+      || lidar_to_body_rotations.cols() != 9
+      || lidar_to_body_translations.rows() != factor_count
+      || lidar_to_body_translations.cols() != 3
+      || translation_information_transforms.rows() != factor_count
+      || translation_information_transforms.cols() != 9
+      || variance.size() != point_count
+      || effective_weights.size() != factor_count
+      || factor_offsets(0) != 0
+      || factor_offsets(factor_count) != point_count
+      || !states.allFinite() || !lidar_points.allFinite()
+      || !plane_normals.allFinite() || !plane_points.allFinite()
+      || !lidar_to_body_rotations.allFinite()
+      || !lidar_to_body_translations.allFinite()
+      || !translation_information_transforms.allFinite()
+      || !variance.allFinite() || (variance.array() <= 0.0).any()
+      || !effective_weights.allFinite()
+      || (effective_weights.array() < 0.0).any()
+      || !std::isfinite(huber_delta) || huber_delta < 0.0) {
+    throw std::invalid_argument(
+        "batched LiDAR subspace inputs are invalid");
+  }
+
+  const Eigen::Index dimension = states.rows() * kStateSize;
+  MatrixXd hessian = MatrixXd::Zero(dimension, dimension);
+  VectorXd gradient = VectorXd::Zero(dimension);
+  double cost = 0.0;
+  for (Eigen::Index factor = 0; factor < factor_count; ++factor) {
+    if (state_indices(factor) < 0 || state_indices(factor) >= states.rows()
+        || factor_offsets(factor) < 0
+        || factor_offsets(factor + 1) <= factor_offsets(factor)) {
+      throw std::invalid_argument(
+          "batched LiDAR subspace factor has invalid indices");
+    }
+    Matrix3d lidar_to_body_rotation;
+    Matrix3d information_transform;
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        lidar_to_body_rotation(row, column) =
+            lidar_to_body_rotations(factor, 3 * row + column);
+        information_transform(row, column) =
+            translation_information_transforms(factor, 3 * row + column);
+      }
+    }
+    const Matrix3d symmetric_transform = 0.5 * (
+        information_transform + information_transform.transpose());
+    Eigen::SelfAdjointEigenSolver<Matrix3d> transform_solver(
+        symmetric_transform);
+    if (transform_solver.info() != Eigen::Success
+        || transform_solver.eigenvalues().minCoeff() <= 0.0
+        || transform_solver.eigenvalues().maxCoeff() > 1.0 + 1.0e-10) {
+      throw std::invalid_argument(
+          "LiDAR subspace transform eigenvalues must be within (0, 1]");
+    }
+    const Vector3d lidar_to_body_translation =
+        lidar_to_body_translations.row(factor).transpose();
+    const int state_index = state_indices(factor);
+    const VectorXd pose = states.row(state_index).head<6>().transpose();
+    const Matrix3d rotation = rpy_to_rotation(pose.segment<3>(3));
+    Eigen::Matrix<double, 6, 6> local_hessian =
+        Eigen::Matrix<double, 6, 6>::Zero();
+    Eigen::Matrix<double, 6, 1> local_gradient =
+        Eigen::Matrix<double, 6, 1>::Zero();
+    for (int point = factor_offsets(factor);
+         point < factor_offsets(factor + 1); ++point) {
+      const Vector3d body_point =
+          lidar_to_body_rotation * lidar_points.row(point).transpose()
+          + lidar_to_body_translation;
+      const Vector3d normal = plane_normals.row(point).transpose();
+      const Vector3d world_point = rotation * body_point + pose.head<3>();
+      const double residual = normal.dot(
+          world_point - plane_points.row(point).transpose());
+      const double standardized = residual / std::sqrt(variance(point));
+      const double absolute = std::abs(standardized);
+      double loss = 0.5 * standardized * standardized;
+      double robust_weight = 1.0;
+      if (huber_delta > 0.0 && absolute > huber_delta) {
+        loss = huber_delta * (absolute - 0.5 * huber_delta);
+        robust_weight = huber_delta / absolute;
+      }
+      const double information = effective_weights(factor)
+          * robust_weight / variance(point);
+      Eigen::Matrix<double, 6, 1> jacobian;
+      jacobian.head<3>() = normal;
+      jacobian.tail<3>() = body_point.cross(rotation.transpose() * normal);
+      local_hessian.noalias() +=
+          information * jacobian * jacobian.transpose();
+      local_gradient.noalias() += information * residual * jacobian;
+      cost += effective_weights(factor) * loss;
+    }
+    if (!symmetric_transform.isApprox(Matrix3d::Identity(), 1.0e-14)) {
+      shape_conditional_translation_normal(
+          local_hessian, local_gradient, symmetric_transform);
+    }
+    const Eigen::Index offset = state_index * kStateSize;
+    hessian.block(offset, offset, 6, 6) += local_hessian;
+    gradient.segment(offset, 6) += local_gradient;
+  }
+  return {hessian, gradient, cost};
+}
+
 VectorXd marginal_local_coordinates(
     const MatrixXd &references, const MatrixXd &states) {
   if (references.rows() <= 0 || references.cols() != kStateSize
@@ -1432,6 +1598,9 @@ PYBIND11_MODULE(_core, module) {
   module.def(
       "lidar_point_plane_graph_normal_axis_scaled",
       &lidar_point_plane_graph_normal_axis_scaled);
+  module.def(
+      "lidar_point_plane_graph_normal_subspace",
+      &lidar_point_plane_graph_normal_subspace);
   module.def("lidar_point_plane_cost", &lidar_point_plane_cost);
   module.def("marginal_prior_normal", &marginal_prior_normal);
   module.def("marginal_prior_cost", &marginal_prior_cost);

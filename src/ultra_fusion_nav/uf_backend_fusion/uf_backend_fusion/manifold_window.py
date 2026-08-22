@@ -66,12 +66,14 @@ except ImportError:
 try:
     from uf_backend_core_cpp import (
         lidar_point_plane_graph_normal_axis_scaled as cpp_lidar_point_plane_graph_normal_axis_scaled,
+        lidar_point_plane_graph_normal_subspace as cpp_lidar_point_plane_graph_normal_subspace,
     )
     CPP_LIDAR_AXIS_SCALED_GRAPH_CORE_AVAILABLE = callable(
         cpp_lidar_point_plane_graph_normal_axis_scaled
     )
 except ImportError:
     cpp_lidar_point_plane_graph_normal_axis_scaled = None
+    cpp_lidar_point_plane_graph_normal_subspace = None
     CPP_LIDAR_AXIS_SCALED_GRAPH_CORE_AVAILABLE = False
 
 try:
@@ -222,14 +224,28 @@ def scale_lidar_conditional_translation_normal(
     if (
         np.any(~np.isfinite(information))
         or np.any(~np.isfinite(gradient))
-        or scales.shape != (3,)
+        or scales.shape not in ((3,), (3, 3))
         or np.any(~np.isfinite(scales))
-        or np.any(scales <= 0.0)
-        or np.any(scales > 1.0)
         or not math.isfinite(maximum_step)
         or maximum_step <= 0.0
     ):
         raise ValueError("conditional LiDAR scaling inputs are invalid")
+    if scales.shape == (3,):
+        if np.any(scales <= 0.0) or np.any(scales > 1.0):
+            raise ValueError("conditional LiDAR scaling inputs are invalid")
+        information_transform = np.diag(np.sqrt(scales))
+    else:
+        if not np.allclose(scales, scales.T, atol=1.0e-10):
+            raise ValueError("LiDAR subspace transform must be symmetric")
+        transform_eigenvalues = np.linalg.eigvalsh(scales)
+        if (
+            np.any(transform_eigenvalues <= 0.0)
+            or np.any(transform_eigenvalues > 1.0 + 1.0e-10)
+        ):
+            raise ValueError(
+                "LiDAR subspace transform eigenvalues must be within (0, 1]"
+            )
+        information_transform = 0.5 * (scales + scales.T)
     information = 0.5 * (information + information.T)
     coupling = information[:3, 3:]
     rotation = information[3:, 3:]
@@ -241,8 +257,7 @@ def scale_lidar_conditional_translation_normal(
     conditional_gradient = gradient[:3] - (
         coupling @ rotation_inverse @ gradient[3:]
     )
-    root_scale = np.diag(np.sqrt(scales))
-    scaled_schur = root_scale @ schur @ root_scale
+    scaled_schur = information_transform @ schur @ information_transform
     conditional_delta = np.linalg.pinv(schur, rcond=1.0e-9) @ (
         conditional_gradient
     )
@@ -596,6 +611,18 @@ def _cpp_lidar_axis_scaled_graph_arguments(factors, states):
         *arguments[:8],
         np.asarray([
             factor["translation_information_scale"] for factor in factors
+        ], dtype=float),
+        *arguments[8:],
+    )
+
+
+def _cpp_lidar_subspace_graph_arguments(factors, states):
+    arguments = _cpp_lidar_graph_arguments(factors, states)
+    return (
+        *arguments[:8],
+        np.asarray([
+            factor["translation_information_transform"].reshape(-1)
+            for factor in factors
         ], dtype=float),
         *arguments[8:],
     )
@@ -1105,7 +1132,8 @@ class ManifoldSlidingWindowBackend:
 
     def add_native_lidar_correspondences(
             self, index, factor, decision=None,
-            axis_information_scale=None):
+            axis_information_scale=None,
+            translation_information_transform=None):
         if not isinstance(factor, NativeLidarPoseNormal):
             raise ValueError("native LiDAR factor has the wrong type")
         if factor.lidar_points is None:
@@ -1125,6 +1153,33 @@ class ManifoldSlidingWindowBackend:
                 "LiDAR axis information scale must be a finite 3-vector "
                 "within [0, 1]"
             )
+        if translation_information_transform is None:
+            information_transform = np.diag(
+                np.sqrt(translation_information_scale)
+            )
+        else:
+            information_transform = np.asarray(
+                translation_information_transform, dtype=float
+            )
+            if (
+                information_transform.shape != (3, 3)
+                or np.any(~np.isfinite(information_transform))
+                or not np.allclose(
+                    information_transform,
+                    information_transform.T,
+                    atol=1.0e-10,
+                )
+            ):
+                raise ValueError(
+                    "LiDAR translation information transform must be a "
+                    "finite symmetric 3x3 matrix"
+                )
+            eigenvalues = np.linalg.eigvalsh(information_transform)
+            if np.any(eigenvalues <= 0.0) or np.any(eigenvalues > 1.0 + 1.0e-10):
+                raise ValueError(
+                    "LiDAR translation information transform eigenvalues "
+                    "must be within (0, 1]"
+                )
         variance = np.full(
             factor.matched_points, factor.measurement_variance, dtype=float
         )
@@ -1139,6 +1194,7 @@ class ManifoldSlidingWindowBackend:
             translation_information_scale=(
                 translation_information_scale.copy()
             ),
+            translation_information_transform=information_transform.copy(),
         )
 
     def add_native_lidar_normal(
@@ -1177,12 +1233,29 @@ class ManifoldSlidingWindowBackend:
             variance=_positive_diagonal(covariance, 6),
         )
 
-    def add_gnss(self, index, position, covariance=1.0, decision=None):
-        self._append(
-            "gnss", (index,), 3, decision,
-            measurement=np.asarray(position, dtype=float),
-            variance=_positive_diagonal(covariance, 3),
-        )
+    def add_gnss(
+            self, index, position, covariance=1.0, decision=None,
+            information_matrix=None):
+        fields = {
+            "measurement": np.asarray(position, dtype=float),
+            "variance": _positive_diagonal(covariance, 3),
+        }
+        if information_matrix is not None:
+            information_matrix = np.asarray(
+                information_matrix, dtype=float
+            ).reshape(3, 3)
+            information_matrix = 0.5 * (
+                information_matrix + information_matrix.T
+            )
+            if np.any(~np.isfinite(information_matrix)):
+                raise ValueError("GNSS information matrix must be finite")
+            eigenvalues = np.linalg.eigvalsh(information_matrix)
+            if eigenvalues[0] < -1.0e-12 or eigenvalues[-1] <= 0.0:
+                raise ValueError(
+                    "GNSS information matrix must be positive semidefinite"
+                )
+            fields["information_matrix"] = information_matrix
+        self._append("gnss", (index,), 3, decision, **fields)
 
     def add_barometer_local_z(
             self, index, height_m, variance_m2, decision=None):
@@ -1516,7 +1589,8 @@ class ManifoldSlidingWindowBackend:
                 "translation_information_scale"
             ]
             axis_scaled = not np.allclose(
-                translation_information_scale, 1.0, atol=0.0, rtol=0.0
+                factor["translation_information_transform"],
+                np.eye(3), atol=0.0, rtol=0.0
             )
             if self.cpp_math_core_enabled and CPP_MATH_CORE_AVAILABLE:
                 measurement = factor["measurement"]
@@ -1541,7 +1615,7 @@ class ManifoldSlidingWindowBackend:
                         scale_lidar_conditional_translation_normal(
                             local_hessian,
                             local_gradient,
-                            translation_information_scale,
+                            factor["translation_information_transform"],
                         )
                     )
                 start = index * STATE_SIZE
@@ -1572,7 +1646,7 @@ class ManifoldSlidingWindowBackend:
                     scale_lidar_conditional_translation_normal(
                         local_hessian,
                         local_gradient,
-                        translation_information_scale,
+                        factor["translation_information_transform"],
                     )
                 )
             hessian[pose, pose] += local_hessian
@@ -1603,12 +1677,22 @@ class ManifoldSlidingWindowBackend:
         if name == "gnss":
             index = factor["indices"][0]
             residual = self._residual(factor, states)
-            information = factor["effective_weight"] / factor["variance"]
+            if "information_matrix" in factor:
+                information_matrix = (
+                    factor["effective_weight"]
+                    * factor["information_matrix"]
+                )
+            else:
+                information = (
+                    factor["effective_weight"] / factor["variance"]
+                )
+                information_matrix = np.diag(information)
+            weighted_residual = information_matrix @ residual
             start = index * STATE_SIZE
             position = slice(start, start + 3)
-            hessian[position, position] += np.diag(information)
-            gradient[position] += information * residual
-            cost = 0.5 * float(np.sum(information * residual ** 2))
+            hessian[position, position] += information_matrix
+            gradient[position] += weighted_residual
+            cost = 0.5 * float(residual @ weighted_residual)
             return hessian, gradient, cost
 
         if name == "optical_flow_range_body":
@@ -2176,8 +2260,8 @@ class ManifoldSlidingWindowBackend:
             if lidar_factors:
                 has_axis_scaled_factor = any(
                     not np.allclose(
-                        factor["translation_information_scale"],
-                        1.0,
+                        factor["translation_information_transform"],
+                        np.eye(3),
                         atol=0.0,
                         rtol=0.0,
                     )
@@ -2188,6 +2272,25 @@ class ManifoldSlidingWindowBackend:
                     lidar_hessian, lidar_gradient, lidar_cost = (
                         cpp_lidar_point_plane_graph_normal(
                             *_cpp_lidar_graph_arguments(
+                                lidar_factors, states
+                            ),
+                            self.lidar_huber_delta,
+                        )
+                    )
+                    hessian += lidar_hessian
+                    gradient += lidar_gradient
+                    cost += float(lidar_cost)
+                    batched_factor_ids.update(
+                        id(factor) for factor in lidar_factors
+                    )
+                    self._profile_stop(
+                        "factor_lidar_point_plane", factor_started
+                    )
+                elif cpp_lidar_point_plane_graph_normal_subspace is not None:
+                    factor_started = self._profile_start()
+                    lidar_hessian, lidar_gradient, lidar_cost = (
+                        cpp_lidar_point_plane_graph_normal_subspace(
+                            *_cpp_lidar_subspace_graph_arguments(
                                 lidar_factors, states
                             ),
                             self.lidar_huber_delta,

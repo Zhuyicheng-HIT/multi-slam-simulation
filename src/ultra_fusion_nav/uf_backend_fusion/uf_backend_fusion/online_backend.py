@@ -1941,6 +1941,93 @@ def axis_information_handoff(
     return scales, next_latched
 
 
+def subspace_information_handoff(
+    lidar_information,
+    alternative_information,
+    latched,
+    *,
+    enter_support=0.15,
+    exit_support=0.35,
+    minimum_lidar_information_scale=1.0e-4,
+    maximum_lidar_to_alternative_ratio=1.0,
+):
+    """Shape weak LiDAR eigenspaces only when another sensor covers them."""
+    lidar_information = np.asarray(lidar_information, dtype=float)
+    alternative_information = np.asarray(alternative_information, dtype=float)
+    latched = np.asarray(latched, dtype=bool)
+    if lidar_information.shape != (3, 3):
+        raise ValueError("LiDAR subspace information must be 3x3")
+    if alternative_information.shape == (3,):
+        alternative_information = np.diag(alternative_information)
+    if alternative_information.shape != (3, 3) or latched.shape != (3,):
+        raise ValueError("subspace handoff inputs have incompatible shapes")
+    if (
+        np.any(~np.isfinite(lidar_information))
+        or np.any(~np.isfinite(alternative_information))
+    ):
+        raise ValueError("subspace handoff information must be finite")
+    lidar_information = 0.5 * (
+        lidar_information + lidar_information.T
+    )
+    alternative_information = 0.5 * (
+        alternative_information + alternative_information.T
+    )
+    if (
+        np.min(np.linalg.eigvalsh(lidar_information)) < -1.0e-9
+        or np.min(np.linalg.eigvalsh(alternative_information)) < -1.0e-9
+    ):
+        raise ValueError("subspace handoff information must be PSD")
+    enter_support = float(enter_support)
+    exit_support = float(exit_support)
+    minimum_scale = float(minimum_lidar_information_scale)
+    maximum_ratio = float(maximum_lidar_to_alternative_ratio)
+    if (
+        not 0.0 <= enter_support < exit_support <= 1.0
+        or not 0.0 < minimum_scale <= 1.0
+        or not math.isfinite(maximum_ratio)
+        or maximum_ratio <= 0.0
+    ):
+        raise ValueError("subspace handoff thresholds are invalid")
+
+    eigenvalues, directions = np.linalg.eigh(lidar_information)
+    maximum = max(float(eigenvalues[-1]), 1.0e-12)
+    support = np.clip(eigenvalues / maximum, 0.0, 1.0)
+    alternative = np.diag(
+        directions.T @ alternative_information @ directions
+    ).copy()
+    scales = np.ones(3, dtype=float)
+    next_latched = latched.copy()
+    for index in range(3):
+        if alternative[index] <= 1.0e-12:
+            next_latched[index] = False
+            continue
+        if latched[index]:
+            next_latched[index] = support[index] < exit_support
+        else:
+            next_latched[index] = support[index] < enter_support
+        if not next_latched[index]:
+            continue
+        observability_scale = support[index] / exit_support
+        if eigenvalues[index] <= 1.0e-12:
+            alternative_scale = minimum_scale
+        else:
+            alternative_scale = (
+                maximum_ratio * alternative[index] / eigenvalues[index]
+            )
+        scales[index] = min(
+            1.0,
+            max(
+                minimum_scale,
+                min(observability_scale, alternative_scale),
+            ),
+        )
+    transform = (
+        directions @ np.diag(np.sqrt(scales)) @ directions.T
+    )
+    transform = 0.5 * (transform + transform.T)
+    return transform, scales, directions, support, next_latched
+
+
 def apply_gnss_prefit_gate(
     scheduler_factor_decision,
     prefit_xy_nis,
@@ -2053,6 +2140,125 @@ def apply_gnss_prefit_gate(
         decision["reliability_weight"] = 0.0
         decision["covariance_inflation"] = MAX_COVARIANCE_INFLATION
     return decision
+
+
+def gnss_lidar_weak_subspace_recovery(
+    scheduler_factor_decision,
+    gated_decision,
+    innovation,
+    innovation_covariance,
+    measurement_covariance,
+    lidar_translation_information,
+    weak_support_threshold=0.30,
+    one_dimensional_nis_gate=6.635,
+):
+    """Recover GNSS only where a healthy LiDAR factor is unobservable.
+
+    A large innovation in the LiDAR weak eigenspace is expected after local
+    drift and must not make the independent absolute factor disappear.  Raw
+    GNSS health and temporal gates remain authoritative.  The returned
+    positive-semidefinite information matrix contains only the LiDAR weak
+    projection, so disagreement in the strong complement can neither block
+    recovery nor pull a direction already constrained by LiDAR.
+    """
+    decision = dict(gated_decision)
+    if decision.get("admission_reason") != "all_axes_inconsistent":
+        return decision, None
+    if not bool(scheduler_factor_decision.get("factor_enabled", False)):
+        return decision, None
+    scheduler_weight = float(
+        scheduler_factor_decision.get("reliability_weight", 0.0)
+    )
+    if not math.isfinite(scheduler_weight) or scheduler_weight <= 0.0:
+        return decision, None
+
+    innovation = np.asarray(innovation, dtype=float).reshape(3)
+    scoring_covariance = np.asarray(
+        innovation_covariance, dtype=float
+    ).reshape(3, 3)
+    measurement_variance = np.asarray(
+        measurement_covariance, dtype=float
+    ).reshape(3)
+    lidar_information = np.asarray(
+        lidar_translation_information, dtype=float
+    ).reshape(3, 3)
+    lidar_information = 0.5 * (lidar_information + lidar_information.T)
+    if (
+        np.any(~np.isfinite(innovation))
+        or np.any(~np.isfinite(scoring_covariance))
+        or np.any(~np.isfinite(measurement_variance))
+        or np.any(measurement_variance <= 0.0)
+        or np.any(~np.isfinite(lidar_information))
+    ):
+        return decision, None
+    weak_support_threshold = float(weak_support_threshold)
+    if not 0.0 < weak_support_threshold < 1.0:
+        raise ValueError("weak support threshold must be in (0, 1)")
+
+    eigenvalues, directions = np.linalg.eigh(lidar_information)
+    maximum = max(float(eigenvalues[-1]), 1.0e-12)
+    support = np.clip(eigenvalues / maximum, 0.0, 1.0)
+    weak = support < weak_support_threshold
+    strong = ~weak
+    # At least one healthy direction must remain as an independent integrity
+    # check.  An entirely unobservable LiDAR factor cannot authorize recovery.
+    if not np.any(weak) or not np.any(strong):
+        return decision, None
+
+    weak_directions = directions[:, weak]
+    strong_directions = directions[:, strong]
+    weak_residual = weak_directions.T @ innovation
+    strong_residual = strong_directions.T @ innovation
+    weak_covariance = (
+        weak_directions.T @ scoring_covariance @ weak_directions
+    )
+    strong_covariance = (
+        strong_directions.T @ scoring_covariance @ strong_directions
+    )
+    try:
+        weak_nis = float(
+            weak_residual @ np.linalg.solve(weak_covariance, weak_residual)
+        )
+        strong_nis = float(
+            strong_residual
+            @ np.linalg.solve(strong_covariance, strong_residual)
+        )
+    except np.linalg.LinAlgError:
+        return decision, None
+    if (
+        not math.isfinite(weak_nis)
+        or not math.isfinite(strong_nis)
+        or weak_nis <= float(one_dimensional_nis_gate)
+    ):
+        return decision, None
+
+    weak_projector = weak_directions @ weak_directions.T
+    nominal_information = np.diag(1.0 / measurement_variance)
+    information_matrix = (
+        weak_projector @ nominal_information @ weak_projector
+    )
+    information_matrix = 0.5 * (
+        information_matrix + information_matrix.T
+    )
+    decision.update({
+        "factor_enabled": True,
+        "reliability_weight": scheduler_weight,
+        "covariance_inflation": max(
+            1.0,
+            min(
+                MAX_COVARIANCE_INFLATION,
+                float(scheduler_factor_decision.get(
+                    "covariance_inflation", 1.0
+                )),
+            ),
+        ),
+        "gnss_subspace_recovery": True,
+        "gnss_subspace_weak_nis": weak_nis,
+        "gnss_subspace_strong_nis": strong_nis,
+        "gnss_subspace_weak_support": support[weak].copy(),
+        "admission_reason": "admitted_lidar_weak_subspace_recovery",
+    })
+    return decision, information_matrix
 
 
 def covariance_update_due(last_stamp_s, current_stamp_s, update_period_s):
@@ -2974,6 +3180,9 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("gnss_z_reanchor_minimum_consecutive", 2)
         self.declare_parameter("gnss_z_recovery_information_scale", 0.50)
         self.declare_parameter("axis_information_handoff_enabled", False)
+        self.declare_parameter(
+            "subspace_information_handoff_enabled", False
+        )
         self.declare_parameter("axis_handoff_enable_x", False)
         self.declare_parameter("axis_handoff_enable_y", False)
         self.declare_parameter("axis_handoff_enable_z", True)
@@ -3479,6 +3688,11 @@ class UnifiedBackendNode(Node):
         )
         self.axis_information_handoff_enabled = bool(
             self.get_parameter("axis_information_handoff_enabled").value
+        )
+        self.subspace_information_handoff_enabled = bool(
+            self.get_parameter(
+                "subspace_information_handoff_enabled"
+            ).value
         )
         self.axis_handoff_enabled_axes = np.asarray([
             bool(self.get_parameter("axis_handoff_enable_x").value),
@@ -4516,10 +4730,17 @@ class UnifiedBackendNode(Node):
         self.last_rgbd_direct_photometric_information_scale = 1.0
         self.rgbd_depth_candidate_sequence = 0
         self.axis_handoff_latched = np.zeros(3, dtype=bool)
+        self.subspace_handoff_latched = np.zeros(3, dtype=bool)
         self.lidar_axis_observability_latched = np.zeros(3, dtype=bool)
         self.last_lidar_axis_information_scale = np.ones(3, dtype=float)
+        self.last_lidar_subspace_information_scale = np.ones(3, dtype=float)
+        self.last_lidar_subspace_directions = np.eye(3, dtype=float)
+        self.last_lidar_subspace_support = np.ones(3, dtype=float)
         self.last_axis_handoff_alternative_information = np.zeros(
             3, dtype=float
+        )
+        self.last_axis_handoff_alternative_information_matrix = np.zeros(
+            (3, 3), dtype=float
         )
         self.last_axis_handoff_gnss_information = np.zeros(3, dtype=float)
         self.last_axis_handoff_rgbd_information = np.zeros(3, dtype=float)
@@ -4551,6 +4772,7 @@ class UnifiedBackendNode(Node):
             "gnss_z_recovery_factors": 0,
             "gnss_all_axes_inconsistent": 0,
             "gnss_prefit_recovery_floor": 0,
+            "gnss_subspace_recovery_factors": 0,
             "gnss_prefit_valid": 0,
             "gnss_prefit_invalid": 0,
             "gnss_prefit_covariance_unavailable": 0,
@@ -4599,6 +4821,7 @@ class UnifiedBackendNode(Node):
             "rgbd_depth_rejected_prefit": 0,
             "rgbd_depth_skipped_healthy_lidar": 0,
             "native_lidar_axis_handoff_frames": 0,
+            "native_lidar_subspace_handoff_frames": 0,
             "native_lidar_axis_handoff_x": 0,
             "native_lidar_axis_handoff_y": 0,
             "native_lidar_axis_handoff_z": 0,
@@ -4788,6 +5011,9 @@ class UnifiedBackendNode(Node):
         self.last_gnss_z_information_scale = 0.0
         self.last_gnss_factor_covariance = np.full(
             3, math.inf, dtype=float
+        )
+        self.last_gnss_factor_information_matrix = np.zeros(
+            (3, 3), dtype=float
         )
         self.gnss_z_reanchor_consecutive = 0
         self.last_gnss_z_reanchor_applied = False
@@ -6908,6 +7134,7 @@ class UnifiedBackendNode(Node):
         self.last_gnss_z_information_scale = 0.0
         if hasattr(self, "last_gnss_factor_covariance"):
             self.last_gnss_factor_covariance.fill(math.inf)
+            self.last_gnss_factor_information_matrix.fill(0.0)
             self.gnss_z_reanchor_consecutive = 0
             self.last_gnss_z_reanchor_applied = False
             self.last_gnss_z_reanchor_target_m = math.nan
@@ -6921,9 +7148,14 @@ class UnifiedBackendNode(Node):
         self.last_gnss_admission_reason = "relocalization_reset"
         if hasattr(self, "axis_handoff_latched"):
             self.axis_handoff_latched.fill(False)
+            self.subspace_handoff_latched.fill(False)
             self.lidar_axis_observability_latched.fill(False)
             self.last_lidar_axis_information_scale.fill(1.0)
+            self.last_lidar_subspace_information_scale.fill(1.0)
+            self.last_lidar_subspace_directions[:] = np.eye(3)
+            self.last_lidar_subspace_support.fill(1.0)
             self.last_axis_handoff_alternative_information.fill(0.0)
+            self.last_axis_handoff_alternative_information_matrix.fill(0.0)
             self.last_axis_handoff_gnss_information.fill(0.0)
             self.last_axis_handoff_rgbd_information.fill(0.0)
             self.last_axis_handoff_barometer_information.fill(0.0)
@@ -7023,6 +7255,7 @@ class UnifiedBackendNode(Node):
     ):
         """Return fresh per-LiDAR-frame axis information from other sensors."""
         gnss_information = np.zeros(3, dtype=float)
+        gnss_information_matrix = np.zeros((3, 3), dtype=float)
         rgbd_information = np.zeros(3, dtype=float)
         prefit_age = float(stamp_s) - self.last_gnss_prefit_stamp_s
         decision = self._decision(
@@ -7045,17 +7278,27 @@ class UnifiedBackendNode(Node):
                     float(decision.get("covariance_inflation", 1.0)),
                 )
             )
-            axis_scale = np.asarray([
-                self.last_gnss_xy_information_scale,
-                self.last_gnss_xy_information_scale,
-                self.last_gnss_z_information_scale,
-            ])
-            gnss_information = (
+            raw_information_matrix = np.asarray(
+                getattr(
+                    self,
+                    "last_gnss_factor_information_matrix",
+                    np.zeros((3, 3)),
+                ),
+                dtype=float,
+            ).reshape(3, 3)
+            if not np.any(raw_information_matrix > 0.0):
+                axis_scale = np.asarray([
+                    self.last_gnss_xy_information_scale,
+                    self.last_gnss_xy_information_scale,
+                    self.last_gnss_z_information_scale,
+                ])
+                raw_information_matrix = np.diag(axis_scale / covariance)
+            gnss_information_matrix = (
                 self.axis_handoff_gnss_rate_ratio
                 * effective_weight
-                * axis_scale
-                / covariance
+                * raw_information_matrix
             )
+            gnss_information = np.diag(gnss_information_matrix).copy()
         rgbd_age = float(stamp_s) - self.last_rgbd_depth_stamp_s
         if 0.0 <= rgbd_age <= self.axis_handoff_rgbd_freshness_s:
             rgbd_information = (
@@ -7088,6 +7331,10 @@ class UnifiedBackendNode(Node):
         self.last_axis_handoff_barometer_information = barometer_information
         self.last_axis_handoff_alternative_information = (
             gnss_information + rgbd_information + barometer_information
+        )
+        self.last_axis_handoff_alternative_information_matrix = (
+            gnss_information_matrix
+            + np.diag(rgbd_information + barometer_information)
         )
         return self.last_axis_handoff_alternative_information.copy()
 
@@ -8272,6 +8519,27 @@ class UnifiedBackendNode(Node):
                 self.gnss_minimum_reliability_weight,
                 self.gnss_minimum_axis_information_scale,
             )
+            gnss_information_matrix = None
+            if bool(getattr(
+                    self, "subspace_information_handoff_enabled", False)):
+                decision, gnss_information_matrix = (
+                    gnss_lidar_weak_subspace_recovery(
+                        scheduler_factor_decision,
+                        decision,
+                        innovation,
+                        innovation_covariance,
+                        solver_covariance,
+                        getattr(
+                            self,
+                            "last_native_translation_profile_information",
+                            np.eye(3),
+                        ),
+                        weak_support_threshold=float(getattr(
+                            self, "axis_handoff_enter_support", 0.30
+                        )),
+                        one_dimensional_nis_gate=self.gnss_z_nis_gate,
+                    )
+                )
         except (ValueError, np.linalg.LinAlgError) as error:
             self.counts["gnss_prefit_invalid"] += 1
             self.last_gnss_admission_reason = (
@@ -8325,13 +8593,23 @@ class UnifiedBackendNode(Node):
                 self.counts["gnss_z_rejected_nis"] += 1
                 self.counts["gnss_all_axes_inconsistent"] += 1
             return
-        if decision["gnss_xy_admitted"]:
+        subspace_recovery = bool(
+            decision.get("gnss_subspace_recovery", False)
+        )
+        if subspace_recovery:
+            self.counts["gnss_subspace_recovery_factors"] = (
+                self.counts.get("gnss_subspace_recovery_factors", 0) + 1
+            )
+            self.counts["gnss_all_axes_inconsistent"] += 1
+        elif decision["gnss_xy_admitted"]:
             self.counts["gnss_xy_admitted"] += 1
         else:
             self.counts["gnss_xy_rejected_nis"] += 1
             self.counts["gnss_xy_robust_downweighted"] += 1
         self.last_gnss_z_reanchor_applied = False
-        if decision["gnss_z_admitted"]:
+        if subspace_recovery:
+            self.gnss_z_reanchor_consecutive = 0
+        elif decision["gnss_z_admitted"]:
             self.counts["gnss_z_admitted"] += 1
             self.gnss_z_reanchor_consecutive = 0
         else:
@@ -8410,13 +8688,29 @@ class UnifiedBackendNode(Node):
         if decision["gnss_recovery_floor"]:
             self.counts["gnss_all_axes_inconsistent"] += 1
             self.counts["gnss_prefit_recovery_floor"] += 1
-        solver_covariance[:2] /= decision["gnss_xy_information_scale"]
-        solver_covariance[2] /= decision["gnss_z_information_scale"]
-        self.backend.add_gnss(
-            index,
-            solver_gnss_position,
-            covariance=solver_covariance,
-            decision=decision)
+        if gnss_information_matrix is None:
+            solver_covariance[:2] /= decision["gnss_xy_information_scale"]
+            solver_covariance[2] /= decision["gnss_z_information_scale"]
+            self.last_gnss_factor_information_matrix = np.diag(
+                1.0 / solver_covariance
+            )
+        else:
+            self.last_gnss_factor_information_matrix = (
+                gnss_information_matrix.copy()
+            )
+        if gnss_information_matrix is None:
+            self.backend.add_gnss(
+                index,
+                solver_gnss_position,
+                covariance=solver_covariance,
+                decision=decision)
+        else:
+            self.backend.add_gnss(
+                index,
+                solver_gnss_position,
+                covariance=solver_covariance,
+                decision=decision,
+                information_matrix=gnss_information_matrix)
         self.counts["gnss_factor_records"] += 1
         self.counts["gnss_factors"] += 1
         if "gnss_provisional_bootstrap" in decision.get("reasons", ()):
@@ -10461,6 +10755,10 @@ class UnifiedBackendNode(Node):
                 self.last_lidar_axis_information_scale = np.ones(
                     3, dtype=float
                 )
+                self.last_lidar_subspace_information_scale = np.ones(
+                    3, dtype=float
+                )
+                lidar_information_transform = np.eye(3, dtype=float)
                 if (
                     self.axis_information_handoff_enabled
                     and bool(lidar_decision.get("factor_enabled", False))
@@ -10477,41 +10775,77 @@ class UnifiedBackendNode(Node):
                             ),
                         )
                     )
-                    lidar_information = (
-                        self.last_native_axis_profile_information
-                        * lidar_effective_weight
-                    )
                     alternative_information = (
                         self._axis_handoff_alternative_information(stamp)
                     )
-                    (
-                        self.last_lidar_axis_information_scale,
-                        self.axis_handoff_latched,
-                    ) = axis_information_handoff(
-                        lidar_information,
-                        self.last_native_isotropic_information_support,
-                        alternative_information,
-                        self.axis_handoff_latched,
-                        enabled_axes=self.axis_handoff_enabled_axes,
-                        enter_support=self.axis_handoff_enter_support,
-                        exit_support=self.axis_handoff_exit_support,
-                        minimum_lidar_information_scale=(
-                            self.axis_handoff_minimum_lidar_information_scale
-                        ),
-                        maximum_lidar_to_alternative_ratio=(
-                            self.axis_handoff_maximum_lidar_to_alternative_ratio
-                        ),
-                    )
-                    handed_off = self.last_lidar_axis_information_scale < 1.0
-                    if np.any(handed_off):
-                        self.counts["native_lidar_axis_handoff_frames"] += 1
-                        for axis, name in enumerate(("x", "y", "z")):
-                            if handed_off[axis]:
-                                self.counts[
-                                    f"native_lidar_axis_handoff_{name}"
-                                ] += 1
-                axis_scaled = np.any(
-                    self.last_lidar_axis_information_scale < 1.0
+                    if self.subspace_information_handoff_enabled:
+                        (
+                            lidar_information_transform,
+                            self.last_lidar_subspace_information_scale,
+                            self.last_lidar_subspace_directions,
+                            self.last_lidar_subspace_support,
+                            self.subspace_handoff_latched,
+                        ) = subspace_information_handoff(
+                            self.last_native_translation_profile_information
+                            * lidar_effective_weight,
+                            self.last_axis_handoff_alternative_information_matrix,
+                            self.subspace_handoff_latched,
+                            enter_support=self.axis_handoff_enter_support,
+                            exit_support=self.axis_handoff_exit_support,
+                            minimum_lidar_information_scale=(
+                                self.axis_handoff_minimum_lidar_information_scale
+                            ),
+                            maximum_lidar_to_alternative_ratio=(
+                                self.axis_handoff_maximum_lidar_to_alternative_ratio
+                            ),
+                        )
+                        if np.any(
+                            self.last_lidar_subspace_information_scale < 1.0
+                        ):
+                            self.counts[
+                                "native_lidar_subspace_handoff_frames"
+                            ] += 1
+                    else:
+                        lidar_information = (
+                            self.last_native_axis_profile_information
+                            * lidar_effective_weight
+                        )
+                        (
+                            self.last_lidar_axis_information_scale,
+                            self.axis_handoff_latched,
+                        ) = axis_information_handoff(
+                            lidar_information,
+                            self.last_native_isotropic_information_support,
+                            alternative_information,
+                            self.axis_handoff_latched,
+                            enabled_axes=self.axis_handoff_enabled_axes,
+                            enter_support=self.axis_handoff_enter_support,
+                            exit_support=self.axis_handoff_exit_support,
+                            minimum_lidar_information_scale=(
+                                self.axis_handoff_minimum_lidar_information_scale
+                            ),
+                            maximum_lidar_to_alternative_ratio=(
+                                self.axis_handoff_maximum_lidar_to_alternative_ratio
+                            ),
+                        )
+                        handed_off = (
+                            self.last_lidar_axis_information_scale < 1.0
+                        )
+                        if np.any(handed_off):
+                            self.counts[
+                                "native_lidar_axis_handoff_frames"
+                            ] += 1
+                            for axis, name in enumerate(("x", "y", "z")):
+                                if handed_off[axis]:
+                                    self.counts[
+                                        f"native_lidar_axis_handoff_{name}"
+                                    ] += 1
+                        lidar_information_transform = np.diag(np.sqrt(
+                            self.last_lidar_axis_information_scale
+                        ))
+                axis_scaled = not np.allclose(
+                    lidar_information_transform, np.eye(3),
+                    atol=0.0, rtol=0.0,
                 )
                 self.backend.add_native_lidar_correspondences(
                     current_index,
@@ -10520,6 +10854,9 @@ class UnifiedBackendNode(Node):
                     axis_information_scale=(
                         self.last_lidar_axis_information_scale
                     ),
+                    translation_information_transform=(
+                        lidar_information_transform
+                    ),
                 )
                 self.counts["native_lidar_relinearized"] += 1
                 if axis_scaled:
@@ -10527,7 +10864,9 @@ class UnifiedBackendNode(Node):
                         "native_lidar_axis_conditional_factors"
                     ] += 1
                     self.last_lidar_source = (
-                        "native_point_to_plane_axis_scaled_relinearized"
+                        "native_point_to_plane_subspace_scaled_relinearized"
+                        if self.subspace_information_handoff_enabled
+                        else "native_point_to_plane_axis_scaled_relinearized"
                     )
                 else:
                     self.last_lidar_source = (
@@ -11819,6 +12158,8 @@ class UnifiedBackendNode(Node):
             f"{self.counts['gnss_all_axes_inconsistent']};"
             "gnss_prefit_recovery_floor="
             f"{self.counts['gnss_prefit_recovery_floor']};"
+            "gnss_subspace_recovery_factors="
+            f"{self.counts['gnss_subspace_recovery_factors']};"
             f"gnss_last_reason={self.last_gnss_admission_reason};"
             f"gnss_duplicates={self.counts['gnss_duplicates']};"
             f"gnss_stale={self.counts['gnss_stale_discarded']};"
@@ -12664,6 +13005,27 @@ class UnifiedBackendNode(Node):
                 ",".join(
                     f"{value:.9g}"
                     for value in self.last_lidar_axis_information_scale
+                ),
+            ),
+            self._key(
+                "native_lidar_subspace_information_scale",
+                ",".join(
+                    f"{value:.9g}"
+                    for value in self.last_lidar_subspace_information_scale
+                ),
+            ),
+            self._key(
+                "native_lidar_subspace_support",
+                ",".join(
+                    f"{value:.9g}"
+                    for value in self.last_lidar_subspace_support
+                ),
+            ),
+            self._key(
+                "native_lidar_subspace_directions",
+                ",".join(
+                    f"{value:.9g}"
+                    for value in self.last_lidar_subspace_directions.reshape(-1)
                 ),
             ),
             self._key(

@@ -19,12 +19,14 @@ from ._core import (
 try:
     from ._core import (
         lidar_point_plane_graph_normal_axis_scaled,
+        lidar_point_plane_graph_normal_subspace,
         lidar_point_plane_normal_axis_scaled,
     )
 except ImportError:
     # Keep source overlays importable while an older compiled extension is
     # still installed; the fusion package falls back to the Python kernel.
     lidar_point_plane_graph_normal_axis_scaled = None
+    lidar_point_plane_graph_normal_subspace = None
     lidar_point_plane_normal_axis_scaled = None
 
 __all__ = [
@@ -34,6 +36,7 @@ __all__ = [
     "lidar_point_plane_cost",
     "lidar_point_plane_graph_normal",
     "lidar_point_plane_graph_normal_axis_scaled",
+    "lidar_point_plane_graph_normal_subspace",
     "lidar_point_plane_normal",
     "lidar_point_plane_normal_axis_scaled",
     "marginal_prior_cost",
