@@ -378,11 +378,23 @@ if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
 fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
+  if [[ -z "${MAVROS_PLUGINLISTS_FILE+x}" ]]; then
+    if [[ "${ENABLE_FCU_FLOW:-0}" == "1" ||
+      "${ENABLE_FCU_RANGE:-0}" == "1" ||
+      "${ENABLE_NONGPS_FLOW:-0}" == "1" ]]; then
+      MAVROS_PLUGINLISTS_FILE="$PKG_SHARE/config/mavros_validation_flow_pluginlists.yaml"
+    else
+      MAVROS_PLUGINLISTS_FILE="$PKG_SHARE/config/mavros_validation_pluginlists.yaml"
+    fi
+  fi
+  if [[ ! -f "$MAVROS_PLUGINLISTS_FILE" ]]; then
+    printf 'MAVROS plugin list is missing: %s\n' "$MAVROS_PLUGINLISTS_FILE" >&2
+    exit 2
+  fi
   setsid ros2 run mavros mavros_node --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     --params-file /opt/ros/humble/share/mavros/launch/apm_config.yaml \
-    --params-file /opt/ros/humble/share/mavros/launch/apm_pluginlists.yaml \
-    --params-file "$PKG_SHARE/config/mavros_apm_rgbd.yaml" \
+    --params-file "$MAVROS_PLUGINLISTS_FILE" \
     >"$LOG_DIR/mavros.log" 2>&1 &
   pids+=("$!")
   sleep 4

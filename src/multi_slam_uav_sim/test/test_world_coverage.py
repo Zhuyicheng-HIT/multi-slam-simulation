@@ -140,6 +140,8 @@ def test_optical_flow_camera_and_range_point_downward():
         sensor.get("name"): sensor
         for sensor in root.findall(".//sensor")
     }
+    assert "optical_flow_imu" not in sensors
+    assert "front_d435i_imu" not in sensors
     for name in ("optical_flow_mono_down", "optical_flow_range"):
         pose = [float(value) for value in sensors[name].findtext("pose").split()]
         assert len(pose) == 6
