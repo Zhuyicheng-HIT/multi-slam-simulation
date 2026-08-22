@@ -194,6 +194,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "axis_information_handoff_enabled", default_value="false"
         ),
+        DeclareLaunchArgument(
+            "subspace_information_handoff_enabled", default_value="false"
+        ),
         DeclareLaunchArgument("axis_handoff_enable_x", default_value="false"),
         DeclareLaunchArgument("axis_handoff_enable_y", default_value="false"),
         DeclareLaunchArgument("axis_handoff_enable_z", default_value="true"),
@@ -392,6 +395,12 @@ def generate_launch_description():
                     "barometer_topic": LaunchConfiguration("barometer_topic"),
                     "axis_information_handoff_enabled": ParameterValue(
                         LaunchConfiguration("axis_information_handoff_enabled"),
+                        value_type=bool,
+                    ),
+                    "subspace_information_handoff_enabled": ParameterValue(
+                        LaunchConfiguration(
+                            "subspace_information_handoff_enabled"
+                        ),
                         value_type=bool,
                     ),
                     "axis_handoff_enable_x": ParameterValue(
