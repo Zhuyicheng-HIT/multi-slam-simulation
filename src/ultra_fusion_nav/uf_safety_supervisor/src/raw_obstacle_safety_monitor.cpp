@@ -72,6 +72,8 @@ public:
     raw_timeout_s_ = declare_parameter<double>("raw.timeout_s", 0.20);
     odom_timeout_s_ = declare_parameter<double>("motion.timeout_s", 0.25);
     future_tolerance_s_ = declare_parameter<double>("raw.future_tolerance_s", 0.02);
+    candidate_timeout_s_ = declare_parameter<double>("candidate.timeout_s", 0.50);
+    path_timeout_s_ = declare_parameter<double>("candidate.path_timeout_s", 0.25);
     minimum_points_ = static_cast<std::size_t>(std::max<std::int64_t>(
       1, declare_parameter<int>("raw.minimum_points", 20)));
     const auto xyz = declare_parameter<std::vector<double>>(
@@ -127,7 +129,7 @@ private:
     odom_received_ = true;
   }
 
-  Eigen::Vector3d desired_direction_body(bool & localization_valid) const
+  Eigen::Vector3d desired_direction_body(bool & localization_valid)
   {
     localization_valid = odom_received_ && finite_pose(odom_.pose.pose);
     Eigen::Vector3d velocity{
@@ -137,10 +139,17 @@ private:
     const Eigen::Vector3d current{
       odom_.pose.pose.position.x, odom_.pose.pose.position.y, odom_.pose.pose.position.z};
     Eigen::Vector3d goal = current;
-    if (!path_.poses.empty() && finite_pose(path_.poses.front().pose)) {
+    const double now = get_clock()->now().seconds();
+    const double path_stamp = stamp_s(path_.header.stamp);
+    const double target_stamp = stamp_s(target_.header.stamp);
+    const bool path_fresh = path_stamp > 0.0 && now >= path_stamp &&
+      now - path_stamp <= path_timeout_s_;
+    const bool target_fresh = target_stamp > 0.0 && now >= target_stamp &&
+      now - target_stamp <= candidate_timeout_s_;
+    if (path_fresh && !path_.poses.empty() && finite_pose(path_.poses.front().pose)) {
       goal = {path_.poses.front().pose.position.x, path_.poses.front().pose.position.y,
         path_.poses.front().pose.position.z};
-    } else if (finite_pose(target_.pose)) {
+    } else if (target_fresh && finite_pose(target_.pose)) {
       goal = {target_.pose.position.x, target_.pose.position.y, target_.pose.position.z};
     } else {
       return velocity;
@@ -227,6 +236,8 @@ private:
   double raw_timeout_s_{0.2};
   double odom_timeout_s_{0.25};
   double future_tolerance_s_{0.02};
+  double candidate_timeout_s_{0.50};
+  double path_timeout_s_{0.25};
   std::size_t minimum_points_{20U};
   double last_raw_stamp_s_{0.0};
   double last_raw_arrival_s_{0.0};
