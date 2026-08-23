@@ -528,6 +528,11 @@ if [[ "$ONLINE_MAPPING_MODE" != disabled ]]; then
 fi
 
 if [[ "$RUN_SMALL_RECTANGLE" == 1 ]]; then
+  source "$PKG_SHARE/scripts/safety_slice_process.sh"
+  safety_slice_start /livox/lidar true "$RUN_DIR/safety_slice.log"
+  if [[ -n "$SAFETY_SLICE_PID" ]]; then
+    record_pid safety_slice "$SAFETY_SLICE_PID"
+  fi
   setsid ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
     -p use_sim_time:=true \
     -p takeoff_alt:="$RECTANGLE_TAKEOFF_ALT" -p length_x:="$RECTANGLE_LENGTH_X" \

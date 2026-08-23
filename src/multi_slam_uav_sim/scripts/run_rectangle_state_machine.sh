@@ -12,6 +12,7 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
+source "$PKG_SHARE/scripts/safety_slice_process.sh"
 
 mavros_ready=false
 for _attempt in $(seq 1 10); do
@@ -45,6 +46,16 @@ fi
 
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/rectangle_state_machine_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
+RAW_OBSTACLE_TOPIC=${RAW_OBSTACLE_TOPIC:-/livox/lidar}
+safety_slice_start "$RAW_OBSTACLE_TOPIC" true "$LOG_DIR/safety_slice.log"
+
+cleanup_safety_slice() {
+  local status=$?
+  trap - EXIT INT TERM
+  safety_slice_stop_owned
+  exit "$status"
+}
+trap cleanup_safety_slice EXIT INT TERM
 
 TAKEOFF_ALT=${TAKEOFF_ALT:-3.0}
 RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-2.0}
@@ -191,4 +202,6 @@ elif [[ "$ENABLE_FLOW_ACCURACY" == "1" ]]; then
   printf '\nNo FLOW_ACCURACY summary found yet. See:\n  %s\n' "$LOG_DIR/flow_gazebo_accuracy.log"
 fi
 
+safety_slice_stop_owned
+trap - EXIT INT TERM
 exit "$state_status"

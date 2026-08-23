@@ -29,6 +29,7 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>uf_interfaces</exec_depend>
+  <exec_depend>uf_safety_supervisor</exec_depend>
   <test_depend>ament_pytest</test_depend>
   <test_depend>python3-pytest</test_depend>
   <export>

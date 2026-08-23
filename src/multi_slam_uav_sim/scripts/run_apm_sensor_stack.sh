@@ -569,6 +569,22 @@ if [[ "$ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV" == "1" ]]; then
   pids+=("$!")
 fi
 
+if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" || "${AUTO_FLIGHT:-0}" == "1" ]]; then
+  # Every automatic mission now publishes an intent.  The safety arbiter is
+  # the sole MAVROS setpoint owner, while obstacle sensing stays on the raw
+  # MID360 stream even when the legacy temporal filter is enabled for SLAM.
+  source "$PKG_SHARE/scripts/safety_slice_process.sh"
+  safety_raw_topic=/livox/lidar
+  if [[ "$temporal_dynamic_filter_enabled" == "true" ]]; then
+    safety_raw_topic=/livox/lidar_raw
+  fi
+  safety_slice_start "$safety_raw_topic" "$USE_SIM_TIME" \
+    "$LOG_DIR/safety_slice.log"
+  if [[ -n "$SAFETY_SLICE_PID" ]]; then
+    pids+=("$SAFETY_SLICE_PID")
+  fi
+fi
+
 if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" ]]; then
   setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args -p use_sim_time:='$USE_SIM_TIME' -p takeoff_alt:=3.0 -p length_x:=6.0 -p length_y:=4.0 -p speed_mps:=0.8 -p land_at_end:=true" >"$LOG_DIR/guided_rectangle_waypoints.log" 2>&1 &
   pids+=("$!")

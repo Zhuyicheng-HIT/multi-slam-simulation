@@ -13,6 +13,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GnssIntegrity.msg"
   "msg/LioDiagnostics.msg"
   "msg/LidarCalibrationMotion.msg"
+  "msg/ObstacleSafetyState.msg"
+  "msg/FlightCommandDecision.msg"
   "msg/ReliabilityScore.msg"
   "msg/SchedulerState.msg"
   "msg/RelocalizationResult.msg"
