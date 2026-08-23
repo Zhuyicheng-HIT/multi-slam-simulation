@@ -28,6 +28,18 @@ def test_dynamic_clean_topics_are_not_obstacle_monitor_inputs():
     assert "/dynamic_observer/static" not in source
 
 
+def test_local_planner_uses_raw_lidar_and_never_owns_mavros():
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "local_avoidance_planner.cpp"
+    ).read_text(encoding="utf-8")
+    assert '"/livox/lidar"' in source
+    assert "/livox/lidar_clean" not in source
+    assert "/dynamic_observer/static" not in source
+    assert "/mavros/setpoint_position/local" not in source
+    assert '"/autonomy/intent/planner/pose"' in source
+    assert '"/autonomy/candidate_path"' in source
+
+
 def test_fcu_heartbeat_absence_is_fail_closed():
     source = (
         Path(__file__).resolve().parents[1] / "src" / "flight_command_arbiter.cpp"

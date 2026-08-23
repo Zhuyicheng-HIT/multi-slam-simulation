@@ -35,6 +35,18 @@ def generate_launch_description():
             ),
             Node(
                 package="uf_safety_supervisor",
+                executable="local_avoidance_planner",
+                parameters=[
+                    config,
+                    {
+                        "use_sim_time": use_sim_time,
+                        "raw_lidar_topic": raw_lidar_topic,
+                    },
+                ],
+                output="screen",
+            ),
+            Node(
+                package="uf_safety_supervisor",
                 executable="flight_command_arbiter",
                 parameters=[config, {"use_sim_time": use_sim_time}],
                 output="screen",

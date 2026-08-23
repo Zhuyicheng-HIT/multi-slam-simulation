@@ -14,6 +14,13 @@ animal removed from FAST-LIO remains visible to obstacle safety.
 `/mavros/setpoint_position/local`. Mission, planner, and active relocalization
 publish source-specific candidate topics.
 
+`local_avoidance_planner` implements a bounded, conservative 2.5-D local A*
+detour over the same Raw MID360 scan. It publishes only a planner intent and a
+candidate path. The raw obstacle monitor independently checks that candidate
+before the arbiter may select it. Planning uses 0.80 m obstacle inflation while
+the independent trajectory gate continues to require 0.65 m clearance; this
+provides tracking margin without weakening the safety contract.
+
 Priority is fixed:
 
 1. manual or FCU failsafe (release automatic publication)
@@ -36,6 +43,15 @@ The braking envelope is
 `margin + reaction_time * speed + speed^2 / (2 * maximum_deceleration)`.
 TTC provides an independent trigger. Body-frame velocity and raw points remain
 usable when world localization is degraded.
+
+## Local replanning states
+
+The local planner follows the fail-closed sequence
+`NAVIGATING -> PATH_BLOCKED -> BRAKE_HOLD -> REPLAN -> TRAJECTORY_VERIFY -> RESUME`.
+A stale Raw scan, stale/non-finite mission or odometry, planner timeout, failed
+search, or candidate-path conflict transitions to `HOVER_REQUIRED`. It never
+forces progress through an invalid path. Global exploration and long-horizon
+dynamic prediction remain out of scope.
 
 ## Run
 
