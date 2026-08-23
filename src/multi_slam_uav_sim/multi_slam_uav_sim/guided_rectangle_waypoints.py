@@ -43,6 +43,9 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("yaw_rate_deg_s", 12.0)
         self.declare_parameter("face_rectangle_edges", True)
         self.declare_parameter("setpoint_rate_hz", 10.0)
+        self.declare_parameter(
+            "setpoint_output_topic", "/autonomy/intent/mission/pose"
+        )
         self.declare_parameter("preflight_wait_s", 45.0)
         self.declare_parameter("navigation_stable_s", 1.0)
         self.declare_parameter("navigation_source", "auto")
@@ -158,7 +161,7 @@ class GuidedRectangleWaypoints(Node):
             qos_profile_sensor_data,
         )
         self.setpoint_pub = self.create_publisher(
-            PoseStamped, "/mavros/setpoint_position/local", 10
+            PoseStamped, str(self.get_parameter("setpoint_output_topic").value), 10
         )
         self.arming_cli = self.create_client(CommandBool, "/mavros/cmd/arming")
         self.mode_cli = self.create_client(SetMode, "/mavros/set_mode")

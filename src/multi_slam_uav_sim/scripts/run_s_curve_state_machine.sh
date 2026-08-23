@@ -12,6 +12,7 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
+source "$PKG_SHARE/scripts/safety_slice_process.sh"
 
 ROUTE_FEEDBACK_SOURCE=${ROUTE_FEEDBACK_SOURCE:-unified_backend}
 GAZEBO_TRUTH_ODOM_TOPIC=${GAZEBO_TRUTH_ODOM_TOPIC:-/sim/mid360/ground_truth_odom}
@@ -71,6 +72,16 @@ fi
 
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/s_curve_state_machine_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
+RAW_OBSTACLE_TOPIC=${RAW_OBSTACLE_TOPIC:-/livox/lidar}
+safety_slice_start "$RAW_OBSTACLE_TOPIC" true "$LOG_DIR/safety_slice.log"
+
+cleanup_safety_slice() {
+  local status=$?
+  trap - EXIT INT TERM
+  safety_slice_stop_owned
+  exit "$status"
+}
+trap cleanup_safety_slice EXIT INT TERM
 
 TAKEOFF_ALT=${TAKEOFF_ALT:-2.2}
 S_CURVE_SPAN=${S_CURVE_SPAN:-9.0}
@@ -288,4 +299,6 @@ ros2 run multi_slam_uav_sim guided_s_curve_waypoints --ros-args \
   -p mavlink_takeoff_url:="$MAVLINK_TAKEOFF_URL" \
   2>&1 | tee "$LOG_DIR/guided_s_curve_waypoints.log"
 status="${PIPESTATUS[0]}"
+safety_slice_stop_owned
+trap - EXIT INT TERM
 exit "$status"

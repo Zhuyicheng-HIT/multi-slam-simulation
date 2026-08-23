@@ -27,6 +27,9 @@ class RectangleFlowTest(Node):
         self.declare_parameter("hold_start_s", 5.0)
         self.declare_parameter("hold_corner_s", 2.0)
         self.declare_parameter("setpoint_rate_hz", 15.0)
+        self.declare_parameter(
+            "setpoint_output_topic", "/autonomy/intent/mission/pose"
+        )
         self.declare_parameter("land_at_end", True)
         self.declare_parameter("flow_topic", "/sim/optical_flow/raw")
         self.declare_parameter("min_good_quality", 60)
@@ -84,7 +87,9 @@ class RectangleFlowTest(Node):
         self.create_subscription(
             OpticalFlow, self.get_parameter("flow_topic").value, self._flow_cb, 10
         )
-        self.setpoint_pub = self.create_publisher(PoseStamped, "/mavros/setpoint_position/local", 10)
+        self.setpoint_pub = self.create_publisher(
+            PoseStamped, str(self.get_parameter("setpoint_output_topic").value), 10
+        )
         self.arming_cli = self.create_client(CommandBool, "/mavros/cmd/arming")
         self.mode_cli = self.create_client(SetMode, "/mavros/set_mode")
         self.takeoff_cli = self.create_client(CommandTOL, "/mavros/cmd/takeoff")

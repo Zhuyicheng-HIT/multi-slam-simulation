@@ -16,6 +16,7 @@ class GuidedFlightDemo(Node):
         self.declare_parameter('hold_time', 6.0)
         self.declare_parameter('setpoint_rate_hz', 10.0)
         self.declare_parameter('land_at_end', False)
+        self.declare_parameter('setpoint_output_topic', '/autonomy/intent/mission/pose')
 
         self.takeoff_alt = float(self.get_parameter('takeoff_alt').value)
         self.side_length = float(self.get_parameter('side_length').value)
@@ -25,7 +26,9 @@ class GuidedFlightDemo(Node):
 
         self.state = State()
         self.create_subscription(State, '/mavros/state', self._state_cb, 10)
-        self.setpoint_pub = self.create_publisher(PoseStamped, '/mavros/setpoint_position/local', 10)
+        self.setpoint_pub = self.create_publisher(
+            PoseStamped, str(self.get_parameter('setpoint_output_topic').value), 10
+        )
         self.arming_cli = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode')
         self.takeoff_cli = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
