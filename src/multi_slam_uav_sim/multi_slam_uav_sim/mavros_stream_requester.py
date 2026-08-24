@@ -20,11 +20,13 @@ class MavrosStreamRequester(Node):
         self.declare_parameter("attitude_rate_hz", 30.0)
         self.declare_parameter("timeout_s", 30.0)
         self.declare_parameter("response_wait_s", 3.0)
+        self.declare_parameter("minimal_only", False)
 
         self.mavros_ns = str(self.get_parameter("mavros_ns").value).rstrip("/")
         self.stream_rate_hz = int(self.get_parameter("stream_rate_hz").value)
         self.timeout_s = float(self.get_parameter("timeout_s").value)
         self.response_wait_s = float(self.get_parameter("response_wait_s").value)
+        self.minimal_only = bool(self.get_parameter("minimal_only").value)
         self.connected = False
         self.start_time = time.monotonic()
 
@@ -97,6 +99,9 @@ class MavrosStreamRequester(Node):
             # disabling RAW_IMU prevents multiple raw sensor sources.
             (27, 0.0),                                                    # RAW_IMU off
         ]
+        if self.minimal_only:
+            required_ids = {105, 24, 29, 32, 33, 27}
+            intervals = [item for item in intervals if item[0] in required_ids]
         highres_imu_ok = False
         if self._wait_service(self.interval_cli, "set_message_interval"):
             for msg_id, rate_hz in intervals:
@@ -111,7 +116,9 @@ class MavrosStreamRequester(Node):
                 if msg_id == 105:
                     highres_imu_ok = accepted
 
-        if self._wait_service(self.stream_cli, "set_stream_rate"):
+        if not self.minimal_only and self._wait_service(
+            self.stream_cli, "set_stream_rate"
+        ):
             for stream_id in stream_ids:
                 if highres_imu_ok and stream_id == StreamRate.Request.STREAM_RAW_SENSORS:
                     continue

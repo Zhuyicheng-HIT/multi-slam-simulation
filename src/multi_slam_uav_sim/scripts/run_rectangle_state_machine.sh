@@ -49,6 +49,7 @@ mkdir -p "$LOG_DIR"
 TAKEOFF_ALT=${TAKEOFF_ALT:-3.0}
 RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-2.0}
 RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-1.2}
+ROUTE_MODE=${ROUTE_MODE:-rectangle}
 RECTANGLE_SPEED=${RECTANGLE_SPEED:-0.20}
 HOLD_TIME=${HOLD_TIME:-2.0}
 POST_TAKEOFF_HOLD_TIME=${POST_TAKEOFF_HOLD_TIME:-3.0}
@@ -109,6 +110,7 @@ Parameters:
   takeoff_alt=$TAKEOFF_ALT
   length_x=$RECTANGLE_LENGTH_X
   length_y=$RECTANGLE_LENGTH_Y
+  route_mode=$ROUTE_MODE
   speed_mps=$RECTANGLE_SPEED
   hold_time=$HOLD_TIME
   post_takeoff_hold_time_s=$POST_TAKEOFF_HOLD_TIME
@@ -160,6 +162,7 @@ ros2 run multi_slam_uav_sim "$rectangle_executable" --ros-args \
   -p takeoff_alt:="$TAKEOFF_ALT_PARAM" \
   -p length_x:="$RECTANGLE_LENGTH_X_PARAM" \
   -p length_y:="$RECTANGLE_LENGTH_Y_PARAM" \
+  -p route_mode:="$ROUTE_MODE" \
   -p speed_mps:="$RECTANGLE_SPEED_PARAM" \
   -p hold_time:="$HOLD_TIME_PARAM" \
   -p post_takeoff_hold_time_s:="$POST_TAKEOFF_HOLD_TIME_PARAM" \

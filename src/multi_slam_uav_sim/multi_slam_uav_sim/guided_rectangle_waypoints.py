@@ -36,6 +36,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("takeoff_alt", 3.0)
         self.declare_parameter("length_x", 2.0)
         self.declare_parameter("length_y", 1.2)
+        self.declare_parameter("route_mode", "rectangle")
         self.declare_parameter("speed_mps", 0.20)
         self.declare_parameter("hold_time", 2.0)
         self.declare_parameter("post_takeoff_hold_time_s", 3.0)
@@ -67,6 +68,9 @@ class GuidedRectangleWaypoints(Node):
         self.takeoff_alt = float(self.get_parameter("takeoff_alt").value)
         self.length_x = float(self.get_parameter("length_x").value)
         self.length_y = float(self.get_parameter("length_y").value)
+        self.route_mode = str(self.get_parameter("route_mode").value).lower()
+        if self.route_mode not in ("rectangle", "straight"):
+            raise ValueError("route_mode must be rectangle or straight")
         self.speed_mps = max(0.05, float(self.get_parameter("speed_mps").value))
         self.hold_time = float(self.get_parameter("hold_time").value)
         self.post_takeoff_hold_time_s = max(
@@ -244,6 +248,11 @@ class GuidedRectangleWaypoints(Node):
         )
 
     def _navigation_source(self):
+        if getattr(self, "route_feedback_source", "") == "gazebo_truth":
+            # Truth-controlled diagnostics intentionally keep EKF3 out of the
+            # loop. MAVROS local pose is still required as the setpoint frame,
+            # but GPS/FCU optical-flow acceptance must not gate the mission.
+            return "gazebo_truth" if self.pose is not None else None
         if self.navigation_source in ("auto", "gps") and self._gps_navigation_ready():
             return "gps"
         if self.navigation_source in ("auto", "optical_flow") and self._flow_ready():
@@ -732,7 +741,10 @@ class GuidedRectangleWaypoints(Node):
         )
         self.wait_for_takeoff_climb()
 
-        self.get_logger().info("Switching to local setpoints for rectangle hold/waypoints...")
+        self.get_logger().info(
+            "Switching to local setpoints for "
+            f"{self.route_mode} route hold/waypoints..."
+        )
         self.ensure_guided("post-takeoff")
         self._publish_mission_phase("post_takeoff_hold")
         self.hold_setpoint(
@@ -745,21 +757,30 @@ class GuidedRectangleWaypoints(Node):
              self.home_yaw + math.pi, self.home_yaw + 3.0 * math.pi / 2.0]
             if self.face_rectangle_edges else [self.home_yaw] * 4
         )
-        points = [
-            (self.home_x, self.home_y, z, self.home_yaw),
-            (self.home_x + self.length_x, self.home_y, z, edge_yaws[0]),
-            (self.home_x + self.length_x, self.home_y + self.length_y, z, edge_yaws[1]),
-            (self.home_x, self.home_y + self.length_y, z, edge_yaws[2]),
-            (self.home_x, self.home_y, z, edge_yaws[3]),
-        ]
+        if self.route_mode == "straight":
+            # A single forward leg is used for long-corridor diagnostics; the
+            # existing LAND path runs immediately after this segment.
+            points = [
+                (self.home_x, self.home_y, z, self.home_yaw),
+                (self.home_x, self.home_y + self.length_y, z, self.home_yaw),
+            ]
+        else:
+            points = [
+                (self.home_x, self.home_y, z, self.home_yaw),
+                (self.home_x + self.length_x, self.home_y, z, edge_yaws[0]),
+                (self.home_x + self.length_x, self.home_y + self.length_y, z, edge_yaws[1]),
+                (self.home_x, self.home_y + self.length_y, z, edge_yaws[2]),
+                (self.home_x, self.home_y, z, edge_yaws[3]),
+            ]
         current = points[0][:3]
         current_yaw = points[0][3]
         self._publish_mission_phase("route_active")
+        route_count = len(points) - 1
         for idx, (x, y, target_z, yaw) in enumerate(points[1:], start=1):
             goal = (x, y, target_z)
             if abs(math.atan2(math.sin(yaw - current_yaw), math.cos(yaw - current_yaw))) > math.radians(1.0):
-                self.rotate_in_place(current, current_yaw, yaw, f"turn {idx}/4")
-            self.fly_segment(current, goal, yaw, f"waypoint {idx}/4")
+                self.rotate_in_place(current, current_yaw, yaw, f"turn {idx}/{route_count}")
+            self.fly_segment(current, goal, yaw, f"waypoint {idx}/{route_count}")
             current = goal
             current_yaw = yaw
 

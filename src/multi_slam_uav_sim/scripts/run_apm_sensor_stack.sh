@@ -24,17 +24,6 @@ ENABLE_EXTERNALNAV_EKF3=${ENABLE_EXTERNALNAV_EKF3:-${ENABLE_EXTERNALNAV_FUSION:-
 ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=${ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV:-${ENABLE_EXTERNALNAV_FUSION:-0}}
 LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
 USE_SIM_TIME=${USE_SIM_TIME:-true}
-# MicoLink is the canonical companion-computer transport. APM's MAVLink
-# transport remains available when the FCU itself must consume optical flow.
-FLOW_PROTOCOL=${FLOW_PROTOCOL:-micolink}
-case "$FLOW_PROTOCOL" in
-  micolink|mavlink_apm) ;;
-  *)
-    printf 'Unsupported FLOW_PROTOCOL=%s. Use micolink or mavlink_apm.\n' \
-      "$FLOW_PROTOCOL" >&2
-    exit 2
-    ;;
-esac
 if [[ -z "${MID360_SIM_BRIDGE_MODE+x}" ]]; then
   if [[ "${ENABLE_MID360_BRIDGE:-1}" == "1" ]]; then
     # Keep simulation on the same Livox CustomMsg boundary as hardware.  The
@@ -53,24 +42,16 @@ case "$MID360_SIM_BRIDGE_MODE" in
     ;;
 esac
 MID360_BODY_FILTER_ENABLED=${MID360_BODY_FILTER_ENABLED:-true}
-MID360_BODY_MIN_X_M=${MID360_BODY_MIN_X_M:--0.25}
-MID360_BODY_MAX_X_M=${MID360_BODY_MAX_X_M:-0.25}
-MID360_BODY_MIN_Y_M=${MID360_BODY_MIN_Y_M:--0.25}
-MID360_BODY_MAX_Y_M=${MID360_BODY_MAX_Y_M:-0.25}
-MID360_BODY_MIN_Z_M=${MID360_BODY_MIN_Z_M:--0.05}
-MID360_BODY_MAX_Z_M=${MID360_BODY_MAX_Z_M:-0.05}
+MID360_BODY_MIN_X_M=${MID360_BODY_MIN_X_M:--0.45}
+MID360_BODY_MAX_X_M=${MID360_BODY_MAX_X_M:-0.45}
+MID360_BODY_MIN_Y_M=${MID360_BODY_MIN_Y_M:--0.45}
+MID360_BODY_MAX_Y_M=${MID360_BODY_MAX_Y_M:-0.45}
+MID360_BODY_MIN_Z_M=${MID360_BODY_MIN_Z_M:--0.35}
+MID360_BODY_MAX_Z_M=${MID360_BODY_MAX_Z_M:-0.15}
 MID360_LIDAR_TO_BODY_X_M=${MID360_LIDAR_TO_BODY_X_M:-0.05}
 MID360_LIDAR_TO_BODY_Y_M=${MID360_LIDAR_TO_BODY_Y_M:-0.0}
 MID360_LIDAR_TO_BODY_Z_M=${MID360_LIDAR_TO_BODY_Z_M:-0.10}
 TEMPORAL_DYNAMIC_FILTER_ENABLED=${TEMPORAL_DYNAMIC_FILTER_ENABLED:-false}
-TEMPORAL_DYNAMIC_FILTER_VOXEL_SIZE_M=${TEMPORAL_DYNAMIC_FILTER_VOXEL_SIZE_M:-0.50}
-TEMPORAL_DYNAMIC_FILTER_HISTORY_FRAMES=${TEMPORAL_DYNAMIC_FILTER_HISTORY_FRAMES:-5}
-TEMPORAL_DYNAMIC_FILTER_MIN_SUPPORT=${TEMPORAL_DYNAMIC_FILTER_MIN_SUPPORT:-2}
-case "${TEMPORAL_DYNAMIC_FILTER_ENABLED,,}" in
-  1|true|yes|on) temporal_dynamic_filter_enabled=true ;;
-  0|false|no|off) temporal_dynamic_filter_enabled=false ;;
-  *) printf 'TEMPORAL_DYNAMIC_FILTER_ENABLED must be true/false or 1/0.\n' >&2; exit 2 ;;
-esac
 
 if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
   if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
@@ -241,90 +222,22 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
   if [[ "${ENABLE_FCU_RANGE:-0}" == "1" || "${ENABLE_NONGPS_FLOW:-0}" == "1" ]]; then
     fcu_range_topic="/mavros/rangefinder_sub"
   fi
-  setsid ros2 run multi_slam_uav_sim gz_rgbd_latest_bridge --ros-args \
-    -p use_sim_time:="$USE_SIM_TIME" \
-    -p gz_prefix:=/camera/camera \
-    -p ros_prefix:=/camera/camera \
-    -p publish_hz:=${FLOW_BRIDGE_HZ:-30.0} \
-    -p publish_all_frames:=${FLOW_PUBLISH_ALL_FRAMES:-true} \
-    -p restamp:=false \
-    >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
-  pids+=("$!")
-
   flow_args=(
     -p use_sim_time:="$USE_SIM_TIME"
-    -p image_topic:=/camera/camera/color/image_raw
-    -p camera_info_topic:=/camera/camera/color/camera_info
-    -p depth_topic:=/camera/camera/depth/image_rect_raw
-    -p flow_topic:=/sim/optical_flow/raw
-    -p rad_topic:=/sim/optical_flow/rad_native
-    -p range_topic:=/sim/optical_flow/range_native
-    -p gazebo_range_topic:=/flow/range
-    -p gazebo_imu_topic:=/flow/imu
+    -p image_gz_topic:=/camera/camera
+    -p range_gz_topic:=/flow/range
     -p imu_topic:=/mavros/imu/data_raw
     # The MTF companion path is consumed by a 10 Hz LiDAR-triggered backend.
     # A deterministic 15 Hz stream preserves fresh zero-motion observations
     # without spending CPU on frames the estimator cannot consume.
     -p max_rate_hz:=${FLOW_RATE_HZ:-15.0}
-    -p angular_scale:=1.0
-    # The camera intrinsics define the metric scale. Keep an explicit override
-    # for A/B tests, but do not hide geometry errors behind an empirical gain.
-    -p translation_scale:=${FLOW_TRANSLATION_SCALE:-1.0}
-    -p use_physics_flow:=${FLOW_USE_PHYSICS:-false}
-    -p use_gazebo_height:=${FLOW_USE_GAZEBO_HEIGHT:-false}
-    -p gazebo_world_name:="$WORLD_NAME"
-    -p gazebo_height_model:=apm_iris
-    -p publish_to_fcu:="$publish_to_fcu"
-    -p fcu_flow_topic:=/mavros/optical_flow/raw/send
-    -p restamp_output:=${FLOW_RESTAMP_OUTPUT:-false}
-    -p debug:=${FLOW_DEBUG:-false}
+    -p flow_topic:=/sim/optical_flow/rad
+    -p range_topic:=/sim/optical_flow/range
   )
-  if [[ -n "$fcu_range_topic" ]]; then
-    flow_args+=(-p fcu_range_topic:="$fcu_range_topic")
-  fi
-  setsid ros2 run multi_slam_uav_sim gazebo_optical_flow_to_mavros --ros-args \
+  setsid ros2 run optical_flow_microlink_cpp gz_microlink_flow_bridge --ros-args \
     "${flow_args[@]}" \
-    >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
+    >"$LOG_DIR/gz_microlink_flow_bridge.log" 2>&1 &
   pids+=("$!")
-
-  effective_flow_protocol="$FLOW_PROTOCOL"
-  if [[ "${ENABLE_FCU_FLOW:-0}" == "1" \
-        || "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
-    # ArduPilot consumes MAVLink optical-flow messages on this route.
-    effective_flow_protocol=mavlink_apm
-  fi
-  if [[ "$effective_flow_protocol" == "micolink" ]]; then
-    setsid ros2 run multi_slam_uav_sim mtf01_micolink_bridge --ros-args \
-      -p use_sim_time:="$USE_SIM_TIME" \
-      -p mode:=sim \
-      -p input_topic:=/sim/optical_flow/rad_native \
-      -p flow_topic:=/sim/optical_flow/rad \
-      -p range_topic:=/sim/optical_flow/range \
-      -p raw_frame_topic:=/sim/mtf01/micolink_frame \
-      -p imu_topic:=/mavros/imu/data_raw \
-      -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
-      -p maximum_sensor_gap_s:=${MTF_MAX_SENSOR_GAP_S:-0.15} \
-      -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
-      -p report_path:="$LOG_DIR/mtf01_micolink_bridge.json" \
-      >"$LOG_DIR/mtf01_micolink_bridge.log" 2>&1 &
-  else
-    setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
-      -p use_sim_time:="$USE_SIM_TIME" \
-      -p mode:=sim \
-      -p input_topic:=/sim/optical_flow/rad_native \
-      -p flow_topic:=/sim/optical_flow/rad \
-      -p range_topic:=/sim/optical_flow/range \
-      -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
-      -p imu_topic:=/mavros/imu/data_raw \
-      -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
-      -p maximum_sensor_gap_s:=${MTF_MAX_SENSOR_GAP_S:-0.15} \
-      -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
-      -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
-      >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
-  fi
-  pids+=("$!")
-  printf 'Optical-flow companion transport: %s\n' "$effective_flow_protocol" \
-    >>"$LOG_DIR/stack_config.txt"
 
   if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
     setsid ros2 run multi_slam_uav_sim optical_flow_viewer --ros-args \
@@ -421,7 +334,15 @@ if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
 fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
-  MAVROS_PLUGINLISTS_FILE=${MAVROS_PLUGINLISTS_FILE:-/opt/ros/humble/share/mavros/launch/apm_pluginlists.yaml}
+  if [[ -z "${MAVROS_PLUGINLISTS_FILE+x}" ]]; then
+    if [[ "${ENABLE_FCU_FLOW:-0}" == "1" ||
+      "${ENABLE_FCU_RANGE:-0}" == "1" ||
+      "${ENABLE_NONGPS_FLOW:-0}" == "1" ]]; then
+      MAVROS_PLUGINLISTS_FILE="$PKG_SHARE/config/mavros_validation_flow_pluginlists.yaml"
+    else
+      MAVROS_PLUGINLISTS_FILE="$PKG_SHARE/config/mavros_validation_pluginlists.yaml"
+    fi
+  fi
   if [[ ! -f "$MAVROS_PLUGINLISTS_FILE" ]]; then
     printf 'MAVROS plugin list is missing: %s\n' "$MAVROS_PLUGINLISTS_FILE" >&2
     exit 2
@@ -443,30 +364,36 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     fi
     sleep 1
   done
-  printf 'Requesting ArduPilot telemetry streams for MAVROS pose/IMU/GPS/barometer topics...\n'
-  : >"$LOG_DIR/mavros_stream_requester.log"
+  printf 'MAVROS telemetry stream request mode: %s\n' \
+    "${MAVROS_REQUEST_STREAMS:-auto}"
   mavros_imu_ready=0
-  for stream_attempt in 1 2; do
-    printf '\n--- telemetry request attempt %s ---\n' "$stream_attempt" \
-      >>"$LOG_DIR/mavros_stream_requester.log"
+  if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
+      --topic /mavros/imu/data_raw --timeout 5 \
+      --reliability best_effort >/dev/null 2>&1; then
+    mavros_imu_ready=1
+  fi
+  if [[ "$mavros_imu_ready" != 1 && "${MAVROS_REQUEST_STREAMS:-auto}" != "0" ]]; then
+    : >"$LOG_DIR/mavros_stream_requester.log"
     ros2 run multi_slam_uav_sim mavros_stream_requester --ros-args \
       -p use_sim_time:="$USE_SIM_TIME" \
       -p mavros_ns:=/mavros \
-      -p timeout_s:=${MAVROS_STREAM_CONNECT_TIMEOUT_S:-60.0} \
+      -p timeout_s:=${MAVROS_STREAM_CONNECT_TIMEOUT_S:-15.0} \
+      -p response_wait_s:=${MAVROS_STREAM_RESPONSE_WAIT_S:-0.75} \
+      -p minimal_only:=${MAVROS_STREAM_MINIMAL_ONLY:-true} \
       -p stream_rate_hz:=20 \
       -p position_rate_hz:=20.0 \
       -p imu_rate_hz:=100.0 \
       -p gps_rate_hz:=10.0 \
       -p barometer_rate_hz:=10.0 \
-      >>"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
-    if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
-        --topic /mavros/imu/data_raw --timeout 15 \
-        --reliability best_effort >/dev/null 2>&1; then
-      mavros_imu_ready=1
-      break
-    fi
-    sleep 2
-  done
+      >"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
+  else
+    printf 'FCU default stream already provides IMU, or requests are disabled.\n'
+  fi
+  if [[ "$mavros_imu_ready" != 1 ]] && python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
+      --topic /mavros/imu/data_raw --timeout 20 \
+      --reliability best_effort >/dev/null 2>&1; then
+    mavros_imu_ready=1
+  fi
   if [[ "$mavros_imu_ready" != 1 ]]; then
     printf 'MAVROS connected but HIGHRES_IMU telemetry is unavailable.\n' >&2
     exit 5
@@ -517,7 +444,7 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
   # timestamps as the default for hardware, but align the simulation Livox
   # adapter to the ROS clock when explicitly requested.
   livox_bridge_output_topic=/livox/lidar
-  if [[ "$temporal_dynamic_filter_enabled" == "true" ]]; then
+  if [[ "$TEMPORAL_DYNAMIC_FILTER_ENABLED" == "true" ]]; then
     livox_bridge_output_topic=/livox/lidar_raw
   fi
   setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
@@ -528,8 +455,6 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \
     -p imu_frame_id:=base_link \
-    -p gazebo_world_name:="$WORLD_NAME" \
-    -p gazebo_model:=apm_iris \
     -p point_stride:=${MID360_POINT_STRIDE:-1} \
     -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
     -p body_min_x_m:="$MID360_BODY_MIN_X_M" \
@@ -540,19 +465,20 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
     -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
     -p restamp_imu:=${MID360_SIM_RESTAMP_IMU:-true} \
+    -p gazebo_world_name:="$WORLD_NAME" \
+    -p gazebo_model:=apm_iris \
     -p publish_ground_truth_odom:=true \
     >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")
-  if [[ "$temporal_dynamic_filter_enabled" == "true" ]]; then
+  if [[ "$TEMPORAL_DYNAMIC_FILTER_ENABLED" == "true" ]]; then
     setsid ros2 run multi_slam_uav_sim livox_temporal_dynamic_filter --ros-args \
       -p use_sim_time:="$USE_SIM_TIME" \
       -p input_topic:=/livox/lidar_raw \
       -p output_topic:=/livox/lidar \
       -p odom_topic:=/mavros/local_position/odom \
-      -p voxel_size_m:="$TEMPORAL_DYNAMIC_FILTER_VOXEL_SIZE_M" \
-      -p history_frames:="$TEMPORAL_DYNAMIC_FILTER_HISTORY_FRAMES" \
-      -p minimum_support:="$TEMPORAL_DYNAMIC_FILTER_MIN_SUPPORT" \
-      -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
+      -p voxel_size_m:="${TEMPORAL_DYNAMIC_FILTER_VOXEL_SIZE_M:-0.20}" \
+      -p history_frames:="${TEMPORAL_DYNAMIC_FILTER_HISTORY_FRAMES:-4}" \
+      -p minimum_support:="${TEMPORAL_DYNAMIC_FILTER_MIN_SUPPORT:-2}" \
       >"$LOG_DIR/livox_temporal_dynamic_filter.log" 2>&1 &
     pids+=("$!")
   fi
@@ -601,9 +527,11 @@ Direct companion-computer sensors:
   /camera/camera/depth/image_rect_raw  (optional; optical flow can use Gazebo height)
 
 Optical-flow test topic:
-  /sim/optical_flow/raw  (mavros_msgs/msg/OpticalFlow, not sent to FCU)
-  /sim/optical_flow/rad  (mavros_msgs/msg/OpticalFlowRad, MTF-01P-like diagnostics)
+  /sim/optical_flow/rad  (mavros_msgs/msg/OpticalFlowRad, MicoLink-compatible)
   /sim/optical_flow/range  (sensor_msgs/msg/Range)
+
+The default simulator path uses the C++ latest-only MicoLink bridge. The
+legacy Python image/MAVLink bridge is not started by this launcher.
 
 Optional FCU optical-flow injection:
   ENABLE_FCU_FLOW=1 publishes optical flow to /mavros/optical_flow/raw/send
