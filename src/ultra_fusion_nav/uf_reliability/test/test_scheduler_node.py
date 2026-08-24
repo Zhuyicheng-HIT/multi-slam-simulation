@@ -293,7 +293,10 @@ class SchedulerNodeTest(unittest.TestCase):
         self.assertFalse(self.scheduler.relocalization_requested)
         self.assertFalse(self.scheduler.relocalization_failed)
         self.assertEqual(self.scheduler.relocalization_commits, 1)
-        self.assertIn(False, self.harness.request_history)
+        # This transaction was injected as an external aggregate request.
+        # The scheduler did not own the source lease and therefore must not
+        # release another producer's request.
+        self.assertEqual(self.harness.request_history, [])
 
     def test_database_not_ready_is_recovery_failure_not_estimator_failure(self):
         healthy = self.drive({}, 0.20)
@@ -308,7 +311,8 @@ class SchedulerNodeTest(unittest.TestCase):
             self.executor.spin_once(timeout_sec=0.01)
         self.assertTrue(self.scheduler.relocalization_failed)
         self.assertEqual(self.scheduler.relocalization_failures, 1)
-        self.assertIn(False, self.harness.request_history)
+        # Failure diagnostics do not grant ownership of an external request.
+        self.assertEqual(self.harness.request_history, [])
 
         after = self.drive({}, 0.20)
         self.assertNotEqual(after.health_state, "FAILSAFE")

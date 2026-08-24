@@ -11,6 +11,7 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>uf_interfaces</exec_depend>
+  <exec_depend>uf_reliability</exec_depend>
   <exec_depend>uf_backend_fusion</exec_depend>
   <exec_depend>uf_shared_mapping</exec_depend>
   <test_depend>ament_flake8</test_depend>

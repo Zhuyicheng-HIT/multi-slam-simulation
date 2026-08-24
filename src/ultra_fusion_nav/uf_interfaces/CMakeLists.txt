@@ -18,6 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObstacleSafetyState.msg"
   "msg/FlightCommandDecision.msg"
   "msg/ReliabilityScore.msg"
+  "msg/RelocalizationRequestIntent.msg"
   "msg/SchedulerState.msg"
   "msg/RelocalizationResult.msg"
   "msg/RgbdGeometryTrack.msg"

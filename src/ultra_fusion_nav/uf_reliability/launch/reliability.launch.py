@@ -13,9 +13,21 @@ def generate_launch_description():
         "config",
         "scheduler_config.yaml",
     )
+    arbiter_config = os.path.join(
+        get_package_share_directory("uf_reliability"),
+        "config",
+        "relocalization_request_arbiter.yaml",
+    )
     use_sim_time = LaunchConfiguration("use_sim_time")
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        Node(
+            package="uf_reliability",
+            executable="relocalization_request_arbiter",
+            name="relocalization_request_arbiter",
+            parameters=[arbiter_config, {"use_sim_time": use_sim_time}],
+            output="screen",
+        ),
         Node(
             package="uf_reliability",
             executable="reliability_monitor",

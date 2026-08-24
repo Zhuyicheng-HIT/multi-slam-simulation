@@ -1,0 +1,11 @@
+relocalization_request_arbiter:
+  ros__parameters:
+    allowed_sources: [reliability_scheduler, localization_safety]
+    intent_topic: /relocalization/request_intent
+    request_topic: /relocalization/request
+    diagnostics_topic: /relocalization/request_arbiter_diagnostics
+    minimum_lease_s: 0.20
+    maximum_lease_s: 5.0
+    maximum_stamp_age_s: 2.0
+    maximum_future_skew_s: 0.50
+    publish_rate_hz: 20.0

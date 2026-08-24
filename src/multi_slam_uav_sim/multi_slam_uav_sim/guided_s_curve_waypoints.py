@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+import uuid
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
@@ -16,7 +17,7 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 from std_msgs.msg import Bool, String
-from uf_interfaces.msg import SchedulerState
+from uf_interfaces.msg import RelocalizationRequestIntent, SchedulerState
 
 from .guided_rectangle_waypoints import GuidedRectangleWaypoints
 from .localization_safety import (
@@ -82,6 +83,12 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             "scheduler_topic", "/reliability/scheduler_state")
         self.declare_parameter(
             "relocalization_request_topic", "/relocalization/request")
+        self.declare_parameter(
+            "relocalization_request_intent_topic",
+            "/relocalization/request_intent",
+        )
+        self.declare_parameter("relocalization_request_lease_s", 1.0)
+        self.declare_parameter("relocalization_request_heartbeat_s", 0.25)
         self.declare_parameter(
             "relocalization_ready_topic", "/relocalization/ready")
         self.declare_parameter(
@@ -288,7 +295,27 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.latest_external_nav_gate_reason = "missing"
         self.relocalization_ready = False
         self.relocalization_request_active = False
+        self.localization_safety_request_active = False
         self.last_relocalization_release_s = None
+        self.relocalization_request_lease_s = max(
+            0.20,
+            float(self.get_parameter("relocalization_request_lease_s").value),
+        )
+        self.relocalization_request_heartbeat_s = max(
+            0.05,
+            min(
+                self.relocalization_request_lease_s * 0.5,
+                float(
+                    self.get_parameter(
+                        "relocalization_request_heartbeat_s"
+                    ).value
+                ),
+            ),
+        )
+        self._request_instance_id = uuid.uuid4().hex
+        self._request_sequence = 0
+        self._request_episode_id = 0
+        self._request_last_publish_monotonic_s = None
         self.relocalization_deferred_logged = False
         self.last_safety_state = TRACKING
         self.route_control_active = False
@@ -333,9 +360,13 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         relocalization_request_topic = str(
             self.get_parameter("relocalization_request_topic").value
         )
-        self.relocalization_request_pub = self.create_publisher(
-            Bool,
-            relocalization_request_topic,
+        self.relocalization_request_intent_pub = self.create_publisher(
+            RelocalizationRequestIntent,
+            str(
+                self.get_parameter(
+                    "relocalization_request_intent_topic"
+                ).value
+            ),
             10,
         )
         self.create_subscription(
@@ -430,8 +461,6 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
 
     def _relocalization_request_state_cb(self, msg):
         active = bool(msg.data)
-        if self.relocalization_request_active and not active:
-            self.last_relocalization_release_s = self._now_s()
         self.relocalization_request_active = active
 
     def _publish_relocalization_motion_status(
@@ -762,24 +791,55 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             external_nav_gate_reason=gate_reason,
         )
 
-    def _publish_relocalization_request(self, active):
-        previous = self.relocalization_request_active
-        message = Bool()
-        message.data = bool(active)
-        self.relocalization_request_pub.publish(message)
-        self.relocalization_request_active = bool(active)
-        if previous and not self.relocalization_request_active:
+    def _publish_relocalization_request(self, active, reason="localization_safety"):
+        active = bool(active)
+        now_monotonic_s = time.monotonic()
+        if active == self.localization_safety_request_active:
+            if not active:
+                return False
+            if (
+                self._request_last_publish_monotonic_s is not None
+                and now_monotonic_s - self._request_last_publish_monotonic_s
+                < self.relocalization_request_heartbeat_s
+            ):
+                return False
+        if active and not self.localization_safety_request_active:
+            self._request_episode_id += 1
+        self._request_sequence += 1
+        message = RelocalizationRequestIntent()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = self.get_name()
+        message.source_id = "localization_safety"
+        message.source_instance_id = self._request_instance_id
+        message.sequence = self._request_sequence
+        message.episode_id = self._request_episode_id
+        message.active = active
+        message.lease_duration_s = float(self.relocalization_request_lease_s)
+        message.reason = str(reason)
+        self.relocalization_request_intent_pub.publish(message)
+        previous = self.localization_safety_request_active
+        self.localization_safety_request_active = active
+        self._request_last_publish_monotonic_s = now_monotonic_s
+        if previous and not active:
             self.last_relocalization_release_s = self._now_s()
+        return True
 
     def _update_relocalization_request(self, decision):
         if decision.clear_relocalization_request:
-            if self.relocalization_request_active:
-                self._publish_relocalization_request(False)
+            if self.localization_safety_request_active:
+                self._publish_relocalization_request(
+                    False, "localization_recovered"
+                )
             return
         should_request = decision.request_relocalization or (
             decision.hold and decision.state == RELOCALIZING_HOLD
         )
-        if not should_request or self.relocalization_request_active:
+        if not should_request:
+            return
+        if self.localization_safety_request_active:
+            self._publish_relocalization_request(
+                True, "persistent_localization_safety_hold"
+            )
             return
         now = self._now_s()
         if (
@@ -796,7 +856,9 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                     "not ready; deferring the recovery request.")
                 self.relocalization_deferred_logged = True
             return
-        self._publish_relocalization_request(True)
+        self._publish_relocalization_request(
+            True, "persistent_localization_safety_hold"
+        )
 
     def _current_hold_target(self):
         if self.route_control_active:

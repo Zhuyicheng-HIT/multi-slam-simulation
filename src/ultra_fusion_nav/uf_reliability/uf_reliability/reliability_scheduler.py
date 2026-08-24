@@ -1,3 +1,6 @@
+import time
+import uuid
+
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rclpy.executors import ExternalShutdownException
@@ -14,6 +17,7 @@ from uf_interfaces.msg import (
     FusionEpoch,
     ReliabilityScore,
     RelocalizationResult,
+    RelocalizationRequestIntent,
     SchedulerState,
 )
 
@@ -101,6 +105,12 @@ class ReliabilityScheduler(Node):
         )
         self.declare_parameter("relocalization_commit_timeout_s", 2.0)
         self.declare_parameter("relocalization_ready_topic", "/relocalization/ready")
+        self.declare_parameter(
+            "relocalization_request_intent_topic",
+            "/relocalization/request_intent",
+        )
+        self.declare_parameter("relocalization_request_lease_s", 1.0)
+        self.declare_parameter("relocalization_request_heartbeat_s", 0.25)
         self.declare_parameter("publish_rate_hz", 10.0)
         active = tuple(self.get_parameter("active_modalities").value)
         required = tuple(
@@ -192,12 +202,40 @@ class ReliabilityScheduler(Node):
         self.relocalization_ready = False
         self.relocalization_failures = 0
         self.last_relocalization_failure_reason = "none"
+        self.relocalization_request_lease_s = max(
+            0.20,
+            float(self.get_parameter("relocalization_request_lease_s").value),
+        )
+        self.relocalization_request_heartbeat_s = max(
+            0.05,
+            min(
+                self.relocalization_request_lease_s * 0.5,
+                float(
+                    self.get_parameter(
+                        "relocalization_request_heartbeat_s"
+                    ).value
+                ),
+            ),
+        )
+        self._request_source_id = "reliability_scheduler"
+        self._request_instance_id = uuid.uuid4().hex
+        self._request_sequence = 0
+        self._request_episode_id = 0
+        self._request_source_active = False
+        self._request_last_publish_monotonic_s = None
         self.state_pub = self.create_publisher(
             SchedulerState, "/reliability/scheduler_state", 20)
         self.diagnostic_pub = self.create_publisher(
             DiagnosticArray, "/reliability/scheduler_diagnostics", 10)
-        self.relocalization_request_pub = self.create_publisher(
-            Bool, "/relocalization/request", 10)
+        self.relocalization_request_intent_pub = self.create_publisher(
+            RelocalizationRequestIntent,
+            str(
+                self.get_parameter(
+                    "relocalization_request_intent_topic"
+                ).value
+            ),
+            10,
+        )
         for modality in MODALITIES:
             self.create_subscription(
                 ReliabilityScore,
@@ -281,6 +319,14 @@ class ReliabilityScheduler(Node):
             self.active_relocalization_transaction_id = 0
             self.active_relocalization_candidate_id = 0
             self.pending_fusion_epochs.clear()
+            self._request_instance_id = uuid.uuid4().hex
+            self._request_sequence = 0
+            self._request_episode_id = 0
+            self._request_source_active = False
+            self._request_last_publish_monotonic_s = None
+            self._publish_relocalization_intent(
+                False, "ros_clock_regression", force=True
+            )
         self._last_clock_s = now_s
 
     def _relocalization(self, msg):
@@ -335,9 +381,37 @@ class ReliabilityScheduler(Node):
             self._release_relocalization_request()
 
     def _release_relocalization_request(self):
-        release = Bool()
-        release.data = False
-        self.relocalization_request_pub.publish(release)
+        self._publish_relocalization_intent(False, "source_release")
+
+    def _publish_relocalization_intent(self, active, reason, force=False):
+        active = bool(active)
+        now_monotonic_s = time.monotonic()
+        if not force and active == self._request_source_active:
+            if not active:
+                return False
+            if (
+                self._request_last_publish_monotonic_s is not None
+                and now_monotonic_s - self._request_last_publish_monotonic_s
+                < self.relocalization_request_heartbeat_s
+            ):
+                return False
+        if active and not self._request_source_active:
+            self._request_episode_id += 1
+        self._request_sequence += 1
+        message = RelocalizationRequestIntent()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = self.get_name()
+        message.source_id = self._request_source_id
+        message.source_instance_id = self._request_instance_id
+        message.sequence = self._request_sequence
+        message.episode_id = self._request_episode_id
+        message.active = active
+        message.lease_duration_s = float(self.relocalization_request_lease_s)
+        message.reason = str(reason)
+        self.relocalization_request_intent_pub.publish(message)
+        self._request_source_active = active
+        self._request_last_publish_monotonic_s = now_monotonic_s
+        return True
 
     def _fusion_epoch(self, msg):
         session_id = int(msg.session_id)
@@ -453,9 +527,9 @@ class ReliabilityScheduler(Node):
         self.relocalization_candidate_since_s = candidate_since
         if not trigger:
             return
-        request = Bool()
-        request.data = True
-        self.relocalization_request_pub.publish(request)
+        self._publish_relocalization_intent(
+            True, "persistent_lidar_and_horizontal_support_loss"
+        )
         self.relocalization_requested = True
         self.relocalization_failed = False
         self.relocalization_epoch_at_request = self.current_fusion_epoch
@@ -480,6 +554,10 @@ class ReliabilityScheduler(Node):
     def _publish(self):
         now_s = self._now_s()
         self._observe_ros_clock(now_s)
+        if self._request_source_active:
+            self._publish_relocalization_intent(
+                True, "persistent_lidar_and_horizontal_support_loss"
+            )
         self._expire_relocalization_commit(now_s)
         result = self.core.update(
             self.scores, now_s, self.relocalization_requested,

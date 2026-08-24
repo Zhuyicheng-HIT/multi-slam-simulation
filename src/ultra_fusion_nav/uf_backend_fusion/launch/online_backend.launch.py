@@ -17,6 +17,9 @@ def generate_launch_description():
     backend_config = backend_share + "/config/online_backend.yaml"
     reliability_config = reliability_share + "/config/reliability.yaml"
     scheduler_config = reliability_share + "/config/scheduler_config.yaml"
+    request_arbiter_config = (
+        reliability_share + "/config/relocalization_request_arbiter.yaml"
+    )
     calibration_motion_config = (
         relocalization_share + "/config/lidar_calibration_motion.yaml"
     )
@@ -234,6 +237,16 @@ def generate_launch_description():
                 "--child-frame-id", "body_frd",
             ],
             condition=IfCondition(publish_mavros_frame_transforms),
+            output="screen",
+        ),
+        Node(
+            package="uf_reliability",
+            executable="relocalization_request_arbiter",
+            name="relocalization_request_arbiter",
+            parameters=[
+                request_arbiter_config,
+                {"use_sim_time": use_sim_time},
+            ],
             output="screen",
         ),
         Node(

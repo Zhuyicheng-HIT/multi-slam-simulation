@@ -28,6 +28,11 @@ def generate_launch_description():
         get_package_share_directory("uf_reliability"),
         "config", "scheduler_config.yaml",
     )
+    request_arbiter_config = os.path.join(
+        get_package_share_directory("uf_reliability"),
+        "config",
+        "relocalization_request_arbiter.yaml",
+    )
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("enabled", default_value="false"),
@@ -90,6 +95,16 @@ def generate_launch_description():
                 ),
             }], output="screen",
             condition=IfCondition(LaunchConfiguration("enabled")),
+        ),
+        Node(
+            package="uf_reliability",
+            executable="relocalization_request_arbiter",
+            name="relocalization_request_arbiter",
+            parameters=[request_arbiter_config, {
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+            }],
+            condition=IfCondition(start_fusion_stack),
+            output="screen",
         ),
         Node(
             package="uf_reliability", executable="reliability_monitor",
