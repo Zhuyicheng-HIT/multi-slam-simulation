@@ -345,6 +345,13 @@ setsid env HEADLESS=1 REQUIRE_GAZEBO_GPU=1 ENABLE_D435_POINTCLOUD=false \
   LOG_DIR="$LOG_DIR/sim" bash "$REPO_ROOT/tools/run_sim_with_unified_externalnav.sh" \
   >"$LOG_DIR/sim_launcher.log" 2>&1 &
 pids+=("$!")
+
+# The sensor stack creates the Livox/PointCloud bridge only after MAVROS has
+# produced the FCU IMU stream. Waiting for LiDAR first deadlocks startup: the
+# validation gate exits before the stack reaches its bridge initialization.
+wait_rate /mavros/imu/data_raw 20.0 40
+wait_rate /sim/barometer/pressure 5.0 40
+
 case "$VALIDATION_MID360_SIM_BRIDGE_MODE" in
   direct_livox)
     fastlio_pointcloud_bridge=0
@@ -363,8 +370,6 @@ case "$VALIDATION_MID360_SIM_BRIDGE_MODE" in
     exit 2
     ;;
 esac
-wait_rate /mavros/imu/data_raw 20.0 40
-wait_rate /sim/barometer/pressure 5.0 40
 
 if [[ "$validation_enable_vision_arg" == "true" ]]; then
   setsid ros2 run d435i_rgbd_bridge_cpp d435i_rgbd_bridge --ros-args \

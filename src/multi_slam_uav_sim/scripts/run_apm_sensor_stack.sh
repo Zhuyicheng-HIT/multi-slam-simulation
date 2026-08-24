@@ -57,7 +57,9 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     printf 'Direct Livox simulation bridge requires %s/install/setup.bash\n' "$LIDAR_WS" >&2
     exit 2
   fi
-  source "$LIDAR_WS/install/setup.bash"
+  # Keep the dependency workspace's environment local. Its full setup can
+  # overwrite simulator plugin paths needed by ArduPilot Gazebo.
+  source "$LIDAR_WS/install/local_setup.bash"
   source "$WS_INSTALL/setup.bash"
 fi
 
@@ -395,6 +397,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     -p use_sim_time:="$USE_SIM_TIME" \
     --params-file /opt/ros/humble/share/mavros/launch/apm_config.yaml \
     --params-file "$MAVROS_PLUGINLISTS_FILE" \
+    --params-file "$PKG_SHARE/config/mavros_apm_rgbd.yaml" \
     >"$LOG_DIR/mavros.log" 2>&1 &
   pids+=("$!")
   sleep 4
