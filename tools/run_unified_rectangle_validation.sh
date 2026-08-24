@@ -7,6 +7,13 @@ LOG_DIR=${LOG_DIR:-"$REPO_ROOT/logs/unified_rectangle_$(date +%Y%m%d_%H%M%S)"}
 LIDAR_WS=${LIDAR_WS:-"$HOME/multi-slam-deps/mid360_ws"}
 VALIDATION_ROUTE=${VALIDATION_ROUTE:-rectangle}
 VALIDATION_ROUTE_MODE=${VALIDATION_ROUTE_MODE:-rectangle}
+case "$VALIDATION_ROUTE_MODE" in
+  rectangle|straight) ;;
+  *)
+    printf 'VALIDATION_ROUTE_MODE must be rectangle or straight.\n' >&2
+    exit 2
+    ;;
+esac
 VALIDATION_CALIBRATION_ONLY=${VALIDATION_CALIBRATION_ONLY:-false}
 VALIDATION_ROS_DOMAIN_ID=${VALIDATION_ROS_DOMAIN_ID:-41}
 if [[ ! "$VALIDATION_ROS_DOMAIN_ID" =~ ^[0-9]+$ ]] ||
@@ -385,7 +392,7 @@ if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
   printf 'missing LiDAR workspace overlay: %s\n' "$LIDAR_WS/install/setup.bash" >&2
   exit 2
 fi
-source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 
 # This launcher owns the complete validation graph. Duplicate estimator or
 # scheduler nodes mix clock domains and can publish competing factor/recovery
@@ -1107,8 +1114,12 @@ case "${VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE,,}" in
     ;;
 esac
 if [[ "$VALIDATION_ROUTE" == "rectangle" ]]; then
+  rectangle_profile_args=()
+  if [[ "$VALIDATION_ROUTE_MODE" == "straight" ]]; then
+    rectangle_profile_args+=(--expected-waypoints 1)
+  fi
   python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
-    "${validation_gate_args[@]}"
+    "${validation_gate_args[@]}" "${rectangle_profile_args[@]}"
 elif [[ "$VALIDATION_ROUTE" == "s_curve" &&
   "$validation_calibration_only_arg" == "true" ]]
 then

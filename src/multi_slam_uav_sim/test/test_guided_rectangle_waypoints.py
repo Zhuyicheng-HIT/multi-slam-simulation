@@ -157,6 +157,97 @@ def test_command_phase_retries_timed_out_mode_and_arm_services(monkeypatch):
     assert calls == {"mode": 2, "arm": 2}
 
 
+def test_takeoff_climb_keeps_arbiter_owned_mission_intent_fresh(monkeypatch):
+    node = GuidedRectangleWaypoints.__new__(GuidedRectangleWaypoints)
+    node.takeoff_min_alt_m = 0.5
+    node.takeoff_min_alt_fraction = 0.5
+    node.takeoff_alt = 2.0
+    node.takeoff_command_attempts = 1
+    node.takeoff_free_climb_s = 2.0
+    node.home_x = 1.0
+    node.home_y = 2.0
+    node.home_yaw = 0.3
+    node.state = SimpleNamespace(mode="GUIDED", armed=True, connected=True)
+    node.last_statustext = ""
+    state = {"time": 0.0, "z": 0.0}
+    published = []
+    node._now_s = lambda: state["time"]
+    node._local_z = lambda: state["z"]
+    node._log_status = lambda _label: None
+    node.publish_setpoint = lambda *args: published.append(args)
+    node._publish_mode_intent = lambda intent: None
+
+    class Logger:
+        def info(self, _message):
+            pass
+
+    node.get_logger = lambda: Logger()
+
+    def spin_once(_node, timeout_sec):
+        assert timeout_sec == 0.1
+        state["time"] += 0.3
+        state["z"] = 1.2
+
+    monkeypatch.setattr(waypoint_module.rclpy, "ok", lambda: True)
+    monkeypatch.setattr(waypoint_module.rclpy, "spin_once", spin_once)
+
+    node.wait_for_takeoff_climb()
+
+    assert len(published) >= 2
+    assert all(intent == (1.0, 2.0, 2.0, 0.3) for intent in published)
+
+
+def test_acked_command_int_without_climb_retries_via_command_tol(monkeypatch):
+    node = GuidedRectangleWaypoints.__new__(GuidedRectangleWaypoints)
+    node.takeoff_min_alt_m = 0.5
+    node.takeoff_min_alt_fraction = 0.5
+    node.takeoff_alt = 2.0
+    node.takeoff_command_attempts = 2
+    node.takeoff_free_climb_s = 0.5
+    node.home_x = 1.0
+    node.home_y = 2.0
+    node.home_yaw = 0.3
+    node.state = SimpleNamespace(mode="GUIDED", armed=True, connected=True)
+    node.last_statustext = ""
+    state = {"time": 0.0, "z": 0.0}
+    retries = []
+    node._now_s = lambda: state["time"]
+    node._local_z = lambda: state["z"]
+    node._log_status = lambda _label: None
+    node.publish_setpoint = lambda *_args: None
+    node._publish_mode_intent = lambda intent: None
+
+    class Logger:
+        def info(self, _message):
+            pass
+
+        def warning(self, _message):
+            pass
+
+    node.get_logger = lambda: Logger()
+
+    def command_tol():
+        retries.append("command_tol")
+        state["z"] = 1.2
+        return True
+
+    node.send_takeoff_command_tol = command_tol
+    node.send_takeoff_command_int = lambda: (_ for _ in ()).throw(
+        AssertionError("COMMAND_INT must not be repeated after a no-climb ACK")
+    )
+
+    def spin_once(_node, timeout_sec):
+        assert timeout_sec == 0.1
+        state["time"] += 0.3
+
+    monkeypatch.setattr(waypoint_module.rclpy, "ok", lambda: True)
+    monkeypatch.setattr(waypoint_module.rclpy, "spin_once", spin_once)
+
+    node.wait_for_takeoff_climb()
+
+    assert retries == ["command_tol"]
+
+
 def _guided_state_node(monotonic_s):
     node = GuidedRectangleWaypoints.__new__(GuidedRectangleWaypoints)
     node.state = SimpleNamespace(mode="GUIDED", armed=True, connected=True)

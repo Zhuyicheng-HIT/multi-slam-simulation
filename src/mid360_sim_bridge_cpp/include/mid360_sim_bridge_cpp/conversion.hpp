@@ -13,6 +13,16 @@ namespace mid360_sim_bridge_cpp
 constexpr std::uint8_t kDefaultTag = 0U;
 constexpr std::size_t kDefaultLineCount = 4U;
 
+// Gazebo publishes both a dynamic-pose stream and a full pose inventory. The
+// full inventory can contain the model's initial pose and may arrive after a
+// newer dynamic update. Once dynamic truth is available, never let that
+// fallback inventory overwrite it.
+inline bool should_accept_model_pose(
+  const bool dynamic_pose_seen, const bool candidate_is_dynamic)
+{
+  return candidate_is_dynamic || !dynamic_pose_seen;
+}
+
 // Convert a seconds/nanoseconds pair without allowing malformed or negative
 // input to reach rclcpp::Time. Gazebo and ROS messages can contain a transient
 // reset value while a simulation is restarting.

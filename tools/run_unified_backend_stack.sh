@@ -125,7 +125,7 @@ if [[ ! -f "$LIDAR_WS/install/setup.bash" ]]; then
   printf 'Patched FAST-LIO overlay is required: %s/install/setup.bash\n' "$LIDAR_WS" >&2
   exit 2
 fi
-source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 if ! ros2 interface show fast_lio/msg/NativeLidarFactor >/dev/null 2>&1; then
   printf 'Patched FAST-LIO NativeLidarFactor interface is unavailable.\n' >&2
   exit 2

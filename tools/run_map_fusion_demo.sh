@@ -60,7 +60,7 @@ esac
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
 if [[ -f "$LIDAR_WS/install/setup.bash" ]]; then
-  source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 fi
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
 set -u

@@ -74,6 +74,14 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn("figure_eight_uses_requested_feedback", checker)
         self.assertNotIn("figure_eight_uses_unified_feedback", checker)
 
+    def test_straight_route_has_an_explicit_one_waypoint_contract(self):
+        runner = (
+            REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('rectangle|straight)', runner)
+        self.assertIn('VALIDATION_ROUTE_MODE" == "straight"', runner)
+        self.assertIn("rectangle_profile_args+=(--expected-waypoints 1)", runner)
+
     def test_validation_separates_world_file_profile_from_gazebo_name(self):
         runner = (
             REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
@@ -97,6 +105,26 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         for block in (python_block, direct_block):
             self.assertIn('-p gazebo_world_name:="$WORLD_NAME"', block)
             self.assertIn("-p gazebo_model:=apm_iris", block)
+
+    def test_external_lidar_overlay_cannot_reintroduce_an_old_project(self):
+        scripts = list((REPO_ROOT / "tools").glob("*.sh"))
+        scripts += list((SIM_ROOT / "scripts").glob("*.sh"))
+        scripts += list(
+            (REPO_ROOT / "src" / "hybridfusion_map_fusion" / "scripts").glob("*.sh")
+        )
+        users = []
+        for script in scripts:
+            text = script.read_text(encoding="utf-8")
+            if 'source "$LIDAR_WS/install/' not in text:
+                continue
+            users.append(script)
+            self.assertNotIn(
+                'source "$LIDAR_WS/install/setup.bash"', text, str(script)
+            )
+            self.assertIn(
+                'source "$LIDAR_WS/install/local_setup.bash"', text, str(script)
+            )
+        self.assertTrue(users)
 
     def test_temporal_dynamic_filter_is_explicit_and_default_off(self):
         runner = (

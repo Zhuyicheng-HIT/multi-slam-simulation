@@ -115,7 +115,7 @@ printf '\n[8/8] 编译主仿真仓库并执行检查...\n'
 cd "$REPO_ROOT"
 set +u
 source /opt/ros/humble/setup.bash
-source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 set -u
 rosdep install --from-paths src --ignore-src -r -y --rosdistro humble \
   --skip-keys ament_python

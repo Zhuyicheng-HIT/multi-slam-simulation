@@ -16,7 +16,7 @@ if [[ -f "$LIDAR_WS/install/setup.bash" ]]; then
   # Source the selected FAST-LIO overlay in this parent process as well as in
   # the mapping wrapper.  The Python backend must be able to import the
   # NativeLidarFactor type before its subscriptions are constructed.
-  source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 fi
 source "$PKG_SHARE/scripts/d435i_active_run_lifecycle.sh"
 

@@ -22,6 +22,12 @@ from multi_slam_uav_sim.simulation_performance_monitor import (
 
 
 class ExternalNavAccuracyTest(unittest.TestCase):
+    def test_dynamic_truth_permanently_supersedes_full_pose_fallback(self):
+        self.assertTrue(ExternalNavAccuracy._accept_truth_source(False, False))
+        self.assertTrue(ExternalNavAccuracy._accept_truth_source(False, True))
+        self.assertTrue(ExternalNavAccuracy._accept_truth_source(True, True))
+        self.assertFalse(ExternalNavAccuracy._accept_truth_source(True, False))
+
     def test_truth_subscription_qos_defaults_to_best_effort_compatibility(
             self):
         qos = ExternalNavAccuracy._truth_subscription_qos("best_effort", 7)

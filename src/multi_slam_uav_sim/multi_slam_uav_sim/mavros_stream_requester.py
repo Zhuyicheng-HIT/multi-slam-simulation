@@ -6,6 +6,38 @@ from mavros_msgs.srv import MessageInterval, StreamRate
 from rclpy.node import Node
 
 
+def fallback_stream_ids(minimal_only, highres_imu_ok):
+    """Select legacy streams without undoing the minimal-startup contract."""
+    all_streams = [
+        StreamRate.Request.STREAM_RAW_SENSORS,
+        StreamRate.Request.STREAM_EXTENDED_STATUS,
+        StreamRate.Request.STREAM_POSITION,
+        StreamRate.Request.STREAM_EXTRA1,
+        StreamRate.Request.STREAM_EXTRA2,
+        StreamRate.Request.STREAM_EXTRA3,
+    ]
+    if minimal_only:
+        # ArduPilot versions that reject SET_MESSAGE_INTERVAL(HIGHRES_IMU)
+        # still provide the IMU through the legacy RAW_SENSORS stream. Keep
+        # the new minimal startup semantics, but do not remove this required
+        # compatibility fallback.
+        return [] if highres_imu_ok else [StreamRate.Request.STREAM_RAW_SENSORS]
+    if highres_imu_ok:
+        return [
+            stream_id
+            for stream_id in all_streams
+            if stream_id != StreamRate.Request.STREAM_RAW_SENSORS
+        ]
+    return all_streams
+
+
+def fallback_stream_rate(stream_id, stream_rate_hz, imu_rate_hz):
+    """Keep the legacy RAW_SENSORS fallback at the configured IMU rate."""
+    if stream_id == StreamRate.Request.STREAM_RAW_SENSORS:
+        return int(round(float(imu_rate_hz)))
+    return int(stream_rate_hz)
+
+
 class MavrosStreamRequester(Node):
     """Request ArduPilot telemetry streams needed by companion nodes."""
 
@@ -72,14 +104,6 @@ class MavrosStreamRequester(Node):
         return bool(getattr(result, "success", True))
 
     def _request_streams(self):
-        stream_ids = [
-            StreamRate.Request.STREAM_RAW_SENSORS,
-            StreamRate.Request.STREAM_EXTENDED_STATUS,
-            StreamRate.Request.STREAM_POSITION,
-            StreamRate.Request.STREAM_EXTRA1,
-            StreamRate.Request.STREAM_EXTRA2,
-            StreamRate.Request.STREAM_EXTRA3,
-        ]
         # MAVLink common message IDs used by MAVROS local/global/IMU plugins.
         # HIGHRES_IMU is first because FAST-LIO cannot start without it.
         intervals = [
@@ -116,20 +140,21 @@ class MavrosStreamRequester(Node):
                 if msg_id == 105:
                     highres_imu_ok = accepted
 
-        if not self.minimal_only and self._wait_service(
-            self.stream_cli, "set_stream_rate"
-        ):
+        stream_ids = fallback_stream_ids(self.minimal_only, highres_imu_ok)
+        if stream_ids and self._wait_service(self.stream_cli, "set_stream_rate"):
             for stream_id in stream_ids:
-                if highres_imu_ok and stream_id == StreamRate.Request.STREAM_RAW_SENSORS:
-                    continue
                 req = StreamRate.Request()
                 req.stream_id = stream_id
-                req.message_rate = self.stream_rate_hz
+                req.message_rate = fallback_stream_rate(
+                    stream_id,
+                    self.stream_rate_hz,
+                    self.get_parameter("imu_rate_hz").value,
+                )
                 req.on_off = True
                 self._call(
                     self.stream_cli,
                     req,
-                    f"stream_rate id={stream_id} hz={self.stream_rate_hz}",
+                    f"stream_rate id={stream_id} hz={req.message_rate}",
                 )
 
     def run(self):

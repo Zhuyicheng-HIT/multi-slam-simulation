@@ -14,6 +14,15 @@ using mid360_sim_bridge_cpp::point_in_body_exclusion_box;
 using mid360_sim_bridge_cpp::point_offset_time_ns;
 using mid360_sim_bridge_cpp::reflectivity_from_intensity;
 using mid360_sim_bridge_cpp::relative_time_ns;
+using mid360_sim_bridge_cpp::should_accept_model_pose;
+
+TEST(Conversion, DynamicModelPosePermanentlySupersedesFallbackInventory)
+{
+  EXPECT_TRUE(should_accept_model_pose(false, false));
+  EXPECT_TRUE(should_accept_model_pose(false, true));
+  EXPECT_TRUE(should_accept_model_pose(true, true));
+  EXPECT_FALSE(should_accept_model_pose(true, false));
+}
 
 TEST(Conversion, AssignsFourLivoxLines)
 {

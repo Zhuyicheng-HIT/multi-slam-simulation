@@ -73,6 +73,7 @@ public:
       "maximum_setpoint_jump_m", config.maximum_setpoint_jump_m);
     config.caution_step_m = declare_parameter<double>("caution_step_m", config.caution_step_m);
     active_status_timeout_s_ = declare_parameter<double>("active_status_timeout_s", 0.25);
+    mode_intent_timeout_s_ = declare_parameter<double>("mode_intent_timeout_s", 0.50);
     core_ = std::make_unique<CommandArbiterCore>(config);
     auto_mode_name_ = declare_parameter<std::string>("automatic_mode_name", "GUIDED");
 
@@ -121,6 +122,8 @@ public:
       [this](std_msgs::msg::String::ConstSharedPtr msg) {
         input_.land_requested = msg->data == "LAND";
         input_.return_requested = msg->data == "RETURN";
+        takeoff_requested_ = msg->data == "TAKEOFF";
+        mode_intent_arrival_s_ = get_clock()->now().seconds();
       });
     fcu_state_sub_ = create_subscription<mavros_msgs::msg::State>(
       "/mavros/state", 10,
@@ -152,6 +155,9 @@ private:
     input_.active_relocalization_hold = active_status_hold_ &&
       input_.now_s >= active_status_arrival_s_ &&
       input_.now_s - active_status_arrival_s_ <= active_status_timeout_s_;
+    input_.takeoff_requested = takeoff_requested_ &&
+      input_.now_s >= mode_intent_arrival_s_ &&
+      input_.now_s - mode_intent_arrival_s_ <= mode_intent_timeout_s_;
     input_.manual_override = explicit_manual_override_ ||
       (fcu_received_ && fcu_connected_ && fcu_mode_ != auto_mode_name_);
     // Absence of an FCU heartbeat is not evidence that automatic control is
@@ -196,6 +202,9 @@ private:
   bool active_status_hold_{false};
   double active_status_arrival_s_{0.0};
   double active_status_timeout_s_{0.25};
+  bool takeoff_requested_{false};
+  double mode_intent_arrival_s_{0.0};
+  double mode_intent_timeout_s_{0.50};
   std::string fcu_mode_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr output_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr selected_candidate_pub_;

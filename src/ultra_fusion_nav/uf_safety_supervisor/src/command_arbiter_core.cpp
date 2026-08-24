@@ -123,6 +123,18 @@ CommandDecision CommandArbiterCore::evaluate(const CommandArbiterInput & input) 
     }
     return hold(input, "fail_closed", "authorized_relocalization_intent_missing", true);
   }
+  if (input.takeoff_requested) {
+    // ArduPilot's GUIDED takeoff controller owns vertical motion until climb
+    // confirmation. Any local-position setpoint switches ModeGuided out of
+    // TakeOff, leaving throttle and desired altitude at their landed values.
+    // Raw obstacle and localization gates above retain their veto authority.
+    CommandDecision decision;
+    decision.action = CommandAction::kRelease;
+    decision.owner = "fcu_takeoff";
+    decision.reason = "guided_takeoff_controller_owns_vertical_motion";
+    decision.fail_closed = false;
+    return decision;
+  }
   if (fresh(input.planner, input.now_s)) {
     return forward(input, input.planner, "local_planner");
   }

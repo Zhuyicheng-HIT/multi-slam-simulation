@@ -6,7 +6,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
 LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
-source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 RUN_DIR=${RUN_DIR:-$REPO_ROOT/logs/tmp/robustness_v3_joint_map_stress_$(date +%Y%m%d_%H%M%S)}
 # The sensor-stack launcher changes into the ArduPilot checkout while starting
 # SITL. Keep every PID, active marker and result path anchored to the project

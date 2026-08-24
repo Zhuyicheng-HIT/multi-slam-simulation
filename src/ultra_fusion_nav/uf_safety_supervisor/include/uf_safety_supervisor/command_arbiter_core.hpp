@@ -37,6 +37,7 @@ struct CommandArbiterInput
   bool fcu_failsafe{false};
   bool land_requested{false};
   bool return_requested{false};
+  bool takeoff_requested{false};
   bool localization_hold{false};
   bool active_relocalization_hold{false};
   bool active_relocalization_authorized{false};

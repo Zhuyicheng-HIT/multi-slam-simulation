@@ -37,6 +37,7 @@ flight_command_arbiter:
     maximum_setpoint_jump_m: 2.50
     caution_step_m: 0.30
     active_status_timeout_s: 0.25
+    mode_intent_timeout_s: 0.50
 
 active_relocalization_controller:
   ros__parameters:

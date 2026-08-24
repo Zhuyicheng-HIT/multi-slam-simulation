@@ -117,7 +117,7 @@ Example:
 EOF
   exit 2
 fi
-source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 
 START_LIVOX_POINTCLOUD_BRIDGE=${START_LIVOX_POINTCLOUD_BRIDGE:-auto}
 LIVOX_INPUT_WAIT_S=${LIVOX_INPUT_WAIT_S:-90}

@@ -11,7 +11,7 @@ WARMUP_S=${WARMUP_S:-20}
 MEASURE_S=${MEASURE_S:-40}
 
 source /opt/ros/humble/setup.bash
-source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 source "$REPO_ROOT/install/setup.bash"
 mkdir -p "$OUTPUT_ROOT"
 

@@ -138,9 +138,9 @@ public:
     }
     if (publish_ground_truth_odom_) {
       const bool dynamic_pose_ok = gz_node_.Subscribe(
-        dynamic_pose_topic_, &GzLivoxBridgeNode::on_model_poses, this);
+        dynamic_pose_topic_, &GzLivoxBridgeNode::on_dynamic_model_poses, this);
       const bool pose_ok = gz_node_.Subscribe(
-        pose_topic_, &GzLivoxBridgeNode::on_model_poses, this);
+        pose_topic_, &GzLivoxBridgeNode::on_fallback_model_poses, this);
       if (!dynamic_pose_ok && !pose_ok) {
         throw std::runtime_error(
                 "Failed to subscribe to Gazebo model pose topics for evaluation truth");
@@ -428,7 +428,17 @@ private:
     ground_truth_odom_pub_->publish(std::move(odom));
   }
 
-  void on_model_poses(const gz::msgs::Pose_V & msg)
+  void on_dynamic_model_poses(const gz::msgs::Pose_V & msg)
+  {
+    on_model_poses(msg, true);
+  }
+
+  void on_fallback_model_poses(const gz::msgs::Pose_V & msg)
+  {
+    on_model_poses(msg, false);
+  }
+
+  void on_model_poses(const gz::msgs::Pose_V & msg, const bool dynamic_source)
   {
     for (const auto & pose : msg.pose()) {
       if (!entity_name_matches_model(pose.name(), gazebo_model_name_)) {
@@ -443,6 +453,10 @@ private:
         return;
       }
       std::lock_guard<std::mutex> lock(model_pose_mutex_);
+      if (!should_accept_model_pose(dynamic_model_pose_seen_, dynamic_source)) {
+        ignored_fallback_model_pose_count_.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       latest_model_position_ = {
         pose.position().x(), pose.position().y(), pose.position().z()};
       latest_model_orientation_xyzw_ = {
@@ -451,6 +465,7 @@ private:
         pose.orientation().z() / quaternion_norm,
         pose.orientation().w() / quaternion_norm};
       latest_model_pose_valid_ = true;
+      dynamic_model_pose_seen_ = dynamic_model_pose_seen_ || dynamic_source;
       return;
     }
   }
@@ -533,7 +548,7 @@ private:
       "body_removed_ratio=%.5f cloud_hz=%.2f imu_hz=%.2f "
       "cloud_minus_imu_ms=%.1f adjusted_lidar=%lu adjusted_imu=%lu "
       "truth_model_pose=%lu truth_scan_pose_fallback=%lu truth_unavailable=%lu "
-      "dropped_invalid=%lu",
+      "truth_full_pose_ignored=%lu dropped_invalid=%lu",
       static_cast<unsigned long>(clouds), last_point_count_.load(std::memory_order_relaxed),
       last_valid_input_point_count_.load(std::memory_order_relaxed),
       last_body_removed_point_count_.load(std::memory_order_relaxed),
@@ -549,6 +564,8 @@ private:
         ground_truth_scan_pose_fallback_count_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
         ground_truth_unavailable_count_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(
+        ignored_fallback_model_pose_count_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
         dropped_invalid_stamps_.load(std::memory_order_relaxed)));
     last_status_time_ = current_time;
@@ -590,6 +607,7 @@ private:
   std::array<double, 3> latest_model_position_{};
   std::array<double, 4> latest_model_orientation_xyzw_{};
   bool latest_model_pose_valid_{false};
+  bool dynamic_model_pose_seen_{false};
 
   gz::transport::Node gz_node_;
   rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar_pub_;
@@ -619,6 +637,7 @@ private:
   std::atomic<std::uint64_t> ground_truth_model_pose_count_{0U};
   std::atomic<std::uint64_t> ground_truth_scan_pose_fallback_count_{0U};
   std::atomic<std::uint64_t> ground_truth_unavailable_count_{0U};
+  std::atomic<std::uint64_t> ignored_fallback_model_pose_count_{0U};
   std::atomic<std::uint32_t> last_point_count_{0U};
   std::atomic<std::uint32_t> last_valid_input_point_count_{0U};
   std::atomic<std::uint32_t> last_body_removed_point_count_{0U};

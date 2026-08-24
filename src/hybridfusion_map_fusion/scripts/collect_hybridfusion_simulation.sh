@@ -29,7 +29,7 @@ fi
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
 if [[ -f "$LIDAR_WS/install/setup.bash" ]]; then
-  source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 fi
 SIM_PREFIX=$(ros2 pkg prefix multi_slam_uav_sim)
 SIM_SHARE="$SIM_PREFIX/share/multi_slam_uav_sim"

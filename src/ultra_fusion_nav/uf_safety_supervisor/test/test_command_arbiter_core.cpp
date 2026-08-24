@@ -46,6 +46,28 @@ TEST(CommandArbiterCore, PlannerOverridesMission)
   EXPECT_EQ(result.owner, "local_planner");
 }
 
+TEST(CommandArbiterCore, GuidedTakeoffReleasesPositionSetpointsAfterSafetyGates)
+{
+  auto input = nominal();
+  input.planner = pose(9.9, 1.5);
+  input.takeoff_requested = true;
+  const auto result = CommandArbiterCore().evaluate(input);
+  EXPECT_EQ(result.action, CommandAction::kRelease);
+  EXPECT_EQ(result.owner, "fcu_takeoff");
+  EXPECT_FALSE(result.publish_setpoint);
+  EXPECT_FALSE(result.fail_closed);
+}
+
+TEST(CommandArbiterCore, ObstacleBrakeStillOverridesGuidedTakeoff)
+{
+  auto input = nominal();
+  input.takeoff_requested = true;
+  input.obstacle_state = ObstacleState::kBrake;
+  const auto result = CommandArbiterCore().evaluate(input);
+  EXPECT_EQ(result.action, CommandAction::kHold);
+  EXPECT_EQ(result.owner, "obstacle_safety");
+}
+
 TEST(CommandArbiterCore, RelocalizationOverridesPlannerWhenObstacleClear)
 {
   auto input = nominal();

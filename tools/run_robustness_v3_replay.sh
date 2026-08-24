@@ -27,7 +27,7 @@ done
 
 source /opt/ros/humble/setup.bash
 source "$WORKSPACE_ROOT/install/setup.bash"
-source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
 mkdir -p "$OUTPUT_DIR"
 
 pids=()

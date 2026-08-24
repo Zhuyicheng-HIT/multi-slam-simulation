@@ -58,7 +58,7 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     printf 'Direct Livox simulation bridge requires %s/install/setup.bash\n' "$LIDAR_WS" >&2
     exit 2
   fi
-  source "$LIDAR_WS/install/setup.bash"
+  source "$LIDAR_WS/install/local_setup.bash"
   source "$WS_INSTALL/setup.bash"
 fi
 

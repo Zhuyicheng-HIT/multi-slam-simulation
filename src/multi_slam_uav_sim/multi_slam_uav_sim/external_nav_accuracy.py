@@ -80,6 +80,7 @@ class ExternalNavAccuracy(Node):
         self.started_wall_s = time.monotonic()
         self.last_report = None
         self.last_causal_samples = []
+        self.dynamic_truth_seen = False
         self.create_subscription(
             Odometry,
             str(self.get_parameter("odom_topic").value),
@@ -99,10 +100,13 @@ class ExternalNavAccuracy(Node):
             self.gz_node.subscribe(
                 Pose_V,
                 f"/world/{self.world_name}/dynamic_pose/info",
-                self._gz_pose,
+                self._gz_dynamic_pose,
             )
             self.gz_node.subscribe(
-                Pose_V, f"/world/{self.world_name}/pose/info", self._gz_pose)
+                Pose_V,
+                f"/world/{self.world_name}/pose/info",
+                self._gz_fallback_pose,
+            )
         self.create_timer(5.0, self._report)
         odom_topic = self.get_parameter("odom_topic").value
         self.get_logger().info(
@@ -146,7 +150,17 @@ class ExternalNavAccuracy(Node):
                 (stamp_s, float(point.x), float(point.y), float(point.z), yaw)
             )
 
-    def _gz_pose(self, msg):
+    def _gz_dynamic_pose(self, msg):
+        self._gz_pose(msg, dynamic_source=True)
+
+    def _gz_fallback_pose(self, msg):
+        self._gz_pose(msg, dynamic_source=False)
+
+    @staticmethod
+    def _accept_truth_source(dynamic_truth_seen, dynamic_source):
+        return bool(dynamic_source or not dynamic_truth_seen)
+
+    def _gz_pose(self, msg, *, dynamic_source):
         try:
             stamp_s = (
                 float(msg.header.stamp.sec)
@@ -162,6 +176,10 @@ class ExternalNavAccuracy(Node):
                 or pose.name.endswith(f"::{self.model_name}")
             ):
                 with self.lock:
+                    if not self._accept_truth_source(
+                        self.dynamic_truth_seen, dynamic_source
+                    ):
+                        return
                     if (
                         not self.truth_samples
                         or stamp_s > self.truth_samples[-1][0]
@@ -178,6 +196,9 @@ class ExternalNavAccuracy(Node):
                                 pose.orientation.w,
                             ),
                         ))
+                        self.dynamic_truth_seen = (
+                            self.dynamic_truth_seen or dynamic_source
+                        )
                 return
 
     def _truth_odom(self, msg):

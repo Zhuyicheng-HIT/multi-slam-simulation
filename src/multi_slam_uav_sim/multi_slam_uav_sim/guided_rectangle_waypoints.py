@@ -168,12 +168,20 @@ class GuidedRectangleWaypoints(Node):
         self.takeoff_cli = self.create_client(CommandTOL, "/mavros/cmd/takeoff")
         self.land_cli = self.create_client(CommandTOL, "/mavros/cmd/land")
         self.mission_phase_pub = self.create_publisher(String, "/mission/phase", 10)
+        self.mode_intent_pub = self.create_publisher(
+            String, "/autonomy/intent/mode", 10
+        )
 
     def _publish_mission_phase(self, phase):
         message = String()
         message.data = str(phase)
         self.mission_phase_pub.publish(message)
         self.get_logger().info(f"Mission phase: {message.data}")
+
+    def _publish_mode_intent(self, intent):
+        message = String()
+        message.data = str(intent)
+        self.mode_intent_pub.publish(message)
 
     def _state_cb(self, msg):
         self.state = msg
@@ -462,6 +470,17 @@ class GuidedRectangleWaypoints(Node):
             deadline = start_ros_s + self.takeoff_free_climb_s
             stable_since = None
             while rclpy.ok() and self._now_s() < deadline:
+                self._publish_mode_intent("TAKEOFF")
+                # Keep the mission intent fresh while COMMAND_INT takeoff is active.
+                # The flight command arbiter is the sole MAVROS setpoint owner; if
+                # this intent expires it must fail closed at the current ground pose,
+                # which legitimately prevents the FCU from climbing.
+                self.publish_setpoint(
+                    self.home_x,
+                    self.home_y,
+                    self.takeoff_alt,
+                    self.home_yaw,
+                )
                 rclpy.spin_once(self, timeout_sec=0.1)
                 self._log_status(f"apm free climb attempt {attempt}")
                 local_z = self._local_z()
@@ -472,6 +491,7 @@ class GuidedRectangleWaypoints(Node):
                             f"Takeoff climb confirmed at local_z={local_z:.2f}m "
                             f"(required>={min_takeoff_z:.2f}m, attempt={attempt})."
                         )
+                        self._publish_mode_intent("NAVIGATE")
                         return
                 else:
                     stable_since = None
@@ -481,9 +501,16 @@ class GuidedRectangleWaypoints(Node):
                 break
             self.get_logger().warning(
                 f"Takeoff ACK produced no climb in {self.takeoff_free_climb_s:.1f}s; "
-                f"re-sending once (attempt {attempt + 1}/{self.takeoff_command_attempts})."
+                "retrying through MAVROS CommandTOL for ArduPilot COMMAND_INT "
+                f"compatibility (attempt {attempt + 1}/{self.takeoff_command_attempts})."
             )
-            if not self.send_takeoff_command_int():
+            # ArduPilot 4.5.x can ACK MAV_CMD_NAV_TAKEOFF in COMMAND_INT form
+            # without engaging the guided takeoff controller (CTUN DAlt and
+            # throttle stay at their landed values).  The MAVROS CommandTOL
+            # service sends the same command through the supported COMMAND_LONG
+            # path.  Only use it after a positive ACK produced no physical
+            # climb, so the upstream COMMAND_INT contract remains primary.
+            if not self.send_takeoff_command_tol():
                 break
         if self.state.armed:
             try:
