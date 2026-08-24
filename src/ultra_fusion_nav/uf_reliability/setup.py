@@ -22,5 +22,9 @@ setup(
     entry_points={"console_scripts": [
         "reliability_monitor = uf_reliability.reliability_monitor:main",
         "reliability_scheduler = uf_reliability.reliability_scheduler:main",
+        "relocalization_risk_shadow = "
+        "uf_reliability.relocalization_risk_shadow_node:main",
+        "relocalization_trigger_shadow_matrix = "
+        "uf_reliability.relocalization_trigger_shadow_matrix:main",
     ]},
 )

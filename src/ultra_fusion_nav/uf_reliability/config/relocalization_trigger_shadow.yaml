@@ -1,0 +1,16 @@
+relocalization_risk_shadow:
+  ros__parameters:
+    # Diagnostics only. This node has no /relocalization/request publisher.
+    watch_threshold: 0.25
+    degraded_threshold: 0.48
+    relocalize_threshold: 0.72
+    watch_dwell_s: 0.30
+    degraded_dwell_s: 1.00
+    relocalize_dwell_s: 1.50
+    recovery_dwell_s: 2.00
+    request_cooldown_s: 15.0
+    maximum_pose_step_m: 0.35
+    covariance_growth_reference_m2ps: 0.05
+    # LIDAR-DIR-001 is DO_NOT_PROMOTE. Keep this shadow input disabled unless
+    # an explicit experiment publishes the diagnostic-only weakness topic.
+    directional_shadow_enabled: false
