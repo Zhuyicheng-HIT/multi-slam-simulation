@@ -5,6 +5,7 @@ raw_obstacle_safety_monitor:
     body_motion_topic: /mavros/local_position/odom
     candidate_setpoint_topic: /autonomy/intent/mission/pose
     candidate_path_topic: /autonomy/candidate_path
+    relocalization_candidate_path_topic: /autonomy/relocalization_candidate_path
     raw.timeout_s: 0.20
     raw.future_tolerance_s: 0.02
     raw.minimum_points: 20
@@ -35,6 +36,27 @@ flight_command_arbiter:
     obstacle_timeout_s: 0.25
     maximum_setpoint_jump_m: 2.50
     caution_step_m: 0.30
+    active_status_timeout_s: 0.25
+
+active_relocalization_controller:
+  ros__parameters:
+    initial_hold_s: 1.0
+    active_timeout_s: 20.0
+    recovery_dwell_s: 0.75
+    resume_dwell_s: 0.25
+    maximum_failures: 2
+    passive_attempt_limit: 3
+    passive_attempt_period_s: 0.25
+    yaw_scan_view_count: 4
+    yaw_step_deg: 90.0
+    target_position_tolerance_m: 0.12
+    target_yaw_tolerance_deg: 8.0
+    target_settle_s: 0.15
+    safe_motion_enabled: true
+    safe_motion_radius_m: 0.35
+    pose_timeout_s: 0.25
+    scheduler_timeout_s: 0.50
+    obstacle_timeout_s: 0.25
 
 local_avoidance_planner:
   ros__parameters:

@@ -38,6 +38,8 @@ struct CommandArbiterInput
   bool land_requested{false};
   bool return_requested{false};
   bool localization_hold{false};
+  bool active_relocalization_hold{false};
+  bool active_relocalization_authorized{false};
   ObstacleState obstacle_state{ObstacleState::kHover};
   bool obstacle_healthy{false};
   double obstacle_stamp_s{0.0};

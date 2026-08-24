@@ -109,14 +109,19 @@ CommandDecision CommandArbiterCore::evaluate(const CommandArbiterInput & input) 
     decision.action = CommandAction::kReturn;
     return decision;
   }
-  if (input.localization_hold) {
-    return hold(input, "localization_safety", "localization_hold", false);
+  if ((input.localization_hold || input.active_relocalization_hold) &&
+    !input.active_relocalization_authorized)
+  {
+    return hold(input,
+      input.active_relocalization_hold ? "active_relocalization" : "localization_safety",
+      input.active_relocalization_hold ? "active_relocalization_hold" : "localization_hold",
+      false);
   }
-  if (fresh(input.relocalization, input.now_s)) {
-    return forward(input, input.relocalization, "active_relocalization");
-  }
-  if (input.relocalization.received && !fresh(input.relocalization, input.now_s)) {
-    return hold(input, "fail_closed", "relocalization_intent_stale_or_invalid", true);
+  if (input.active_relocalization_authorized) {
+    if (fresh(input.relocalization, input.now_s)) {
+      return forward(input, input.relocalization, "active_relocalization");
+    }
+    return hold(input, "fail_closed", "authorized_relocalization_intent_missing", true);
   }
   if (fresh(input.planner, input.now_s)) {
     return forward(input, input.planner, "local_planner");

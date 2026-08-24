@@ -248,6 +248,20 @@ private:
     path_pub_->publish(path);
   }
 
+  void publish_verified_mission()
+  {
+    // Once a previous detour/hold has published a planner intent, silently
+    // stopping publication leaves that old candidate stale in the arbiter and
+    // correctly triggers fail-closed forever.  NAVIGATING means the direct
+    // mission segment has just passed the same Raw-obstacle verification, so
+    // keep the ordinary-priority planner candidate fresh without bypassing
+    // either the arbiter or the independent obstacle veto.
+    auto command = mission_;
+    command.header.stamp = get_clock()->now();
+    command.header.frame_id = "map";
+    planner_pub_->publish(command);
+  }
+
   void clear_candidate_path()
   {
     nav_msgs::msg::Path path;
@@ -352,6 +366,7 @@ private:
       active_world_path_.clear();
       consecutive_replans_ = 0U;
       clear_candidate_path();
+      publish_verified_mission();
     } else if (state == AvoidanceState::kResume) {
       publish_active(position, world_from_body);
     } else {

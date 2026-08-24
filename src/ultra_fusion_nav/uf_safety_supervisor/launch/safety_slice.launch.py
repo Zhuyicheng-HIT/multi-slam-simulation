@@ -22,6 +22,12 @@ def generate_launch_description():
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("raw_lidar_topic", default_value="/livox/lidar"),
             Node(
+                package="uf_relocalization",
+                executable="active_relocalization_controller",
+                parameters=[config, {"use_sim_time": use_sim_time}],
+                output="screen",
+            ),
+            Node(
                 package="uf_safety_supervisor",
                 executable="raw_obstacle_safety_monitor",
                 parameters=[

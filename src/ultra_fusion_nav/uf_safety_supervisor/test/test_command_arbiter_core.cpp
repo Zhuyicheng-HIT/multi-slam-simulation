@@ -51,6 +51,7 @@ TEST(CommandArbiterCore, RelocalizationOverridesPlannerWhenObstacleClear)
   auto input = nominal();
   input.planner = pose(9.9, 1.5);
   input.relocalization = pose(9.9, 0.4);
+  input.active_relocalization_authorized = true;
   EXPECT_EQ(CommandArbiterCore().evaluate(input).owner, "active_relocalization");
 }
 
@@ -58,6 +59,7 @@ TEST(CommandArbiterCore, ObstacleBrakeOverridesActiveRelocalization)
 {
   auto input = nominal();
   input.relocalization = pose(9.9, 0.4);
+  input.active_relocalization_authorized = true;
   input.obstacle_state = ObstacleState::kBrake;
   const auto result = CommandArbiterCore().evaluate(input);
   EXPECT_EQ(result.action, CommandAction::kHold);
@@ -79,6 +81,43 @@ TEST(CommandArbiterCore, LocalizationHoldOverridesPlanner)
   input.localization_hold = true;
   input.planner = pose(9.9, 1.5);
   EXPECT_EQ(CommandArbiterCore().evaluate(input).owner, "localization_safety");
+}
+
+TEST(CommandArbiterCore, AuthorizedRelocalizationOverridesLocalizationHold)
+{
+  auto input = nominal();
+  input.localization_hold = true;
+  input.active_relocalization_authorized = true;
+  input.relocalization = pose(9.9, 0.2);
+  EXPECT_EQ(CommandArbiterCore().evaluate(input).owner, "active_relocalization");
+}
+
+TEST(CommandArbiterCore, ActiveRelocalizationHoldOwnsHoldWithoutSharedBooleanTopic)
+{
+  CommandArbiterCore core;
+  auto input = nominal();
+  input.active_relocalization_hold = true;
+  const auto result = core.evaluate(input);
+  EXPECT_EQ(result.action, CommandAction::kHold);
+  EXPECT_EQ(result.owner, "active_relocalization");
+  EXPECT_EQ(result.reason, "active_relocalization_hold");
+}
+
+TEST(CommandArbiterCore, UnsolicitedRelocalizationIntentIsIgnored)
+{
+  auto input = nominal();
+  input.relocalization = pose(9.9, 0.2);
+  EXPECT_EQ(CommandArbiterCore().evaluate(input).owner, "mission");
+}
+
+TEST(CommandArbiterCore, AuthorizedRelocalizationWithoutFreshIntentFailsClosed)
+{
+  auto input = nominal();
+  input.localization_hold = true;
+  input.active_relocalization_authorized = true;
+  const auto result = CommandArbiterCore().evaluate(input);
+  EXPECT_TRUE(result.fail_closed);
+  EXPECT_EQ(result.reason, "authorized_relocalization_intent_missing");
 }
 
 TEST(CommandArbiterCore, ManualAndFcuReleaseAutomaticOwnership)
