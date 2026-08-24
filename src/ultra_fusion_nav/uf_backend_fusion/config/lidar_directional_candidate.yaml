@@ -1,0 +1,13 @@
+online_backend:
+  ros__parameters:
+    # LIDAR-DIR-001 candidate only. Production remains scalar/default-off
+    # until multi-scene runtime evidence closes the prediction-gate blocker.
+    axis_information_handoff_enabled: true
+    subspace_information_handoff_enabled: true
+    axis_handoff_enable_x: true
+    axis_handoff_enable_y: true
+    axis_handoff_enable_z: true
+    axis_handoff_enter_support: 0.30
+    axis_handoff_exit_support: 0.35
+    axis_handoff_minimum_lidar_information_scale: 0.00001
+    axis_handoff_maximum_lidar_to_alternative_ratio: 1.0

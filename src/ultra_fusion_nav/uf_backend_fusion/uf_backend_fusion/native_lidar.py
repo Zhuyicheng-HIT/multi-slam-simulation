@@ -97,6 +97,79 @@ class LidarReliabilityLayers:
     isotropic_information_support_xyz: tuple[float, float, float]
 
 
+@dataclass(frozen=True)
+class LidarDirectionalReliability:
+    """Health/consistency/observability evidence without scene labels.
+
+    ``eigenvectors`` are columns in the map translation frame.  The online
+    detector uses only the Native LiDAR conditional information and causal
+    health/innovation evidence; expected weak directions belong exclusively
+    to offline evaluation.
+    """
+
+    health: float
+    consistency: float
+    conditional_information: tuple[float, ...]
+    normalized_eigenvalues: tuple[float, float, float]
+    eigenvectors: tuple[float, ...]
+    reliability_eigenspace: tuple[float, float, float]
+    reliability_xyz: tuple[float, float, float]
+    weakest_direction: tuple[float, float, float]
+
+
+def lidar_directional_reliability(
+    factor: NativeLidarPoseNormal,
+    *,
+    chain_healthy: bool = True,
+    consistency: float = 1.0,
+) -> LidarDirectionalReliability:
+    """Compose source health, consistency and geometric observability.
+
+    A corrupt factor is rejected by health before this function is called in
+    production.  Keeping health separate here prevents a healthy but
+    directionally weak scan from being confused with a stale/corrupt stream.
+    """
+    consistency = float(consistency)
+    if not math.isfinite(consistency) or not 0.0 <= consistency <= 1.0:
+        raise ValueError("LiDAR consistency must be in [0, 1]")
+    healthy = bool(
+        chain_healthy
+        and factor.correspondences_valid
+        and factor.stamp_ns > 0
+        and factor.matched_points > 0
+        and math.isfinite(float(factor.measurement_variance))
+        and float(factor.measurement_variance) > 0.0
+    )
+    health = 1.0 if healthy else 0.0
+    observability = lidar_vertical_observability(factor)
+    information = np.asarray(
+        observability.translation_profile_information, dtype=float
+    ).reshape(3, 3)
+    eigenvalues, eigenvectors = np.linalg.eigh(information)
+    eigenvalues = np.maximum(eigenvalues, 0.0)
+    maximum = max(float(eigenvalues[-1]), 1.0e-12)
+    eigenspace_support = np.clip(eigenvalues / maximum, 0.0, 1.0)
+    axis_support = np.clip(np.diag(information) / maximum, 0.0, 1.0)
+    weakest = eigenvectors[:, 0].copy()
+    pivot = int(np.argmax(np.abs(weakest)))
+    if weakest[pivot] < 0.0:
+        weakest = -weakest
+    return LidarDirectionalReliability(
+        health=health,
+        consistency=consistency,
+        conditional_information=tuple(float(v) for v in information.reshape(-1)),
+        normalized_eigenvalues=tuple(float(v) for v in eigenspace_support),
+        eigenvectors=tuple(float(v) for v in eigenvectors.reshape(-1)),
+        reliability_eigenspace=tuple(
+            float(health * consistency * v) for v in eigenspace_support
+        ),
+        reliability_xyz=tuple(
+            float(health * consistency * v) for v in axis_support
+        ),
+        weakest_direction=tuple(float(v) for v in weakest),
+    )
+
+
 def lidar_reliability_layers(
     factor: NativeLidarPoseNormal,
     observability: LidarVerticalObservability,
