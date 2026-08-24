@@ -1,5 +1,9 @@
 # Ultra-Fusion Safety Slice
 
+Active relocalization is integrated as an arbiter-owned production candidate.
+See `docs/REL_ACT_003_ACTIVE_RELOCALIZATION_FLIGHT.md` at the repository root
+for its state, epoch/recovery, Raw-obstacle veto and validation contracts.
+
 This opt-in package closes the minimum low-level obstacle-safety loop without
 changing estimator mathematics or Dynamic Clean ownership.
 

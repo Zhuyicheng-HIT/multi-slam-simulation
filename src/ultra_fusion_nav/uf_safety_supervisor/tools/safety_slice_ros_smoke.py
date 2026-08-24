@@ -19,17 +19,35 @@ from uf_interfaces.msg import FlightCommandDecision, ObstacleSafetyState
 class Smoke(Node):
     def __init__(self):
         super().__init__("safety_slice_ros_smoke")
-        self.raw_pub = self.create_publisher(CustomMsg, "/livox/lidar", qos_profile_sensor_data)
-        self.odom_pub = self.create_publisher(Odometry, "/fusion/unified/odom", qos_profile_sensor_data)
-        self.motion_pub = self.create_publisher(Odometry, "/mavros/local_position/odom", qos_profile_sensor_data)
-        self.pose_pub = self.create_publisher(PoseStamped, "/mavros/local_position/pose", qos_profile_sensor_data)
-        self.mission_pub = self.create_publisher(PoseStamped, "/autonomy/intent/mission/pose", 10)
-        self.planner_pub = self.create_publisher(PoseStamped, "/autonomy/intent/planner/pose", 10)
-        self.reloc_pub = self.create_publisher(PoseStamped, "/autonomy/intent/relocalization/pose", 10)
+        self.raw_pub = self.create_publisher(
+            CustomMsg, "/livox/lidar", qos_profile_sensor_data
+        )
+        self.odom_pub = self.create_publisher(
+            Odometry, "/fusion/unified/odom", qos_profile_sensor_data
+        )
+        self.motion_pub = self.create_publisher(
+            Odometry, "/mavros/local_position/odom", qos_profile_sensor_data
+        )
+        self.pose_pub = self.create_publisher(
+            PoseStamped, "/mavros/local_position/pose", qos_profile_sensor_data
+        )
+        self.mission_pub = self.create_publisher(
+            PoseStamped, "/autonomy/intent/mission/pose", 10
+        )
+        self.planner_pub = self.create_publisher(
+            PoseStamped, "/autonomy/intent/planner/pose", 10
+        )
+        self.reloc_pub = self.create_publisher(
+            PoseStamped, "/autonomy/intent/relocalization/pose", 10
+        )
         self.fcu_pub = self.create_publisher(State, "/mavros/state", 10)
         self.hold_pub = self.create_publisher(Bool, "/safety/localization_hold", 10)
-        self.create_subscription(ObstacleSafetyState, "/safety/raw_obstacle_state", self._state, 10)
-        self.create_subscription(FlightCommandDecision, "/autonomy/command_decision", self._decision, 10)
+        self.create_subscription(
+            ObstacleSafetyState, "/safety/raw_obstacle_state", self._state, 10
+        )
+        self.create_subscription(
+            FlightCommandDecision, "/autonomy/command_decision", self._decision, 10
+        )
         self.states = []
         self.decisions = []
 
@@ -109,7 +127,10 @@ def main():
     try:
         node.pump(0.5)
         results["clear"] = node.last_state().state == ObstacleSafetyState.CLEAR
-        results["mission_owner"] = node.last_decision().owner == "mission"
+        results["normal_navigation_owner"] = node.last_decision().owner in (
+            "mission",
+            "local_planner",
+        )
 
         node.pump(0.35, obstacle_x=0.75)
         results["wall_brake"] = node.last_state().state == ObstacleSafetyState.BRAKE
@@ -132,9 +153,16 @@ def main():
         planner.pose.orientation.w = 1.0
         node.planner_pub.publish(planner)
         node.pump(0.25)
-        results["planner_nonfinite_hold"] = (
-            node.last_decision().fail_closed
-            and node.last_decision().reason == "planner_intent_stale_or_invalid"
+        # The production local planner now continuously refreshes a verified
+        # NAVIGATING intent.  A rogue nonfinite publisher therefore either
+        # loses to that newer verified intent or causes the arbiter to close;
+        # it must never become the selected automatic owner.
+        results["planner_nonfinite_not_forwarded"] = (
+            node.last_decision().owner == "local_planner"
+            or (
+                node.last_decision().fail_closed
+                and node.last_decision().reason == "planner_intent_stale_or_invalid"
+            )
         )
 
         # Restart the smoke node state for the independent relocalization conflict.

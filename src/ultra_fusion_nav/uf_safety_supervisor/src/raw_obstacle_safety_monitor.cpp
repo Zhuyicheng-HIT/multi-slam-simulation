@@ -97,6 +97,8 @@ public:
     const auto target_topic = declare_parameter<std::string>(
       "candidate_setpoint_topic", "/autonomy/selected_candidate_pose");
     const auto path_topic = declare_parameter<std::string>("candidate_path_topic", "/autonomy/candidate_path");
+    const auto relocalization_path_topic = declare_parameter<std::string>(
+      "relocalization_candidate_path_topic", "/autonomy/relocalization_candidate_path");
 
     state_pub_ = create_publisher<uf_interfaces::msg::ObstacleSafetyState>(
       "/safety/raw_obstacle_state", rclcpp::QoS(10).reliable());
@@ -119,6 +121,9 @@ public:
       [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr message) {target_ = *message;});
     path_sub_ = create_subscription<nav_msgs::msg::Path>(
       path_topic, 10, [this](nav_msgs::msg::Path::ConstSharedPtr message) {path_ = *message;});
+    relocalization_path_sub_ = create_subscription<nav_msgs::msg::Path>(
+      relocalization_path_topic, 10,
+      [this](nav_msgs::msg::Path::ConstSharedPtr message) {relocalization_path_ = *message;});
     timer_ = create_wall_timer(std::chrono::milliseconds(50), [this]() {watchdog();});
   }
 
@@ -141,12 +146,21 @@ private:
     Eigen::Vector3d goal = current;
     const double now = get_clock()->now().seconds();
     const double path_stamp = stamp_s(path_.header.stamp);
+    const double relocalization_path_stamp = stamp_s(relocalization_path_.header.stamp);
     const double target_stamp = stamp_s(target_.header.stamp);
     const bool path_fresh = path_stamp > 0.0 && now >= path_stamp &&
       now - path_stamp <= path_timeout_s_;
+    const bool relocalization_path_fresh = relocalization_path_stamp > 0.0 &&
+      now >= relocalization_path_stamp && now - relocalization_path_stamp <= path_timeout_s_;
     const bool target_fresh = target_stamp > 0.0 && now >= target_stamp &&
       now - target_stamp <= candidate_timeout_s_;
-    if (path_fresh && !path_.poses.empty() && finite_pose(path_.poses.front().pose)) {
+    if (relocalization_path_fresh && !relocalization_path_.poses.empty() &&
+      finite_pose(relocalization_path_.poses.back().pose))
+    {
+      goal = {relocalization_path_.poses.back().pose.position.x,
+        relocalization_path_.poses.back().pose.position.y,
+        relocalization_path_.poses.back().pose.position.z};
+    } else if (path_fresh && !path_.poses.empty() && finite_pose(path_.poses.front().pose)) {
       goal = {path_.poses.front().pose.position.x, path_.poses.front().pose.position.y,
         path_.poses.front().pose.position.z};
     } else if (target_fresh && finite_pose(target_.pose)) {
@@ -248,6 +262,7 @@ private:
   nav_msgs::msg::Odometry motion_odom_;
   geometry_msgs::msg::PoseStamped target_;
   nav_msgs::msg::Path path_;
+  nav_msgs::msg::Path relocalization_path_;
   rclcpp::Publisher<uf_interfaces::msg::ObstacleSafetyState>::SharedPtr state_pub_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr raw_sub_;
@@ -255,6 +270,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr motion_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr target_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr relocalization_path_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

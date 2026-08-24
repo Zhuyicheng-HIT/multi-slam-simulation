@@ -6,6 +6,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <uf_interfaces/msg/flight_command_decision.hpp>
+#include <uf_interfaces/msg/active_relocalization_status.hpp>
 #include <uf_interfaces/msg/obstacle_safety_state.hpp>
 
 #include <Eigen/Geometry>
@@ -71,6 +72,7 @@ public:
     config.maximum_setpoint_jump_m = declare_parameter<double>(
       "maximum_setpoint_jump_m", config.maximum_setpoint_jump_m);
     config.caution_step_m = declare_parameter<double>("caution_step_m", config.caution_step_m);
+    active_status_timeout_s_ = declare_parameter<double>("active_status_timeout_s", 0.25);
     core_ = std::make_unique<CommandArbiterCore>(config);
     auto_mode_name_ = declare_parameter<std::string>("automatic_mode_name", "GUIDED");
 
@@ -99,6 +101,15 @@ public:
     localization_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/safety/localization_hold", 10,
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {input_.localization_hold = msg->data;});
+    active_status_sub_ = create_subscription<uf_interfaces::msg::ActiveRelocalizationStatus>(
+      "/safety/active_relocalization_status", 10,
+      [this](uf_interfaces::msg::ActiveRelocalizationStatus::ConstSharedPtr msg) {
+        active_status_authorized_ = msg->motion_authorized;
+        active_status_hold_ = msg->state !=
+          uf_interfaces::msg::ActiveRelocalizationStatus::NORMAL_NAVIGATION &&
+          msg->state != uf_interfaces::msg::ActiveRelocalizationStatus::RESUME;
+        active_status_arrival_s_ = get_clock()->now().seconds();
+      });
     manual_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/safety/manual_override", 10,
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {explicit_manual_override_ = msg->data;});
@@ -135,6 +146,12 @@ private:
   {
     const auto now = get_clock()->now();
     input_.now_s = now.seconds();
+    input_.active_relocalization_authorized = active_status_authorized_ &&
+      input_.now_s >= active_status_arrival_s_ &&
+      input_.now_s - active_status_arrival_s_ <= active_status_timeout_s_;
+    input_.active_relocalization_hold = active_status_hold_ &&
+      input_.now_s >= active_status_arrival_s_ &&
+      input_.now_s - active_status_arrival_s_ <= active_status_timeout_s_;
     input_.manual_override = explicit_manual_override_ ||
       (fcu_received_ && fcu_connected_ && fcu_mode_ != auto_mode_name_);
     // Absence of an FCU heartbeat is not evidence that automatic control is
@@ -175,6 +192,10 @@ private:
   bool explicit_fcu_failsafe_{false};
   bool fcu_received_{false};
   bool fcu_connected_{false};
+  bool active_status_authorized_{false};
+  bool active_status_hold_{false};
+  double active_status_arrival_s_{0.0};
+  double active_status_timeout_s_{0.25};
   std::string fcu_mode_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr output_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr selected_candidate_pub_;
@@ -186,6 +207,8 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr relocalization_sub_;
   rclcpp::Subscription<uf_interfaces::msg::ObstacleSafetyState>::SharedPtr obstacle_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr localization_sub_;
+  rclcpp::Subscription<uf_interfaces::msg::ActiveRelocalizationStatus>::SharedPtr
+    active_status_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr manual_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr failsafe_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_request_sub_;
