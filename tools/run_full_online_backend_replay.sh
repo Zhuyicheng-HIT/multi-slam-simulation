@@ -17,6 +17,10 @@ REPLAY_ACK_TIMEOUT_MS=${REPLAY_ACK_TIMEOUT_MS:-10000}
 REPLAY_WALL_TIMEOUT_S=${REPLAY_WALL_TIMEOUT_S:-1800}
 POST_REPLAY_DRAIN_WALL_S=${POST_REPLAY_DRAIN_WALL_S:-15}
 ENABLE_CYCLE_TRACE=${ENABLE_CYCLE_TRACE:-1}
+REGENERATE_LIDAR_SCHEDULER=${REGENERATE_LIDAR_SCHEDULER:-0}
+LIDAR_FACTOR_SCORE_MODE=${LIDAR_FACTOR_SCORE_MODE:-hybrid}
+LIDAR_ADMISSION_MODE=${LIDAR_ADMISSION_MODE:-adaptive}
+LIDAR_PAPER_ACTIVATION_THRESHOLD=${LIDAR_PAPER_ACTIVATION_THRESHOLD:-0.25}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 BACKEND_EXECUTOR_THREADS=${BACKEND_EXECUTOR_THREADS:-2}
@@ -177,6 +181,18 @@ case "$FRONTEND_SCAN_PREDICTION_ENABLED" in
     printf 'FRONTEND_SCAN_PREDICTION_ENABLED must be auto, true, or false.\n' >&2
     exit 2
     ;;
+esac
+case "$REGENERATE_LIDAR_SCHEDULER" in
+  0|1) ;;
+  *) printf 'REGENERATE_LIDAR_SCHEDULER must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$LIDAR_FACTOR_SCORE_MODE" in
+  hybrid|paper_eq19) ;;
+  *) printf 'LIDAR_FACTOR_SCORE_MODE must be hybrid or paper_eq19.\n' >&2; exit 2 ;;
+esac
+case "$LIDAR_ADMISSION_MODE" in
+  adaptive|paper_eq15) ;;
+  *) printf 'LIDAR_ADMISSION_MODE must be adaptive or paper_eq15.\n' >&2; exit 2 ;;
 esac
 if [[ ! -f "$REPLAY_QOS_OVERRIDES" ]]; then
   printf 'Missing rosbag QoS override file: %s\n' "$REPLAY_QOS_OVERRIDES" >&2
@@ -367,6 +383,9 @@ backend_command=(
   -p native_lidar_qos_depth:="$NATIVE_LIDAR_QOS_DEPTH"
   -p native_worker_queue_size:="$NATIVE_WORKER_QUEUE_SIZE"
 )
+if [[ "$LIDAR_ADMISSION_MODE" != adaptive ]]; then
+  backend_command+=( -p lidar_admission_mode:="$LIDAR_ADMISSION_MODE" )
+fi
 if [[ "$ENABLE_CYCLE_TRACE" == 1 ]]; then
   backend_command+=(
     -p performance_profiling_enabled:=true
@@ -435,6 +454,42 @@ if (( regenerate_visual_factor_score == 1 )); then
   pids+=("$!")
 fi
 
+if [[ "$REGENERATE_LIDAR_SCHEDULER" == 1 ]]; then
+  monitor_command=(
+    ros2 run uf_reliability reliability_monitor --ros-args
+    --params-file "$WORKSPACE_ROOT/install/uf_reliability/share/uf_reliability/config/reliability.yaml"
+    -p use_sim_time:=true
+    -r /reliability/lidar_score:=/replay/reliability/lidar_score
+    -r /reliability/lidar_map_score:=/replay/reliability/lidar_map_score
+    -r /reliability/gnss_score:=/replay/monitor_unused/gnss_score
+    -r /reliability/imu_score:=/replay/monitor_unused/imu_score
+    -r /reliability/optical_flow_score:=/replay/monitor_unused/optical_flow_score
+    -r /reliability/vision_score:=/replay/monitor_unused/vision_score
+    -r /reliability/vision_factor_score:=/replay/monitor_unused/vision_factor_score
+    -r /reliability/gnss_integrity:=/replay/monitor_unused/gnss_integrity
+  )
+  if [[ "$LIDAR_FACTOR_SCORE_MODE" != hybrid ]]; then
+    monitor_command+=( -p lidar.factor.score_mode:="$LIDAR_FACTOR_SCORE_MODE" )
+  fi
+  setsid "${monitor_command[@]}" >"$OUTPUT_DIR/lidar_score_regenerator.log" 2>&1 &
+  pids+=("$!")
+
+  scheduler_command=(
+    ros2 run uf_reliability reliability_scheduler --ros-args
+    --params-file "$WORKSPACE_ROOT/install/uf_reliability/share/uf_reliability/config/scheduler_config.yaml"
+    -p use_sim_time:=true
+    -r /reliability/lidar_score:=/replay/reliability/lidar_score
+  )
+  if [[ "$LIDAR_ADMISSION_MODE" != adaptive ]]; then
+    scheduler_command+=(
+      -p lidar_admission_mode:="$LIDAR_ADMISSION_MODE"
+      -p lidar_paper_activation_threshold:="$LIDAR_PAPER_ACTIVATION_THRESHOLD"
+    )
+  fi
+  setsid "${scheduler_command[@]}" >"$OUTPUT_DIR/reliability_scheduler.log" 2>&1 &
+  pids+=("$!")
+fi
+
 setsid python3 "$REPO_ROOT/tools/record_backend_replay_metrics.py" \
   --output "$OUTPUT_DIR/replay_metrics.json" --wall-timeout 1800 \
   >"$OUTPUT_DIR/metrics_recorder.log" 2>&1 &
@@ -453,16 +508,7 @@ if [[ "$ACCURACY_ENABLED" == 1 ]]; then
 fi
 sleep 4
 
-play_command=(
-  ros2 bag play "$BAG_DIR"
-  --rate "$REPLAY_RATE"
-  --start-offset "$REPLAY_START_OFFSET"
-  --read-ahead-queue-size "$REPLAY_READ_AHEAD_QUEUE_SIZE"
-  --delay "$REPLAY_DISCOVERY_DELAY_S"
-  --wait-for-all-acked "$REPLAY_ACK_TIMEOUT_MS"
-  --disable-keyboard-controls
-  --qos-profile-overrides-path "$REPLAY_QOS_OVERRIDES"
-  --topics
+play_topics=(
   /clock
   /fast_lio/frontend_scan_request
   /fast_lio/native_lidar_factor
@@ -475,8 +521,6 @@ play_command=(
   /vision/feature_tracks
   /vision/rgbd_geometry_tracks
   /vision/rgbd_direct_tracks
-  /reliability/scheduler_state
-  /reliability/lidar_score
   /reliability/imu_score
   /reliability/gnss_score
   /reliability/optical_flow_score
@@ -486,6 +530,24 @@ play_command=(
   /sim/mid360/ground_truth_odom
   /mission/phase
   /mission/checkpoint
+)
+if [[ "$REGENERATE_LIDAR_SCHEDULER" == 1 ]]; then
+  play_topics+=( /lio/diagnostics /lio/odom )
+else
+  play_topics+=( /reliability/scheduler_state /reliability/lidar_score )
+fi
+
+play_command=(
+  ros2 bag play "$BAG_DIR"
+  --rate "$REPLAY_RATE"
+  --start-offset "$REPLAY_START_OFFSET"
+  --read-ahead-queue-size "$REPLAY_READ_AHEAD_QUEUE_SIZE"
+  --delay "$REPLAY_DISCOVERY_DELAY_S"
+  --wait-for-all-acked "$REPLAY_ACK_TIMEOUT_MS"
+  --disable-keyboard-controls
+  --qos-profile-overrides-path "$REPLAY_QOS_OVERRIDES"
+  --topics
+  "${play_topics[@]}"
 )
 set +e
 timeout "${REPLAY_WALL_TIMEOUT_S}s" "${play_command[@]}" \
@@ -567,6 +629,10 @@ printf 'frontend_scan_prediction_enabled=%s\n' \
 printf 'fixed_lidar_weight=%s\nfixed_gnss_weight=%s\nfixed_imu_weight=%s\nfixed_optical_flow_weight=%s\nfixed_vision_weight=%s\n' \
   "$FIXED_LIDAR_WEIGHT" "$FIXED_GNSS_WEIGHT" "$FIXED_IMU_WEIGHT" \
   "$FIXED_OPTICAL_FLOW_WEIGHT" "$FIXED_VISION_WEIGHT" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'regenerate_lidar_scheduler=%s\nlidar_factor_score_mode=%s\nlidar_admission_mode=%s\nlidar_paper_activation_threshold=%s\n' \
+  "$REGENERATE_LIDAR_SCHEDULER" "$LIDAR_FACTOR_SCORE_MODE" \
+  "$LIDAR_ADMISSION_MODE" "$LIDAR_PAPER_ACTIVATION_THRESHOLD" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'rgbd_depth_healthy_lidar_stride=%s\n' \
   "$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" >>"$OUTPUT_DIR/replay_result.env"
