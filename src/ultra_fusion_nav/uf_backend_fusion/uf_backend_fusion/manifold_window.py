@@ -185,6 +185,44 @@ def _covariance_information(covariance):
     return inverse_cholesky.T @ inverse_cholesky
 
 
+def lidar_translation_subspace_normal(hessian, gradient, scale):
+    """Reweight the rotation-conditioned translation normal subspace."""
+    hessian = np.asarray(hessian, dtype=float)
+    gradient = np.asarray(gradient, dtype=float)
+    scale = np.asarray(scale, dtype=float)
+    if hessian.shape != (6, 6) or gradient.shape != (6,):
+        raise ValueError("LiDAR pose normal must be 6-dimensional")
+    if scale.shape != (3, 3) or np.any(~np.isfinite(scale)):
+        raise ValueError("LiDAR subspace scale must be a finite 3x3 matrix")
+    scale = 0.5 * (scale + scale.T)
+    values, vectors = np.linalg.eigh(scale)
+    if np.any(values < -1.0e-9) or np.any(values > 1.0 + 1.0e-9):
+        raise ValueError("LiDAR subspace scale must be PSD and bounded")
+    root = (vectors * np.sqrt(np.clip(values, 0.0, 1.0))) @ vectors.T
+    translation = slice(0, 3)
+    rotation = slice(3, 6)
+    h_rr = 0.5 * (
+        hessian[rotation, rotation] + hessian[rotation, rotation].T
+    )
+    coupling = hessian[translation, rotation]
+    conditional_map = coupling @ np.linalg.pinv(h_rr, rcond=1.0e-12)
+    schur = hessian[translation, translation] - conditional_map @ coupling.T
+    schur = 0.5 * (schur + schur.T)
+    conditional_gradient = (
+        gradient[translation] - conditional_map @ gradient[rotation]
+    )
+    result_hessian = hessian.copy()
+    result_gradient = gradient.copy()
+    result_hessian[translation, translation] = (
+        root @ schur @ root + conditional_map @ h_rr @ conditional_map.T
+    )
+    result_gradient[translation] = (
+        scale @ conditional_gradient
+        + conditional_map @ gradient[rotation]
+    )
+    return 0.5 * (result_hessian + result_hessian.T), result_gradient
+
+
 def huber_loss_and_weight(standardized_residual, delta):
     """Return Huber loss and IRLS weight in measurement-sigma units."""
     residual = np.asarray(standardized_residual, dtype=float)
@@ -1014,7 +1052,27 @@ class ManifoldSlidingWindowBackend:
             translation_information_scale=(
                 translation_information_scale.copy()
             ),
+            translation_subspace_scale=np.eye(3, dtype=float),
         )
+
+    def set_lidar_subspace_scale(self, scale):
+        """Apply one translation subspace scale to active raw LiDAR factors.
+
+        Marginal priors are deliberately excluded: only factors retaining raw
+        point-plane correspondences can be reweighted without reconstructing a
+        prior.  The transform is applied during the next normal assembly.
+        """
+        scale = np.asarray(scale, dtype=float)
+        if scale.shape != (3, 3) or np.any(~np.isfinite(scale)):
+            raise ValueError("LiDAR subspace scale must be a finite 3x3 matrix")
+        scale = 0.5 * (scale + scale.T)
+        eigenvalues = np.linalg.eigvalsh(scale)
+        if np.any(eigenvalues < -1.0e-9) or np.any(eigenvalues > 1.0 + 1.0e-9):
+            raise ValueError("LiDAR subspace scale must be PSD and bounded")
+        for factor in self._factors:
+            if factor["name"] == "lidar_point_plane":
+                factor["translation_subspace_scale"] = scale.copy()
+        self._last_hessian = None
 
     def add_native_lidar_normal(
         self,
@@ -1370,11 +1428,18 @@ class ManifoldSlidingWindowBackend:
             translation_information_scale = factor[
                 "translation_information_scale"
             ]
+            subspace_scale = factor.get(
+                "translation_subspace_scale", np.eye(3, dtype=float)
+            )
+            subspace_scaled = not np.allclose(
+                subspace_scale, np.eye(3), atol=1.0e-12, rtol=0.0
+            )
             axis_scaled = not np.allclose(
                 translation_information_scale, 1.0, atol=0.0, rtol=0.0
             )
             if (
                 self.cpp_math_core_enabled
+                and not subspace_scaled
                 and (
                     not axis_scaled
                     or CPP_LIDAR_AXIS_SCALED_CORE_AVAILABLE
@@ -1434,10 +1499,18 @@ class ManifoldSlidingWindowBackend:
             )
             start = index * STATE_SIZE
             pose = slice(start, start + 6)
-            hessian[pose, pose] += (
+            local_hessian = (
                 pose_jacobian.T @ (information[:, None] * pose_jacobian)
             )
-            gradient[pose] += pose_jacobian.T @ (information * residual)
+            local_gradient = pose_jacobian.T @ (information * residual)
+            if subspace_scaled:
+                local_hessian, local_gradient = (
+                    lidar_translation_subspace_normal(
+                        local_hessian, local_gradient, subspace_scale
+                    )
+                )
+            hessian[pose, pose] += local_hessian
+            gradient[pose] += local_gradient
             return (
                 hessian,
                 gradient,
@@ -2000,6 +2073,17 @@ class ManifoldSlidingWindowBackend:
                 if factor["name"] == "lidar_point_plane" and factor["enabled"]
             ]
             if lidar_factors:
+                has_subspace_scaled_factor = any(
+                    not np.allclose(
+                        factor.get(
+                            "translation_subspace_scale", np.eye(3)
+                        ),
+                        np.eye(3),
+                        atol=1.0e-12,
+                        rtol=0.0,
+                    )
+                    for factor in lidar_factors
+                )
                 has_axis_scaled_factor = any(
                     not np.allclose(
                         factor["translation_information_scale"],
@@ -2010,8 +2094,11 @@ class ManifoldSlidingWindowBackend:
                     for factor in lidar_factors
                 )
                 if (
+                    not has_subspace_scaled_factor
+                    and (
                     not has_axis_scaled_factor
                     or CPP_LIDAR_AXIS_SCALED_GRAPH_CORE_AVAILABLE
+                    )
                 ):
                     factor_started = self._profile_start()
                     if has_axis_scaled_factor:

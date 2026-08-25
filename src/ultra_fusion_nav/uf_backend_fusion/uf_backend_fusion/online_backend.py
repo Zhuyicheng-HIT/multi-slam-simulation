@@ -2692,6 +2692,10 @@ class UnifiedBackendNode(Node):
         self.declare_parameter(
             "lidar_anchor_maximum_covariance_inflation", 5.0)
         self.declare_parameter("native_lidar_factor_enabled", True)
+        self.declare_parameter("lidar_subspace_enabled", False)
+        self.declare_parameter("lidar_subspace_weak_threshold", 0.15)
+        self.declare_parameter("lidar_subspace_exit_threshold", 0.25)
+        self.declare_parameter("lidar_subspace_weak_scale", 0.10)
         self.declare_parameter("input_trigger_mode", "native_factor")
         self.declare_parameter("live_propagation_enabled", True)
         self.declare_parameter("live_propagation_rate_hz", 10.0)
@@ -3285,6 +3289,24 @@ class UnifiedBackendNode(Node):
         native_requested = bool(
             self.get_parameter("native_lidar_factor_enabled").value
         )
+        self.lidar_subspace_enabled = bool(
+            self.get_parameter("lidar_subspace_enabled").value
+        )
+        self.lidar_subspace_weak_threshold = float(
+            self.get_parameter("lidar_subspace_weak_threshold").value
+        )
+        self.lidar_subspace_exit_threshold = float(
+            self.get_parameter("lidar_subspace_exit_threshold").value
+        )
+        self.lidar_subspace_weak_scale = float(
+            self.get_parameter("lidar_subspace_weak_scale").value
+        )
+        if not (
+            0.0 < self.lidar_subspace_weak_threshold
+            < self.lidar_subspace_exit_threshold <= 1.0
+            and 0.0 < self.lidar_subspace_weak_scale <= 1.0
+        ):
+            raise ValueError("LiDAR subspace limits are invalid")
         self.native_lidar_enabled = bool(
             native_requested and NativeLidarFactor is not None)
         requested_trigger_mode = str(
@@ -4472,6 +4494,10 @@ class UnifiedBackendNode(Node):
             (3, 3), dtype=float
         )
         self.last_native_weakest_translation_direction = np.zeros(3, dtype=float)
+        self.last_lidar_subspace_scale = np.eye(3, dtype=float)
+        self.lidar_subspace_episode_active = False
+        self.last_lidar_subspace_weak_modes = 0
+        self.last_lidar_subspace_information_scale = np.ones(3, dtype=float)
         self.last_native_health_degradation = 1.0
         self.last_native_consistency_degradation = 0.0
         self.last_native_observability_degradation = np.ones(3, dtype=float)
@@ -6521,6 +6547,48 @@ class UnifiedBackendNode(Node):
         decision["reasons"] = ("scheduler_unavailable_default",)
         return decision
 
+    def _update_lidar_subspace_projector(self):
+        """Update the raw-factor projector without touching marginal priors."""
+        eigenvalues = np.asarray(
+            self.last_native_translation_normalized_eigenvalues, dtype=float
+        )
+        eigenvectors = np.asarray(
+            self.last_native_translation_eigenvectors, dtype=float
+        )
+        if (
+            not self.lidar_subspace_enabled
+            or eigenvalues.shape != (3,)
+            or eigenvectors.shape != (3, 3)
+            or np.any(~np.isfinite(eigenvalues))
+            or np.any(~np.isfinite(eigenvectors))
+            or float(np.max(eigenvalues)) <= 0.0
+        ):
+            self.lidar_subspace_episode_active = False
+            self.last_lidar_subspace_weak_modes = 0
+            self.last_lidar_subspace_information_scale = np.ones(3)
+            self.last_lidar_subspace_scale = np.eye(3)
+            return
+        weak = eigenvalues < (
+            self.lidar_subspace_exit_threshold
+            if self.lidar_subspace_episode_active
+            else self.lidar_subspace_weak_threshold
+        )
+        weak_modes = int(np.count_nonzero(weak))
+        self.lidar_subspace_episode_active = weak_modes > 0
+        if not self.lidar_subspace_episode_active:
+            self.last_lidar_subspace_weak_modes = 0
+            self.last_lidar_subspace_information_scale = np.ones(3)
+            self.last_lidar_subspace_scale = np.eye(3)
+            return
+        mode_scale = np.where(weak, self.lidar_subspace_weak_scale, 1.0)
+        self.last_lidar_subspace_weak_modes = weak_modes
+        self.last_lidar_subspace_information_scale = mode_scale.copy()
+        self.last_lidar_subspace_scale = (
+            eigenvectors @ np.diag(mode_scale) @ eigenvectors.T
+        )
+        if self.backend_solver_mode == "manifold":
+            self.backend.set_lidar_subspace_scale(self.last_lidar_subspace_scale)
+
     def _axis_handoff_alternative_information(
         self, stamp_s, *, include_barometer=True
     ):
@@ -7539,6 +7607,18 @@ class UnifiedBackendNode(Node):
                 ),
                 "effective_translation_eigenvectors_row_major": (
                     effective_eigenvectors.tolist()
+                ),
+                "subspace_projector_row_major": (
+                    self.last_lidar_subspace_scale.tolist()
+                ),
+                "subspace_mode_information_scale": (
+                    self.last_lidar_subspace_information_scale.tolist()
+                ),
+                "subspace_weak_mode_count": int(
+                    self.last_lidar_subspace_weak_modes
+                ),
+                "subspace_episode_active": bool(
+                    self.lidar_subspace_episode_active
                 ),
                 "weakest_translation_direction": (
                     self.last_native_weakest_translation_direction.tolist()
@@ -9579,6 +9659,7 @@ class UnifiedBackendNode(Node):
             self.last_native_weakest_translation_direction = np.asarray(
                 native_vertical.weakest_translation_direction, dtype=float
             )
+            self._update_lidar_subspace_projector()
             if native_observability.effective_rank < 6:
                 self.counts["native_lidar_directionally_degenerate"] += 1
 
@@ -9923,6 +10004,10 @@ class UnifiedBackendNode(Node):
                         self.last_lidar_axis_information_scale
                     ),
                 )
+                if self.lidar_subspace_episode_active:
+                    self.backend.set_lidar_subspace_scale(
+                        self.last_lidar_subspace_scale
+                    )
                 self.counts["native_lidar_relinearized"] += 1
                 if axis_scaled:
                     self.counts[
