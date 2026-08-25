@@ -4468,6 +4468,9 @@ class UnifiedBackendNode(Node):
         self.last_native_translation_normalized_eigenvalues = np.zeros(
             3, dtype=float
         )
+        self.last_native_translation_eigenvectors = np.zeros(
+            (3, 3), dtype=float
+        )
         self.last_native_weakest_translation_direction = np.zeros(3, dtype=float)
         self.last_native_health_degradation = 1.0
         self.last_native_consistency_degradation = 0.0
@@ -7347,9 +7350,28 @@ class UnifiedBackendNode(Node):
             ) * int(os.sysconf("SC_PAGE_SIZE"))
         except (OSError, ValueError, IndexError):
             rss_bytes = -1
-        active_factor_counts = self._factor_name_counts(
-            self.backend.factor_summary()
-        )
+        factor_records = self.backend.factor_summary()
+        active_factor_counts = self._factor_name_counts(factor_records)
+        active_lidar_records = [
+            record for record in factor_records
+            if record.enabled
+            and record.name
+            in {"lidar_point_plane", "lidar_point_plane_condensed"}
+        ]
+        state_stamps = tuple(float(value) for value in self.visual_state_stamps)
+        active_lidar_ages = []
+        active_lidar_state_indices = []
+        for record in active_lidar_records:
+            for index in record.state_indices:
+                active_lidar_state_indices.append(int(index))
+                if 0 <= int(index) < len(state_stamps):
+                    active_lidar_ages.append(
+                        max(
+                            0.0,
+                            float(context["stamp_s"])
+                            - state_stamps[int(index)],
+                        )
+                    )
         factor_counters = {
             "lidar": int(self.counts["native_lidar_factors"]),
             "imu": int(self.counts["imu_factors"]),
@@ -7363,11 +7385,51 @@ class UnifiedBackendNode(Node):
             for name, value in factor_counters.items()
         }
         factor_counts["total"] = int(sum(factor_counts.values()))
+        current_lidar_record = (
+            active_lidar_records[-1]
+            if state_committed
+            and factor_counts.get("lidar", 0) > 0
+            and active_lidar_records
+            else None
+        )
+        lidar_effective_weight = (
+            float(current_lidar_record.effective_weight)
+            if current_lidar_record is not None
+            and current_lidar_record.enabled
+            else 0.0
+        )
+        axis_root_scale = np.diag(
+            np.sqrt(
+                np.clip(
+                    self.last_lidar_axis_information_scale, 0.0, 1.0
+                )
+            )
+        )
+        effective_translation_information = (
+            lidar_effective_weight
+            * axis_root_scale
+            @ self.last_native_translation_profile_information
+            @ axis_root_scale
+        )
+        effective_eigenvalues, effective_eigenvectors = np.linalg.eigh(
+            0.5
+            * (
+                effective_translation_information
+                + effective_translation_information.T
+            )
+        )
+        optimized_state = None
+        if state_committed and self.backend.state_count > 0:
+            optimized_state = self.backend.state(
+                self.backend.state_count - 1
+            ).tolist()
         phases = dict(self.current_cycle_phase or {})
         phases["callback_total"] = float(callback_total_ms)
         trace = {
             "schema_version": 2,
             "stamp_s": context["stamp_s"],
+            "transaction_index": int(self.counts["lio"]),
+            "native_scan_sequence": int(self.last_native_sequence),
             "wall_started_s": context["wall_started_s"],
             "wall_finished_s": time.monotonic(),
             "nonlinear_iteration_budget": int(context.get(
@@ -7408,6 +7470,13 @@ class UnifiedBackendNode(Node):
                 "covariance_inflation": float(context.get(
                     "lidar_factor_inflation", MAX_COVARIANCE_INFLATION
                 )),
+                "effective_weight": float(lidar_effective_weight),
+                "solver_admitted": bool(
+                    state_committed
+                    and factor_counts.get("lidar", 0) > 0
+                    and current_lidar_record is not None
+                    and current_lidar_record.enabled
+                ),
                 "map_eligible": bool(context.get(
                     "lidar_map_eligible", False
                 )),
@@ -7459,6 +7528,18 @@ class UnifiedBackendNode(Node):
                 "translation_normalized_eigenvalues": (
                     self.last_native_translation_normalized_eigenvalues.tolist()
                 ),
+                "translation_eigenvectors_row_major": (
+                    self.last_native_translation_eigenvectors.tolist()
+                ),
+                "effective_translation_information": (
+                    effective_translation_information.tolist()
+                ),
+                "effective_translation_eigenvalues": (
+                    effective_eigenvalues.tolist()
+                ),
+                "effective_translation_eigenvectors_row_major": (
+                    effective_eigenvectors.tolist()
+                ),
                 "weakest_translation_direction": (
                     self.last_native_weakest_translation_direction.tolist()
                 ),
@@ -7467,10 +7548,14 @@ class UnifiedBackendNode(Node):
                 ),
             },
             "visual_candidates_staged": int(len(staged_visual_candidates)),
+            "active_lidar_state_indices": active_lidar_state_indices,
+            "active_lidar_ages_s": active_lidar_ages,
+            "active_lidar_factor_count": int(len(active_lidar_records)),
             "marginalization_happened": bool(
                 backend_profile.get("marginalization_happened", False)
             ),
             "state_committed": bool(state_committed),
+            "optimized_state": optimized_state,
             "last_reason": str(self.last_reason),
             "resource_delta": process_resource_delta(
                 context["resource"], resource_after
@@ -9488,6 +9573,9 @@ class UnifiedBackendNode(Node):
             self.last_native_translation_normalized_eigenvalues = np.asarray(
                 native_vertical.translation_normalized_eigenvalues, dtype=float
             )
+            self.last_native_translation_eigenvectors = np.asarray(
+                native_vertical.translation_eigenvectors, dtype=float
+            ).reshape(3, 3)
             self.last_native_weakest_translation_direction = np.asarray(
                 native_vertical.weakest_translation_direction, dtype=float
             )
