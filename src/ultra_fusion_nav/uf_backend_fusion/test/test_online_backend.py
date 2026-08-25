@@ -2656,7 +2656,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         self.assertFalse(admission["recovered"])
         self.assertFalse(admission["recovery_floor"])
 
-    def test_lidar_prediction_gate_uses_geometry_checked_recovery_floor(self):
+    def test_lidar_prediction_gate_does_not_reinject_frame_inconsistent_factor(self):
         admission = lidar_prediction_factor_admission(
             {"position_m": 1.2, "yaw_rad": 0.1},
             1.0,
@@ -2666,16 +2666,13 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             recovery_geometry_usable=True,
         )
 
-        self.assertTrue(admission["factor_enabled"])
-        self.assertEqual(
-            admission["reason"],
-            "lidar_prediction_position_gate_recovery_floor",
-        )
+        self.assertFalse(admission["factor_enabled"])
+        self.assertEqual(admission["reason"], "lidar_prediction_position_gate")
         self.assertEqual(admission["consecutive_rejections"], 3)
         self.assertFalse(admission["recovered"])
-        self.assertTrue(admission["recovery_floor"])
+        self.assertFalse(admission["recovery_floor"])
 
-    def test_lidar_prediction_recovery_requires_usable_geometry(self):
+    def test_lidar_prediction_rejection_stays_disabled_without_usable_geometry(self):
         admission = lidar_prediction_factor_admission(
             {"position_m": 1.2, "yaw_rad": 0.1},
             1.0,
