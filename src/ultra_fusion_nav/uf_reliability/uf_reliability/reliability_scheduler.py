@@ -83,6 +83,8 @@ class ReliabilityScheduler(Node):
         self.declare_parameter("factor_enable_threshold", 0.55)
         self.declare_parameter("minimum_weight", 0.05)
         self.declare_parameter("maximum_covariance_inflation", 20.0)
+        self.declare_parameter("lidar_admission_mode", "adaptive")
+        self.declare_parameter("lidar_paper_activation_threshold", 0.25)
         self.declare_parameter("imu_soft_max_degradation", 0.80)
         self.declare_parameter("transition_dwell_s", 0.5)
         self.declare_parameter("recovery_dwell_s", 1.5)
@@ -126,6 +128,12 @@ class ReliabilityScheduler(Node):
             factor_enable_threshold=float(self.get_parameter("factor_enable_threshold").value),
             minimum_weight=float(self.get_parameter("minimum_weight").value),
             maximum_covariance_inflation=float(self.get_parameter("maximum_covariance_inflation").value),
+            lidar_admission_mode=str(
+                self.get_parameter("lidar_admission_mode").value
+            ).strip().lower(),
+            lidar_paper_activation_threshold=float(
+                self.get_parameter("lidar_paper_activation_threshold").value
+            ),
             imu_soft_max_degradation=float(
                 self.get_parameter("imu_soft_max_degradation").value
             ),

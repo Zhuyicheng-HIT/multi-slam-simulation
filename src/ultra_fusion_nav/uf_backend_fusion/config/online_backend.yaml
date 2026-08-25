@@ -402,6 +402,7 @@ unified_backend_fusion:
     calibration_time_unlock_count: 3
     scheduler_timeout_s: 1.0
     reliability_mode: dynamic
+    lidar_admission_mode: adaptive
     fixed_lidar_weight: 1.0
     fixed_gnss_weight: 1.0
     fixed_imu_weight: 1.0

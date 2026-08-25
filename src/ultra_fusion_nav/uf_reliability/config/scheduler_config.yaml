@@ -36,6 +36,10 @@ reliability_scheduler:
     factor_enable_threshold: 0.55
     minimum_weight: 0.05
     maximum_covariance_inflation: 20.0
+    # paper_eq15 is an opt-in A/B: Eq. (19) is compared with one LiDAR
+    # threshold and the factor is either full weight or zero weight.
+    lidar_admission_mode: adaptive
+    lidar_paper_activation_threshold: 0.25
     # Valid high-dynamic IMU remains a propagation factor with at least 0.20
     # reliability weight. Stale, invalid, or saturated IMU is still disabled.
     imu_soft_max_degradation: 0.80

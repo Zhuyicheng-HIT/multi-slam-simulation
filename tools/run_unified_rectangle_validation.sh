@@ -6,6 +6,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 LOG_DIR=${LOG_DIR:-"$REPO_ROOT/logs/unified_rectangle_$(date +%Y%m%d_%H%M%S)"}
 LIDAR_WS=${LIDAR_WS:-"$HOME/multi-slam-deps/mid360_ws"}
 VALIDATION_ROUTE=${VALIDATION_ROUTE:-rectangle}
+VALIDATION_ROUTE_MODE=${VALIDATION_ROUTE_MODE:-${ROUTE_MODE:-rectangle}}
 VALIDATION_CALIBRATION_ONLY=${VALIDATION_CALIBRATION_ONLY:-false}
 VALIDATION_ROS_DOMAIN_ID=${VALIDATION_ROS_DOMAIN_ID:-41}
 if [[ ! "$VALIDATION_ROS_DOMAIN_ID" =~ ^[0-9]+$ ]] ||
@@ -16,6 +17,13 @@ then
 fi
 export ROS_DOMAIN_ID="$VALIDATION_ROS_DOMAIN_ID"
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+case "$VALIDATION_ROUTE_MODE" in
+  rectangle|straight) ;;
+  *)
+    printf 'VALIDATION_ROUTE_MODE must be rectangle or straight.\n' >&2
+    exit 2
+    ;;
+esac
 VALIDATION_WORLD_NAME=${VALIDATION_WORLD_NAME:-${WORLD_NAME:-low_indoor_apm_rgbd_mid360}}
 VALIDATION_TAKEOFF_ALT=${VALIDATION_TAKEOFF_ALT:-2.2}
 VALIDATION_RANGE_FACET_ENABLED=${VALIDATION_RANGE_FACET_ENABLED:-false}
@@ -48,15 +56,36 @@ esac
 VALIDATION_MID360_SIM_BRIDGE_MODE=${VALIDATION_MID360_SIM_BRIDGE_MODE:-direct_livox}
 VALIDATION_PRESERVE_LIO_ANCHOR=${VALIDATION_PRESERVE_LIO_ANCHOR:-false}
 VALIDATION_PERFORMANCE_PROFILING=${VALIDATION_PERFORMANCE_PROFILING:-true}
+VALIDATION_ENABLE_LIDAR_CALIBRATION_MOTION=${VALIDATION_ENABLE_LIDAR_CALIBRATION_MOTION:-true}
+VALIDATION_ENABLE_FASTLIO_ACCURACY=${VALIDATION_ENABLE_FASTLIO_ACCURACY:-true}
+VALIDATION_ENABLE_SLAM_DRIFT=${VALIDATION_ENABLE_SLAM_DRIFT:-true}
 VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED=${VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED:-false}
 VALIDATION_GNSS_Z_REANCHOR_ENABLED=${VALIDATION_GNSS_Z_REANCHOR_ENABLED:-false}
 VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE=${VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE:-0.50}
 VALIDATION_BAROMETER_FALLBACK_ENABLED=${VALIDATION_BAROMETER_FALLBACK_ENABLED:-false}
 VALIDATION_RELIABILITY_MODE=${VALIDATION_RELIABILITY_MODE:-dynamic}
+VALIDATION_LIDAR_FACTOR_SCORE_MODE=${VALIDATION_LIDAR_FACTOR_SCORE_MODE:-hybrid}
+VALIDATION_LIDAR_ADMISSION_MODE=${VALIDATION_LIDAR_ADMISSION_MODE:-adaptive}
+VALIDATION_LIDAR_PAPER_ACTIVATION_THRESHOLD=${VALIDATION_LIDAR_PAPER_ACTIVATION_THRESHOLD:-0.25}
+VALIDATION_LIDAR_PREDICTION_GATE_ENABLED=${VALIDATION_LIDAR_PREDICTION_GATE_ENABLED:-true}
 case "$VALIDATION_RELIABILITY_MODE" in
   dynamic|fixed) ;;
   *)
     printf 'VALIDATION_RELIABILITY_MODE must be dynamic or fixed.\n' >&2
+    exit 2
+    ;;
+esac
+case "$VALIDATION_LIDAR_FACTOR_SCORE_MODE" in
+  hybrid|paper_eq19) ;;
+  *)
+    printf 'VALIDATION_LIDAR_FACTOR_SCORE_MODE must be hybrid or paper_eq19.\n' >&2
+    exit 2
+    ;;
+esac
+case "$VALIDATION_LIDAR_ADMISSION_MODE" in
+  adaptive|paper_eq15) ;;
+  *)
+    printf 'VALIDATION_LIDAR_ADMISSION_MODE must be adaptive or paper_eq15.\n' >&2
     exit 2
     ;;
 esac
@@ -234,6 +263,11 @@ printf 'Validation reliability: mode=%s lidar=%s imu=%s gnss=%s flow=%s vision=%
   "${FIXED_GNSS_WEIGHT:-1.0}" \
   "${FIXED_OPTICAL_FLOW_WEIGHT:-1.0}" \
   "${FIXED_VISION_WEIGHT:-1.0}"
+printf 'Validation LiDAR paper path: score=%s admission=%s threshold=%s prediction_gate=%s\n' \
+  "$VALIDATION_LIDAR_FACTOR_SCORE_MODE" \
+  "$VALIDATION_LIDAR_ADMISSION_MODE" \
+  "$VALIDATION_LIDAR_PAPER_ACTIVATION_THRESHOLD" \
+  "$VALIDATION_LIDAR_PREDICTION_GATE_ENABLED"
 printf 'Validation visual cadence: profile=%s\n' \
   "$VALIDATION_VISUAL_KEYFRAME_PROFILE"
 printf 'Validation Z recovery: lidar_axis_handoff=%s gnss_reanchor=%s barometer=%s\n' \
@@ -432,12 +466,17 @@ setsid env ENABLE_VISION="$validation_enable_vision_arg" \
   RELOCALIZATION_SEARCH_TIMEOUT_S="$VALIDATION_RELOCALIZATION_SEARCH_TIMEOUT_S" \
   EXTERNAL_NAV_OUTPUT_TOPIC="$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
   PERFORMANCE_PROFILING_ENABLED="$VALIDATION_PERFORMANCE_PROFILING" \
+  ENABLE_LIDAR_CALIBRATION_MOTION="$VALIDATION_ENABLE_LIDAR_CALIBRATION_MOTION" \
   AXIS_INFORMATION_HANDOFF_ENABLED="$VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED" \
   GNSS_Z_REANCHOR_ENABLED="$VALIDATION_GNSS_Z_REANCHOR_ENABLED" \
   GNSS_Z_RECOVERY_INFORMATION_SCALE="$VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE" \
   BAROMETER_FALLBACK_ENABLED="$VALIDATION_BAROMETER_FALLBACK_ENABLED" \
   RANGE_FACET_ENABLED="$VALIDATION_RANGE_FACET_ENABLED" \
   RELIABILITY_MODE="$VALIDATION_RELIABILITY_MODE" \
+  LIDAR_FACTOR_SCORE_MODE="$VALIDATION_LIDAR_FACTOR_SCORE_MODE" \
+  LIDAR_ADMISSION_MODE="$VALIDATION_LIDAR_ADMISSION_MODE" \
+  LIDAR_PAPER_ACTIVATION_THRESHOLD="$VALIDATION_LIDAR_PAPER_ACTIVATION_THRESHOLD" \
+  LIDAR_PREDICTION_GATE_ENABLED="$VALIDATION_LIDAR_PREDICTION_GATE_ENABLED" \
   VISUAL_TIME_CALIBRATION_APPLY_LOCKED="${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}" \
   LOG_DIR="$LOG_DIR/unified" \
   bash "$REPO_ROOT/tools/run_unified_backend_stack.sh" \
@@ -479,13 +518,22 @@ case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   *) printf 'ExternalNav FCU consumption disabled; output continuity is metrics-only.\n' ;;
 esac
 
-setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
-  -p use_sim_time:=true \
-  -p world_name:="$VALIDATION_WORLD_NAME" \
-  -p odom_topic:=/Odometry \
-  -p output_path:="$LOG_DIR/fastlio_accuracy.json" \
-  >"$LOG_DIR/fastlio_accuracy.log" 2>&1 &
-pids+=("$!")
+case "${VALIDATION_ENABLE_FASTLIO_ACCURACY,,}" in
+  1|true|yes|on)
+    setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
+      -p use_sim_time:=true \
+      -p world_name:="$VALIDATION_WORLD_NAME" \
+      -p odom_topic:=/Odometry \
+      -p output_path:="$LOG_DIR/fastlio_accuracy.json" \
+      >"$LOG_DIR/fastlio_accuracy.log" 2>&1 &
+    pids+=("$!")
+    ;;
+  0|false|no|off) ;;
+  *)
+    printf 'VALIDATION_ENABLE_FASTLIO_ACCURACY must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   -p use_sim_time:=true \
@@ -632,6 +680,7 @@ case "$VALIDATION_ROUTE" in
     ;;
 esac
 env ROUTE_FEEDBACK_SOURCE="$VALIDATION_ROUTE_FEEDBACK_SOURCE" \
+  ROUTE_MODE="$VALIDATION_ROUTE_MODE" \
   TAKEOFF_ALT="$VALIDATION_TAKEOFF_ALT" \
   LOCALIZATION_SAFETY_ENABLED="$VALIDATION_LOCALIZATION_SAFETY_ENABLED" \
   POST_TAKEOFF_HOLD_TIME="$VALIDATION_POST_TAKEOFF_HOLD_TIME" \
@@ -646,11 +695,20 @@ route_pid=$!
 pids+=("$route_pid")
 
 drift_status=0
-python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
-  --output "$LOG_DIR/slam_drift.json" \
-  "${observer_stop_args[@]}" \
-  --ros-args -p use_sim_time:=true \
-  >"$LOG_DIR/slam_drift.log" 2>&1 || drift_status=$?
+case "${VALIDATION_ENABLE_SLAM_DRIFT,,}" in
+  1|true|yes|on)
+    python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
+      --output "$LOG_DIR/slam_drift.json" \
+      "${observer_stop_args[@]}" \
+      --ros-args -p use_sim_time:=true \
+      >"$LOG_DIR/slam_drift.log" 2>&1 || drift_status=$?
+    ;;
+  0|false|no|off) ;;
+  *)
+    printf 'VALIDATION_ENABLE_SLAM_DRIFT must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 metrics_status=0
 wait "$metrics_pid" || metrics_status=$?
 if [[ -n "$relocalization_trigger_pid" ]]; then
@@ -745,8 +803,15 @@ case "${VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE,,}" in
     ;;
 esac
 if [[ "$VALIDATION_ROUTE" == "rectangle" ]]; then
-  python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
-    "${validation_gate_args[@]}"
+  if [[ "$VALIDATION_ROUTE_MODE" == "straight" ]]; then
+    python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
+      "${validation_gate_args[@]}" \
+      --expected-waypoints 1 \
+      --minimum-matched-samples 150
+  else
+    python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
+      "${validation_gate_args[@]}"
+  fi
 elif [[ "$VALIDATION_ROUTE" == "s_curve" &&
   "$validation_calibration_only_arg" == "true" ]]
 then

@@ -49,6 +49,53 @@
         <collision name="roof"><pose>0 0 5.0 0 0 0</pose><geometry><box><size>8 96 0.20</size></box></geometry></collision>
         <visual name="roof_visual"><pose>0 0 5.0 0 0 0</pose><geometry><box><size>8 96 0.20</size></box></geometry><material><diffuse>0.28 0.29 0.31 1</diffuse></material></visual>
 
+        <!-- Visual-only anchors: these thin overlays have no collision and
+             therefore do not make the deliberately repetitive LiDAR geometry
+             observable. Eight-metre texture tiles retain enough image-space
+             gradient for the 100 px downward optical-flow camera. -->
+        <visual name="floor_texture_m44"><pose>0 -44 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.78 0.80 0.82 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_m36"><pose>0 -36 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.80 0.78 0.74 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_m28"><pose>0 -28 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.74 0.80 0.78 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_m20"><pose>0 -20 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.78 0.76 0.82 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_m12"><pose>0 -12 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.82 0.78 0.76 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_m4"><pose>0 -4 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.76 0.82 0.78 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_p4"><pose>0 4 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.80 0.77 0.73 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_p12"><pose>0 12 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.74 0.79 0.83 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_p20"><pose>0 20 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.82 0.76 0.79 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_p28"><pose>0 28 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.77 0.82 0.74 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_p36"><pose>0 36 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.79 0.74 0.82 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+        <visual name="floor_texture_p44"><pose>0 44 0.012 0 0 0</pose><geometry><box><size>7.7 7.8 0.012</size></box></geometry><material><diffuse>0.75 0.82 0.81 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.96</roughness></metal></pbr></material></visual>
+
+        <!-- A continuous dashed centre line gives the downward camera a
+             realistic lane-like anchor without adding range geometry. -->
+        <visual name="lane_m42"><pose>0 -42 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_m36"><pose>0 -36 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_m30"><pose>0 -30 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_m24"><pose>0 -24 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_m18"><pose>0 -18 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_m12"><pose>0 -12 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_m6"><pose>0 -6 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_0"><pose>0 0 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_p6"><pose>0 6 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_p12"><pose>0 12 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_p18"><pose>0 18 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_p24"><pose>0 24 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_p30"><pose>0 30 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_p36"><pose>0 36 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+        <visual name="lane_p42"><pose>0 42 0.024 0 0 0</pose><geometry><box><size>0.20 1.1 0.010</size></box></geometry><material><emissive>0.92 0.92 0.90 1</emissive></material></visual>
+
+        <!-- Non-periodic wall panels provide RGB-D anchors. Their thin visual
+             geometry stays inside the collision wall envelope. -->
+        <visual name="west_anchor_m31"><pose>-3.866 -31.0 1.25 0 0 0</pose><geometry><box><size>0.012 1.30 1.10</size></box></geometry><material><emissive>0.72 0.16 0.12 1</emissive></material></visual>
+        <visual name="east_anchor_m23"><pose>3.866 -23.0 2.85 0 0 0</pose><geometry><box><size>0.012 0.75 1.45</size></box></geometry><material><emissive>0.10 0.48 0.82 1</emissive></material></visual>
+        <visual name="west_anchor_m14"><pose>-3.866 -14.0 3.35 0 0 0</pose><geometry><box><size>0.012 1.70 0.55</size></box></geometry><material><emissive>0.18 0.72 0.34 1</emissive></material></visual>
+        <visual name="east_anchor_m7"><pose>3.866 -7.0 1.10 0 0 0</pose><geometry><box><size>0.012 0.62 1.75</size></box></geometry><material><emissive>0.88 0.54 0.10 1</emissive></material></visual>
+        <visual name="west_anchor_p3"><pose>-3.866 3.0 2.30 0 0 0</pose><geometry><box><size>0.012 1.05 1.05</size></box></geometry><material><emissive>0.72 0.18 0.62 1</emissive></material></visual>
+        <visual name="east_anchor_p11"><pose>3.866 11.0 3.55 0 0 0</pose><geometry><box><size>0.012 1.45 0.62</size></box></geometry><material><emissive>0.12 0.72 0.72 1</emissive></material></visual>
+        <visual name="west_anchor_p19"><pose>-3.866 19.0 1.55 0 0 0</pose><geometry><box><size>0.012 0.72 1.55</size></box></geometry><material><emissive>0.86 0.30 0.12 1</emissive></material></visual>
+        <visual name="east_anchor_p29"><pose>3.866 29.0 2.45 0 0 0</pose><geometry><box><size>0.012 1.85 0.70</size></box></geometry><material><emissive>0.30 0.62 0.18 1</emissive></material></visual>
+        <visual name="west_anchor_p38"><pose>-3.866 38.0 3.05 0 0 0</pose><geometry><box><size>0.012 0.90 1.30</size></box></geometry><material><emissive>0.22 0.38 0.88 1</emissive></material></visual>
+
         <!-- Repeated ribs intentionally provide ambiguous along-tunnel geometry. -->
         <collision name="rib_m40"><pose>-3.80 -40 2.5 0 0 0</pose><geometry><box><size>0.18 0.30 5</size></box></geometry></collision>
         <visual name="rib_m40_visual"><pose>-3.80 -40 2.5 0 0 0</pose><geometry><box><size>0.18 0.30 5</size></box></geometry><material><diffuse>0.52 0.53 0.55 1</diffuse></material></visual>

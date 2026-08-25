@@ -12,6 +12,9 @@ reliability_monitor:
     lidar.extension.reference: 0.35
     lidar.extension.paper_weight: 0.70
     lidar.extension.weights: [0.20, 0.15, 0.20, 0.10, 0.15, 0.20]
+    # hybrid keeps the validated innovation guard; paper_eq19 publishes only
+    # Eq. (19) for the controlled paper-strict A/B.
+    lidar.factor.score_mode: hybrid
     lidar.factor.approximate_geometry_weight: 0.20
     lidar.factor.native_geometry_weight: 0.60
     lidar.factor.tau_position_innovation_m: 0.50

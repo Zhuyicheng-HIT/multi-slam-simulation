@@ -2757,6 +2757,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("calibration_time_unlock_count", 3)
         self.declare_parameter("scheduler_timeout_s", 1.0)
         self.declare_parameter("reliability_mode", "dynamic")
+        self.declare_parameter("lidar_admission_mode", "adaptive")
         self.declare_parameter("fixed_lidar_weight", 1.0)
         self.declare_parameter("fixed_gnss_weight", 1.0)
         self.declare_parameter("fixed_imu_weight", 1.0)
@@ -3483,6 +3484,13 @@ class UnifiedBackendNode(Node):
             self.get_parameter("reliability_mode").value).lower()
         if self.reliability_mode not in {"dynamic", "fixed"}:
             raise ValueError("reliability_mode must be dynamic or fixed")
+        self.lidar_admission_mode = str(
+            self.get_parameter("lidar_admission_mode").value
+        ).strip().lower()
+        if self.lidar_admission_mode not in {"adaptive", "paper_eq15"}:
+            raise ValueError(
+                "lidar_admission_mode must be adaptive or paper_eq15"
+            )
         self.fixed_weights = {
             modality: float(self.get_parameter(f"fixed_{modality}_weight").value)
             for modality in ("lidar", "gnss", "imu", "optical_flow", "vision")
@@ -6492,6 +6500,12 @@ class UnifiedBackendNode(Node):
         # not silently remove its pose factor and leave rotation unobservable.
         score_fresh = self._score_is_fresh(modality, now)
         if modality == "lidar" and not score_fresh:
+            if self.lidar_admission_mode == "paper_eq15":
+                decision = scheduler_decision(
+                    0.0, False, MAX_COVARIANCE_INFLATION
+                )
+                decision["reasons"] = ("paper_eq15_score_not_fresh",)
+                return decision
             decision = scheduler_decision(1.0, default_enabled, 1.0)
             decision["reasons"] = ("lidar_anchor_without_fresh_score",)
             return decision
@@ -6743,6 +6757,8 @@ class UnifiedBackendNode(Node):
 
     def _protect_lidar_anchor(self, modality, decision, now, score_fresh):
         if modality != "lidar":
+            return decision
+        if self.lidar_admission_mode == "paper_eq15":
             return decision
         if self.preserve_lio_anchor:
             return apply_lidar_anchor_floor(

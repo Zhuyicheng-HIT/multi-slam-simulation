@@ -3,7 +3,8 @@ import unittest
 from uf_reliability.scoring import (
     augment_lidar_score, gnss_integrity_quality, gnss_score,
     imu_health_admission, imu_score, lidar_score,
-    lidar_factor_score, lidar_innovation_score, lidar_map_score,
+    lidar_factor_score, lidar_factor_score_for_mode, lidar_innovation_score,
+    lidar_map_score,
     apm_optical_flow_compensated_los, optical_flow_displacement_frd,
     optical_flow_lever_arm_displacement_flu,
     optical_flow_los_prediction_flu, optical_flow_los_rate_apm,
@@ -63,6 +64,24 @@ class ScoringTest(unittest.TestCase):
 
         self.assertGreater(result[0], 0.80)
         self.assertEqual(result[1]["hard_gate_allowed"], 1.0)
+
+    def test_paper_eq19_mode_does_not_mix_prediction_innovation(self):
+        paper = lidar_score(
+            [0.1, 1.0, 2.0, 3.0, 4.0, 5.0],
+            [0.01, 0.2, 0.7],
+            0.4,
+            250,
+        )
+        inconsistent = lidar_innovation_score(10.0, 3.0)
+
+        result = lidar_factor_score_for_mode(
+            paper, inconsistent, approximate_geometry=False, mode="paper_eq19"
+        )
+
+        self.assertAlmostEqual(result[0], paper[0])
+        self.assertEqual(result[1]["innovation_weight_factor_score"], 0.0)
+        self.assertEqual(result[1]["hard_gate_allowed"], 1.0)
+        self.assertIn("paper_eq19_only", result[2])
 
     def test_map_quality_diagnostic_is_not_double_counted(self):
         first = lidar_map_score(

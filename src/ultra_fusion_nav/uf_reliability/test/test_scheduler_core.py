@@ -17,6 +17,50 @@ def score(value, valid=True, arrival_s=0.0, reasons=(), count=1, minimum=1,
 
 
 class SchedulerCoreTest(unittest.TestCase):
+    def test_paper_eq15_lidar_is_binary_at_modality_threshold(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "imu"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=1,
+            lidar_admission_mode="paper_eq15",
+            lidar_paper_activation_threshold=0.35,
+            transition_dwell_s=0.0,
+            recovery_dwell_s=0.0,
+        ))
+        healthy = core.update({
+            "lidar": score(0.35),
+            "imu": score(0.1),
+        }, 0.0)
+        self.assertTrue(healthy.factor_enabled["lidar"])
+        self.assertEqual(healthy.reliability_weights["lidar"], 1.0)
+        self.assertEqual(healthy.covariance_inflation["lidar"], 1.0)
+
+        degraded = core.update({
+            "lidar": score(0.351),
+            "imu": score(0.1),
+        }, 0.1)
+        self.assertFalse(degraded.factor_enabled["lidar"])
+        self.assertEqual(degraded.reliability_weights["lidar"], 0.0)
+        self.assertEqual(degraded.covariance_inflation["lidar"], 20.0)
+        self.assertIn("paper_eq15_deactivated", degraded.reasons["lidar"])
+
+    def test_paper_eq15_does_not_honor_soft_gate_override(self):
+        core = ReliabilitySchedulerCore(SchedulerConfig(
+            active_modalities=("lidar", "imu"),
+            required_modalities=("imu",),
+            minimum_usable_modalities=1,
+            lidar_admission_mode="paper_eq15",
+            lidar_paper_activation_threshold=0.35,
+            transition_dwell_s=0.0,
+            recovery_dwell_s=0.0,
+        ))
+        result = core.update({
+            "lidar": score(0.9, hard_gate_allowed=False),
+            "imu": score(0.1),
+        }, 0.0)
+        self.assertFalse(result.factor_enabled["lidar"])
+        self.assertEqual(result.reliability_weights["lidar"], 0.0)
+
     def test_relocalization_failure_does_not_override_healthy_capabilities(self):
         core = ReliabilitySchedulerCore(SchedulerConfig(
             active_modalities=("imu",),
