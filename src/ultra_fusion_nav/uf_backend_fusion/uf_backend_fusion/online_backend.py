@@ -2227,11 +2227,12 @@ def lidar_prediction_factor_admission(
     A rejected local-map factor must not stop IMU propagation or prevent GNSS
     and optical-flow factors at the same timestamp from updating the window.
     The next LiDAR packet is evaluated independently so a transient mismatch
-    can recover without waiting for a relocalization reset. A persistent
-    mismatch may admit a separately downweighted recovery factor, but only
-    when the caller has verified the native point-plane geometry. The caller
-    must still enforce sensor-health scheduling and keep recovery observations
-    out of map insertion and calibration.
+    can recover without waiting for a relocalization reset. Local point-plane
+    rank cannot prove that FAST-LIO's local map is aligned with the backend
+    map, so a factor that fails this frame-consistency gate must never be
+    reintroduced merely because its local geometry is well conditioned.  The
+    recovery arguments remain in the helper contract for configuration
+    compatibility; they cannot override a failed gate.
     """
     allowed, reason = lidar_prediction_gate(
         innovation, maximum_position_m, maximum_yaw_rad
@@ -2249,17 +2250,12 @@ def lidar_prediction_factor_admission(
             "recovery_floor": False,
         }
     consecutive = previous + 1
-    recovery_floor = bool(
-        recovery_geometry_usable and consecutive >= recovery_after
-    )
     return {
-        "factor_enabled": recovery_floor,
-        "reason": (
-            f"{reason}_recovery_floor" if recovery_floor else reason
-        ),
+        "factor_enabled": False,
+        "reason": reason,
         "consecutive_rejections": consecutive,
         "recovered": False,
-        "recovery_floor": recovery_floor,
+        "recovery_floor": False,
     }
 
 
