@@ -460,3 +460,9 @@ unified_backend_fusion:
     # repeated request after this grace marks the missing factor as dropped
     # and advances the real-time front-end instead of deadlocking forever.
     scan_prediction_missing_factor_grace_s: 0.5
+    # Three consecutive cache failures indicate that FAST-LIO is not consuming
+    # backend trajectories. Once established, request silence is also fatal.
+    # The backend reports ERROR and suppresses unified odometry until a valid
+    # cache hit proves that the handshake has recovered.
+    scan_prediction_contract_failure_threshold: 3
+    scan_prediction_contract_request_timeout_s: 1.0
