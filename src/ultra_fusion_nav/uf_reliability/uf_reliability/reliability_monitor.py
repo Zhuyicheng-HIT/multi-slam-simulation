@@ -27,7 +27,7 @@ from .scoring import (
     gnss_score,
     imu_health_admission,
     imu_score,
-    lidar_factor_score,
+    lidar_factor_score_for_mode,
     lidar_innovation_score,
     lidar_map_score,
     lidar_score,
@@ -268,6 +268,7 @@ class ReliabilityMonitor(Node):
             "lidar.extension.reference": 0.35,
             "lidar.extension.paper_weight": 0.70,
             "lidar.extension.weights": [0.20, 0.15, 0.20, 0.10, 0.15, 0.20],
+            "lidar.factor.score_mode": "hybrid",
             "lidar.factor.approximate_geometry_weight": 0.20,
             "lidar.factor.native_geometry_weight": 0.60,
             "lidar.factor.tau_position_innovation_m": 0.50,
@@ -563,10 +564,11 @@ class ReliabilityMonitor(Node):
             self.get_parameter("lidar.factor.tau_yaw_innovation_rad").value,
             tuple(self.get_parameter("lidar.factor.innovation_weights").value),
         )
-        result = lidar_factor_score(
+        result = lidar_factor_score_for_mode(
             paper_result,
             innovation_result,
             bool(msg.approximate),
+            self.get_parameter("lidar.factor.score_mode").value,
             self.get_parameter("lidar.factor.approximate_geometry_weight").value,
             self.get_parameter("lidar.factor.native_geometry_weight").value,
         )

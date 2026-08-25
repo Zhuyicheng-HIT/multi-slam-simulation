@@ -23,6 +23,9 @@ def generate_launch_description():
     relocalization_config = relocalization_share + "/config/relocalization.yaml"
     use_sim_time = LaunchConfiguration("use_sim_time")
     enable_vision = LaunchConfiguration("enable_vision")
+    enable_lidar_calibration_motion = LaunchConfiguration(
+        "enable_lidar_calibration_motion"
+    )
     external_nav_output_topic = LaunchConfiguration("external_nav_output_topic")
     publish_mavros_frame_transforms = LaunchConfiguration(
         "publish_mavros_frame_transforms"
@@ -42,6 +45,14 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
+        DeclareLaunchArgument(
+            "enable_lidar_calibration_motion",
+            default_value="true",
+            description=(
+                "Run the scan-to-scan LiDAR shadow calibration producer; disable "
+                "only for compute-isolation experiments"
+            ),
+        ),
         DeclareLaunchArgument(
             "active_modalities",
             default_value="[lidar, gnss, imu, optical_flow]",
@@ -72,6 +83,14 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument("reliability_mode", default_value="dynamic"),
+        DeclareLaunchArgument("lidar_factor_score_mode", default_value="hybrid"),
+        DeclareLaunchArgument("lidar_admission_mode", default_value="adaptive"),
+        DeclareLaunchArgument(
+            "lidar_paper_activation_threshold", default_value="0.25"
+        ),
+        DeclareLaunchArgument(
+            "lidar_prediction_gate_enabled", default_value="true"
+        ),
         DeclareLaunchArgument("fixed_lidar_weight", default_value="1.0"),
         DeclareLaunchArgument("fixed_gnss_weight", default_value="1.0"),
         DeclareLaunchArgument("fixed_imu_weight", default_value="1.0"),
@@ -209,6 +228,9 @@ def generate_launch_description():
                     value_type=float,
                 ),
                 "vision.factor_mode": LaunchConfiguration("visual_factor_mode"),
+                "lidar.factor.score_mode": LaunchConfiguration(
+                    "lidar_factor_score_mode"
+                ),
             }],
             output="screen",
         ),
@@ -221,6 +243,13 @@ def generate_launch_description():
                 {
                     "active_modalities": active_modalities,
                     "use_sim_time": use_sim_time,
+                    "lidar_admission_mode": LaunchConfiguration(
+                        "lidar_admission_mode"
+                    ),
+                    "lidar_paper_activation_threshold": ParameterValue(
+                        LaunchConfiguration("lidar_paper_activation_threshold"),
+                        value_type=float,
+                    ),
                 },
             ],
             condition=UnlessCondition(enable_vision),
@@ -235,6 +264,13 @@ def generate_launch_description():
                 {
                     "active_modalities": active_modalities_with_vision,
                     "use_sim_time": use_sim_time,
+                    "lidar_admission_mode": LaunchConfiguration(
+                        "lidar_admission_mode"
+                    ),
+                    "lidar_paper_activation_threshold": ParameterValue(
+                        LaunchConfiguration("lidar_paper_activation_threshold"),
+                        value_type=float,
+                    ),
                 },
             ],
             condition=IfCondition(enable_vision),
@@ -245,6 +281,7 @@ def generate_launch_description():
             executable="lidar_calibration_motion_node",
             name="lidar_calibration_motion_node",
             parameters=[calibration_motion_config, {"use_sim_time": use_sim_time}],
+            condition=IfCondition(enable_lidar_calibration_motion),
             output="screen",
         ),
         Node(
@@ -271,6 +308,13 @@ def generate_launch_description():
                         value_type=int,
                     ),
                     "reliability_mode": LaunchConfiguration("reliability_mode"),
+                    "lidar_admission_mode": LaunchConfiguration(
+                        "lidar_admission_mode"
+                    ),
+                    "lidar_prediction_gate_enabled": ParameterValue(
+                        LaunchConfiguration("lidar_prediction_gate_enabled"),
+                        value_type=bool,
+                    ),
                     "fixed_lidar_weight": ParameterValue(
                         LaunchConfiguration("fixed_lidar_weight"), value_type=float
                     ),

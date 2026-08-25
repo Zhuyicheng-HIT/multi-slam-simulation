@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import unittest
 
 from multi_slam_uav_sim.flow_gazebo_accuracy import (
+    FlowGazeboAccuracy,
     accuracy_row_arrays,
     select_association_basis,
     stamp_seconds,
@@ -11,6 +12,31 @@ from multi_slam_uav_sim.flow_gazebo_accuracy import (
 
 
 class FlowGazeboAccuracyTest(unittest.TestCase):
+    def test_target_mission_phase_finishes_capture(self):
+        node = FlowGazeboAccuracy.__new__(FlowGazeboAccuracy)
+        node.done = False
+        node.stop_on_mission_phase = "landed"
+        messages = []
+        finishes = []
+        node.get_logger = lambda: SimpleNamespace(info=messages.append)
+        node._finish = lambda: finishes.append(True)
+
+        node._mission_phase_cb(SimpleNamespace(data="landed"))
+
+        self.assertEqual(finishes, [True])
+        self.assertIn("landed", messages[0])
+
+    def test_other_mission_phase_keeps_capture_running(self):
+        node = FlowGazeboAccuracy.__new__(FlowGazeboAccuracy)
+        node.done = False
+        node.stop_on_mission_phase = "landed"
+        finishes = []
+        node._finish = lambda: finishes.append(True)
+
+        node._mission_phase_cb(SimpleNamespace(data="landing"))
+
+        self.assertEqual(finishes, [])
+
     def test_stamp_seconds_accepts_ros_header_nanosec(self):
         stamp = SimpleNamespace(sec=12, nanosec=345000000)
         self.assertEqual(stamp_seconds(stamp), 12.345)

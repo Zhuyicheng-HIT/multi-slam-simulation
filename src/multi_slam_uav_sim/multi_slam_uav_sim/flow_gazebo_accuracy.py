@@ -14,6 +14,7 @@ from mavros_msgs.msg import OpticalFlowRad
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import String
 
 from multi_slam_uav_sim.optical_flow_model import sensor_displacement_frd
 
@@ -97,6 +98,7 @@ class FlowGazeboAccuracy(Node):
         self.declare_parameter("maximum_clock_offset_s", 1.0)
         self.declare_parameter("sensor_offset_z_down_m", 0.35)
         self.declare_parameter("csv_path", "")
+        self.declare_parameter("stop_on_mission_phase", "")
 
         self.flow_topic = str(self.get_parameter("flow_topic").value)
         self.native_flow_topic = str(self.get_parameter("native_flow_topic").value)
@@ -128,6 +130,9 @@ class FlowGazeboAccuracy(Node):
             float(self.get_parameter("sensor_offset_z_down_m").value),
         )
         self.csv_path = str(self.get_parameter("csv_path").value)
+        self.stop_on_mission_phase = str(
+            self.get_parameter("stop_on_mission_phase").value
+        ).strip().lower()
 
         self.lock = threading.Lock()
         self.pose_samples = []
@@ -149,6 +154,10 @@ class FlowGazeboAccuracy(Node):
             self._native_flow_cb,
             qos_profile_sensor_data,
         )
+        if self.stop_on_mission_phase:
+            self.create_subscription(
+                String, "/mission/phase", self._mission_phase_cb, 10
+            )
         self.gz_node = GzNode()
         self.gz_pose_topics = (
             f"/world/{self.world_name}/dynamic_pose/info",
@@ -162,6 +171,16 @@ class FlowGazeboAccuracy(Node):
             f"flow={self.flow_topic}, native_flow={self.native_flow_topic}, "
             f"gazebo_model={self.model_name}"
         )
+
+    def _mission_phase_cb(self, msg):
+        if self.done:
+            return
+        phase = str(msg.data).strip().lower()
+        if phase == self.stop_on_mission_phase:
+            self.get_logger().info(
+                f"Stopping flow accuracy capture on mission phase: {phase}"
+            )
+            self._finish()
 
     @staticmethod
     def _stamp_key(stamp):

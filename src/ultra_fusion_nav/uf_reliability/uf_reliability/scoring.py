@@ -380,6 +380,44 @@ def lidar_factor_score(paper_result, innovation_result, approximate_geometry,
     return finalize_score(score, coverage, evidence, reasons)
 
 
+def lidar_factor_score_for_mode(
+    paper_result,
+    innovation_result,
+    approximate_geometry,
+    mode="hybrid",
+    approximate_geometry_weight=0.20,
+    native_geometry_weight=0.60,
+):
+    """Select the published Eq. 19 score or the guarded project extension."""
+    mode = str(mode).strip().lower()
+    if mode == "hybrid":
+        return lidar_factor_score(
+            paper_result,
+            innovation_result,
+            approximate_geometry,
+            approximate_geometry_weight,
+            native_geometry_weight,
+        )
+    if mode != "paper_eq19":
+        raise ValueError("LiDAR factor score mode must be hybrid or paper_eq19")
+
+    score, source_evidence, source_reasons = paper_result
+    evidence = dict(source_evidence)
+    evidence.update({
+        "paper_score_eq19": float(score),
+        "geometry_source_approximate": (
+            1.0 if approximate_geometry else 0.0
+        ),
+        "geometry_weight_factor_score": 1.0,
+        "innovation_weight_factor_score": 0.0,
+        "innovation_complete_factor_score": 0.0,
+        "hard_gate_allowed": 1.0,
+        "lidar_factor_score": float(score),
+    })
+    reasons = list(source_reasons) + ["paper_eq19_only"]
+    return float(score), evidence, reasons
+
+
 def lidar_map_score(residual_p95_m, spatial_coverage, dynamic_ratio,
                     uncertain_ratio, feature_repeatability,
                     tau_residual_m=0.15, tau_dynamic_ratio=0.20,

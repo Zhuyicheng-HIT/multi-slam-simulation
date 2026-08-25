@@ -32,6 +32,8 @@ class SchedulerConfig:
     factor_enable_threshold: float = 0.55
     minimum_weight: float = 0.05
     maximum_covariance_inflation: float = 20.0
+    lidar_admission_mode: str = "adaptive"
+    lidar_paper_activation_threshold: float = 0.25
     imu_soft_max_degradation: float = 0.80
     transition_dwell_s: float = 0.5
     recovery_dwell_s: float = 1.5
@@ -93,6 +95,12 @@ class ReliabilitySchedulerCore:
             raise ValueError(
                 "IMU soft maximum degradation must be below the failsafe threshold"
             )
+        if self.config.lidar_admission_mode not in {"adaptive", "paper_eq15"}:
+            raise ValueError(
+                "LiDAR admission mode must be adaptive or paper_eq15"
+            )
+        if not 0.0 <= self.config.lidar_paper_activation_threshold <= 1.0:
+            raise ValueError("LiDAR paper activation threshold must be in [0, 1]")
         self.required_modalities = tuple(
             name
             for name in self.config.required_modalities
@@ -258,6 +266,10 @@ class ReliabilitySchedulerCore:
             # case and reserve binary disabling for stale/invalid evidence or
             # an explicit hard gate.
             operational_value = value
+            paper_lidar = bool(
+                name == "lidar"
+                and self.config.lidar_admission_mode == "paper_eq15"
+            )
             imu_hard_failure = (
                 name == "imu" and "saturation_eq21" in sample_reasons
             )
@@ -281,12 +293,24 @@ class ReliabilitySchedulerCore:
                 operational_value = 1.0
             operational_scores_by_modality[name] = operational_value
             weight = 1.0 - operational_value if valid else 0.0
+            if paper_lidar:
+                paper_enabled = bool(
+                    valid
+                    and value <= self.config.lidar_paper_activation_threshold
+                )
+                weight = 1.0 if paper_enabled else 0.0
+                sample_reasons.append(
+                    "paper_eq15_enabled"
+                    if paper_enabled else "paper_eq15_deactivated"
+                )
             weights[name] = clamp(weight)
             if name in self.active_modalities:
                 if valid:
                     valid_count += 1
                     valid_active_scores[name] = value
-            if imu_hard_failure:
+            if paper_lidar:
+                self.factor_enabled[name] = paper_enabled
+            elif imu_hard_failure:
                 self.factor_enabled[name] = False
             elif name == "imu" and valid and hard_gate_allowed:
                 # Keep valid IMU propagation enabled through high dynamics;
@@ -312,12 +336,20 @@ class ReliabilitySchedulerCore:
                         )
             elif valid and value <= self.config.factor_enable_threshold:
                 self.factor_enabled[name] = True
-            inflation[name] = (
-                min(self.config.maximum_covariance_inflation,
-                    1.0 / max(self.config.minimum_weight, weights[name]))
-                if self.factor_enabled[name]
-                else self.config.maximum_covariance_inflation
-            )
+            if paper_lidar:
+                inflation[name] = (
+                    1.0 if self.factor_enabled[name]
+                    else self.config.maximum_covariance_inflation
+                )
+            else:
+                inflation[name] = (
+                    min(
+                        self.config.maximum_covariance_inflation,
+                        1.0 / max(self.config.minimum_weight, weights[name]),
+                    )
+                    if self.factor_enabled[name]
+                    else self.config.maximum_covariance_inflation
+                )
             reasons[name] = tuple(sample_reasons)
         usable_active_scores = {
             name: operational_scores_by_modality[name]
