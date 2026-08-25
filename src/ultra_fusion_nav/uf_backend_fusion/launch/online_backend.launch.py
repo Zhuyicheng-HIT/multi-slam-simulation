@@ -111,6 +111,16 @@ def generate_launch_description():
             description="Serve backend-owned scan trajectories to the LiDAR front-end",
         ),
         DeclareLaunchArgument(
+            "scan_prediction_contract_failure_threshold",
+            default_value="3",
+            description="Consecutive cache failures before fusion output is suppressed",
+        ),
+        DeclareLaunchArgument(
+            "scan_prediction_contract_request_timeout_s",
+            default_value="1.0",
+            description="Maximum request silence after the trajectory handshake starts",
+        ),
+        DeclareLaunchArgument(
             "preserve_lio_anchor",
             default_value="false",
             description="Legacy weak LiDAR anchor; disabled for backend-owned trajectory mode",
@@ -302,6 +312,18 @@ def generate_launch_description():
                     "frontend_scan_prediction_enabled": ParameterValue(
                         LaunchConfiguration("frontend_scan_prediction_enabled"),
                         value_type=bool,
+                    ),
+                    "scan_prediction_contract_failure_threshold": ParameterValue(
+                        LaunchConfiguration(
+                            "scan_prediction_contract_failure_threshold"
+                        ),
+                        value_type=int,
+                    ),
+                    "scan_prediction_contract_request_timeout_s": ParameterValue(
+                        LaunchConfiguration(
+                            "scan_prediction_contract_request_timeout_s"
+                        ),
+                        value_type=float,
                     ),
                     "performance_profiling_enabled": ParameterValue(
                         LaunchConfiguration("performance_profiling_enabled"),

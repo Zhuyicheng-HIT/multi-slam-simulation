@@ -430,6 +430,21 @@ def reanchor_imu_samples(samples, boundary_s):
     return ordered[max(0, first_newer - 1):]
 
 
+def backend_diagnostic_level_message(
+    last_reason, optimization_errors, contract_violated, contract_reason
+):
+    if contract_violated:
+        return (
+            DiagnosticStatus.ERROR,
+            f"scan_prediction_contract_violation:{contract_reason}",
+        )
+    healthy = str(last_reason) == "ok" and int(optimization_errors) == 0
+    return (
+        DiagnosticStatus.OK if healthy else DiagnosticStatus.WARN,
+        str(last_reason),
+    )
+
+
 @dataclass(frozen=True)
 class StationaryImuInitialization:
     valid: bool
@@ -2930,6 +2945,8 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("scan_prediction_state_tolerance", 1.0e-8)
         self.declare_parameter("scan_prediction_cache_size", 8)
         self.declare_parameter("scan_prediction_missing_factor_grace_s", 0.5)
+        self.declare_parameter("scan_prediction_contract_failure_threshold", 3)
+        self.declare_parameter("scan_prediction_contract_request_timeout_s", 1.0)
 
         self.performance_profiling_enabled = bool(
             self.get_parameter("performance_profiling_enabled").value
@@ -3898,6 +3915,16 @@ class UnifiedBackendNode(Node):
         self.scan_prediction_missing_factor_grace_s = float(
             self.get_parameter("scan_prediction_missing_factor_grace_s").value
         )
+        self.scan_prediction_contract_failure_threshold = int(
+            self.get_parameter(
+                "scan_prediction_contract_failure_threshold"
+            ).value
+        )
+        self.scan_prediction_contract_request_timeout_s = float(
+            self.get_parameter(
+                "scan_prediction_contract_request_timeout_s"
+            ).value
+        )
         if self.frontend_scan_prediction_enabled:
             if self.backend_solver_mode != "manifold":
                 raise ValueError(
@@ -3920,6 +3947,9 @@ class UnifiedBackendNode(Node):
             or self.scan_prediction_state_tolerance <= 0.0
             or self.scan_prediction_cache_size < 1
             or self.scan_prediction_missing_factor_grace_s <= 0.0
+            or self.scan_prediction_contract_failure_threshold < 1
+            or self.scan_prediction_contract_request_timeout_s
+            <= self.scan_prediction_missing_factor_grace_s
         ):
             raise ValueError("scan prediction limits are invalid")
         self.native_lidar_qos_depth = int(
@@ -4339,6 +4369,9 @@ class UnifiedBackendNode(Node):
             "scan_prediction_duplicate_requests": 0,
             "scan_prediction_stale_requests": 0,
             "scan_prediction_missing_factor_skips": 0,
+            "scan_prediction_contract_trips": 0,
+            "scan_prediction_contract_recoveries": 0,
+            "scan_prediction_contract_output_suppressed": 0,
             "native_consumed_without_state_commit": 0,
             "frontend_map_pose_published": 0,
             "frontend_map_pose_rejected": 0,
@@ -4526,6 +4559,13 @@ class UnifiedBackendNode(Node):
             maxlen=self.scan_prediction_cache_size
         )
         self.scan_prediction_by_sequence = {}
+        self.scan_prediction_contract_lock = threading.RLock()
+        self.scan_prediction_contract_established = False
+        self.scan_prediction_contract_violated = False
+        self.scan_prediction_contract_consecutive_failures = 0
+        self.scan_prediction_contract_reason = "waiting_for_handshake"
+        self.scan_prediction_contract_first_failure_sequence = -1
+        self.scan_prediction_contract_first_failure_stamp_s = -1.0
         self.last_native_consumed_sequence = -1
         self.pending_scan_requests = {}
         self.pending_scan_request_first_seen_s = {}
@@ -4722,6 +4762,79 @@ class UnifiedBackendNode(Node):
         if received_s is None or received_s > now_s:
             return math.inf
         return now_s - received_s
+
+    def _set_scan_prediction_contract_violation(
+        self, reason, sequence, stamp_s
+    ):
+        if self.scan_prediction_contract_violated:
+            return
+        if self.scan_prediction_contract_first_failure_sequence < 0:
+            self.scan_prediction_contract_first_failure_sequence = int(sequence)
+            self.scan_prediction_contract_first_failure_stamp_s = float(stamp_s)
+        self.scan_prediction_contract_violated = True
+        self.scan_prediction_contract_reason = str(reason)
+        self.counts["scan_prediction_contract_trips"] += 1
+        logger = self.get_logger() if hasattr(self, "_logger") else None
+        if logger is not None:
+            logger.error(
+                "Scan prediction contract violated: "
+                f"reason={reason}; sequence={sequence}; stamp_s={stamp_s:.9g}; "
+                "suppressing unified fusion output until a valid cache hit"
+            )
+
+    def _record_scan_prediction_contract_failure(
+        self, reason, sequence, stamp_s
+    ):
+        if not self.frontend_scan_prediction_enabled:
+            return
+        with self.scan_prediction_contract_lock:
+            if self.scan_prediction_contract_consecutive_failures == 0:
+                self.scan_prediction_contract_first_failure_sequence = int(sequence)
+                self.scan_prediction_contract_first_failure_stamp_s = float(stamp_s)
+            self.scan_prediction_contract_consecutive_failures += 1
+            if (
+                self.scan_prediction_contract_consecutive_failures
+                >= self.scan_prediction_contract_failure_threshold
+            ):
+                self._set_scan_prediction_contract_violation(
+                    f"consecutive_{reason}", sequence, stamp_s
+                )
+
+    def _record_scan_prediction_contract_success(self):
+        if not self.frontend_scan_prediction_enabled:
+            return
+        with self.scan_prediction_contract_lock:
+            recovered = self.scan_prediction_contract_violated
+            self.scan_prediction_contract_established = True
+            self.scan_prediction_contract_violated = False
+            self.scan_prediction_contract_consecutive_failures = 0
+            self.scan_prediction_contract_reason = "ok"
+            if recovered:
+                self.counts["scan_prediction_contract_recoveries"] += 1
+                logger = self.get_logger() if hasattr(self, "_logger") else None
+                if logger is not None:
+                    logger.warning(
+                        "Scan prediction contract recovered after a valid cache hit"
+                    )
+
+    def _scan_prediction_contract_allows_output(self, now_s=None):
+        if not getattr(self, "frontend_scan_prediction_enabled", False):
+            return True
+        if now_s is None:
+            now_s = self._now_s()
+        with self.scan_prediction_contract_lock:
+            if (
+                not self.scan_prediction_contract_violated
+                and self.scan_prediction_contract_established
+                and self._age_s(now_s, self.last_scan_request_arrival_s)
+                > self.scan_prediction_contract_request_timeout_s
+            ):
+                self._set_scan_prediction_contract_violation(
+                    "request_timeout",
+                    getattr(self, "last_native_sequence", -1),
+                    now_s,
+                )
+            return not self.scan_prediction_contract_violated
 
     def _effective_visual_time_offset_s(self):
         update = self.last_visual_time_calibration
@@ -6947,6 +7060,10 @@ class UnifiedBackendNode(Node):
             or not self.imu_factor_enabled
             or self.native_worker_stop.is_set()
         ):
+            return
+        if not self._scan_prediction_contract_allows_output():
+            self.counts["scan_prediction_contract_output_suppressed"] += 1
+            self._reject_live_propagation("scan_prediction_contract_violation")
             return
         anchor = self._optimization_anchor_snapshot()
         if anchor is None:
@@ -9576,6 +9693,11 @@ class UnifiedBackendNode(Node):
             if native_factor.scan_end_s <= native_factor.scan_begin_s:
                 self.counts["optimization_rejected"] += 1
                 self.last_reason = "scan_prediction_missing_exact_interval"
+                self._record_scan_prediction_contract_failure(
+                    "missing_exact_interval",
+                    native_factor.scan_sequence,
+                    stamp,
+                )
                 return
             scan_prediction, prediction_reason = consume_cached_prediction(
                 self.scan_prediction_by_sequence,
@@ -9593,8 +9715,14 @@ class UnifiedBackendNode(Node):
                     self.counts["scan_prediction_reuse_rejected"] += 1
                 self.counts["optimization_rejected"] += 1
                 self.last_reason = f"scan_prediction_not_reusable:{prediction_reason}"
+                self._record_scan_prediction_contract_failure(
+                    prediction_reason,
+                    native_factor.scan_sequence,
+                    stamp,
+                )
                 return
             self.counts["scan_prediction_cache_hits"] += 1
+            self._record_scan_prediction_contract_success()
             self.scan_prediction_cache.append(scan_prediction)
             initial_state = scan_prediction.end_state.copy()
             manifold_measurement = scan_prediction.measurement
@@ -10830,6 +10958,9 @@ class UnifiedBackendNode(Node):
         output_stamp_s = stamp_seconds(output.header.stamp)
         if output_stamp_s <= 0.0:
             raise ValueError("backend output requires a source timestamp")
+        if not self._scan_prediction_contract_allows_output():
+            self.counts["scan_prediction_contract_output_suppressed"] += 1
+            return False
         with self.output_lock:
             if (
                 self.last_unified_output_stamp_s is not None
@@ -11358,6 +11489,7 @@ class UnifiedBackendNode(Node):
             f"{self.counts['marginal_covariance_errors']}", flush=True, )
 
     def _diagnostics(self):
+        self._scan_prediction_contract_allows_output()
         average_solve_ms = (
             self.backend_solve_ms_total / self.backend_solve_count
             if self.backend_solve_count else 0.0
@@ -11381,9 +11513,12 @@ class UnifiedBackendNode(Node):
         diagnostic = DiagnosticStatus()
         diagnostic.name = "unified_backend_fusion"
         diagnostic.hardware_id = "companion_computer"
-        healthy = self.last_reason == "ok" and self.counts["optimization_errors"] == 0
-        diagnostic.level = DiagnosticStatus.OK if healthy else DiagnosticStatus.WARN
-        diagnostic.message = self.last_reason
+        diagnostic.level, diagnostic.message = backend_diagnostic_level_message(
+            self.last_reason,
+            self.counts["optimization_errors"],
+            self.scan_prediction_contract_violated,
+            self.scan_prediction_contract_reason,
+        )
         diagnostic.values = [
             self._key("scheduler_health", self.scheduler_health),
             self._key(
@@ -11513,6 +11648,46 @@ class UnifiedBackendNode(Node):
             ),
             self._key(
                 "frontend_state_seed_enabled", self.frontend_state_seed_enabled
+            ),
+            self._key(
+                "scan_prediction_contract_established",
+                self.scan_prediction_contract_established,
+            ),
+            self._key(
+                "scan_prediction_contract_valid",
+                not self.scan_prediction_contract_violated,
+            ),
+            self._key(
+                "scan_prediction_contract_reason",
+                self.scan_prediction_contract_reason,
+            ),
+            self._key(
+                "scan_prediction_contract_consecutive_failures",
+                self.scan_prediction_contract_consecutive_failures,
+            ),
+            self._key(
+                "scan_prediction_contract_failure_threshold",
+                self.scan_prediction_contract_failure_threshold,
+            ),
+            self._key(
+                "scan_prediction_contract_first_failure_sequence",
+                self.scan_prediction_contract_first_failure_sequence,
+            ),
+            self._key(
+                "scan_prediction_contract_first_failure_stamp_s",
+                f"{self.scan_prediction_contract_first_failure_stamp_s:.9g}",
+            ),
+            self._key(
+                "scan_prediction_contract_trips",
+                self.counts["scan_prediction_contract_trips"],
+            ),
+            self._key(
+                "scan_prediction_contract_recoveries",
+                self.counts["scan_prediction_contract_recoveries"],
+            ),
+            self._key(
+                "scan_prediction_contract_output_suppressed",
+                self.counts["scan_prediction_contract_output_suppressed"],
             ),
             self._key("state_reset_counter", self.state_reset_counter),
             self._key("last_imu_reason", self.last_imu_reason),

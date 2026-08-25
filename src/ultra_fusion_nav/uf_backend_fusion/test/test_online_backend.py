@@ -10,6 +10,7 @@ from collections import deque
 from types import SimpleNamespace
 
 import numpy as np
+from diagnostic_msgs.msg import DiagnosticStatus
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 
@@ -28,6 +29,7 @@ from uf_backend_fusion.online_backend import (
     axis_map_protection,
     axis_observability_latch,
     axis_information_handoff,
+    backend_diagnostic_level_message,
     apply_flow_rotation_gate,
     apply_gnss_prefit_gate,
     apply_lidar_anchor_floor,
@@ -1510,6 +1512,130 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.output_lock = threading.Lock()
 
         self.assertEqual(node._latest_lidar_frontend_activity_s(), 9.0)
+
+    def test_scan_prediction_contract_stays_healthy_with_cache_hits(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.frontend_scan_prediction_enabled = True
+        node.scan_prediction_contract_failure_threshold = 3
+        node.scan_prediction_contract_request_timeout_s = 1.0
+        node.scan_prediction_contract_lock = threading.RLock()
+        node.scan_prediction_contract_established = False
+        node.scan_prediction_contract_violated = False
+        node.scan_prediction_contract_consecutive_failures = 0
+        node.scan_prediction_contract_reason = "waiting_for_handshake"
+        node.scan_prediction_contract_first_failure_sequence = -1
+        node.scan_prediction_contract_first_failure_stamp_s = -1.0
+        node.last_scan_request_arrival_s = 10.0
+        node.counts = {
+            "scan_prediction_contract_trips": 0,
+            "scan_prediction_contract_recoveries": 0,
+        }
+
+        node._record_scan_prediction_contract_success()
+        node._record_scan_prediction_contract_success()
+
+        self.assertTrue(node.scan_prediction_contract_established)
+        self.assertFalse(node.scan_prediction_contract_violated)
+        self.assertEqual(node.scan_prediction_contract_reason, "ok")
+        self.assertEqual(node.scan_prediction_contract_consecutive_failures, 0)
+        self.assertEqual(node.counts["scan_prediction_contract_trips"], 0)
+
+    def test_scan_prediction_contract_violation_is_diagnostic_error(self):
+        level, message = backend_diagnostic_level_message(
+            "scan_prediction_not_reusable:cache_miss",
+            0,
+            True,
+            "consecutive_cache_miss",
+        )
+
+        self.assertEqual(level, DiagnosticStatus.ERROR)
+        self.assertEqual(
+            message,
+            "scan_prediction_contract_violation:consecutive_cache_miss",
+        )
+
+    def test_missing_scan_handshake_fails_fast_and_suppresses_unified_odom(self):
+        class Recorder:
+            def __init__(self):
+                self.messages = []
+
+            def publish(self, message):
+                self.messages.append(message)
+
+        node = object.__new__(UnifiedBackendNode)
+        node.frontend_scan_prediction_enabled = True
+        node.scan_prediction_contract_failure_threshold = 3
+        node.scan_prediction_contract_request_timeout_s = 1.0
+        node.scan_prediction_contract_lock = threading.RLock()
+        node.scan_prediction_contract_established = False
+        node.scan_prediction_contract_violated = False
+        node.scan_prediction_contract_consecutive_failures = 0
+        node.scan_prediction_contract_reason = "waiting_for_handshake"
+        node.scan_prediction_contract_first_failure_sequence = -1
+        node.scan_prediction_contract_first_failure_stamp_s = -1.0
+        node.last_scan_request_arrival_s = None
+        node.output_lock = threading.Lock()
+        node.last_unified_output_stamp_s = None
+        node.odom_pub = Recorder()
+        node.counts = {
+            "scan_prediction_contract_trips": 0,
+            "scan_prediction_contract_recoveries": 0,
+            "scan_prediction_contract_output_suppressed": 0,
+            "optimized_odom_nonmonotonic_suppressed": 0,
+            "published": 0,
+            "optimized_odom_published": 0,
+            "live_propagation_published": 0,
+        }
+        node._now_s = lambda: 10.0
+
+        node._record_scan_prediction_contract_failure("cache_miss", 40, 9.8)
+        node._record_scan_prediction_contract_failure("cache_miss", 41, 9.9)
+        self.assertFalse(node.scan_prediction_contract_violated)
+        node._record_scan_prediction_contract_failure("cache_miss", 42, 10.0)
+
+        output = Odometry()
+        output.header.stamp.sec = 10
+        self.assertFalse(node._publish_unified_odom(output, "imu_propagated"))
+        self.assertTrue(node.scan_prediction_contract_violated)
+        self.assertEqual(
+            node.scan_prediction_contract_reason,
+            "consecutive_cache_miss",
+        )
+        self.assertEqual(node.scan_prediction_contract_first_failure_sequence, 40)
+        self.assertEqual(node.counts["scan_prediction_contract_trips"], 1)
+        self.assertEqual(
+            node.counts["scan_prediction_contract_output_suppressed"], 1
+        )
+        self.assertFalse(node.odom_pub.messages)
+
+        node.last_scan_request_arrival_s = 11.0
+        node._record_scan_prediction_contract_success()
+        self.assertTrue(node._scan_prediction_contract_allows_output(11.0))
+        self.assertEqual(node.counts["scan_prediction_contract_recoveries"], 1)
+
+    def test_established_scan_handshake_times_out_before_imu_only_output(self):
+        node = object.__new__(UnifiedBackendNode)
+        node.frontend_scan_prediction_enabled = True
+        node.scan_prediction_contract_failure_threshold = 3
+        node.scan_prediction_contract_request_timeout_s = 1.0
+        node.scan_prediction_contract_lock = threading.RLock()
+        node.scan_prediction_contract_established = True
+        node.scan_prediction_contract_violated = False
+        node.scan_prediction_contract_consecutive_failures = 0
+        node.scan_prediction_contract_reason = "ok"
+        node.scan_prediction_contract_first_failure_sequence = -1
+        node.scan_prediction_contract_first_failure_stamp_s = -1.0
+        node.last_scan_request_arrival_s = 8.0
+        node.last_native_sequence = 55
+        node.counts = {
+            "scan_prediction_contract_trips": 0,
+            "scan_prediction_contract_recoveries": 0,
+        }
+
+        self.assertFalse(node._scan_prediction_contract_allows_output(10.0))
+        self.assertTrue(node.scan_prediction_contract_violated)
+        self.assertEqual(node.scan_prediction_contract_reason, "request_timeout")
+        self.assertEqual(node.counts["scan_prediction_contract_trips"], 1)
 
     def test_path_sampling_requires_motion_or_rotation(self):
         self.assertTrue(path_sample_due(
