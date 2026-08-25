@@ -49,6 +49,7 @@ GNSS_Z_REANCHOR_ENABLED=${GNSS_Z_REANCHOR_ENABLED:-false}
 BAROMETER_FALLBACK_ENABLED=${BAROMETER_FALLBACK_ENABLED:-false}
 BAROMETER_TOPIC=${BAROMETER_TOPIC:-/mavros/imu/static_pressure}
 BACKEND_RELIABILITY_MODE=${BACKEND_RELIABILITY_MODE:-dynamic}
+TRANSACTIONAL_UPDATE_ENABLED=${TRANSACTIONAL_UPDATE_ENABLED:-true}
 FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
 FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
 FIXED_IMU_WEIGHT=${FIXED_IMU_WEIGHT:-1.0}
@@ -111,6 +112,11 @@ fi
 if [[ "$BACKEND_RELIABILITY_MODE" != dynamic && \
       "$BACKEND_RELIABILITY_MODE" != fixed ]]; then
   printf 'BACKEND_RELIABILITY_MODE must be dynamic or fixed.\n' >&2
+  exit 2
+fi
+if [[ "$TRANSACTIONAL_UPDATE_ENABLED" != true && \
+      "$TRANSACTIONAL_UPDATE_ENABLED" != false ]]; then
+  printf 'TRANSACTIONAL_UPDATE_ENABLED must be true or false.\n' >&2
   exit 2
 fi
 for value in \
@@ -371,6 +377,7 @@ backend_command=(
   -p barometer_fallback_enabled:="$BAROMETER_FALLBACK_ENABLED"
   -p barometer_topic:="$BAROMETER_TOPIC"
   -p reliability_mode:="$BACKEND_RELIABILITY_MODE"
+  -p transactional_update_enabled:="$TRANSACTIONAL_UPDATE_ENABLED"
   -p fixed_lidar_weight:="$FIXED_LIDAR_WEIGHT"
   -p fixed_gnss_weight:="$FIXED_GNSS_WEIGHT"
   -p fixed_imu_weight:="$FIXED_IMU_WEIGHT"
@@ -632,6 +639,8 @@ printf 'numeric_threads=%s\ncpp_math_core_enabled=%s\nvisual_factor_mode_request
   "$VISUAL_PENDING_ENABLED" \
   "$VISUAL_REQUIRE_TIME_LOCK" "$BACKEND_RELIABILITY_MODE" \
   >>"$OUTPUT_DIR/replay_result.env"
+printf 'transactional_update_enabled=%s\n' \
+  "$TRANSACTIONAL_UPDATE_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
 printf 'executor_threads=%s\nnative_lidar_qos_depth=%s\nnative_worker_queue_size=%s\n' \
   "$BACKEND_EXECUTOR_THREADS" "$NATIVE_LIDAR_QOS_DEPTH" \
   "$NATIVE_WORKER_QUEUE_SIZE" >>"$OUTPUT_DIR/replay_result.env"

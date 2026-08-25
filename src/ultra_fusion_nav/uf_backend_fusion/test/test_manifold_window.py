@@ -433,6 +433,29 @@ class ManifoldWindowTest(unittest.TestCase):
             diagnostic["current_weak_position_information_trace"],
         )
 
+    def test_active_lidar_solver_information_matches_factor_normal(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=False
+        )
+        factor = plane_factor(
+            [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+        )
+        index = backend.add_state(np.zeros(15))
+        backend.add_native_lidar_correspondences(index, factor)
+        backend.set_lidar_subspace_scale(np.diag([0.1, 1.0, 1.0]))
+
+        normal, _, _ = backend._normal()
+        observed, count = backend.active_lidar_solver_information()
+        pose = normal[:6, :6]
+        expected = (
+            pose[:3, :3]
+            - pose[:3, 3:] @ np.linalg.pinv(pose[3:, 3:], rcond=1.0e-12)
+            @ pose[3:, :3]
+        )
+
+        self.assertEqual(count, 1)
+        np.testing.assert_allclose(observed, expected, atol=1.0e-12)
+
     def test_marginal_prior_diagnostic_accumulates_lidar_sources(self):
         backend = ManifoldSlidingWindowBackend(
             max_states=2, cpp_math_core_enabled=False
