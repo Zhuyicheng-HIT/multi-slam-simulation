@@ -34,6 +34,7 @@ NONLINEAR_RECOVERY_MAX_ITERATIONS=${NONLINEAR_RECOVERY_MAX_ITERATIONS:-4}
 NONLINEAR_REINTEGRATION_MAX_ITERATIONS=${NONLINEAR_REINTEGRATION_MAX_ITERATIONS:-1}
 NATIVE_LIDAR_QOS_DEPTH=${NATIVE_LIDAR_QOS_DEPTH:-auto}
 NATIVE_WORKER_QUEUE_SIZE=${NATIVE_WORKER_QUEUE_SIZE:-auto}
+NATIVE_WORKER_LATEST_ONLY_ENABLED=${NATIVE_WORKER_LATEST_ONLY_ENABLED:-true}
 FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-auto}
 CPP_MATH_CORE_ENABLED=${CPP_MATH_CORE_ENABLED:-true}
 VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
@@ -185,6 +186,10 @@ case "$FRONTEND_SCAN_PREDICTION_ENABLED" in
     printf 'FRONTEND_SCAN_PREDICTION_ENABLED must be auto, true, or false.\n' >&2
     exit 2
     ;;
+esac
+case "$NATIVE_WORKER_LATEST_ONLY_ENABLED" in
+  true|false) ;;
+  *) printf 'NATIVE_WORKER_LATEST_ONLY_ENABLED must be true or false.\n' >&2; exit 2 ;;
 esac
 case "$REGENERATE_LIDAR_SCHEDULER" in
   0|1) ;;
@@ -390,6 +395,7 @@ backend_command=(
   -p nonlinear_reintegration_max_iterations:="$NONLINEAR_REINTEGRATION_MAX_ITERATIONS"
   -p native_lidar_qos_depth:="$NATIVE_LIDAR_QOS_DEPTH"
   -p native_worker_queue_size:="$NATIVE_WORKER_QUEUE_SIZE"
+  -p native_worker_latest_only_enabled:="$NATIVE_WORKER_LATEST_ONLY_ENABLED"
 )
 if [[ "$LIDAR_ADMISSION_MODE" != adaptive ]]; then
   backend_command+=( -p lidar_admission_mode:="$LIDAR_ADMISSION_MODE" )
@@ -629,6 +635,8 @@ printf 'numeric_threads=%s\ncpp_math_core_enabled=%s\nvisual_factor_mode_request
 printf 'executor_threads=%s\nnative_lidar_qos_depth=%s\nnative_worker_queue_size=%s\n' \
   "$BACKEND_EXECUTOR_THREADS" "$NATIVE_LIDAR_QOS_DEPTH" \
   "$NATIVE_WORKER_QUEUE_SIZE" >>"$OUTPUT_DIR/replay_result.env"
+printf 'native_worker_latest_only_enabled=%s\n' \
+  "$NATIVE_WORKER_LATEST_ONLY_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
 printf 'qos_overrides=%s\n' "$REPLAY_QOS_OVERRIDES" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'read_ahead_queue_size=%s\ndiscovery_delay_s=%s\nack_timeout_ms=%s\npost_replay_drain_wall_s=%s\n' \

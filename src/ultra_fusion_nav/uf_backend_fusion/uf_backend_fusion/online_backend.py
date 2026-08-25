@@ -2715,6 +2715,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("native_lidar_minimum_matches", 50)
         self.declare_parameter("native_lidar_qos_depth", 1)
         self.declare_parameter("native_worker_queue_size", 1)
+        self.declare_parameter("native_worker_latest_only_enabled", True)
         self.declare_parameter("imu_qos_depth", 64)
         self.declare_parameter("imu_covariance_scale", 50.0)
         self.declare_parameter("imu_bias_random_walk_variance", 1.0e-4)
@@ -3309,6 +3310,9 @@ class UnifiedBackendNode(Node):
             raise ValueError("LiDAR subspace limits are invalid")
         self.native_lidar_enabled = bool(
             native_requested and NativeLidarFactor is not None)
+        self.native_worker_latest_only_enabled = bool(
+            self.get_parameter("native_worker_latest_only_enabled").value
+        )
         requested_trigger_mode = str(
             self.get_parameter("input_trigger_mode").value
         ).lower()
@@ -7479,6 +7483,22 @@ class UnifiedBackendNode(Node):
             @ self.last_native_translation_profile_information
             @ axis_root_scale
         )
+        subspace_eigenvalues, subspace_eigenvectors = np.linalg.eigh(
+            0.5 * (
+                self.last_lidar_subspace_scale
+                + self.last_lidar_subspace_scale.T
+            )
+        )
+        subspace_root_scale = (
+            subspace_eigenvectors
+            @ np.diag(np.sqrt(np.clip(subspace_eigenvalues, 0.0, 1.0)))
+            @ subspace_eigenvectors.T
+        )
+        effective_translation_information = (
+            subspace_root_scale
+            @ effective_translation_information
+            @ subspace_root_scale
+        )
         effective_eigenvalues, effective_eigenvectors = np.linalg.eigh(
             0.5
             * (
@@ -7486,6 +7506,17 @@ class UnifiedBackendNode(Node):
                 + effective_translation_information.T
             )
         )
+        prior_projection = getattr(
+            self.backend, "marginal_prior_translation_diagnostic", None
+        )
+        marginal_prior_diagnostic = dict(
+            prior_projection(self.last_lidar_subspace_scale)
+            if callable(prior_projection)
+            else {}
+        )
+        marginal_prior_diagnostic.update(dict(getattr(
+            self.backend, "last_marginal_prior_diagnostic", {}
+        )))
         optimized_state = None
         if state_committed and self.backend.state_count > 0:
             optimized_state = self.backend.state(
@@ -7634,6 +7665,7 @@ class UnifiedBackendNode(Node):
             "marginalization_happened": bool(
                 backend_profile.get("marginalization_happened", False)
             ),
+            "marginal_prior_diagnostic": marginal_prior_diagnostic,
             "state_committed": bool(state_committed),
             "optimized_state": optimized_state,
             "last_reason": str(self.last_reason),
@@ -9053,7 +9085,10 @@ class UnifiedBackendNode(Node):
                 # source age and can trigger a rollback storm. Drop this
                 # frame before it mutates the backend; the newer frame remains
                 # the sole candidate for the next transaction.
-                if self._native_worker_frame_superseded(factor):
+                if (
+                    self.native_worker_latest_only_enabled
+                    and self._native_worker_frame_superseded(factor)
+                ):
                     continue
                 self._process_native_worker_frame(header, factor)
             except Exception as error:  # one bad packet must not kill the worker

@@ -15,6 +15,7 @@ try:
         imu_preintegrated_normal as cpp_imu_preintegrated_normal,
         lidar_point_plane_cost as cpp_lidar_point_plane_cost,
         lidar_point_plane_normal as cpp_lidar_point_plane_normal,
+        lidar_point_plane_normal_subspace as cpp_lidar_point_plane_normal_subspace,
         marginal_prior_cost as cpp_marginal_prior_cost,
         marginal_prior_normal as cpp_marginal_prior_normal,
         state_plus_batch as cpp_state_plus_batch,
@@ -27,6 +28,7 @@ except ImportError:
     cpp_imu_preintegrated_normal = None
     cpp_lidar_point_plane_cost = None
     cpp_lidar_point_plane_normal = None
+    cpp_lidar_point_plane_normal_subspace = None
     cpp_marginal_prior_cost = None
     cpp_marginal_prior_normal = None
     cpp_state_plus_batch = None
@@ -712,6 +714,7 @@ class ManifoldSlidingWindowBackend:
         self._last_rejected_steps = 0
         self._last_hessian = None
         self._last_marginalization_ms = 0.0
+        self.last_marginal_prior_diagnostic = {}
         self.profiling_enabled = bool(profiling_enabled)
         self.profiling_capacity = max(64, int(profiling_capacity))
         self._profile_samples = defaultdict(
@@ -943,6 +946,7 @@ class ManifoldSlidingWindowBackend:
         self._last_rejected_steps = 0
         self._last_hessian = None
         self._last_marginalization_ms = 0.0
+        self.last_marginal_prior_diagnostic = {}
         self._lm_damping = min(
             self.lm_max_damping, max(self.lm_min_damping, self.damping)
         )
@@ -1439,14 +1443,32 @@ class ManifoldSlidingWindowBackend:
             )
             if (
                 self.cpp_math_core_enabled
-                and not subspace_scaled
+                and (
+                    not subspace_scaled
+                    or cpp_lidar_point_plane_normal_subspace is not None
+                )
                 and (
                     not axis_scaled
                     or CPP_LIDAR_AXIS_SCALED_CORE_AVAILABLE
                 )
             ):
                 measurement = factor["measurement"]
-                if axis_scaled:
+                if subspace_scaled:
+                    kernel = cpp_lidar_point_plane_normal_subspace
+                    kernel_arguments = (
+                        states[index][:6],
+                        measurement.lidar_points,
+                        measurement.plane_normals,
+                        measurement.plane_points,
+                        measurement.lidar_to_body_rotation,
+                        measurement.lidar_to_body_translation,
+                        translation_information_scale,
+                        subspace_scale,
+                        factor["variance"],
+                        factor["effective_weight"],
+                        self.lidar_huber_delta,
+                    )
+                elif axis_scaled:
                     kernel = cpp_lidar_point_plane_normal_axis_scaled
                     kernel_arguments = (
                         states[index][:6],
@@ -2348,6 +2370,69 @@ class ManifoldSlidingWindowBackend:
             for factor in self._factors
         ]
 
+    def marginal_prior_translation_diagnostic(self, subspace_scale):
+        """Project the live marginal prior onto the current LiDAR subspace."""
+        scale = np.asarray(subspace_scale, dtype=float)
+        if scale.shape != (3, 3) or np.any(~np.isfinite(scale)):
+            raise ValueError("subspace scale must be a finite 3x3 matrix")
+        scale = 0.5 * (scale + scale.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(scale)
+        weak = eigenvalues < 1.0 - 1.0e-6
+        weak_projector = (
+            eigenvectors[:, weak] @ eigenvectors[:, weak].T
+            if np.any(weak)
+            else np.zeros((3, 3), dtype=float)
+        )
+        for factor in reversed(self._factors):
+            if factor["name"] != "marginal_prior" or not factor["enabled"]:
+                continue
+            prior = np.asarray(factor["normal_hessian"], dtype=float)
+            position_information = np.zeros((3, 3), dtype=float)
+            for block in range(len(factor["indices"])):
+                start = block * STATE_SIZE
+                position_information += prior[
+                    start:start + 3, start:start + 3
+                ]
+            position_information = 0.5 * (
+                position_information + position_information.T
+            )
+            total_trace = float(np.trace(position_information))
+            weak_trace = float(np.trace(
+                weak_projector @ position_information
+            ))
+            return {
+                "active": True,
+                "position_information_trace": total_trace,
+                "current_weak_position_information_trace": weak_trace,
+                "current_strong_position_information_trace": (
+                    total_trace - weak_trace
+                ),
+                "current_weak_position_information_fraction": (
+                    weak_trace / total_trace if total_trace > 0.0 else 0.0
+                ),
+                "current_weak_mode_count": int(np.count_nonzero(weak)),
+                "historical_source_factor_counts": dict(factor.get(
+                    "marginal_source_factor_counts", {}
+                )),
+                "historical_lidar_pre_schur_translation_trace": float(
+                    factor.get("marginal_lidar_translation_trace", 0.0)
+                ),
+                "historical_lidar_attenuated_weak_trace": float(
+                    factor.get("marginal_lidar_weak_translation_trace", 0.0)
+                ),
+            }
+        return {
+            "active": False,
+            "position_information_trace": 0.0,
+            "current_weak_position_information_trace": 0.0,
+            "current_strong_position_information_trace": 0.0,
+            "current_weak_position_information_fraction": 0.0,
+            "current_weak_mode_count": int(np.count_nonzero(weak)),
+            "historical_source_factor_counts": {},
+            "historical_lidar_pre_schur_translation_trace": 0.0,
+            "historical_lidar_attenuated_weak_trace": 0.0,
+        }
+
     def _marginalize_if_needed(self):
         started = time.perf_counter()
         profile_started = self._profile_start()
@@ -2357,6 +2442,48 @@ class ManifoldSlidingWindowBackend:
             eliminated = [
                 factor for factor in self._factors if 0 in factor["indices"]
             ]
+            source_counts = defaultdict(int)
+            lidar_translation_trace = 0.0
+            lidar_weak_translation_trace = 0.0
+            lidar_weak_mode_count = 0
+            for factor in eliminated:
+                if factor["name"] == "marginal_prior":
+                    for name, count in factor.get(
+                        "marginal_source_factor_counts", {}
+                    ).items():
+                        source_counts[name] += int(count)
+                    lidar_translation_trace += float(factor.get(
+                        "marginal_lidar_translation_trace", 0.0
+                    ))
+                    lidar_weak_translation_trace += float(factor.get(
+                        "marginal_lidar_weak_translation_trace", 0.0
+                    ))
+                    lidar_weak_mode_count += int(factor.get(
+                        "marginal_lidar_weak_mode_count", 0
+                    ))
+                    continue
+                source_counts[factor["name"]] += 1
+                if factor["name"] != "lidar_point_plane":
+                    continue
+                local_hessian = np.zeros((len(self._states) * STATE_SIZE,) * 2)
+                local_gradient = np.zeros(len(self._states) * STATE_SIZE)
+                self._factor_normal(
+                    factor, self._states, local_hessian, local_gradient
+                )
+                block = local_hessian[:3, :3]
+                lidar_translation_trace += float(np.trace(block))
+                scale = factor.get(
+                    "translation_subspace_scale", np.eye(3)
+                )
+                weak_projector = np.eye(3) - np.asarray(scale, dtype=float)
+                lidar_weak_translation_trace += float(
+                    np.trace(weak_projector @ block)
+                )
+                lidar_weak_mode_count += int(
+                    np.count_nonzero(
+                        np.linalg.eigvalsh(weak_projector) > 1.0e-6
+                    )
+                )
             retained = [
                 factor for factor in self._factors if 0 not in factor["indices"]]
             references = [state.copy() for state in self._states[1:]]
@@ -2417,6 +2544,14 @@ class ManifoldSlidingWindowBackend:
                     index - 1 for index in factor["indices"])
             self._factors = retained
             if schur_hessian is not None and schur_hessian.size:
+                self.last_marginal_prior_diagnostic = {
+                    "source_factor_counts": dict(source_counts),
+                    "lidar_translation_trace": lidar_translation_trace,
+                    "lidar_weak_translation_trace": (
+                        lidar_weak_translation_trace
+                    ),
+                    "lidar_weak_mode_count": lidar_weak_mode_count,
+                }
                 self._factors.append({
                     "name": "marginal_prior",
                     "indices": tuple(range(len(self._states))),
@@ -2428,6 +2563,16 @@ class ManifoldSlidingWindowBackend:
                     "normal_hessian": schur_hessian,
                     "normal_gradient": schur_gradient,
                     "references": references,
+                    "marginal_source_factor_counts": dict(source_counts),
+                    "marginal_lidar_translation_trace": (
+                        lidar_translation_trace
+                    ),
+                    "marginal_lidar_weak_translation_trace": (
+                        lidar_weak_translation_trace
+                    ),
+                    "marginal_lidar_weak_mode_count": (
+                        lidar_weak_mode_count
+                    ),
                 })
         self._last_marginalization_ms = (
             (time.perf_counter() - started) * 1000.0 if marginalized else 0.0
