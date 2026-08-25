@@ -49,7 +49,7 @@ class GazeboOpticalFlowToMavros(Node):
         self.declare_parameter("range_topic", "/sim/optical_flow/range")
         self.declare_parameter("fcu_flow_topic", "")
         self.declare_parameter("fcu_range_topic", "")
-        self.declare_parameter("imu_topic", "/mavros/imu/data_raw")
+        self.declare_parameter("imu_topic", "/livox/imu")
         self.declare_parameter("gazebo_imu_topic", "/flow/imu")
         self.declare_parameter("gazebo_range_topic", "/flow/range")
         self.declare_parameter("camera_fov_x_rad", 1.21126)

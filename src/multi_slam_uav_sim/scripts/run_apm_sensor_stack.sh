@@ -243,7 +243,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p range_topic:=/sim/optical_flow/range_native
     -p gazebo_range_topic:=/flow/range
     -p gazebo_imu_topic:=/flow/imu
-    -p imu_topic:=/mavros/imu/data_raw
+    -p imu_topic:=/livox/imu
     # The MTF companion path is consumed by a 10 Hz LiDAR-triggered backend.
     # A deterministic 15 Hz stream preserves fresh zero-motion observations
     # without spending CPU on frames the estimator cannot consume.
@@ -269,8 +269,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
   pids+=("$!")
 
-  # The MTF device clock is kept in raw MAVLink frames. Its ROS observations
-  # must share MAVROS IMU's time domain for the companion fusion pipeline.
+  # Companion observations use the same Gazebo sensor clock as the MID360 IMU.
   setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p mode:=sim \
@@ -278,7 +277,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p flow_topic:=/sim/optical_flow/rad \
     -p range_topic:=/sim/optical_flow/range \
     -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
-    -p imu_topic:=/mavros/imu/data_raw \
+    -p imu_topic:=/livox/imu \
     -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
     -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
     -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
@@ -467,7 +466,9 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
   setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
+    -p gz_imu_topic:=/mid360/imu \
     -p raw_topic:=/sim/mid360/points_raw \
+    -p imu_topic:=/sim/mid360/imu_raw \
     -p registered_topic:=/sim/mid360/cloud_registered \
     -p odom_topic:=/sim/mid360/ground_truth_odom \
     -p sensor_frame:=mid360_link \
@@ -478,14 +479,12 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
     >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
   pids+=("$!")
 elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
-  # The simulation FCU timestamp can regress when Gazebo RTF drops. Keep raw
-  # timestamps as the default for hardware, but align the simulation Livox
-  # adapter to the ROS clock when explicitly requested.
+  # Bridge the independently simulated MID360 IMU and LiDAR from Gazebo.
   setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
+    -p gz_imu_topic:=/mid360/imu \
     -p livox_lidar_topic:=/livox/lidar \
-    -p input_imu_topic:=/mavros/imu/data_raw \
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \
     -p imu_frame_id:=base_link \
@@ -498,7 +497,7 @@ elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
     -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
     -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
-    -p restamp_imu:=${MID360_SIM_RESTAMP_IMU:-true} \
+    -p restamp_lidar:=false \
     -p publish_ground_truth_odom:=true \
     >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")
