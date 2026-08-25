@@ -16,6 +16,23 @@ relocalization_node:
     request_topic: /relocalization/request
     result_topic: /relocalization/result
     ready_topic: /relocalization/ready
+    # Routine loop closure is a low-rate historical-place search. It reuses the
+    # same geometric and multi-frame gates as fault-triggered relocalization.
+    automatic_loop_closure_enabled: true
+    automatic_loop_allowed_scheduler_states: [NORMAL, RECOVERED]
+    automatic_loop_search_cooldown_s: 15.0
+    automatic_loop_minimum_keyframe_age_s: 20.0
+    # Same-session loop closure has a trustworthy approximate fused pose.
+    # Avoid global descriptor matches in novel or repetitive structures; the
+    # manual/fault recovery path below remains global.
+    automatic_loop_maximum_candidate_distance_m: 3.0
+    automatic_loop_maximum_candidates: 2
+    automatic_loop_maximum_search_attempts: 3
+    # Routine loop closure is allowed to trim accumulated drift, not perform a
+    # large kidnapped-robot jump. Fault/manual relocalization retains the wider
+    # limits below.
+    automatic_loop_maximum_correction_translation_m: 0.75
+    automatic_loop_maximum_correction_rotation_rad: 0.25
     keyframe_attempt_period_s: 0.5
     query_attempt_period_s: 0.5
     search_timeout_s: 6.0

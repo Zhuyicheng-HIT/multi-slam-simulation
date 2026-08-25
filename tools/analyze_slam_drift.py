@@ -11,11 +11,12 @@ import time
 import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Imu, PointCloud2, PointField
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 # Keep the evaluator usable from a normal ROS workspace shell.  The Livox
 # interface is built in the external MID360 workspace, so it is not included
@@ -156,11 +157,14 @@ class SlamDriftAnalyzer(Node):
         self.livox_stamp_duplicates = 0
         self.livox_timebase_regressions = 0
         self.livox_point_offset_regressions = 0
+        self.ros_clock_regressions = 0
         self.body_removed_ratios = []
         self.registered_point_counts = []
         self.registered_abs_max_m = []
         self.registered_frame_ids = set()
         self.publisher_samples = []
+        self.mission_phase = "unreported"
+        self.mission_phase_timeline = []
         self.previous_voxels = None
         self.previous_centroid = None
 
@@ -179,6 +183,30 @@ class SlamDriftAnalyzer(Node):
         self.create_subscription(
             Float32, "/sensors/lidar/body_removed_ratio",
             self._body_removed_ratio_cb, qos_profile_sensor_data)
+        self.create_subscription(String, "/mission/phase", self._mission_phase_cb, 10)
+
+    def _mission_phase_cb(self, msg):
+        phase = str(msg.data).strip() or "unreported"
+        if phase == self.mission_phase:
+            return
+        now_ns = self.get_clock().now().nanoseconds
+        if now_ns <= 0:
+            return
+        self.mission_phase = phase
+        self.mission_phase_timeline.append({
+            "stamp_ns": int(now_ns),
+            "stamp_s": int(now_ns) * 1.0e-9,
+            "phase": phase,
+        })
+
+    def has_mission_phase(self, phase):
+        wanted = str(phase).strip()
+        if not wanted:
+            return False
+        return any(
+            str(event.get("phase", "")).strip() == wanted
+            for event in self.mission_phase_timeline
+        )
 
     @staticmethod
     def _odom_record(msg):
@@ -366,6 +394,7 @@ def build_report(node, sim_duration, wall_duration=None):
             "fast_lio_fcu_imu": node.imu_stamp_duplicates,
             "livox_custom_msg": node.livox_stamp_duplicates,
         },
+        "clock_regressions": node.ros_clock_regressions,
         "pointcloud": {
             "source": "/livox/lidar (livox_ros_driver2/msg/CustomMsg)",
             "livox_packet_p05_points": percentile(node.livox_point_counts, 5),
@@ -553,6 +582,14 @@ def main():
         default=0.0,
         help="Wall-clock watchdog only; zero selects max(60 s, 10x sim duration)",
     )
+    parser.add_argument(
+        "--stop-on-mission-phase",
+        default="",
+        help=(
+            "Finish after this /mission/phase is observed. Use 'landed' to "
+            "avoid collecting idle post-landing FAST-LIO diagnostics."
+        ),
+    )
     args = parser.parse_args(remove_ros_args(args=sys.argv)[1:])
 
     rclpy.init()
@@ -566,6 +603,7 @@ def main():
     ros_started = None
     last_ros_s = None
     last_graph_sample = 0.0
+    termination_reason = "duration_complete"
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.1)
@@ -576,14 +614,27 @@ def main():
             if now_ros_s > 0.0 and ros_started is None:
                 ros_started = now_ros_s
             if last_ros_s is not None and now_ros_s < last_ros_s:
-                raise RuntimeError("ROS simulation clock moved backwards during evaluation")
+                node.ros_clock_regressions += 1
+                continue
             last_ros_s = now_ros_s
+            if (
+                args.stop_on_mission_phase
+                and node.has_mission_phase(args.stop_on_mission_phase)
+            ):
+                termination_reason = (
+                    f"mission_phase:{args.stop_on_mission_phase}"
+                )
+                break
             if ros_started is not None and now_ros_s - ros_started >= args.duration:
                 break
             if time.monotonic() - wall_started >= wall_timeout:
                 raise RuntimeError(
                     "wall-clock watchdog expired while waiting for ROS simulation time"
                 )
+        else:
+            termination_reason = "ros_shutdown"
+    except (KeyboardInterrupt, ExternalShutdownException):
+        termination_reason = "interrupted"
     finally:
         wall_duration = time.monotonic() - wall_started
         sim_duration = (
@@ -592,6 +643,10 @@ def main():
             else max(0.0, last_ros_s - ros_started)
         )
         report = build_report(node, sim_duration, wall_duration)
+        report["requested_duration_s"] = float(args.duration)
+        report["stop_on_mission_phase"] = str(args.stop_on_mission_phase)
+        report["termination_reason"] = termination_reason
+        report["mission_phase_timeline"] = node.mission_phase_timeline
         with open(args.output, "w", encoding="utf-8") as handle:
             json.dump(report, handle, ensure_ascii=False, indent=2)
         print(json.dumps(report, ensure_ascii=False, indent=2))

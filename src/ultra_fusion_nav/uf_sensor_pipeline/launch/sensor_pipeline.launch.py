@@ -1,4 +1,5 @@
 import os
+from typing import List
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -6,6 +7,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -23,6 +25,9 @@ def generate_launch_description():
     fcu_flow_input_topic = LaunchConfiguration("fcu_flow_input_topic")
     fcu_flow_rad_input_topic = LaunchConfiguration("fcu_flow_rad_input_topic")
     fcu_range_input_topic = LaunchConfiguration("fcu_range_input_topic")
+    active_modalities = ParameterValue(
+        LaunchConfiguration("active_modalities"), value_type=List[str]
+    )
     scheduled_fault_modality = os.environ.get("UF_FAULT_MODALITY", "").strip()
     scheduled_fault = {}
     if scheduled_fault_modality:
@@ -174,9 +179,7 @@ def generate_launch_description():
                 config,
                 {
                     "use_sim_time": use_sim_time,
-                    "active_modalities": [
-                        "lidar", "imu", "gnss", "optical_flow"
-                    ],
+                    "active_modalities": active_modalities,
                 },
             ],
             output="screen",
@@ -189,6 +192,11 @@ def generate_launch_description():
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
         DeclareLaunchArgument("enable_nmea_gnss", default_value="false"),
+        DeclareLaunchArgument(
+            "active_modalities",
+            default_value="[lidar, imu, gnss, optical_flow]",
+            description="Modalities expected by the non-vision sensor contract",
+        ),
         DeclareLaunchArgument("nmea_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("nmea_strict_checksum", default_value="true"),
         DeclareLaunchArgument(
@@ -202,8 +210,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "gnss_algorithm_rate_hz",
-            default_value="2.5",
-            description="Paired fix/raw rate exposed to the companion estimator (2-3 Hz)",
+            default_value="5.0",
+            description="Paired fix/raw rate exposed to the companion estimator (5 Hz)",
         ),
         DeclareLaunchArgument(
             "d435_color_input_topic",

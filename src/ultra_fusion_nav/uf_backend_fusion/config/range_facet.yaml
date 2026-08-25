@@ -1,0 +1,15 @@
+range_facet:
+  enabled: false
+  input_topic: /hardware/mtf01/range
+  min_range_m: 0.02
+  max_range_m: 12.0
+  range_sigma_m: 0.04
+  minimum_support_points: 3
+  maximum_plane_rmse_m: 0.05
+  denominator_epsilon: 0.05
+  facet_margin_m: 0.20
+  timestamp_tolerance_s: 0.05
+  mahalanobis_gate: 9.0
+  huber_delta: 2.5
+  require_stable_submap: true
+  require_static_facet: true

@@ -585,6 +585,7 @@ class OnlineSpatiotemporalCalibrator:
         solve_period_s=0.0,
         minimum_time_lock_candidate_separation_s=1.0,
         time_unlock_count=3,
+        estimate_rotation=True,
     ):
         if (
             window_s <= 0.0
@@ -626,6 +627,7 @@ class OnlineSpatiotemporalCalibrator:
             minimum_time_lock_candidate_separation_s
         )
         self.time_unlock_count = int(time_unlock_count)
+        self.estimate_rotation = bool(estimate_rotation)
         self.last_solve_stamp_s = None
         if (
             not 0.0 < self.minimum_excitation_ratio <= 1.0
@@ -648,7 +650,9 @@ class OnlineSpatiotemporalCalibrator:
         self.time_lock_candidate_count = 0
         self.time_lock_conflict_count = 0
         self.time_lock_revocations = 0
-        self.rotation_locked = False
+        # A fixed measured extrinsic is authoritative when rotation estimation
+        # is disabled. It is considered available, but is never optimized.
+        self.rotation_locked = not self.estimate_rotation
         self.initial_rotation_set = False
         # Keep the observability evidence alongside the last update so the
         # runtime diagnostic can distinguish pair starvation from a failed
@@ -889,6 +893,39 @@ class OnlineSpatiotemporalCalibrator:
         )
         if time_accepted:
             self._update_time_lock(time_candidate.offset_s, stamp_s)
+        if not self.estimate_rotation:
+            self.last_excitation_ratio = 0.0
+            self.last_accumulated_rotation_rad = physical_time_rotation
+            self.last_weighted_accumulated_rotation_rad = float(sum(
+                interval_weight * np.linalg.norm(rotation_vector)
+                for _, _, rotation_vector, interval_weight in intervals
+            ))
+            self.last_unweighted_accumulated_rotation_rad = (
+                physical_time_rotation
+            )
+            self.last_imu_accumulated_rotation_rad = 0.0
+            self.last_motion_weight_mean = float(np.mean([
+                interval_weight
+                for _, _, _, interval_weight in intervals
+            ])) if intervals else 0.0
+            self.last_rotation_inlier_ratio = 0.0
+            reason = "time_accepted_fixed_extrinsic" if time_accepted else (
+                "sharp_turn_frozen" if sharp_turn
+                else "time_unobservable_or_low_confidence"
+            )
+            self.last_update = CalibrationUpdate(
+                time_accepted,
+                self.time_locked,
+                self.time_offset_s,
+                self.lidar_to_body_rotation.copy(),
+                time_candidate.correlation,
+                time_candidate.margin,
+                -1.0,
+                (0.0, 0.0, 0.0),
+                time_candidate.pair_count,
+                reason,
+            )
+            return self.last_update
         rotation_offset = (
             time_candidate.offset_s if time_accepted else self.time_offset_s
         )

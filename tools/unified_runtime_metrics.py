@@ -836,7 +836,11 @@ class Metrics(Node):
         self.covariance_sources = Counter()
         self.backend_diagnostic_messages = 0
         self.relocalization_states = Counter()
+        self.relocalization_reasons = Counter()
+        self.relocalization_timeline = []
         self.relocalization_successes = 0
+        self.automatic_loop_searches = 0
+        self.automatic_loop_successes = 0
         self.fusion_epoch_events = []
         self.calibration_motion_stats = CalibrationMotionStats()
         self.calibration_timeline = []
@@ -851,6 +855,9 @@ class Metrics(Node):
         self.scheduler_clock_domain_deferred = 0
         self.scheduler_clock_domain_max_error_s = 0.0
         self.scheduler_clock_domain_examples = []
+        self.ros_clock_regressions = 0
+        self.ros_clock_regression_max_s = 0.0
+        self.ros_clock_regression_examples = []
         self.graph_contract_violations = []
         self.last_graph_contract_check_wall_s = None
         self.create_subscription(
@@ -894,11 +901,21 @@ class Metrics(Node):
             self.sensor_contract,
             10,
         )
-        self.create_subscription(String, "/mission/phase", self.mission_phase_event, 10)
-        self.create_subscription(SchedulerState, "/reliability/scheduler_state", self.scheduler, 20)
-        self.create_subscription(DiagnosticArray, "/external_nav/diagnostics", self.diagnostics, 10)
-        self.create_subscription(DiagnosticArray, "/fusion/unified/diagnostics", self.diagnostics, 10)
-        self.create_subscription(RelocalizationResult, "/relocalization/result", self.relocalization, 10)
+        self.create_subscription(
+            String, "/mission/phase", self.mission_phase_event, 10
+        )
+        self.create_subscription(
+            SchedulerState, "/reliability/scheduler_state", self.scheduler, 20
+        )
+        self.create_subscription(
+            DiagnosticArray, "/external_nav/diagnostics", self.diagnostics, 10
+        )
+        self.create_subscription(
+            DiagnosticArray, "/fusion/unified/diagnostics", self.diagnostics, 10
+        )
+        self.create_subscription(
+            RelocalizationResult, "/relocalization/result", self.relocalization, 10
+        )
         epoch_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
@@ -1043,6 +1060,15 @@ class Metrics(Node):
             "phase": phase,
         })
 
+    def has_mission_phase(self, phase):
+        wanted = str(phase).strip()
+        if not wanted:
+            return False
+        return any(
+            str(event.get("phase", "")).strip() == wanted
+            for event in self.mission_phase_timeline
+        )
+
     @staticmethod
     def _endpoint_identity(endpoint):
         return {
@@ -1087,7 +1113,18 @@ class Metrics(Node):
         if now_ros_s <= 0.0:
             return False
         if self.last_ros_s is not None and now_ros_s < self.last_ros_s:
-            raise RuntimeError("ROS simulation clock moved backwards")
+            regression_s = self.last_ros_s - now_ros_s
+            self.ros_clock_regressions += 1
+            self.ros_clock_regression_max_s = max(
+                self.ros_clock_regression_max_s, regression_s
+            )
+            if len(self.ros_clock_regression_examples) < 8:
+                self.ros_clock_regression_examples.append({
+                    "previous_ros_s": self.last_ros_s,
+                    "current_ros_s": now_ros_s,
+                    "regression_s": regression_s,
+                })
+            return False
         self.last_ros_s = now_ros_s
         if self.started_ros_s is None:
             self.started_ros_s = now_ros_s
@@ -1170,7 +1207,26 @@ class Metrics(Node):
 
     def relocalization(self, message):
         self.relocalization_states[message.state_name] += 1
+        reason = str(message.reason)
+        self.relocalization_reasons[reason] += 1
+        message_stamp_ns = stamp_ns(message)
+        self.relocalization_timeline.append({
+            "stamp_s": message_stamp_ns * 1.0e-9,
+            "mission_phase": self.mission_phase,
+            "state": str(message.state_name),
+            "reason": reason,
+            "accepted": bool(message.accepted),
+            "transaction_id": int(message.transaction_id),
+            "candidate_id": int(message.candidate_id),
+        })
         self.relocalization_successes += int(message.accepted)
+        self.automatic_loop_searches += int(
+            reason == "automatic_loop_searching_historical_keyframes"
+        )
+        self.automatic_loop_successes += int(
+            bool(message.accepted)
+            and reason.startswith("automatic_loop_candidate_accepted")
+        )
 
     def fusion_epoch(self, message):
         event_stamp_ns = stamp_ns(message)
@@ -1258,10 +1314,23 @@ class Metrics(Node):
             "scheduler_clock_domain_examples": (
                 self.scheduler_clock_domain_examples
             ),
+            "ros_clock_regressions": self.ros_clock_regressions,
+            "ros_clock_regression_max_s": self.ros_clock_regression_max_s,
+            "ros_clock_regression_examples": (
+                self.ros_clock_regression_examples
+            ),
             "graph_contract_violations": self.graph_contract_violations,
-            "factor_enabled_ratio": {name: self.enabled[name] / count for name, count in self.samples.items() if count},
-            "capability_support_mean": {name: self.capability_sum[name] / count for name, count in self.capability_count.items() if count},
-            "estimator_support_mean": sum(self.support) / len(self.support) if self.support else None,
+            "factor_enabled_ratio": {
+                name: self.enabled[name] / count
+                for name, count in self.samples.items() if count
+            },
+            "capability_support_mean": {
+                name: self.capability_sum[name] / count
+                for name, count in self.capability_count.items() if count
+            },
+            "estimator_support_mean": (
+                sum(self.support) / len(self.support) if self.support else None
+            ),
             "estimator_support_min": min(self.support) if self.support else None,
             "externalnav_diagnostic_reasons": dict(self.reasons),
             "externalnav_gate_latest": self.externalnav_gate_latest,
@@ -1282,7 +1351,11 @@ class Metrics(Node):
             ),
             "covariance_sources": dict(self.covariance_sources),
             "relocalization_states": dict(self.relocalization_states),
+            "relocalization_reasons": dict(self.relocalization_reasons),
+            "relocalization_timeline": self.relocalization_timeline,
             "relocalization_successes": self.relocalization_successes,
+            "automatic_loop_searches": self.automatic_loop_searches,
+            "automatic_loop_successes": self.automatic_loop_successes,
             "fusion_epoch_events": self.fusion_epoch_events,
             "fusion_epoch_continuity": epoch_continuity,
             "fusion_epoch_applied": sum(
@@ -1296,6 +1369,14 @@ def main():
     parser.add_argument("--duration", type=float, default=125.0)
     parser.add_argument("--output", required=True)
     parser.add_argument("--wall-timeout", type=float, default=0.0)
+    parser.add_argument(
+        "--stop-on-mission-phase",
+        default="",
+        help=(
+            "Finish after this /mission/phase is observed. This keeps mission "
+            "validators from recording idle post-landing data."
+        ),
+    )
     args = parser.parse_args(remove_ros_args(args=sys.argv)[1:])
     rclpy.init()
     node = Metrics()
@@ -1318,12 +1399,10 @@ def main():
                         "wall watchdog expired waiting for ROS simulation time"
                     )
                 continue
-            if last_ros_s is not None and now_ros_s < last_ros_s:
-                raise RuntimeError("ROS simulation clock moved backwards")
-            last_ros_s = now_ros_s
-            if started_ros_s is None:
-                started_ros_s = now_ros_s
-            node.observe_ros_time(now_ros_s)
+            if not node.observe_ros_time(now_ros_s):
+                continue
+            last_ros_s = node.last_ros_s
+            started_ros_s = node.started_ros_s
             if time.monotonic() - started_wall_s >= 3.0:
                 if not node.graph_contract_valid():
                     raise RuntimeError("ROS graph publisher contract violated")
@@ -1331,6 +1410,14 @@ def main():
                 raise RuntimeError(
                     "scheduler state arrived from a different ROS clock domain"
                 )
+            if (
+                args.stop_on_mission_phase
+                and node.has_mission_phase(args.stop_on_mission_phase)
+            ):
+                termination_reason = (
+                    f"mission_phase:{args.stop_on_mission_phase}"
+                )
+                break
             if now_ros_s - started_ros_s >= args.duration:
                 break
             if time.monotonic() - started_wall_s >= wall_timeout:
@@ -1346,6 +1433,8 @@ def main():
         pending_error = error
     finally:
         report = node.report(last_ros_s)
+        report["requested_duration_s"] = float(args.duration)
+        report["stop_on_mission_phase"] = str(args.stop_on_mission_phase)
         report["termination_reason"] = termination_reason
         with open(args.output, "w", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, sort_keys=True)

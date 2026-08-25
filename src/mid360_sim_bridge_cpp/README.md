@@ -21,7 +21,7 @@ ROS message types and topic names.
 
 Before publishing, the adapter transforms each return from `mid360_link` into
 the aircraft body frame and removes returns inside the configured aircraft
-exclusion box. The default rotation is the simulated 10 degree nose-down
+exclusion box. The default rotation is the simulated 15 degree nose-down
 mount, and the default body-frame bounds are `x,y=[-0.45,0.45] m` and
 `z=[-0.35,0.15] m`. The per-frame removed fraction is published on
 `/sensors/lidar/body_removed_ratio`. This filtering happens before FAST-LIO,

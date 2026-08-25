@@ -77,9 +77,15 @@ reliability_monitor:
     # Camera health remains continuous for the scheduler. Per-candidate factor
     # evidence is published separately and must not make camera health stale.
     vision.track_evidence_enabled: true
+    # Paper reprojection requires PnP/geometric inliers. Direct RGB-D uses
+    # KLT tracks with valid metric depth and performs its own depth/photo prefit.
+    vision.factor_mode: paper_reprojection
     vision.factor_score_topic: /reliability/vision_factor_score
     vision.camera_cache_size: 4
     vision.minimum_camera_evidence_coverage: 0.75
+    # Direct RGB-D omits only Eq.20's PnP reprojection term (weight 0.25).
+    # Depth and photometric prefit remain authoritative in the backend.
+    vision.minimum_direct_factor_evidence_coverage: 0.75
     vision.minimum_depth_m: 0.30
     vision.maximum_depth_m: 6.0
     vision.klt_weight: 0.15

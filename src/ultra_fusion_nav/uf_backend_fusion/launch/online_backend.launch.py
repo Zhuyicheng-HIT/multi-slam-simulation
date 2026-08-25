@@ -1,4 +1,5 @@
 import os
+from typing import List
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -26,6 +27,13 @@ def generate_launch_description():
     publish_mavros_frame_transforms = LaunchConfiguration(
         "publish_mavros_frame_transforms"
     )
+    active_modalities = ParameterValue(
+        LaunchConfiguration("active_modalities"), value_type=List[str]
+    )
+    active_modalities_with_vision = ParameterValue(
+        LaunchConfiguration("active_modalities_with_vision"),
+        value_type=List[str],
+    )
     relocalization_prefix = None
     if os.environ.get("UF_RELOCALIZATION_GDB", "0") == "1":
         relocalization_prefix = (
@@ -34,9 +42,48 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
+        DeclareLaunchArgument(
+            "active_modalities",
+            default_value="[lidar, gnss, imu, optical_flow]",
+            description="Modalities scheduled when vision is disabled",
+        ),
+        DeclareLaunchArgument(
+            "active_modalities_with_vision",
+            default_value="[lidar, gnss, imu, optical_flow, vision]",
+            description="Modalities scheduled when vision is enabled",
+        ),
         DeclareLaunchArgument("visual_factor_mode", default_value="disabled"),
         DeclareLaunchArgument("rgbd_minimum_depth_m", default_value="0.30"),
         DeclareLaunchArgument("rgbd_maximum_depth_m", default_value="6.0"),
+        DeclareLaunchArgument("rgbd_depth_factor_enabled", default_value="false"),
+        DeclareLaunchArgument(
+            "range_facet_enabled",
+            default_value="false",
+            description=(
+                "Fuse the MTF-01P ray/plane RangeFacet row with its flow packet"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "rgbd_depth_healthy_lidar_stride",
+            default_value="1",
+            description=(
+                "Keep every quality-gated RGB-D depth batch; values above one "
+                "are retained only for controlled ablation"
+            ),
+        ),
+        DeclareLaunchArgument("reliability_mode", default_value="dynamic"),
+        DeclareLaunchArgument("fixed_lidar_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_gnss_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_imu_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_optical_flow_weight", default_value="1.0"),
+        DeclareLaunchArgument("fixed_vision_weight", default_value="1.0"),
+        DeclareLaunchArgument(
+            "frontend_map_commit_delay_states",
+            default_value="7",
+            description=(
+                "Fixed-lag states retained before an irreversible LiDAR map write"
+            ),
+        ),
         DeclareLaunchArgument(
             "external_nav_output_topic",
             default_value="/mavros/odometry/out",
@@ -95,6 +142,31 @@ def generate_launch_description():
                 "Apply a locked camera/IMU time offset; keep shadow-only by default"
             ),
         ),
+        DeclareLaunchArgument(
+            "visual_rotation_body_camera",
+            default_value="[0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]",
+            description="Measured row-major rotation for T_body_camera",
+        ),
+        DeclareLaunchArgument(
+            "visual_translation_body_camera_m",
+            default_value="[0.20, 0.0, 0.02]",
+            description="Measured translation in metres for T_body_camera",
+        ),
+        DeclareLaunchArgument(
+            "barometer_topic", default_value="/mavros/imu/static_pressure"
+        ),
+        DeclareLaunchArgument(
+            "axis_information_handoff_enabled", default_value="false"
+        ),
+        DeclareLaunchArgument(
+            "gnss_z_reanchor_enabled", default_value="false"
+        ),
+        DeclareLaunchArgument(
+            "gnss_z_recovery_information_scale", default_value="0.50"
+        ),
+        DeclareLaunchArgument(
+            "barometer_fallback_enabled", default_value="false"
+        ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
@@ -136,6 +208,7 @@ def generate_launch_description():
                     LaunchConfiguration("rgbd_maximum_depth_m"),
                     value_type=float,
                 ),
+                "vision.factor_mode": LaunchConfiguration("visual_factor_mode"),
             }],
             output="screen",
         ),
@@ -146,7 +219,7 @@ def generate_launch_description():
             parameters=[
                 scheduler_config,
                 {
-                    "active_modalities": ["lidar", "gnss", "imu", "optical_flow"],
+                    "active_modalities": active_modalities,
                     "use_sim_time": use_sim_time,
                 },
             ],
@@ -160,9 +233,7 @@ def generate_launch_description():
             parameters=[
                 scheduler_config,
                 {
-                    "active_modalities": [
-                        "lidar", "gnss", "imu", "optical_flow", "vision"
-                    ],
+                    "active_modalities": active_modalities_with_vision,
                     "use_sim_time": use_sim_time,
                 },
             ],
@@ -186,6 +257,39 @@ def generate_launch_description():
                     "use_sim_time": use_sim_time,
                     "visual_factor_mode": LaunchConfiguration(
                         "visual_factor_mode"
+                    ),
+                    "rgbd_depth_factor_enabled": ParameterValue(
+                        LaunchConfiguration("rgbd_depth_factor_enabled"),
+                        value_type=bool,
+                    ),
+                    "range_facet_enabled": ParameterValue(
+                        LaunchConfiguration("range_facet_enabled"),
+                        value_type=bool,
+                    ),
+                    "rgbd_depth_healthy_lidar_stride": ParameterValue(
+                        LaunchConfiguration("rgbd_depth_healthy_lidar_stride"),
+                        value_type=int,
+                    ),
+                    "reliability_mode": LaunchConfiguration("reliability_mode"),
+                    "fixed_lidar_weight": ParameterValue(
+                        LaunchConfiguration("fixed_lidar_weight"), value_type=float
+                    ),
+                    "fixed_gnss_weight": ParameterValue(
+                        LaunchConfiguration("fixed_gnss_weight"), value_type=float
+                    ),
+                    "fixed_imu_weight": ParameterValue(
+                        LaunchConfiguration("fixed_imu_weight"), value_type=float
+                    ),
+                    "fixed_optical_flow_weight": ParameterValue(
+                        LaunchConfiguration("fixed_optical_flow_weight"),
+                        value_type=float,
+                    ),
+                    "fixed_vision_weight": ParameterValue(
+                        LaunchConfiguration("fixed_vision_weight"), value_type=float
+                    ),
+                    "frontend_map_commit_delay_states": ParameterValue(
+                        LaunchConfiguration("frontend_map_commit_delay_states"),
+                        value_type=int,
                     ),
                     "preserve_lio_anchor": ParameterValue(
                         LaunchConfiguration("preserve_lio_anchor"),
@@ -215,6 +319,33 @@ def generate_launch_description():
                     ),
                     "visual_time_calibration_apply_locked": ParameterValue(
                         LaunchConfiguration("visual_time_calibration_apply_locked"),
+                        value_type=bool,
+                    ),
+                    "visual_rotation_body_camera": ParameterValue(
+                        LaunchConfiguration("visual_rotation_body_camera"),
+                        value_type=List[float],
+                    ),
+                    "visual_translation_body_camera_m": ParameterValue(
+                        LaunchConfiguration("visual_translation_body_camera_m"),
+                        value_type=List[float],
+                    ),
+                    "barometer_topic": LaunchConfiguration("barometer_topic"),
+                    "axis_information_handoff_enabled": ParameterValue(
+                        LaunchConfiguration("axis_information_handoff_enabled"),
+                        value_type=bool,
+                    ),
+                    "gnss_z_reanchor_enabled": ParameterValue(
+                        LaunchConfiguration("gnss_z_reanchor_enabled"),
+                        value_type=bool,
+                    ),
+                    "gnss_z_recovery_information_scale": ParameterValue(
+                        LaunchConfiguration(
+                            "gnss_z_recovery_information_scale"
+                        ),
+                        value_type=float,
+                    ),
+                    "barometer_fallback_enabled": ParameterValue(
+                        LaunchConfiguration("barometer_fallback_enabled"),
                         value_type=bool,
                     ),
                 },

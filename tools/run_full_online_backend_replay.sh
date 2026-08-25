@@ -20,6 +20,10 @@ ENABLE_CYCLE_TRACE=${ENABLE_CYCLE_TRACE:-1}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 BACKEND_EXECUTOR_THREADS=${BACKEND_EXECUTOR_THREADS:-2}
+NONLINEAR_MAX_ITERATIONS=${NONLINEAR_MAX_ITERATIONS:-2}
+NONLINEAR_INITIALIZATION_MAX_ITERATIONS=${NONLINEAR_INITIALIZATION_MAX_ITERATIONS:-4}
+NONLINEAR_RECOVERY_MAX_ITERATIONS=${NONLINEAR_RECOVERY_MAX_ITERATIONS:-4}
+NONLINEAR_REINTEGRATION_MAX_ITERATIONS=${NONLINEAR_REINTEGRATION_MAX_ITERATIONS:-1}
 NATIVE_LIDAR_QOS_DEPTH=${NATIVE_LIDAR_QOS_DEPTH:-auto}
 NATIVE_WORKER_QUEUE_SIZE=${NATIVE_WORKER_QUEUE_SIZE:-auto}
 FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-auto}
@@ -27,12 +31,25 @@ CPP_MATH_CORE_ENABLED=${CPP_MATH_CORE_ENABLED:-true}
 VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
 VISUAL_PENDING_ENABLED=${VISUAL_PENDING_ENABLED:-true}
 VISUAL_REQUIRE_TIME_LOCK=${VISUAL_REQUIRE_TIME_LOCK:-false}
+RGBD_DEPTH_HEALTHY_LIDAR_STRIDE=${RGBD_DEPTH_HEALTHY_LIDAR_STRIDE:-1}
+RGBD_DIRECT_DEPTH_INFORMATION_SCALE=${RGBD_DIRECT_DEPTH_INFORMATION_SCALE:-0.25}
+RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE=${RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE:-0.10}
+AXIS_INFORMATION_HANDOFF_ENABLED=${AXIS_INFORMATION_HANDOFF_ENABLED:-false}
+RANGE_FACET_ENABLED=${RANGE_FACET_ENABLED:-false}
+GNSS_Z_REANCHOR_ENABLED=${GNSS_Z_REANCHOR_ENABLED:-false}
+BAROMETER_FALLBACK_ENABLED=${BAROMETER_FALLBACK_ENABLED:-false}
+BAROMETER_TOPIC=${BAROMETER_TOPIC:-/mavros/imu/static_pressure}
 BACKEND_RELIABILITY_MODE=${BACKEND_RELIABILITY_MODE:-dynamic}
 FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
 FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
 FIXED_IMU_WEIGHT=${FIXED_IMU_WEIGHT:-1.0}
 FIXED_OPTICAL_FLOW_WEIGHT=${FIXED_OPTICAL_FLOW_WEIGHT:-1.0}
 FIXED_VISION_WEIGHT=${FIXED_VISION_WEIGHT:-1.0}
+LIDAR_PREDICTION_GATE_MAX_POSITION_M=${LIDAR_PREDICTION_GATE_MAX_POSITION_M:-1.0}
+LIDAR_PREDICTION_GATE_MAX_YAW_RAD=${LIDAR_PREDICTION_GATE_MAX_YAW_RAD:-0.50}
+LIDAR_PREDICTION_GATE_RECOVERY_AFTER=${LIDAR_PREDICTION_GATE_RECOVERY_AFTER:-3}
+LIDAR_PREDICTION_RECOVERY_WEIGHT=${LIDAR_PREDICTION_RECOVERY_WEIGHT:-0.20}
+LIDAR_PREDICTION_RECOVERY_INFLATION=${LIDAR_PREDICTION_RECOVERY_INFLATION:-5.0}
 CALIBRATION_APPLY_LOCKED_TIME_OFFSET=${CALIBRATION_APPLY_LOCKED_TIME_OFFSET:-false}
 CALIBRATION_APPLY_LOCKED_ROTATION=${CALIBRATION_APPLY_LOCKED_ROTATION:-false}
 ACCURACY_ENABLED=${ACCURACY_ENABLED:-1}
@@ -42,6 +59,7 @@ MISSING_VISION_FACTOR_SCORE_POLICY=${MISSING_VISION_FACTOR_SCORE_POLICY:-error}
 REGENERATE_VISION_FACTOR_SCORE=${REGENERATE_VISION_FACTOR_SCORE:-auto}
 REPLAY_VISION_FACTOR_SCORE_TOPIC=${REPLAY_VISION_FACTOR_SCORE_TOPIC:-/replay/reliability/vision_factor_score}
 REPLAY_RGBD_MAX_DEPTH_M=${REPLAY_RGBD_MAX_DEPTH_M:-10.0}
+REPLAY_REQUIRE_RGBD_GEOMETRY=${REPLAY_REQUIRE_RGBD_GEOMETRY:-auto}
 STRICT_REPLAY_ACCEPTANCE=${STRICT_REPLAY_ACCEPTANCE:-1}
 REPLAY_REQUIRE_TIME_CALIBRATION_LOCK=${REPLAY_REQUIRE_TIME_CALIBRATION_LOCK:-false}
 REPLAY_REQUIRE_TIME_CALIBRATION_APPLIED=${REPLAY_REQUIRE_TIME_CALIBRATION_APPLIED:-false}
@@ -55,6 +73,25 @@ export ROS_DOMAIN_ID
 
 if [[ "$CPP_MATH_CORE_ENABLED" != true && "$CPP_MATH_CORE_ENABLED" != false ]]; then
   printf 'CPP_MATH_CORE_ENABLED must be true or false.\n' >&2
+  exit 2
+fi
+if [[ "$AXIS_INFORMATION_HANDOFF_ENABLED" != true && \
+      "$AXIS_INFORMATION_HANDOFF_ENABLED" != false ]]; then
+  printf 'AXIS_INFORMATION_HANDOFF_ENABLED must be true or false.\n' >&2
+  exit 2
+fi
+if [[ "$RANGE_FACET_ENABLED" != true && "$RANGE_FACET_ENABLED" != false ]]; then
+  printf 'RANGE_FACET_ENABLED must be true or false.\n' >&2
+  exit 2
+fi
+for value in "$GNSS_Z_REANCHOR_ENABLED" "$BAROMETER_FALLBACK_ENABLED"; do
+  if [[ "$value" != true && "$value" != false ]]; then
+    printf 'GNSS Z reanchor and barometer switches must be true or false.\n' >&2
+    exit 2
+  fi
+done
+if [[ "$BAROMETER_TOPIC" != /* ]]; then
+  printf 'BAROMETER_TOPIC must be an absolute ROS topic.\n' >&2
   exit 2
 fi
 if [[ "$VISUAL_REQUIRE_TIME_LOCK" != true && \
@@ -76,6 +113,23 @@ for value in \
     exit 2
   fi
 done
+if ! python3 -c \
+    'import math,sys; values=[float(v) for v in sys.argv[1:]]; raise SystemExit(not all(math.isfinite(v) and v>0 for v in values))' \
+    "$LIDAR_PREDICTION_GATE_MAX_POSITION_M" \
+    "$LIDAR_PREDICTION_GATE_MAX_YAW_RAD" \
+    "$LIDAR_PREDICTION_RECOVERY_WEIGHT" \
+    "$LIDAR_PREDICTION_RECOVERY_INFLATION"; then
+  printf 'LiDAR prediction gate and recovery values must be positive and finite.\n' >&2
+  exit 2
+fi
+if ! [[ "$LIDAR_PREDICTION_GATE_RECOVERY_AFTER" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'LIDAR_PREDICTION_GATE_RECOVERY_AFTER must be a positive integer.\n' >&2
+  exit 2
+fi
+if ! [[ "$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'RGBD_DEPTH_HEALTHY_LIDAR_STRIDE must be a positive integer.\n' >&2
+  exit 2
+fi
 for value in \
   "$CALIBRATION_APPLY_LOCKED_TIME_OFFSET" \
   "$CALIBRATION_APPLY_LOCKED_ROTATION" \
@@ -106,6 +160,13 @@ case "$REGENERATE_VISION_FACTOR_SCORE" in
   auto|0|1) ;;
   *) printf 'REGENERATE_VISION_FACTOR_SCORE must be auto, 0, or 1.\n' >&2; exit 2 ;;
 esac
+case "$REPLAY_REQUIRE_RGBD_GEOMETRY" in
+  auto|true|false) ;;
+  *)
+    printf 'REPLAY_REQUIRE_RGBD_GEOMETRY must be auto, true, or false.\n' >&2
+    exit 2
+    ;;
+esac
 case "$STRICT_REPLAY_ACCEPTANCE" in
   0|1) ;;
   *) printf 'STRICT_REPLAY_ACCEPTANCE must be 0 or 1.\n' >&2; exit 2 ;;
@@ -135,6 +196,20 @@ contract_args=(
 )
 if [[ "$VISUAL_FACTOR_MODE" == paper_reprojection ]]; then
   contract_args+=(--require-visual)
+fi
+require_rgbd_geometry=$REPLAY_REQUIRE_RGBD_GEOMETRY
+if [[ "$require_rgbd_geometry" == auto ]]; then
+  if [[ "$VISUAL_FACTOR_MODE" == paper_reprojection ]]; then
+    require_rgbd_geometry=true
+  else
+    require_rgbd_geometry=false
+  fi
+fi
+if [[ "$require_rgbd_geometry" == true ]]; then
+  contract_args+=(--require-rgbd-geometry)
+fi
+if [[ "$VISUAL_FACTOR_MODE" == rgbd_direct ]]; then
+  contract_args+=(--require-rgbd-direct)
 fi
 set +e
 "${contract_args[@]}" >"$OUTPUT_DIR/bag_contract.log" 2>&1
@@ -212,10 +287,13 @@ if (( regenerate_visual_factor_score == 1 )); then
   backend_visual_factor_score_topic=$REPLAY_VISION_FACTOR_SCORE_TOPIC
 fi
 if [[ "$NATIVE_LIDAR_QOS_DEPTH" == auto ]]; then
-  NATIVE_LIDAR_QOS_DEPTH=$((expected_native_factor_count + 16))
+  # The backend is deliberately latest-only. A bag replay must exercise the
+  # same bounded-latency contract as live ExternalNav; buffering every native
+  # frame creates stale callbacks before enqueue_latest can discard them.
+  NATIVE_LIDAR_QOS_DEPTH=1
 fi
 if [[ "$NATIVE_WORKER_QUEUE_SIZE" == auto ]]; then
-  NATIVE_WORKER_QUEUE_SIZE=$((expected_native_factor_count + 16))
+  NATIVE_WORKER_QUEUE_SIZE=1
 fi
 if ! [[ "$NATIVE_LIDAR_QOS_DEPTH" =~ ^[1-9][0-9]*$ ]] || \
    ! [[ "$NATIVE_WORKER_QUEUE_SIZE" =~ ^[1-9][0-9]*$ ]]; then
@@ -255,12 +333,25 @@ backend_command=(
   -p visual_pending_enabled:="$VISUAL_PENDING_ENABLED"
   -p visual_initialization_require_time_lock:="$VISUAL_REQUIRE_TIME_LOCK"
   -p visual_factor_score_topic:="$backend_visual_factor_score_topic"
+  -p rgbd_depth_healthy_lidar_stride:="$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE"
+  -p rgbd_direct_depth_information_scale:="$RGBD_DIRECT_DEPTH_INFORMATION_SCALE"
+  -p rgbd_direct_photometric_information_scale:="$RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE"
+  -p axis_information_handoff_enabled:="$AXIS_INFORMATION_HANDOFF_ENABLED"
+  -p range_facet_enabled:="$RANGE_FACET_ENABLED"
+  -p gnss_z_reanchor_enabled:="$GNSS_Z_REANCHOR_ENABLED"
+  -p barometer_fallback_enabled:="$BAROMETER_FALLBACK_ENABLED"
+  -p barometer_topic:="$BAROMETER_TOPIC"
   -p reliability_mode:="$BACKEND_RELIABILITY_MODE"
   -p fixed_lidar_weight:="$FIXED_LIDAR_WEIGHT"
   -p fixed_gnss_weight:="$FIXED_GNSS_WEIGHT"
   -p fixed_imu_weight:="$FIXED_IMU_WEIGHT"
   -p fixed_optical_flow_weight:="$FIXED_OPTICAL_FLOW_WEIGHT"
   -p fixed_vision_weight:="$FIXED_VISION_WEIGHT"
+  -p lidar_prediction_gate_max_position_m:="$LIDAR_PREDICTION_GATE_MAX_POSITION_M"
+  -p lidar_prediction_gate_max_yaw_rad:="$LIDAR_PREDICTION_GATE_MAX_YAW_RAD"
+  -p lidar_prediction_gate_recovery_after_rejections:="$LIDAR_PREDICTION_GATE_RECOVERY_AFTER"
+  -p lidar_prediction_recovery_weight:="$LIDAR_PREDICTION_RECOVERY_WEIGHT"
+  -p lidar_prediction_recovery_inflation:="$LIDAR_PREDICTION_RECOVERY_INFLATION"
   -p calibration_apply_locked_time_offset:="$CALIBRATION_APPLY_LOCKED_TIME_OFFSET"
   -p calibration_apply_locked_rotation:="$CALIBRATION_APPLY_LOCKED_ROTATION"
   -p native_lidar_factor_enabled:=true
@@ -269,6 +360,10 @@ backend_command=(
   -p allow_lio_pose_fallback:=false
   -p imu_factor_enabled:=true
   -p executor_threads:="$BACKEND_EXECUTOR_THREADS"
+  -p nonlinear_max_iterations:="$NONLINEAR_MAX_ITERATIONS"
+  -p nonlinear_initialization_max_iterations:="$NONLINEAR_INITIALIZATION_MAX_ITERATIONS"
+  -p nonlinear_recovery_max_iterations:="$NONLINEAR_RECOVERY_MAX_ITERATIONS"
+  -p nonlinear_reintegration_max_iterations:="$NONLINEAR_REINTEGRATION_MAX_ITERATIONS"
   -p native_lidar_qos_depth:="$NATIVE_LIDAR_QOS_DEPTH"
   -p native_worker_queue_size:="$NATIVE_WORKER_QUEUE_SIZE"
 )
@@ -374,8 +469,12 @@ play_command=(
   /sensors/imu
   /sensors/gnss/fix
   /sensors/gnss/raw
+  /mavros/imu/static_pressure
+  /sim/barometer/pressure
   /sensors/optical_flow/rad
   /vision/feature_tracks
+  /vision/rgbd_geometry_tracks
+  /vision/rgbd_direct_tracks
   /reliability/scheduler_state
   /reliability/lidar_score
   /reliability/imu_score
@@ -468,6 +567,20 @@ printf 'frontend_scan_prediction_enabled=%s\n' \
 printf 'fixed_lidar_weight=%s\nfixed_gnss_weight=%s\nfixed_imu_weight=%s\nfixed_optical_flow_weight=%s\nfixed_vision_weight=%s\n' \
   "$FIXED_LIDAR_WEIGHT" "$FIXED_GNSS_WEIGHT" "$FIXED_IMU_WEIGHT" \
   "$FIXED_OPTICAL_FLOW_WEIGHT" "$FIXED_VISION_WEIGHT" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'rgbd_depth_healthy_lidar_stride=%s\n' \
+  "$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" >>"$OUTPUT_DIR/replay_result.env"
+printf 'rgbd_direct_depth_information_scale=%s\nrgbd_direct_photometric_information_scale=%s\n' \
+  "$RGBD_DIRECT_DEPTH_INFORMATION_SCALE" \
+  "$RGBD_DIRECT_PHOTOMETRIC_INFORMATION_SCALE" >>"$OUTPUT_DIR/replay_result.env"
+printf 'axis_information_handoff_enabled=%s\n' \
+  "$AXIS_INFORMATION_HANDOFF_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
+printf 'range_facet_enabled=%s\n' \
+  "$RANGE_FACET_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
+printf 'gnss_z_reanchor_enabled=%s\nbarometer_fallback_enabled=%s\nbarometer_topic=%s\n' \
+  "$GNSS_Z_REANCHOR_ENABLED" "$BAROMETER_FALLBACK_ENABLED" \
+  "$BAROMETER_TOPIC" >>"$OUTPUT_DIR/replay_result.env"
+printf 'require_rgbd_geometry=%s\n' "$require_rgbd_geometry" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'calibration_apply_locked_time_offset=%s\ncalibration_apply_locked_rotation=%s\n' \
   "$CALIBRATION_APPLY_LOCKED_TIME_OFFSET" \

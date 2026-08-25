@@ -4,6 +4,7 @@ uf_rgbd_feature_frontend:
     depth_topic: /sensors/rgbd/depth
     camera_info_topic: /front/d435i/color/camera_info
     tracks_topic: /vision/feature_tracks
+    geometry_tracks_topic: /vision/rgbd_geometry_tracks
     max_features: 240
     minimum_distance_px: 12.0
     forward_backward_threshold_px: 1.0
@@ -41,4 +42,4 @@ uf_rgbd_feature_frontend:
     candidate_maximum_pnp_condition_number: 500.0
     candidate_require_pnp: true
     diagnostic_topic: /vision/frontend_diagnostics
-    cache_size: 12
+    cache_size: 2

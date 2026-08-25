@@ -1,0 +1,6 @@
+std_msgs/Header header
+builtin_interfaces/Time previous_stamp
+string previous_frame_id
+RgbdDirectTrack[] tracks
+uint32 source_feature_count
+float32 spatial_distribution

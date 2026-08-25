@@ -635,9 +635,9 @@
           <izz>1e-9</izz>
         </inertia>
       </inertial>
+      <!-- Gazebo camera and lidar rays point along sensor +X. A positive
+           90-degree pitch maps +X to the vehicle -Z (downward). -->
       <sensor name="optical_flow_mono_down" type="camera">
-        <!-- Gazebo camera and lidar rays point along sensor +X. A positive
-             90-degree pitch maps +X to the vehicle -Z (downward). -->
         <pose>0 0 0 0 1.57079632679 0</pose>
         <always_on>0</always_on>
         <update_rate>30</update_rate>
@@ -650,15 +650,8 @@
             <height>100</height>
             <format>R8G8B8</format>
           </image>
-          <clip>
-            <near>0.105</near>
-            <far>20.0</far>
-          </clip>
-          <noise>
-            <type>gaussian</type>
-            <mean>0.0</mean>
-            <stddev>0.003</stddev>
-          </noise>
+          <clip><near>0.105</near><far>20.0</far></clip>
+          <noise><type>gaussian</type><mean>0.0</mean><stddev>0.003</stddev></noise>
         </camera>
       </sensor>
       <sensor name="optical_flow_range" type="gpu_lidar">
@@ -697,24 +690,6 @@
           </noise>
         </lidar>
       </sensor>
-      <sensor name="optical_flow_imu" type="imu">
-        <pose>0 0 0 3.14159265359 0 0</pose>
-        <always_on>0</always_on>
-        <update_rate>200</update_rate>
-        <topic>/flow/imu</topic>
-        <imu>
-          <angular_velocity>
-            <x><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></x>
-            <y><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></y>
-            <z><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></z>
-          </angular_velocity>
-          <linear_acceleration>
-            <x><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></x>
-            <y><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></y>
-            <z><noise type="gaussian"><mean>0</mean><stddev>0.02</stddev></noise></z>
-          </linear_acceleration>
-        </imu>
-      </sensor>
     </link>
     <joint name="flow_camera_mount_joint" type="fixed">
       <parent>iris_with_standoffs::base_link</parent>
@@ -743,7 +718,7 @@
       <sensor name="front_d435i_rgbd" type="rgbd_camera">
         <!-- The Gazebo sensor wakes when its transport topics have subscribers. -->
         <always_on>0</always_on>
-        <update_rate>30</update_rate>
+        <update_rate>15</update_rate>
         <visualize>false</visualize>
         <topic>/front/d435i/gz</topic>
         <camera>
@@ -758,22 +733,22 @@
           <noise><type>gaussian</type><mean>0.0</mean><stddev>0.002</stddev></noise>
         </camera>
       </sensor>
-      <sensor name="front_d435i_imu" type="imu">
-        <always_on>0</always_on>
-        <update_rate>200</update_rate>
-        <topic>/front/d435i/gz/imu</topic>
-        <imu>
-          <angular_velocity>
-            <x><noise type="gaussian"><mean>0</mean><stddev>0.0002</stddev></noise></x>
-            <y><noise type="gaussian"><mean>0</mean><stddev>0.0002</stddev></noise></y>
-            <z><noise type="gaussian"><mean>0</mean><stddev>0.0002</stddev></noise></z>
-          </angular_velocity>
-          <linear_acceleration>
-            <x><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></x>
-            <y><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></y>
-            <z><noise type="gaussian"><mean>0</mean><stddev>0.002</stddev></noise></z>
-          </linear_acceleration>
-        </imu>
+      <!-- Gazebo-native barometer. The ROS bridge converts this noisy sensor
+           stream to the same FluidPressure interface used by MAVROS. -->
+      <sensor name="barometer" type="air_pressure">
+        <always_on>1</always_on>
+        <update_rate>20</update_rate>
+        <visualize>false</visualize>
+        <topic>air_pressure</topic>
+        <air_pressure>
+          <reference_altitude>584.0</reference_altitude>
+          <pressure>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>2.0</stddev>
+            </noise>
+          </pressure>
+        </air_pressure>
       </sensor>
     </link>
     <joint name="front_d435i_mount_joint" type="fixed">
@@ -783,8 +758,8 @@
 
     <link name="mid360_link">
       <!-- Measured simulation mount: 5 cm forward, 10 cm above body origin,
-           with a 10 degree nose-down pitch. -->
-      <pose>0.05 0.0 0.10 0 0.174532925199433 0</pose>
+           with a 15 degree nose-down pitch. -->
+      <pose>0.05 0.0 0.10 0 0.2617993877991494 0</pose>
       <gravity>false</gravity>
       <self_collide>false</self_collide>
       <inertial>
@@ -821,13 +796,13 @@
         <lidar>
           <scan>
             <horizontal>
-              <samples>500</samples>
+              <samples>360</samples>
               <resolution>1</resolution>
               <min_angle>-3.14159265</min_angle>
               <max_angle>3.14159265</max_angle>
             </horizontal>
             <vertical>
-              <samples>40</samples>
+              <samples>16</samples>
               <resolution>1</resolution>
               <min_angle>-0.12217304764</min_angle>
               <max_angle>0.90757121104</max_angle>

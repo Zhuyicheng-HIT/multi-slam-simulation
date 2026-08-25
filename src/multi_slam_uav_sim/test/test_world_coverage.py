@@ -11,13 +11,18 @@ from multi_slam_uav_sim.s_curve_path import (
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
 WORLD = PACKAGE_ROOT / "worlds" / "simple_apm_rgbd_mid360.sdf"
+LOW_WORLD = PACKAGE_ROOT / "worlds" / "low_indoor_apm_rgbd_mid360.sdf"
 LANDMARKS = (
     PACKAGE_ROOT / "models" / "s_curve_lidar_landmarks" / "model.sdf"
 )
 URBAN_STRUCTURES = (
     PACKAGE_ROOT / "models" / "s_curve_urban_structures" / "model.sdf"
 )
+URBAN_TEXTURES = URBAN_STRUCTURES.parent / "materials" / "textures"
 AIRCRAFT_MODEL = PACKAGE_ROOT / "models" / "iris_apm_rgbd" / "model.sdf"
+D435I_DOWNWARD_MODEL = (
+    PACKAGE_ROOT / "models" / "d435i_downward_rgbd" / "model.sdf"
+)
 S_CURVE_CONTROLLER = (
     PACKAGE_ROOT / "multi_slam_uav_sim" / "guided_s_curve_waypoints.py"
 )
@@ -135,6 +140,8 @@ def test_optical_flow_camera_and_range_point_downward():
         sensor.get("name"): sensor
         for sensor in root.findall(".//sensor")
     }
+    assert "optical_flow_imu" not in sensors
+    assert "front_d435i_imu" not in sensors
     for name in ("optical_flow_mono_down", "optical_flow_range"):
         pose = [float(value) for value in sensors[name].findtext("pose").split()]
         assert len(pose) == 6
@@ -145,6 +152,55 @@ def test_optical_flow_camera_and_range_point_downward():
         # Gazebo sensors look along local +X. R_y(+pi/2) maps it to body -Z.
         forward_body_z = -math.sin(pose[4])
         assert forward_body_z < -0.999999
+
+
+def test_mid360_mount_is_fifteen_degrees_nose_down():
+    root = ET.parse(AIRCRAFT_MODEL).getroot()
+    link = root.find(".//link[@name='mid360_link']")
+    assert link is not None
+    pose = [float(value) for value in link.findtext("pose").split()]
+    assert len(pose) == 6
+    assert math.isclose(pose[0], 0.05, abs_tol=1.0e-9)
+    assert math.isclose(pose[2], 0.10, abs_tol=1.0e-9)
+    assert math.isclose(pose[4], math.radians(15.0), abs_tol=1.0e-9)
+
+
+def test_rgbd_cameras_run_at_fifteen_hz_without_throttling_optical_flow():
+    aircraft = ET.parse(AIRCRAFT_MODEL).getroot()
+    sensors = {
+        sensor.get("name"): sensor
+        for sensor in aircraft.findall(".//sensor")
+    }
+    assert float(sensors["front_d435i_rgbd"].findtext("update_rate")) == 15.0
+    assert float(sensors["optical_flow_mono_down"].findtext("update_rate")) == 30.0
+    assert float(sensors["optical_flow_range"].findtext("update_rate")) == 30.0
+
+    downward = ET.parse(D435I_DOWNWARD_MODEL).getroot()
+    rgbd = downward.find(".//sensor[@name='d435i_rgbd_down']")
+    assert rgbd is not None
+    assert float(rgbd.findtext("update_rate")) == 15.0
+
+
+def test_low_world_has_nonplanar_ground_for_range_facets():
+    root = ET.parse(LOW_WORLD).getroot()
+    collisions = root.findall(".//collision")
+    reliefs = [
+        collision for collision in collisions
+        if collision.get("name", "").startswith("relief_")
+    ]
+    assert len(reliefs) >= 8
+    heights = []
+    for collision in reliefs:
+        geometry = collision.find("geometry")
+        assert geometry is not None
+        if geometry.find("box") is not None:
+            heights.append(float(geometry.findtext("box/size").split()[2]))
+        elif geometry.find("cylinder") is not None:
+            heights.append(float(geometry.findtext("cylinder/length")))
+        else:
+            raise AssertionError("unsupported relief geometry")
+    assert max(heights) >= 0.20
+    assert max(heights) <= 0.50
 
 
 def test_companion_sensor_payloads_are_dynamically_negligible():
@@ -230,6 +286,16 @@ def test_lidar_landmarks_cover_the_large_figure_eight_and_outer_area():
     )
     assert route_max_distance <= 4.5
 
+
+def test_low_figure_eight_stays_below_five_metres():
+    route = generate_large_figure_eight(
+        9.0, 1.5, 2.2, 0.8, samples=481,
+        rotation_deg=158.0, altitude_power=4)
+    altitudes = [point[2] for point in route]
+    assert min(altitudes) >= 2.2 - 1.0e-9
+    assert max(altitudes) <= 3.0 + 1.0e-9
+    assert sum(value <= 5.0 for value in altitudes) / len(altitudes) >= 0.50
+
     audit_grid = [
         (x, y)
         for x in (-16.0, -8.0, 0.0, 8.0, 16.0)
@@ -276,9 +342,43 @@ def test_urban_structures_are_loaded_and_replace_the_pillar_forest():
         "west_background_facade",
         "north_background_facade",
         "south_background_facade",
+        "east_wall_relief_01",
+        "west_wall_relief_03",
+        "north_wall_relief_05",
+        "south_wall_relief_01",
     }
     assert required <= collision_names
-    assert len(collision_names) >= 24
+    assert len(collision_names) >= 36
+
+    albedo_maps = {
+        element.text
+        for element in urban_root.findall(".//albedo_map")
+    }
+    expected_textures = {
+        "materials/textures/facade_a_v2.png",
+        "materials/textures/facade_b_v2.png",
+        "materials/textures/tunnel_v1.png",
+        "materials/textures/canyon_v1.png",
+    }
+    assert expected_textures <= albedo_maps
+    for relative_path in expected_textures:
+        texture = URBAN_STRUCTURES.parent / relative_path
+        assert texture.is_file()
+        assert texture.stat().st_size > 100_000
+
+    textured_visuals = {
+        visual.get("name"): visual.findtext("material/pbr/metal/albedo_map")
+        for visual in urban_root.findall(".//visual")
+    }
+    assert textured_visuals["short_tunnel_left_wall_visual"] == (
+        "materials/textures/tunnel_v1.png"
+    )
+    assert textured_visuals["urban_canyon_east_south_visual"] == (
+        "materials/textures/canyon_v1.png"
+    )
+    assert textured_visuals["south_east_facade_visual"] == (
+        "materials/textures/facade_a_v2.png"
+    )
 
 
 def test_forward_visual_geometry_covers_the_figure_eight_at_simulation_range():
@@ -433,7 +533,7 @@ def test_figure_eight_runner_keeps_single_pass_geometry_and_yaw_contract():
     assert "RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp" in runner
     assert "S_CURVE_SPAN=${S_CURVE_SPAN:-9.0}" in runner
     assert "S_CURVE_AMPLITUDE=${S_CURVE_AMPLITUDE:-1.5}" in runner
-    assert "S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-4.5}" in runner
+    assert "S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-0.8}" in runner
     assert "S_CURVE_PASSES=${S_CURVE_PASSES:-1}" in runner
     assert "FIGURE8_ROTATION_DEG=${FIGURE8_ROTATION_DEG:-158.0}" in runner
     assert "follow_heading_fraction=0.5" in controller
@@ -493,9 +593,10 @@ def test_vertical_diagnostic_uses_a_clear_corridor_outside_the_tunnel_roof():
 def test_s_curve_navigation_feedback_is_strictly_the_unified_backend():
     source = S_CURVE_CONTROLLER.read_text(encoding="utf-8")
     assert '"unified_odom_topic", "/fusion/unified/odom"' in source
-    assert "route_feedback_source=unified_backend" in source
-    assert "ground_truth" not in source
-    assert "/sim/" not in source
+    assert '"route_feedback_source", "unified_backend"' in source
+    assert '"gazebo_truth_odom_topic", "/sim/mid360/ground_truth_odom"' in source
+    assert 'self.route_feedback_source == "gazebo_truth"' in source
+    assert 'self.route_feedback_source == "unified_backend"' in source
     assert "effective_hold = mission_hold_required(" in source
     assert "decision.hold, lost, self.relocalization_request_active" in source
     assert "route_hold_fcu_setpoint" in source
@@ -513,3 +614,5 @@ def test_stable_unified_launch_exports_native_factors_without_scan_handshake():
     assert "FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0" in frontend
     assert "FRONTEND_SCAN_PREDICTION_ENABLED:-false" in backend
     assert "FASTLIO_BACKEND_TRAJECTORY_FRONTEND:-0" in validation
+    assert "VALIDATION_RELIABILITY_MODE:-dynamic" in validation
+    assert 'RELIABILITY_MODE="$VALIDATION_RELIABILITY_MODE"' in validation

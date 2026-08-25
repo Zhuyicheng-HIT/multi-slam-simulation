@@ -183,6 +183,11 @@ class TopicWindow:
             float(sample[1]) for sample in recent
             if sample[1] is not None and math.isfinite(float(sample[1]))
         ]
+        source_intervals = [
+            after - before
+            for before, after in zip(source_stamps, source_stamps[1:])
+            if after > before
+        ]
         source_rate_hz = 0.0
         if len(source_stamps) >= 2 and source_stamps[-1] > source_stamps[0]:
             source_rate_hz = (len(source_stamps) - 1) / (source_stamps[-1] - source_stamps[0])
@@ -201,6 +206,7 @@ class TopicWindow:
             "source_to_arrival_rate_ratio": (
                 source_rate_hz / rate_hz if source_rate_hz > 0.0 and rate_hz > 0.0 else None
             ),
+            "source_interval_median_ms": percentile(source_intervals, 0.50) * 1000.0,
             "arrival_interval_median_ms": median_interval * 1000.0,
             "jitter_ms": jitter_ms,
             "age_s": None if not arrivals else now_s - arrivals[-1],
@@ -208,10 +214,10 @@ class TopicWindow:
 
 
 def topic_rate_for_gate(topic_name, summary):
-    """Use simulated source time for intentional low-rate GNSS sampling."""
-    if topic_name == "gnss":
-        return float(summary["source_stamp_rate_hz"])
-    return float(summary["rate_hz"])
+    """Use sensor/source time when available, independent of simulation RTF."""
+    del topic_name
+    source_rate_hz = float(summary["source_stamp_rate_hz"])
+    return source_rate_hz if source_rate_hz > 0.0 else float(summary["rate_hz"])
 
 
 BACKEND_TIMING_KEYS = frozenset({
@@ -250,9 +256,9 @@ class SimulationPerformanceMonitor(Node):
         self.declare_parameter("output_path", "")
         self.declare_parameter("minimum_live_rtf", 0.80)
         self.declare_parameter("minimum_flow_rate_hz", 10.0)
-        # The companion estimator intentionally receives realistic 2-3 Hz GNSS.
-        # ArduPilot/MAVROS retain their independent native stream rate.
-        self.declare_parameter("minimum_gnss_rate_hz", 2.0)
+        # The current real GNSS contract is 5 Hz.  Allow modest scheduling
+        # jitter while still detecting an unintended return to 2-3 Hz.
+        self.declare_parameter("minimum_gnss_rate_hz", 4.0)
         self.declare_parameter("minimum_external_nav_rate_hz", 10.0)
         self.declare_parameter("flow_truth_assistance", False)
         self.declare_parameter("fusion_topic", "/fusion/gps_flow/odom")
@@ -290,6 +296,10 @@ class SimulationPerformanceMonitor(Node):
             )
         }
         self.latest_arrival = {}
+        # Keep source-time provenance separate from wall-arrival time.  A
+        # 5 Hz GNSS stream may be older than a 10 Hz fusion output by design;
+        # that age is not a transport latency or a queue stall.
+        self.latest_source_stamp = {}
         self.stage_latency_ms = {
             name: deque(maxlen=2000)
             for name in (
@@ -398,6 +408,9 @@ class SimulationPerformanceMonitor(Node):
         with self.lock:
             self.topics[name].add(now, self._source_stamp(message))
             self.latest_arrival[name] = now
+            source_stamp = self._source_stamp(message)
+            if source_stamp is not None:
+                self.latest_source_stamp[name] = source_stamp
             if upstream is not None and stage is not None:
                 upstream_time = self.latest_arrival.get(upstream)
                 if upstream_time is not None:
@@ -406,12 +419,26 @@ class SimulationPerformanceMonitor(Node):
                         self.stage_latency_ms[stage].append(latency_s * 1000.0)
 
     def _fusion(self, msg):
-        self._record("fusion", msg, "sensor_flow", "sensor_flow_to_fusion")
-        now = time.monotonic()
+        self._record("fusion", msg)
+        fusion_stamp = self._source_stamp(msg)
         with self.lock:
-            gnss_time = self.latest_arrival.get("gnss")
-            if gnss_time is not None and 0.0 <= now - gnss_time <= 1.0:
-                self.stage_latency_ms["gnss_to_fusion"].append((now - gnss_time) * 1000.0)
+            # Pair by simulation/source stamp, not by whichever callback
+            # happened to arrive most recently on the wall clock.  This
+            # reports observation age and avoids falsely reporting ~0.8 s
+            # latency for a valid 5 Hz GNSS stream feeding a 10 Hz backend.
+            if fusion_stamp is not None:
+                gnss_stamp = self.latest_source_stamp.get("gnss")
+                if gnss_stamp is not None:
+                    age_s = fusion_stamp - gnss_stamp
+                    if 0.0 <= age_s <= 1.0:
+                        self.stage_latency_ms["gnss_to_fusion"].append(age_s * 1000.0)
+                flow_stamp = self.latest_source_stamp.get("sensor_flow")
+                if flow_stamp is not None:
+                    age_s = fusion_stamp - flow_stamp
+                    if 0.0 <= age_s <= 1.0:
+                        self.stage_latency_ms["sensor_flow_to_fusion"].append(
+                            age_s * 1000.0
+                        )
 
     def _raw_flow(self, msg):
         self._record("raw_flow", msg, "flow_image", "flow_image_to_raw_flow")
@@ -534,7 +561,15 @@ class SimulationPerformanceMonitor(Node):
                     "p50_ms": percentile(values, 0.50),
                     "p95_ms": percentile(values, 0.95),
                     "max_ms": max(values) if values else 0.0,
-                    "approximate_from_arrival_times": True,
+                    "approximate_from_arrival_times": name not in {
+                        "gnss_to_fusion",
+                        "sensor_flow_to_fusion",
+                    },
+                    "measurement": (
+                        "source_stamp_age"
+                        if name in {"gnss_to_fusion", "sensor_flow_to_fusion"}
+                        else "wall_arrival_delta"
+                    ),
                 }
                 for name, values in self.stage_latency_ms.items()
             }
@@ -594,9 +629,22 @@ class SimulationPerformanceMonitor(Node):
                 "pids_max": max(metrics["pids"]) if metrics["pids"] else 0,
                 "samples": len(metrics["cpu_percent"]),
             }
+        wall_wait_stages = {
+            name: values for name, values in stage_report.items()
+            if values["measurement"] == "wall_arrival_delta"
+        }
+        observation_age_stages = {
+            name: values for name, values in stage_report.items()
+            if values["measurement"] == "source_stamp_age"
+        }
         wait_bottleneck = max(
-            stage_report,
-            key=lambda name: stage_report[name]["p95_ms"],
+            wall_wait_stages,
+            key=lambda name: wall_wait_stages[name]["p95_ms"],
+            default="insufficient_samples",
+        )
+        observation_age_bottleneck = max(
+            observation_age_stages,
+            key=lambda name: observation_age_stages[name]["p95_ms"],
             default="insufficient_samples",
         )
         mean_timings = {
@@ -620,21 +668,23 @@ class SimulationPerformanceMonitor(Node):
             rate_gate_values[name] >= minimum
             for name, minimum in self.minimum_rates.items()
         )
-        flow_ratio = topic_report["raw_flow"]["source_to_arrival_rate_ratio"]
+        flow_source_rate_hz = topic_report["raw_flow"]["source_stamp_rate_hz"]
         flow_source_rate_valid = (
-            flow_ratio is not None and 0.75 <= flow_ratio <= 1.25
+            flow_source_rate_hz >= self.minimum_rates["raw_flow"]
         )
         flow_integration_median_ms = percentile(flow_integration, 0.50)
+        flow_source_interval_ms = topic_report["raw_flow"][
+            "source_interval_median_ms"]
         flow_arrival_interval_ms = topic_report["raw_flow"][
             "arrival_interval_median_ms"]
-        flow_integration_arrival_ratio = (
-            flow_integration_median_ms / flow_arrival_interval_ms
-            if flow_integration_median_ms > 0.0 and flow_arrival_interval_ms > 0.0
+        flow_integration_source_ratio = (
+            flow_integration_median_ms / flow_source_interval_ms
+            if flow_integration_median_ms > 0.0 and flow_source_interval_ms > 0.0
             else None
         )
         flow_integration_valid = (
-            flow_integration_arrival_ratio is not None
-            and 0.75 <= flow_integration_arrival_ratio <= 1.25
+            flow_integration_source_ratio is not None
+            and 0.75 <= flow_integration_source_ratio <= 1.25
         )
         real_time_compute_feasible = (
             rtf_median >= self.minimum_live_rtf
@@ -698,10 +748,18 @@ class SimulationPerformanceMonitor(Node):
             "node_timings_ms": node_timings,
             "optical_flow_timing": {
                 "integration_time_median_ms": flow_integration_median_ms,
+                "source_interval_median_ms": flow_source_interval_ms,
                 "arrival_interval_median_ms": flow_arrival_interval_ms,
-                "integration_to_arrival_ratio": flow_integration_arrival_ratio,
+                "integration_to_source_interval_ratio": flow_integration_source_ratio,
+                "integration_to_arrival_ratio": (
+                    flow_integration_median_ms / flow_arrival_interval_ms
+                    if flow_integration_median_ms > 0.0
+                    and flow_arrival_interval_ms > 0.0
+                    else None
+                ),
             },
             "bottleneck_wait_stage_by_p95": wait_bottleneck,
+            "bottleneck_observation_age_stage_by_p95": observation_age_bottleneck,
             "bottleneck_compute_stage_by_mean": compute_bottleneck,
             "gates": {
                 "live_timing_comparison_valid": real_time_compute_feasible,
@@ -712,7 +770,11 @@ class SimulationPerformanceMonitor(Node):
                 "minimum_live_rtf": self.minimum_live_rtf,
                 "minimum_rates_hz": self.minimum_rates,
                 "rate_gate_values_hz": rate_gate_values,
+                "sensor_rate_gate_clock": "message_header_source_time_when_available",
                 "gnss_rate_gate_clock": "message_header_sim_time",
+                "flow_source_rate_valid": flow_source_rate_valid,
+                "flow_integration_source_interval_valid": flow_integration_valid,
+                # Compatibility aliases retained for older report readers.
                 "flow_source_arrival_ratio_valid": flow_source_rate_valid,
                 "flow_integration_arrival_ratio_valid": flow_integration_valid,
                 "algorithm_accuracy_still_requires_truth_ATE_RPE": True,
@@ -765,6 +827,10 @@ class SimulationPerformanceMonitor(Node):
             self._value(
                 "bottleneck_wait_stage", report["bottleneck_wait_stage_by_p95"]),
             self._value(
+                "bottleneck_observation_age_stage",
+                report["bottleneck_observation_age_stage_by_p95"],
+            ),
+            self._value(
                 "bottleneck_compute_stage",
                 report["bottleneck_compute_stage_by_mean"]),
             self._value(
@@ -781,6 +847,12 @@ class SimulationPerformanceMonitor(Node):
             self._value(
                 "flow_integration_arrival_ratio",
                 report["optical_flow_timing"]["integration_to_arrival_ratio"]),
+            self._value(
+                "flow_integration_source_interval_ratio",
+                report["optical_flow_timing"][
+                    "integration_to_source_interval_ratio"
+                ],
+            ),
             self._value("gnss_rate_hz", f"{report['topics']['gnss']['rate_hz']:.3f}"),
             self._value(
                 "gnss_source_rate_hz",
@@ -804,6 +876,7 @@ class SimulationPerformanceMonitor(Node):
             f"gnss_sim={report['topics']['gnss']['source_stamp_rate_hz']:.2f}Hz "
             f"external_nav={report['topics']['external_nav']['rate_hz']:.2f}Hz "
             f"wait_bottleneck={report['bottleneck_wait_stage_by_p95']} "
+            f"age_bottleneck={report['bottleneck_observation_age_stage_by_p95']} "
             f"compute_bottleneck={report['bottleneck_compute_stage_by_mean']} "
             f"live_valid={valid}")
 

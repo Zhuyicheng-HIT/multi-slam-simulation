@@ -22,6 +22,7 @@ MTF01_RANGE_TOPIC=${MTF01_RANGE_TOPIC:-/hardware/mtf01/range}
 MTF01_RAW_TOPIC=${MTF01_RAW_TOPIC:-/hardware/mtf01/mavlink_frame}
 MTF01_IMU_TOPIC=${MTF01_IMU_TOPIC:-/mavros/imu/data_raw}
 MTF01_REPORT_PATH=${MTF01_REPORT_PATH:-/tmp/mtf01_hardware_bridge.json}
+MTF01_NOMINAL_RATE_HZ=${MTF01_NOMINAL_RATE_HZ:-100.0}
 
 printf 'MTF-01 TCP source: %s:%s\n' "$WINDOWS_HOST_IP" "$MTF01_TCP_PORT"
 printf 'ROS flow output: %s\n' "$MTF01_FLOW_TOPIC"
@@ -34,5 +35,9 @@ exec ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
   -p range_topic:="$MTF01_RANGE_TOPIC" \
   -p raw_frame_topic:="$MTF01_RAW_TOPIC" \
   -p imu_topic:="$MTF01_IMU_TOPIC" \
-  -p restamp_output:=true \
+  -p nominal_rate_hz:="$MTF01_NOMINAL_RATE_HZ" \
+  -p range_min_m:=0.01 \
+  -p range_max_m:=12.0 \
+  -p range_fov_rad:=0.0261799388 \
+  -p restamp_output:=false \
   -p report_path:="$MTF01_REPORT_PATH"

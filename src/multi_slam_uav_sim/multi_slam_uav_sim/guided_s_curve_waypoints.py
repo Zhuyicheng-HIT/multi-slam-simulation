@@ -29,19 +29,24 @@ from .localization_safety import (
 )
 from .relocalization_checkpoints import MissionCheckpoint, encode_checkpoint
 from .s_curve_path import (
-    backend_error_to_fcu_setpoint,
     clamp_route_altitude_setpoint,
+    feedback_error_to_fcu_setpoint,
     generate_calibration_figure_eight,
     generate_large_figure_eight,
     normalize_angle,
+    normalize_route_feedback_source,
     polyline_length,
     resample_polyline,
 )
 
 
 class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
-    def __init__(self):
-        super().__init__(node_name="guided_s_curve_waypoints")
+    def __init__(
+        self,
+        node_name="guided_s_curve_waypoints",
+        enforce_figure8_constraints=True,
+    ):
+        super().__init__(node_name=node_name)
         self.declare_parameter("longitudinal_span", 9.0)
         self.declare_parameter("lateral_amplitude", 1.5)
         self.declare_parameter("vertical_amplitude", 4.5)
@@ -77,6 +82,11 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.declare_parameter("unified_map_frame", "camera_init")
         self.declare_parameter("unified_body_frame", "body")
         self.declare_parameter("route_feedback_source", "unified_backend")
+        self.declare_parameter(
+            "gazebo_truth_odom_topic", "/sim/mid360/ground_truth_odom")
+        self.declare_parameter("gazebo_truth_map_frame", "camera_init")
+        self.declare_parameter("gazebo_truth_body_frame", "mid360_link")
+        self.declare_parameter("gazebo_truth_timeout_s", 0.30)
         self.declare_parameter("max_route_command_offset_m", 1.50)
         self.declare_parameter("max_route_vertical_offset_m", 0.75)
         self.declare_parameter("route_altitude_margin_m", 0.50)
@@ -164,11 +174,25 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             self.get_parameter("unified_map_frame").value)
         self.unified_body_frame = str(
             self.get_parameter("unified_body_frame").value)
-        self.route_feedback_source = str(
-            self.get_parameter("route_feedback_source").value).strip().lower()
-        if self.route_feedback_source != "unified_backend":
+        self.route_feedback_source = normalize_route_feedback_source(
+            self.get_parameter("route_feedback_source").value)
+        if (
+            self.route_feedback_source == "gazebo_truth"
+            and self.localization_safety_enabled
+        ):
             raise ValueError(
-                "long S evaluation requires route_feedback_source=unified_backend")
+                "gazebo_truth route control requires "
+                "localization_safety_enabled=false so SLAM cannot hold or "
+                "advance the diagnostic mission"
+            )
+        self.gazebo_truth_map_frame = str(
+            self.get_parameter("gazebo_truth_map_frame").value)
+        self.gazebo_truth_body_frame = str(
+            self.get_parameter("gazebo_truth_body_frame").value)
+        self.gazebo_truth_timeout_s = max(
+            0.05,
+            float(self.get_parameter("gazebo_truth_timeout_s").value),
+        )
         self.max_route_command_offset = max(
             0.20,
             float(self.get_parameter("max_route_command_offset_m").value),
@@ -184,6 +208,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.latest_scheduler = None
         self.latest_scheduler_arrival = None
         self.latest_unified_odom = None
+        self.latest_gazebo_truth_odom = None
         self.latest_external_nav_gate_stamp_s = None
         self.latest_external_nav_gate_healthy = False
         self.latest_external_nav_gate_reason = "missing"
@@ -193,10 +218,10 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.relocalization_deferred_logged = False
         self.last_safety_state = TRACKING
         self.route_control_active = False
-        self.route_origin_backend = None
-        self.route_origin_backend_yaw = None
+        self.route_origin_feedback = None
+        self.route_origin_feedback_yaw = None
         self.route_origin_fcu_z = None
-        self.backend_to_fcu_yaw = None
+        self.feedback_to_fcu_yaw = None
         self.route_altitude_guard_logged = False
         self.last_route_fcu_setpoint = None
         self.route_hold_fcu_setpoint = None
@@ -243,6 +268,13 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             self._unified_odom_cb,
             latest_odom_qos,
         )
+        if self.route_feedback_source == "gazebo_truth":
+            self.create_subscription(
+                Odometry,
+                str(self.get_parameter("gazebo_truth_odom_topic").value),
+                self._gazebo_truth_odom_cb,
+                latest_odom_qos,
+            )
         self.create_subscription(
             DiagnosticArray,
             str(
@@ -264,11 +296,15 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             readiness_qos,
         )
 
-        if self.pass_count != 1:
-            raise ValueError("the large figure-eight route must run exactly once")
-        if self.takeoff_alt < self.minimum_clearance_alt:
-            raise ValueError(
-                "takeoff_alt is below minimum_clearance_alt")
+        if enforce_figure8_constraints:
+            if self.pass_count != 1:
+                raise ValueError(
+                    "the large figure-eight route must run exactly once"
+                )
+            if self.takeoff_alt < self.minimum_clearance_alt:
+                raise ValueError(
+                    "takeoff_alt is below minimum_clearance_alt"
+                )
 
     def _scheduler_cb(self, msg):
         self.latest_scheduler = msg
@@ -279,6 +315,9 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
 
     def _unified_odom_cb(self, msg):
         self.latest_unified_odom = msg
+
+    def _gazebo_truth_odom_cb(self, msg):
+        self.latest_gazebo_truth_odom = msg
 
     def _external_nav_diagnostics_cb(self, msg):
         for status in msg.status:
@@ -306,16 +345,17 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         if self.relocalization_ready:
             self.relocalization_deferred_logged = False
 
-    def _unified_odom_health(self, now):
-        if self.latest_unified_odom is None:
+    @staticmethod
+    def _odom_health(message, now, timeout_s, map_frame, body_frame):
+        if message is None:
             return False, False
-        stamp = self.latest_unified_odom.header.stamp
+        stamp = message.header.stamp
         source_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
         fresh = (
             source_s > 0.0
-            and 0.0 <= now - source_s <= self.unified_odom_timeout_s
+            and 0.0 <= now - source_s <= float(timeout_s)
         )
-        pose = self.latest_unified_odom.pose.pose
+        pose = message.pose.pose
         values = (
             float(pose.position.x), float(pose.position.y),
             float(pose.position.z), float(pose.orientation.x),
@@ -324,9 +364,8 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         )
         quaternion_norm = math.sqrt(sum(value * value for value in values[3:]))
         frame_valid = (
-            self.latest_unified_odom.header.frame_id == self.unified_map_frame
-            and self.latest_unified_odom.child_frame_id
-            == self.unified_body_frame
+            message.header.frame_id == map_frame
+            and message.child_frame_id == body_frame
         )
         finite = (
             all(math.isfinite(value) for value in values)
@@ -334,6 +373,24 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             and frame_valid
         )
         return fresh, finite
+
+    def _unified_odom_health(self, now):
+        return self._odom_health(
+            self.latest_unified_odom,
+            now,
+            self.unified_odom_timeout_s,
+            self.unified_map_frame,
+            self.unified_body_frame,
+        )
+
+    def _gazebo_truth_odom_health(self, now):
+        return self._odom_health(
+            self.latest_gazebo_truth_odom,
+            now,
+            self.gazebo_truth_timeout_s,
+            self.gazebo_truth_map_frame,
+            self.gazebo_truth_body_frame,
+        )
 
     @staticmethod
     def _pose_yaw(pose):
@@ -374,6 +431,41 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             self._pose_yaw(pose),
         )
 
+    def _gazebo_truth_state(self):
+        now = self._now_s()
+        fresh, valid = self._gazebo_truth_odom_health(now)
+        if not fresh or not valid:
+            frame = "missing"
+            child = "missing"
+            source_s = -1.0
+            if self.latest_gazebo_truth_odom is not None:
+                frame = self.latest_gazebo_truth_odom.header.frame_id
+                child = self.latest_gazebo_truth_odom.child_frame_id
+                stamp = self.latest_gazebo_truth_odom.header.stamp
+                source_s = (
+                    float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+                )
+            raise RuntimeError(
+                "Gazebo-truth route feedback is unavailable: "
+                f"fresh={fresh}, valid={valid}, frame={frame}, child={child}, "
+                f"now_s={now:.3f}, source_s={source_s:.3f}, "
+                f"source_age_s={now - source_s:.3f}"
+            )
+        pose = self.latest_gazebo_truth_odom.pose.pose
+        return (
+            (
+                float(pose.position.x),
+                float(pose.position.y),
+                float(pose.position.z),
+            ),
+            self._pose_yaw(pose),
+        )
+
+    def _route_feedback_state(self):
+        if self.route_feedback_source == "gazebo_truth":
+            return self._gazebo_truth_state()
+        return self._backend_state()
+
     def wait_unified_route_ready(self):
         deadline = self._now_s() + self.preflight_wait_s
         stable_since = None
@@ -383,33 +475,75 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             fresh, valid = self._unified_odom_health(now)
             if not fresh or not valid or self.pose is None:
                 stable_since = None
+                purpose = (
+                    "observer output"
+                    if self.route_feedback_source == "gazebo_truth"
+                    else "strict route feedback"
+                )
+                self._log_status(f"waiting for unified-backend {purpose}")
+                continue
+            stable_since = stable_since or now
+            if now - stable_since >= self.navigation_stable_s:
+                return
+        if self.route_feedback_source == "gazebo_truth":
+            raise RuntimeError(
+                "unified backend observer output did not become fresh and "
+                "valid; aborting because there would be no SLAM trajectory "
+                "to diagnose"
+            )
+        raise RuntimeError(
+            "unified backend route feedback did not become fresh and valid; "
+            "the figure-eight mission will not fall back to FCU or Gazebo position")
+
+    def wait_selected_route_feedback_ready(self):
+        if self.route_feedback_source == "unified_backend":
+            self.wait_unified_route_ready()
+            return
+        deadline = self._now_s() + self.preflight_wait_s
+        stable_since = None
+        while rclpy.ok() and self._now_s() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            now = self._now_s()
+            fresh, valid = self._gazebo_truth_odom_health(now)
+            if not fresh or not valid or self.pose is None:
+                stable_since = None
                 self._log_status(
-                    "waiting for strict unified-backend route feedback")
+                    "waiting for isolated Gazebo-truth route feedback")
                 continue
             stable_since = stable_since or now
             if now - stable_since >= self.navigation_stable_s:
                 return
         raise RuntimeError(
-            "unified backend route feedback did not become fresh and valid; "
-            "the long S mission will not fall back to FCU or Gazebo position")
+            "Gazebo-truth route feedback did not become fresh and valid; "
+            "the observer mission will not fall back to FCU or SLAM position"
+        )
 
-    def activate_unified_route_control(self):
-        self.wait_unified_route_ready()
-        backend_position, backend_yaw = self._backend_state()
+    def activate_route_control(self):
+        self.wait_selected_route_feedback_ready()
+        feedback_position, feedback_yaw = self._route_feedback_state()
         if self.pose is None:
             raise RuntimeError("FCU local pose is required to express APM setpoints")
         fcu_yaw = self._pose_yaw(self.pose.pose)
-        self.route_origin_backend = backend_position
-        self.route_origin_backend_yaw = backend_yaw
+        self.route_origin_feedback = feedback_position
+        self.route_origin_feedback_yaw = feedback_yaw
         self.route_origin_fcu_z = float(self.pose.pose.position.z)
-        self.backend_to_fcu_yaw = normalize_angle(fcu_yaw - backend_yaw)
+        self.feedback_to_fcu_yaw = normalize_angle(fcu_yaw - feedback_yaw)
         self.route_control_active = True
+        if self.route_feedback_source == "gazebo_truth":
+            self.get_logger().warning(
+                "DIAGNOSTIC CONTROL ISOLATION ENABLED: target/error/convergence "
+                "use Gazebo world truth; unified SLAM remains observer-only and "
+                "cannot hold, advance, or correct the route. MAVROS local pose "
+                "is only the APM setpoint coordinate adapter. yaw_alignment="
+                f"{math.degrees(self.feedback_to_fcu_yaw):.2f}deg"
+            )
+            return
         self.get_logger().warning(
             "Strict route control enabled: target/error/convergence use "
             f"{self.unified_map_frame}->{self.unified_body_frame}; MAVROS local "
             "pose is only the APM setpoint coordinate adapter. No Gazebo truth "
             f"or FCU navigation fallback is accepted. yaw_alignment="
-            f"{math.degrees(self.backend_to_fcu_yaw):.2f}deg")
+            f"{math.degrees(self.feedback_to_fcu_yaw):.2f}deg")
 
     def _scheduler_is_fresh(self, now):
         return (
@@ -499,20 +633,17 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
 
     def _current_hold_target(self):
         if self.route_control_active:
-            if self.latest_unified_odom is not None:
-                pose = self.latest_unified_odom.pose.pose
-                values = (
-                    float(pose.position.x),
-                    float(pose.position.y),
-                    float(pose.position.z),
-                    self._pose_yaw(pose),
-                )
+            try:
+                position, yaw = self._route_feedback_state()
+                values = (*position, yaw)
                 if all(math.isfinite(value) for value in values):
                     return values
-            if self.route_origin_backend is not None:
+            except RuntimeError:
+                pass
+            if self.route_origin_feedback is not None:
                 return (
-                    *self.route_origin_backend,
-                    float(self.route_origin_backend_yaw),
+                    *self.route_origin_feedback,
+                    float(self.route_origin_feedback_yaw),
                 )
             return None
         if self.pose is None:
@@ -528,18 +659,18 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             return super().publish_setpoint(x, y, z, yaw)
         if self.route_hold_fcu_setpoint is not None:
             return super().publish_setpoint(*self.route_hold_fcu_setpoint)
-        if self.pose is None or self.backend_to_fcu_yaw is None:
+        if self.pose is None or self.feedback_to_fcu_yaw is None:
             raise RuntimeError(
-                "strict unified route control lost its FCU setpoint adapter")
-        backend_position, _ = self._backend_state()
+                "selected route control lost its FCU setpoint adapter")
+        feedback_position, _ = self._route_feedback_state()
         fcu_pose = self.pose.pose.position
         fcu_position = (
             float(fcu_pose.x), float(fcu_pose.y), float(fcu_pose.z))
-        command = backend_error_to_fcu_setpoint(
-            backend_position,
+        command = feedback_error_to_fcu_setpoint(
+            feedback_position,
             (float(x), float(y), float(z)),
             fcu_position,
-            self.backend_to_fcu_yaw,
+            self.feedback_to_fcu_yaw,
             self.max_route_command_offset,
             self.max_route_vertical_offset,
         )
@@ -560,7 +691,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
                 )
                 self.route_altitude_guard_logged = True
             command = (command[0], command[1], guarded_z)
-        command_yaw = normalize_angle(float(yaw) + self.backend_to_fcu_yaw)
+        command_yaw = normalize_angle(float(yaw) + self.feedback_to_fcu_yaw)
         self.last_route_fcu_setpoint = (*command, command_yaw)
         return super().publish_setpoint(*self.last_route_fcu_setpoint)
 
@@ -672,7 +803,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
 
     def _position_error(self, point):
         if self.route_control_active:
-            position, _ = self._backend_state()
+            position, _ = self._route_feedback_state()
             return math.dist(position, point)
         if self.pose is None:
             return math.inf
@@ -735,10 +866,10 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             )
 
     def _absolute_path(self):
-        if not self.route_control_active or self.route_origin_backend is None:
+        if not self.route_control_active or self.route_origin_feedback is None:
             raise RuntimeError(
-                "figure-eight path cannot be anchored before unified route control")
-        origin_x, origin_y, origin_z = self.route_origin_backend
+                "figure-eight path cannot be anchored before route control")
+        origin_x, origin_y, origin_z = self.route_origin_feedback
         relative = generate_large_figure_eight(
             self.longitudinal_span,
             self.lateral_amplitude,
@@ -754,17 +885,17 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         ]
 
     def _route_anchor_index(self, path):
-        if not path or self.route_origin_backend is None:
+        if not path or self.route_origin_feedback is None:
             raise RuntimeError("cannot anchor an empty figure-eight route")
         index = min(
             range(len(path)),
             key=lambda candidate: math.dist(
-                path[candidate], self.route_origin_backend),
+                path[candidate], self.route_origin_feedback),
         )
-        distance = math.dist(path[index], self.route_origin_backend)
+        distance = math.dist(path[index], self.route_origin_feedback)
         if distance > self.waypoint_position_tolerance_m:
             raise RuntimeError(
-                "unified-backend route origin is not on the planned figure-eight: "
+                "selected route origin is not on the planned figure-eight: "
                 f"nearest_distance={distance:.2f}m")
         return index
 
@@ -828,7 +959,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.get_logger().info(
             f"{label}: points={len(points)}, distance={length:.2f}m, "
             f"duration={length / speed_mps:.1f}s, "
-            f"feedback={'unified_backend' if self.route_control_active else 'fcu_calibration'}, "
+            f"feedback={self.route_feedback_source if self.route_control_active else 'fcu_calibration'}, "
             f"center_yaw={math.degrees(yaw):.1f}deg, "
             f"yaw_sweep={math.degrees(yaw_sweep_rad):.1f}deg, "
             f"yaw_cycles={yaw_cycles:.1f}, "
@@ -967,12 +1098,14 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             if not self.state.armed:
                 self.get_logger().info(
                     "LAND completed and FCU disarm confirmed.")
+                self._publish_mission_phase("landed")
                 return
             deadline = time.monotonic() + self.land_disarm_timeout_s
             while rclpy.ok() and time.monotonic() < deadline:
                 if not self.state.armed:
                     self.get_logger().info(
                         "LAND completed and FCU disarm confirmed.")
+                    self._publish_mission_phase("landed")
                     return
                 rclpy.spin_once(self, timeout_sec=0.1)
                 self._log_status("landing descent")
@@ -997,10 +1130,14 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self._publish_mission_phase("preflight")
         self.wait_ready()
         navigation_source = self.wait_navigation_ready()
-        # Refuse to arm if the authoritative estimator is absent. Takeoff and
-        # calibration still use FCU setpoints, but the evaluation route never
-        # starts from FCU or Gazebo position feedback.
-        self.wait_unified_route_ready()
+        # In the normal route, the unified backend is the authoritative
+        # feedback source and must be fresh before arming.  The explicit
+        # gazebo_truth mode is an observer-only diagnostic: truth controls the
+        # route while unified odometry is recorded independently, so requiring
+        # it here would prevent the diagnostic flight from starting whenever
+        # the backend is temporarily stale.
+        if self.route_feedback_source != "gazebo_truth":
+            self.wait_unified_route_ready()
         self.wait_localization_safety_ready()
         start = (self.home_x, self.home_y, self.takeoff_alt)
         self.get_logger().info(
@@ -1014,16 +1151,25 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
         self.hold_setpoint(
             *start, seconds=self.post_takeoff_hold_time_s, yaw=fcu_locked_yaw,
             label="post-takeoff hold", require_guided=True)
-        self.calibration_warmup(start, fcu_locked_yaw)
+        if self.route_feedback_source == "gazebo_truth":
+            self.activate_route_control()
+            calibration_position = self.route_origin_feedback
+            calibration_yaw = normalize_angle(
+                self.route_origin_feedback_yaw + self.locked_yaw_offset)
+        else:
+            calibration_position = start
+            calibration_yaw = fcu_locked_yaw
+        self.calibration_warmup(calibration_position, calibration_yaw)
 
-        self.activate_unified_route_control()
+        if not self.route_control_active:
+            self.activate_route_control()
         if self.calibration_only:
             self._publish_mission_phase("calibration_complete")
-            current = self.route_origin_backend
-            yaw = self.route_origin_backend_yaw
+            current = self.route_origin_feedback
+            yaw = self.route_origin_feedback_yaw
             self.get_logger().info(
                 "Calibration-only mode completed the excitation trajectory; "
-                "holding the same position through strict unified-backend "
+                "holding the same position through the selected route "
                 "feedback before landing.")
             self.hold_setpoint(
                 *current,
@@ -1041,7 +1187,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             raise RuntimeError(
                 "large figure-eight does not contain the unified route origin at "
                 "a planned center crossing")
-        if math.dist(base_path[0], self.route_origin_backend) > 0.05:
+        if math.dist(base_path[0], self.route_origin_feedback) > 0.05:
             raise RuntimeError(
                 "large figure-eight must start at the unified route origin")
         route_length = polyline_length(base_path)
@@ -1088,7 +1234,7 @@ class GuidedSCurveWaypoints(GuidedRectangleWaypoints):
             publish_relocalization_checkpoints=True,
         )
         current = base_path[-1]
-        if math.dist(current, self.route_origin_backend) > 0.05:
+        if math.dist(current, self.route_origin_feedback) > 0.05:
             raise RuntimeError(
                 "large figure-eight did not close at the unified route origin")
         self.settle_waypoint(

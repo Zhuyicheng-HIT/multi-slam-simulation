@@ -121,6 +121,19 @@ class ReliabilityMonitorHelpersTest(unittest.TestCase):
         metrics = visual_factor_track_metrics(message)
         self.assertEqual(metrics["selected_track_count"], 0)
 
+    def test_rgbd_direct_factor_selection_does_not_require_pnp_inlier(self):
+        message = SimpleNamespace(tracks=[
+            self.visual_track(geometric_inlier=False, grid_cell=2),
+            self.visual_track(geometric_inlier=False, grid_cell=10),
+            self.visual_track(geometric_inlier=False, depth_valid=False),
+        ])
+        paper = visual_factor_track_metrics(message, require_pnp=True)
+        direct = visual_factor_track_metrics(message, require_pnp=False)
+        self.assertEqual(paper["selected_track_count"], 0)
+        self.assertEqual(direct["selected_track_count"], 2)
+        self.assertEqual(direct["geometry_eligible_count"], 3)
+        self.assertEqual(direct["mean_reprojection_error_px"], -1.0)
+
     def test_camera_health_and_factor_candidate_topics_are_distinct(self):
         self.assertEqual(VISION_HEALTH_TOPIC, "/reliability/vision_score")
         self.assertEqual(

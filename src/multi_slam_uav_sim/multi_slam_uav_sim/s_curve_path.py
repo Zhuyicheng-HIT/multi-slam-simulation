@@ -10,12 +10,72 @@ from typing import Iterable, Sequence
 Point3 = tuple[float, float, float]
 
 
+ROUTE_FEEDBACK_SOURCES = ("unified_backend", "gazebo_truth")
+
+
+def normalize_route_feedback_source(value: str) -> str:
+    """Validate the explicit source used to close the route-control loop."""
+    source = str(value).strip().lower()
+    if source not in ROUTE_FEEDBACK_SOURCES:
+        choices = ", ".join(ROUTE_FEEDBACK_SOURCES)
+        raise ValueError(f"route_feedback_source must be one of: {choices}")
+    return source
+
+
 def normalize_angle(angle: float) -> float:
     """Wrap an angle to [-pi, pi)."""
     angle = float(angle)
     if not math.isfinite(angle):
         raise ValueError("angle must be finite")
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def feedback_error_to_fcu_setpoint(
+    feedback_position: Point3,
+    feedback_target: Point3,
+    fcu_position: Point3,
+    feedback_to_fcu_yaw: float,
+    max_horizontal_offset: float,
+    max_vertical_offset: float,
+) -> Point3:
+    """Convert an explicitly selected feedback error into an FCU setpoint.
+
+    The mission target and feedback stay in the selected feedback frame.
+    MAVROS local position is used only as the origin required by APM's local
+    setpoint interface; it never decides whether the route was followed.
+    """
+    values = (
+        *feedback_position,
+        *feedback_target,
+        *fcu_position,
+        feedback_to_fcu_yaw,
+        max_horizontal_offset,
+        max_vertical_offset,
+    )
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("route-control values must be finite")
+    if max_horizontal_offset <= 0.0 or max_vertical_offset <= 0.0:
+        raise ValueError("route-control offset limits must be positive")
+
+    error_x = feedback_target[0] - feedback_position[0]
+    error_y = feedback_target[1] - feedback_position[1]
+    error_z = feedback_target[2] - feedback_position[2]
+    horizontal = math.hypot(error_x, error_y)
+    if horizontal > max_horizontal_offset:
+        scale = max_horizontal_offset / horizontal
+        error_x *= scale
+        error_y *= scale
+    error_z = max(-max_vertical_offset, min(max_vertical_offset, error_z))
+
+    cosine = math.cos(feedback_to_fcu_yaw)
+    sine = math.sin(feedback_to_fcu_yaw)
+    fcu_error_x = cosine * error_x - sine * error_y
+    fcu_error_y = sine * error_x + cosine * error_y
+    return (
+        fcu_position[0] + fcu_error_x,
+        fcu_position[1] + fcu_error_y,
+        fcu_position[2] + error_z,
+    )
 
 
 def backend_error_to_fcu_setpoint(
@@ -26,43 +86,14 @@ def backend_error_to_fcu_setpoint(
     max_horizontal_offset: float,
     max_vertical_offset: float,
 ) -> Point3:
-    """Convert unified-backend position error into an FCU-local setpoint.
-
-    The mission target and feedback stay in the unified backend frame. MAVROS
-    local position is used only as the origin required by APM's local setpoint
-    interface; it is never used to decide whether the route was followed.
-    """
-    values = (
-        *backend_position,
-        *backend_target,
-        *fcu_position,
+    """Backward-compatible name for unified-backend route control."""
+    return feedback_error_to_fcu_setpoint(
+        backend_position,
+        backend_target,
+        fcu_position,
         backend_to_fcu_yaw,
         max_horizontal_offset,
         max_vertical_offset,
-    )
-    if not all(math.isfinite(float(value)) for value in values):
-        raise ValueError("route-control values must be finite")
-    if max_horizontal_offset <= 0.0 or max_vertical_offset <= 0.0:
-        raise ValueError("route-control offset limits must be positive")
-
-    error_x = backend_target[0] - backend_position[0]
-    error_y = backend_target[1] - backend_position[1]
-    error_z = backend_target[2] - backend_position[2]
-    horizontal = math.hypot(error_x, error_y)
-    if horizontal > max_horizontal_offset:
-        scale = max_horizontal_offset / horizontal
-        error_x *= scale
-        error_y *= scale
-    error_z = max(-max_vertical_offset, min(max_vertical_offset, error_z))
-
-    cosine = math.cos(backend_to_fcu_yaw)
-    sine = math.sin(backend_to_fcu_yaw)
-    fcu_error_x = cosine * error_x - sine * error_y
-    fcu_error_y = sine * error_x + cosine * error_y
-    return (
-        fcu_position[0] + fcu_error_x,
-        fcu_position[1] + fcu_error_y,
-        fcu_position[2] + error_z,
     )
 
 

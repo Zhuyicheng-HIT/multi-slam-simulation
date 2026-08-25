@@ -4,12 +4,14 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    start_fusion_stack = LaunchConfiguration("start_fusion_stack")
+    external_nav_enabled = LaunchConfiguration("external_nav_enabled")
     frontend_config = os.path.join(
         get_package_share_directory(
             "uf_visual_frontend"), "config", "visual_frontend.yaml"
@@ -50,12 +52,16 @@ def generate_launch_description():
             "external_nav_output_topic",
             default_value="/fusion/runtime_external_nav",
         ),
+        DeclareLaunchArgument("external_nav_enabled", default_value="true"),
         DeclareLaunchArgument("camera_time_offset_s", default_value="0.0"),
         DeclareLaunchArgument(
             "camera_time_calibration_enabled", default_value="true"
         ),
         DeclareLaunchArgument(
             "visual_initialization_require_time_lock", default_value="false"
+        ),
+        DeclareLaunchArgument(
+            "barometer_topic", default_value="/mavros/imu/static_pressure"
         ),
         Node(
             package="uf_visual_frontend", executable="rgbd_feature_frontend",
@@ -66,6 +72,13 @@ def generate_launch_description():
                 ),
                 "candidate_quality_enabled": LaunchConfiguration(
                     "visual_candidate_quality_enabled"
+                ),
+                "candidate_require_pnp": ParameterValue(
+                    PythonExpression([
+                        "'", LaunchConfiguration("visual_factor_mode"),
+                        "' != 'rgbd_direct'",
+                    ]),
+                    value_type=bool,
                 ),
                 "minimum_depth_m": ParameterValue(
                     LaunchConfiguration("rgbd_minimum_depth_m"),
@@ -90,8 +103,9 @@ def generate_launch_description():
                     LaunchConfiguration("rgbd_maximum_depth_m"),
                     value_type=float,
                 ),
+                "vision.factor_mode": LaunchConfiguration("visual_factor_mode"),
             }],
-            condition=IfCondition(LaunchConfiguration("start_fusion_stack")),
+            condition=IfCondition(start_fusion_stack),
             output="screen",
         ),
         Node(
@@ -146,6 +160,7 @@ def generate_launch_description():
                 "visual_initialization_require_time_lock": LaunchConfiguration(
                     "visual_initialization_require_time_lock"
                 ),
+                "barometer_topic": LaunchConfiguration("barometer_topic"),
                 # Paper mode requires the Stage3 native-factor contract. Keep
                 # this explicit so a stale FAST-LIO overlay cannot silently
                 # fall back to paired /Odometry poses.
@@ -194,7 +209,10 @@ def generate_launch_description():
                 "maximum_orientation_step_rad": 0.5,
                 "maximum_angular_speed_radps": 5.0,
             }],
-            condition=IfCondition(LaunchConfiguration("start_fusion_stack")),
+            condition=IfCondition(PythonExpression([
+                "'", start_fusion_stack, "' == 'true' and '",
+                external_nav_enabled, "' == 'true'",
+            ])),
             output="screen",
         ),
     ])

@@ -42,6 +42,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "visual_initialization_require_time_lock", default_value="false"
         ),
+        DeclareLaunchArgument("external_nav_enabled", default_value="true"),
         DeclareLaunchArgument(
             "visual_factor_mode", default_value="paper_reprojection"
         ),
@@ -61,6 +62,9 @@ def generate_launch_description():
         DeclareLaunchArgument("performance_trace_path", default_value=""),
         DeclareLaunchArgument("backend_process_prefix", default_value=""),
         DeclareLaunchArgument("backend_numeric_threads", default_value="1"),
+        DeclareLaunchArgument(
+            "barometer_topic", default_value="/sim/barometer/pressure"
+        ),
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
         DeclareLaunchArgument("shared_mapping_rgbd_enabled", default_value="true"),
         DeclareLaunchArgument(
@@ -152,12 +156,16 @@ def generate_launch_description():
             "visual_initialization_require_time_lock": LaunchConfiguration(
                 "visual_initialization_require_time_lock"
             ),
+            "external_nav_enabled": LaunchConfiguration(
+                "external_nav_enabled"
+            ),
             "rgbd_minimum_depth_m": LaunchConfiguration(
                 "rgbd_minimum_depth_m"
             ),
             "rgbd_maximum_depth_m": LaunchConfiguration(
                 "rgbd_maximum_depth_m"
             ),
+            "barometer_topic": LaunchConfiguration("barometer_topic"),
         }),
         include("uf_shared_mapping", "shared_mapping.launch.py", {
             "enabled": LaunchConfiguration("shared_mapping_enabled"),

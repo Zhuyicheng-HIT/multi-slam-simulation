@@ -34,6 +34,61 @@ except ImportError:
     cpp_visual_reprojection_normal = None
     CPP_MATH_CORE_AVAILABLE = False
 
+try:
+    from uf_backend_core_cpp import (
+        lidar_point_plane_normal_axis_scaled as cpp_lidar_point_plane_normal_axis_scaled,
+    )
+    CPP_LIDAR_AXIS_SCALED_CORE_AVAILABLE = callable(
+        cpp_lidar_point_plane_normal_axis_scaled
+    )
+except ImportError:
+    cpp_lidar_point_plane_normal_axis_scaled = None
+    CPP_LIDAR_AXIS_SCALED_CORE_AVAILABLE = False
+
+try:
+    from uf_backend_core_cpp import (
+        imu_preintegrated_graph_normal as cpp_imu_preintegrated_graph_normal,
+    )
+    CPP_IMU_GRAPH_CORE_AVAILABLE = True
+except ImportError:
+    cpp_imu_preintegrated_graph_normal = None
+    CPP_IMU_GRAPH_CORE_AVAILABLE = False
+
+try:
+    from uf_backend_core_cpp import (
+        lidar_point_plane_graph_normal as cpp_lidar_point_plane_graph_normal,
+    )
+    CPP_LIDAR_GRAPH_CORE_AVAILABLE = True
+except ImportError:
+    cpp_lidar_point_plane_graph_normal = None
+    CPP_LIDAR_GRAPH_CORE_AVAILABLE = False
+
+try:
+    from uf_backend_core_cpp import (
+        lidar_point_plane_graph_normal_axis_scaled as cpp_lidar_point_plane_graph_normal_axis_scaled,
+    )
+    CPP_LIDAR_AXIS_SCALED_GRAPH_CORE_AVAILABLE = callable(
+        cpp_lidar_point_plane_graph_normal_axis_scaled
+    )
+except ImportError:
+    cpp_lidar_point_plane_graph_normal_axis_scaled = None
+    CPP_LIDAR_AXIS_SCALED_GRAPH_CORE_AVAILABLE = False
+
+try:
+    from uf_backend_core_cpp import (
+        rgbd_depth_cost as cpp_rgbd_depth_cost,
+        rgbd_depth_normal as cpp_rgbd_depth_normal,
+        rgbd_direct_cost as cpp_rgbd_direct_cost,
+        rgbd_direct_normal as cpp_rgbd_direct_normal,
+    )
+    CPP_RGBD_DEPTH_CORE_AVAILABLE = True
+except ImportError:
+    cpp_rgbd_depth_cost = None
+    cpp_rgbd_depth_normal = None
+    cpp_rgbd_direct_cost = None
+    cpp_rgbd_direct_normal = None
+    CPP_RGBD_DEPTH_CORE_AVAILABLE = False
+
 from .imu_preintegration import ManifoldPreintegratedImu
 from .manifold import (
     STATE_SIZE,
@@ -53,9 +108,17 @@ from .native_lidar import (
     point_plane_residual_jacobian,
     rpy_to_rotation_matrix,
 )
+from .range_facet import (
+    RangeFacetObservation,
+    range_facet_prediction_jacobian,
+)
 from .window import FactorRecord, FactorResidual, _scheduler_values
 from .visual_reprojection import (
+    RgbdDepthTrackBatch,
+    RgbdDirectTrackBatch,
     VisualTrackBatch,
+    rgbd_depth_residual_jacobians,
+    rgbd_direct_residual_jacobians,
     visual_reprojection_residual_jacobians,
 )
 
@@ -391,6 +454,93 @@ def _cpp_imu_factor_arguments(factor, states, gravity):
     )
 
 
+def _cpp_imu_graph_arguments(factors, states, gravity):
+    measurements = [factor["measurement"] for factor in factors]
+    return (
+        np.asarray(states, dtype=float),
+        np.asarray([factor["indices"] for factor in factors], dtype=np.int32),
+        gravity,
+        np.asarray([measurement.dt_s for measurement in measurements]),
+        np.asarray([measurement.delta_position for measurement in measurements]),
+        np.asarray([measurement.delta_velocity for measurement in measurements]),
+        np.asarray([measurement.delta_quaternion for measurement in measurements]),
+        np.asarray([
+            measurement.accel_bias_linearization
+            for measurement in measurements
+        ]),
+        np.asarray([
+            measurement.gyro_bias_linearization
+            for measurement in measurements
+        ]),
+        np.asarray([
+            measurement.jacobian_delta_position_accel_bias
+            for measurement in measurements
+        ]).reshape((-1, 9)),
+        np.asarray([
+            measurement.jacobian_delta_position_gyro_bias
+            for measurement in measurements
+        ]).reshape((-1, 9)),
+        np.asarray([
+            measurement.jacobian_delta_velocity_accel_bias
+            for measurement in measurements
+        ]).reshape((-1, 9)),
+        np.asarray([
+            measurement.jacobian_delta_velocity_gyro_bias
+            for measurement in measurements
+        ]).reshape((-1, 9)),
+        np.asarray([
+            measurement.jacobian_delta_rotation_gyro_bias
+            for measurement in measurements
+        ]).reshape((-1, 9)),
+        np.asarray([
+            factor["information_matrix"] for factor in factors
+        ]).reshape((-1, STATE_SIZE * STATE_SIZE)),
+        np.asarray([factor["effective_weight"] for factor in factors]),
+    )
+
+
+def _cpp_lidar_graph_arguments(factors, states):
+    measurements = [factor["measurement"] for factor in factors]
+    counts = np.asarray(
+        [measurement.lidar_points.shape[0] for measurement in measurements],
+        dtype=np.int32,
+    )
+    offsets = np.r_[0, np.cumsum(counts, dtype=np.int32)]
+    return (
+        np.asarray(states, dtype=float),
+        np.asarray([factor["indices"][0] for factor in factors], dtype=np.int32),
+        offsets,
+        np.concatenate([
+            measurement.lidar_points for measurement in measurements
+        ]),
+        np.concatenate([
+            measurement.plane_normals for measurement in measurements
+        ]),
+        np.concatenate([
+            measurement.plane_points for measurement in measurements
+        ]),
+        np.asarray([
+            measurement.lidar_to_body_rotation for measurement in measurements
+        ]).reshape((-1, 9)),
+        np.asarray([
+            measurement.lidar_to_body_translation for measurement in measurements
+        ]),
+        np.concatenate([factor["variance"] for factor in factors]),
+        np.asarray([factor["effective_weight"] for factor in factors]),
+    )
+
+
+def _cpp_lidar_axis_scaled_graph_arguments(factors, states):
+    arguments = _cpp_lidar_graph_arguments(factors, states)
+    return (
+        *arguments[:8],
+        np.asarray([
+            factor["translation_information_scale"] for factor in factors
+        ], dtype=float),
+        *arguments[8:],
+    )
+
+
 def _cpp_visual_factor_arguments(factor, states):
     previous, current = factor["indices"]
     tracks = factor["measurement"]
@@ -401,6 +551,47 @@ def _cpp_visual_factor_arguments(factor, states):
         tracks.current_normalized,
         tracks.inverse_depth,
         factor["variance"],
+        tracks.rotation_body_camera,
+        tracks.translation_body_camera,
+        factor["effective_weight"],
+        2.5,
+        1.0e-4,
+    )
+
+
+def _cpp_rgbd_depth_factor_arguments(factor, states):
+    previous, current = factor["indices"]
+    tracks = factor["measurement"]
+    return (
+        states[previous],
+        states[current],
+        tracks.anchor_normalized,
+        tracks.anchor_depth_m,
+        tracks.current_depth_m,
+        factor["variance"],
+        tracks.rotation_body_camera,
+        tracks.translation_body_camera,
+        factor["effective_weight"],
+        2.5,
+        1.0e-4,
+    )
+
+
+def _cpp_rgbd_direct_factor_arguments(factor, states):
+    previous, current = factor["indices"]
+    tracks = factor["measurement"]
+    return (
+        states[previous],
+        states[current],
+        tracks.anchor_normalized,
+        tracks.current_normalized,
+        tracks.anchor_depth_m,
+        tracks.current_depth_m,
+        tracks.depth_variance_m2,
+        tracks.previous_intensity,
+        tracks.current_intensity,
+        tracks.current_gradient_normalized,
+        tracks.photometric_variance,
         tracks.rotation_body_camera,
         tracks.translation_body_camera,
         factor["effective_weight"],
@@ -478,6 +669,7 @@ class ManifoldSlidingWindowBackend:
         self._last_initial_cost = 0.0
         self._last_cost = 0.0
         self._last_iterations = 0
+        self._last_iteration_budget = int(max_iterations)
         self._last_solve_ms = 0.0
         self._last_rejected_steps = 0
         self._last_hessian = None
@@ -628,6 +820,10 @@ class ManifoldSlidingWindowBackend:
     @property
     def last_iterations(self):
         return self._last_iterations
+
+    @property
+    def last_iteration_budget(self):
+        return self._last_iteration_budget
 
     @property
     def last_solve_ms(self):
@@ -782,11 +978,31 @@ class ManifoldSlidingWindowBackend:
                 return True
         return False
 
-    def add_native_lidar_correspondences(self, index, factor, decision=None):
+    def add_native_lidar_correspondences(
+            self, index, factor, decision=None,
+            axis_information_scale=None):
         if not isinstance(factor, NativeLidarPoseNormal):
             raise ValueError("native LiDAR factor has the wrong type")
         if factor.lidar_points is None:
             raise ValueError("native LiDAR factor lacks raw correspondences")
+        translation_information_scale = (
+            np.ones(3, dtype=float)
+            if axis_information_scale is None
+            else np.asarray(axis_information_scale, dtype=float)
+        )
+        if (
+            translation_information_scale.shape != (3,)
+            or np.any(~np.isfinite(translation_information_scale))
+            or np.any(translation_information_scale < 0.0)
+            or np.any(translation_information_scale > 1.0)
+        ):
+            raise ValueError(
+                "LiDAR axis information scale must be a finite 3-vector "
+                "within [0, 1]"
+            )
+        variance = np.full(
+            factor.matched_points, factor.measurement_variance, dtype=float
+        )
         self._append(
             "lidar_point_plane",
             (index,
@@ -794,9 +1010,10 @@ class ManifoldSlidingWindowBackend:
             factor.matched_points,
             decision,
             measurement=factor,
-            variance=np.full(
-                factor.matched_points,
-                factor.measurement_variance),
+            variance=variance,
+            translation_information_scale=(
+                translation_information_scale.copy()
+            ),
         )
 
     def add_native_lidar_normal(
@@ -842,6 +1059,17 @@ class ManifoldSlidingWindowBackend:
             variance=_positive_diagonal(covariance, 3),
         )
 
+    def add_barometer_local_z(
+            self, index, height_m, variance_m2, decision=None):
+        height_m = float(height_m)
+        if not math.isfinite(height_m):
+            raise ValueError("barometer height must be finite")
+        self._append(
+            "barometer_local_z", (index,), 1, decision,
+            measurement=height_m,
+            variance=_positive_diagonal(variance_m2, 1),
+        )
+
     def add_optical_flow(
             self,
             previous,
@@ -876,6 +1104,43 @@ class ManifoldSlidingWindowBackend:
             variance=_positive_diagonal(covariance, 2),
         )
 
+    def add_optical_flow_range_body(
+            self,
+            previous,
+            current,
+            delta_body,
+            range_observation,
+            range_variance_m2,
+            linearization_yaw=None,
+            covariance=1.0,
+            decision=None):
+        """Add one MTF packet as planar flow plus one RangeFacet row.
+
+        The range row is part of this factor record, so a flow/range packet
+        is consumed once and cannot accidentally count as two independent
+        measurements from the same sensor source.
+        """
+        if not isinstance(range_observation, RangeFacetObservation):
+            raise ValueError("range observation has the wrong type")
+        measurement = np.asarray(delta_body, dtype=float).copy()
+        if measurement.shape == (2,):
+            measurement = np.r_[measurement, 0.0]
+        if measurement.shape != (3,) or np.any(~np.isfinite(measurement)):
+            raise ValueError("body optical flow must be a finite 2- or 3-vector")
+        measurement[2] = 0.0
+        range_variance_m2 = float(range_variance_m2)
+        if not math.isfinite(range_variance_m2) or range_variance_m2 <= 0.0:
+            raise ValueError("range variance must be finite and positive")
+        self._append(
+            "optical_flow_range_body", (previous, current), 3, decision,
+            measurement={
+                "delta_body": measurement,
+                "range_observation": range_observation,
+                "range_variance_m2": range_variance_m2,
+            },
+            variance=_positive_diagonal(covariance, 2),
+        )
+
     def add_visual_reprojection(
             self,
             previous,
@@ -889,6 +1154,28 @@ class ManifoldSlidingWindowBackend:
             tracks.track_count * 2, decision,
             measurement=tracks,
             variance=tracks.variance.copy(),
+        )
+
+    def add_rgbd_depth(
+            self, previous, current, tracks, decision=None):
+        if not isinstance(tracks, RgbdDepthTrackBatch):
+            raise ValueError("RGB-D depth factor has the wrong type")
+        self._append(
+            "rgbd_depth", (previous, current), tracks.track_count, decision,
+            measurement=tracks,
+            variance=tracks.variance_m2.copy(),
+        )
+
+    def add_rgbd_direct(self, previous, current, tracks, decision=None):
+        if not isinstance(tracks, RgbdDirectTrackBatch):
+            raise ValueError("RGB-D direct factor has the wrong type")
+        self._append(
+            "rgbd_direct", (previous, current), tracks.track_count * 2,
+            decision, measurement=tracks,
+            variance=np.column_stack((
+                tracks.depth_variance_m2,
+                tracks.photometric_variance,
+            )).reshape(-1),
         )
 
     def add_legacy_visual_odometry(
@@ -924,6 +1211,10 @@ class ManifoldSlidingWindowBackend:
             return state_local(factor["measurement"], states[indices[0]])[:6]
         if name == "gnss":
             return states[indices[0]][POSITION] - factor["measurement"]
+        if name == "barometer_local_z":
+            return np.asarray([
+                states[indices[0]][POSITION][2] - factor["measurement"]
+            ])
         if name == "optical_flow":
             return (
                 states[indices[1]][POSITION]
@@ -936,10 +1227,39 @@ class ManifoldSlidingWindowBackend:
                 - rpy_to_rotation_matrix(states[indices[0]][ROTATION])
                 @ factor["measurement"]
             )[:2]
+        if name == "optical_flow_range_body":
+            previous, current = indices
+            flow = factor["measurement"]["delta_body"]
+            flow_residual = (
+                states[current][POSITION]
+                - states[previous][POSITION]
+                - rpy_to_rotation_matrix(states[previous][ROTATION]) @ flow
+            )[:2]
+            try:
+                predicted, _, _ = range_facet_prediction_jacobian(
+                    factor["measurement"]["range_observation"],
+                    states[current][POSITION],
+                    rpy_to_rotation_matrix(states[current][ROTATION]),
+                )
+                range_residual = predicted - float(
+                    factor["measurement"]["range_observation"].measured_range_m
+                )
+            except (ValueError, TypeError, FloatingPointError):
+                range_residual = 0.0
+            return np.r_[flow_residual, range_residual]
         if name == "visual_reprojection":
             return visual_reprojection_residual_jacobians(
                 states[indices[0]], states[indices[1]], factor["measurement"]
             )[0]
+        if name == "rgbd_depth":
+            return rgbd_depth_residual_jacobians(
+                states[indices[0]], states[indices[1]], factor["measurement"]
+            )[0]
+        if name == "rgbd_direct":
+            values = rgbd_direct_residual_jacobians(
+                states[indices[0]], states[indices[1]], factor["measurement"]
+            )
+            return np.column_stack((values[0], values[1])).reshape(-1)
         if name == "legacy_visual_odometry":
             previous, current = indices
             previous_rotation = rpy_to_rotation_matrix(
@@ -1047,10 +1367,37 @@ class ManifoldSlidingWindowBackend:
             return hessian, gradient, cost
         if name == "lidar_point_plane":
             index = factor["indices"][0]
-            if self.cpp_math_core_enabled:
+            translation_information_scale = factor[
+                "translation_information_scale"
+            ]
+            axis_scaled = not np.allclose(
+                translation_information_scale, 1.0, atol=0.0, rtol=0.0
+            )
+            if (
+                self.cpp_math_core_enabled
+                and (
+                    not axis_scaled
+                    or CPP_LIDAR_AXIS_SCALED_CORE_AVAILABLE
+                )
+            ):
                 measurement = factor["measurement"]
-                local_hessian, local_gradient, cost = (
-                    cpp_lidar_point_plane_normal(
+                if axis_scaled:
+                    kernel = cpp_lidar_point_plane_normal_axis_scaled
+                    kernel_arguments = (
+                        states[index][:6],
+                        measurement.lidar_points,
+                        measurement.plane_normals,
+                        measurement.plane_points,
+                        measurement.lidar_to_body_rotation,
+                        measurement.lidar_to_body_translation,
+                        translation_information_scale,
+                        factor["variance"],
+                        factor["effective_weight"],
+                        self.lidar_huber_delta,
+                    )
+                else:
+                    kernel = cpp_lidar_point_plane_normal
+                    kernel_arguments = (
                         states[index][:6],
                         measurement.lidar_points,
                         measurement.plane_normals,
@@ -1061,6 +1408,8 @@ class ManifoldSlidingWindowBackend:
                         factor["effective_weight"],
                         self.lidar_huber_delta,
                     )
+                local_hessian, local_gradient, cost = kernel(
+                    *kernel_arguments
                 )
                 start = index * STATE_SIZE
                 pose = slice(start, start + 6)
@@ -1070,6 +1419,10 @@ class ManifoldSlidingWindowBackend:
             residual, pose_jacobian = point_plane_residual_jacobian(
                 factor["measurement"], states[index][:6]
             )
+            pose_jacobian = pose_jacobian.copy()
+            pose_jacobian[:, :3] *= np.sqrt(
+                translation_information_scale
+            )[None, :]
             standardized = residual / np.sqrt(factor["variance"])
             loss, robust_weight = huber_loss_and_weight(
                 standardized, self.lidar_huber_delta
@@ -1118,6 +1471,76 @@ class ManifoldSlidingWindowBackend:
             gradient[position] += information * residual
             cost = 0.5 * float(np.sum(information * residual ** 2))
             return hessian, gradient, cost
+
+        if name == "optical_flow_range_body":
+            previous, current = factor["indices"]
+            measurement = factor["measurement"]
+            flow = measurement["delta_body"]
+            observation = measurement["range_observation"]
+            residual = self._residual(factor, states)
+            flow_information = factor["effective_weight"] / factor["variance"]
+            try:
+                _, range_jacobian, _ = range_facet_prediction_jacobian(
+                    observation,
+                    states[current][POSITION],
+                    rpy_to_rotation_matrix(states[current][ROTATION]),
+                )
+            except (ValueError, TypeError, FloatingPointError):
+                range_jacobian = np.zeros(6, dtype=float)
+            range_variance = float(measurement["range_variance_m2"])
+            range_standardized = residual[2] / math.sqrt(range_variance)
+            _, range_robust_weight = huber_loss_and_weight(
+                np.asarray([range_standardized]), 2.5
+            )
+            range_information = (
+                factor["effective_weight"]
+                * float(range_robust_weight[0])
+                / range_variance
+            )
+            previous_start = previous * STATE_SIZE
+            current_start = current * STATE_SIZE
+            previous_jacobian = np.zeros((3, STATE_SIZE), dtype=float)
+            current_jacobian = np.zeros((3, STATE_SIZE), dtype=float)
+            previous_jacobian[:2, :2] = -np.eye(2)
+            current_jacobian[:2, :2] = np.eye(2)
+            rotation_jacobian = (
+                rpy_to_rotation_matrix(states[previous][ROTATION])
+                @ skew(flow)
+            )[:2, :]
+            previous_jacobian[:2, 3:6] = -rotation_jacobian
+            current_jacobian[2, :6] = range_jacobian
+            information = np.r_[flow_information, range_information]
+            weighted_residual = information * residual
+            previous_slice = slice(previous_start, previous_start + STATE_SIZE)
+            current_slice = slice(current_start, current_start + STATE_SIZE)
+            gradient[previous_slice] += previous_jacobian.T @ weighted_residual
+            gradient[current_slice] += current_jacobian.T @ weighted_residual
+            hessian[previous_slice, previous_slice] += (
+                previous_jacobian.T @ (information[:, None] * previous_jacobian)
+            )
+            hessian[previous_slice, current_slice] += (
+                previous_jacobian.T @ (information[:, None] * current_jacobian)
+            )
+            hessian[current_slice, previous_slice] += (
+                current_jacobian.T @ (information[:, None] * previous_jacobian)
+            )
+            hessian[current_slice, current_slice] += (
+                current_jacobian.T @ (information[:, None] * current_jacobian)
+            )
+            flow_cost = 0.5 * float(np.sum(flow_information * residual[:2] ** 2))
+            range_cost = 0.5 * range_information * residual[2] ** 2
+            return hessian, gradient, flow_cost + range_cost
+
+        if name == "barometer_local_z":
+            index = factor["indices"][0]
+            residual = float(self._residual(factor, states)[0])
+            information = (
+                factor["effective_weight"] / float(factor["variance"][0])
+            )
+            z_index = index * STATE_SIZE + 2
+            hessian[z_index, z_index] += information
+            gradient[z_index] += information * residual
+            return hessian, gradient, 0.5 * information * residual * residual
 
         if name == "optical_flow":
             previous, current = factor["indices"]
@@ -1245,6 +1668,111 @@ class ManifoldSlidingWindowBackend:
                     )
             return hessian, gradient, factor["effective_weight"] * \
                 float(np.sum(loss))
+        if (
+                name == "rgbd_depth"
+                and self.cpp_math_core_enabled
+                and CPP_RGBD_DEPTH_CORE_AVAILABLE):
+            previous, current = factor["indices"]
+            local_hessian, local_gradient, cost = cpp_rgbd_depth_normal(
+                *_cpp_rgbd_depth_factor_arguments(factor, states)
+            )
+            indices = np.r_[
+                np.arange(previous * STATE_SIZE, (previous + 1) * STATE_SIZE),
+                np.arange(current * STATE_SIZE, (current + 1) * STATE_SIZE),
+            ]
+            hessian[np.ix_(indices, indices)] += local_hessian
+            gradient[indices] += local_gradient
+            return hessian, gradient, float(cost)
+        if name == "rgbd_depth":
+            previous, current = factor["indices"]
+            residual, previous_jacobian, current_jacobian, valid = (
+                rgbd_depth_residual_jacobians(
+                    states[previous], states[current], factor["measurement"]
+                )
+            )
+            if residual.size == 0:
+                return hessian, gradient, 0.0
+            variance = factor["variance"][valid]
+            standardized = residual / np.sqrt(variance)
+            loss, robust_weight = huber_loss_and_weight(standardized, 2.5)
+            information = factor["effective_weight"] * robust_weight / variance
+            jacobians = {
+                previous: previous_jacobian,
+                current: current_jacobian,
+            }
+            for first_index, first_jacobian in jacobians.items():
+                first = slice(
+                    first_index * STATE_SIZE, (first_index + 1) * STATE_SIZE
+                )
+                gradient[first] += first_jacobian.T @ (information * residual)
+                for second_index, second_jacobian in jacobians.items():
+                    second = slice(
+                        second_index * STATE_SIZE,
+                        (second_index + 1) * STATE_SIZE,
+                    )
+                    hessian[first, second] += first_jacobian.T @ (
+                        information[:, None] * second_jacobian
+                    )
+            return hessian, gradient, factor["effective_weight"] * float(
+                np.sum(loss)
+            )
+        if (
+                name == "rgbd_direct"
+                and self.cpp_math_core_enabled
+                and CPP_RGBD_DEPTH_CORE_AVAILABLE):
+            previous, current = factor["indices"]
+            local_hessian, local_gradient, cost = cpp_rgbd_direct_normal(
+                *_cpp_rgbd_direct_factor_arguments(factor, states)
+            )
+            indices = np.r_[
+                np.arange(previous * STATE_SIZE, (previous + 1) * STATE_SIZE),
+                np.arange(current * STATE_SIZE, (current + 1) * STATE_SIZE),
+            ]
+            hessian[np.ix_(indices, indices)] += local_hessian
+            gradient[indices] += local_gradient
+            return hessian, gradient, float(cost)
+        if name == "rgbd_direct":
+            previous, current = factor["indices"]
+            values = rgbd_direct_residual_jacobians(
+                states[previous], states[current], factor["measurement"]
+            )
+            if values[0].size == 0:
+                return hessian, gradient, 0.0
+            valid = values[6]
+            residual = np.column_stack((values[0], values[1])).reshape(-1)
+            variance = np.column_stack((
+                factor["measurement"].depth_variance_m2[valid],
+                factor["measurement"].photometric_variance[valid],
+            )).reshape(-1)
+            previous_jacobian = np.stack(
+                (values[2], values[4]), axis=1
+            ).reshape(-1, STATE_SIZE)
+            current_jacobian = np.stack(
+                (values[3], values[5]), axis=1
+            ).reshape(-1, STATE_SIZE)
+            standardized = residual / np.sqrt(variance)
+            loss, robust_weight = huber_loss_and_weight(standardized, 2.5)
+            information = factor["effective_weight"] * robust_weight / variance
+            jacobians = {
+                previous: previous_jacobian,
+                current: current_jacobian,
+            }
+            for first_index, first_jacobian in jacobians.items():
+                first = slice(
+                    first_index * STATE_SIZE, (first_index + 1) * STATE_SIZE
+                )
+                gradient[first] += first_jacobian.T @ (information * residual)
+                for second_index, second_jacobian in jacobians.items():
+                    second = slice(
+                        second_index * STATE_SIZE,
+                        (second_index + 1) * STATE_SIZE,
+                    )
+                    hessian[first, second] += first_jacobian.T @ (
+                        information[:, None] * second_jacobian
+                    )
+            return hessian, gradient, factor["effective_weight"] * float(
+                np.sum(loss)
+            )
         if name == "imu_preintegrated":
             previous, current = factor["indices"]
             residual, previous_jacobian, current_jacobian = (
@@ -1375,6 +1903,48 @@ class ManifoldSlidingWindowBackend:
             standardized = residual / np.sqrt(variance)
             loss, _ = huber_loss_and_weight(standardized, 2.5)
             return factor["effective_weight"] * float(np.sum(loss))
+        if (
+                name == "rgbd_depth"
+                and self.cpp_math_core_enabled
+                and CPP_RGBD_DEPTH_CORE_AVAILABLE):
+            return float(cpp_rgbd_depth_cost(
+                *_cpp_rgbd_depth_factor_arguments(factor, states)
+            ))
+        if name == "rgbd_depth":
+            previous, current = factor["indices"]
+            residual, _, _, valid = rgbd_depth_residual_jacobians(
+                states[previous], states[current], factor["measurement"]
+            )
+            if residual.size == 0:
+                return 0.0
+            variance = factor["variance"][valid]
+            standardized = residual / np.sqrt(variance)
+            loss, _ = huber_loss_and_weight(standardized, 2.5)
+            return factor["effective_weight"] * float(np.sum(loss))
+        if (
+                name == "rgbd_direct"
+                and self.cpp_math_core_enabled
+                and CPP_RGBD_DEPTH_CORE_AVAILABLE):
+            return float(cpp_rgbd_direct_cost(
+                *_cpp_rgbd_direct_factor_arguments(factor, states)
+            ))
+        if name == "rgbd_direct":
+            previous, current = factor["indices"]
+            values = rgbd_direct_residual_jacobians(
+                states[previous], states[current], factor["measurement"]
+            )
+            if values[0].size == 0:
+                return 0.0
+            valid = values[6]
+            residual = np.column_stack((values[0], values[1])).reshape(-1)
+            variance = np.column_stack((
+                factor["measurement"].depth_variance_m2[valid],
+                factor["measurement"].photometric_variance[valid],
+            )).reshape(-1)
+            loss, _ = huber_loss_and_weight(
+                residual / np.sqrt(variance), 2.5
+            )
+            return factor["effective_weight"] * float(np.sum(loss))
         if name == "imu_preintegrated" and self.cpp_math_core_enabled:
             return float(cpp_imu_preintegrated_cost(
                 *_cpp_imu_factor_arguments(factor, states, self.gravity)
@@ -1402,7 +1972,78 @@ class ManifoldSlidingWindowBackend:
         hessian = np.zeros((dimension, dimension))
         gradient = np.zeros(dimension)
         cost = 0.0
+        batched_factor_ids = set()
+        if self.cpp_math_core_enabled and CPP_IMU_GRAPH_CORE_AVAILABLE:
+            imu_factors = [
+                factor for factor in factors
+                if factor["name"] == "imu_preintegrated" and factor["enabled"]
+            ]
+            if imu_factors:
+                factor_started = self._profile_start()
+                imu_hessian, imu_gradient, imu_cost = (
+                    cpp_imu_preintegrated_graph_normal(
+                        *_cpp_imu_graph_arguments(
+                            imu_factors, states, self.gravity
+                        )
+                    )
+                )
+                hessian += imu_hessian
+                gradient += imu_gradient
+                cost += float(imu_cost)
+                batched_factor_ids.update(id(factor) for factor in imu_factors)
+                self._profile_stop(
+                    "factor_imu_preintegrated", factor_started
+                )
+        if self.cpp_math_core_enabled and CPP_LIDAR_GRAPH_CORE_AVAILABLE:
+            lidar_factors = [
+                factor for factor in factors
+                if factor["name"] == "lidar_point_plane" and factor["enabled"]
+            ]
+            if lidar_factors:
+                has_axis_scaled_factor = any(
+                    not np.allclose(
+                        factor["translation_information_scale"],
+                        1.0,
+                        atol=0.0,
+                        rtol=0.0,
+                    )
+                    for factor in lidar_factors
+                )
+                if (
+                    not has_axis_scaled_factor
+                    or CPP_LIDAR_AXIS_SCALED_GRAPH_CORE_AVAILABLE
+                ):
+                    factor_started = self._profile_start()
+                    if has_axis_scaled_factor:
+                        lidar_hessian, lidar_gradient, lidar_cost = (
+                            cpp_lidar_point_plane_graph_normal_axis_scaled(
+                                *_cpp_lidar_axis_scaled_graph_arguments(
+                                    lidar_factors, states
+                                ),
+                                self.lidar_huber_delta,
+                            )
+                        )
+                    else:
+                        lidar_hessian, lidar_gradient, lidar_cost = (
+                            cpp_lidar_point_plane_graph_normal(
+                                *_cpp_lidar_graph_arguments(
+                                    lidar_factors, states
+                                ),
+                                self.lidar_huber_delta,
+                            )
+                        )
+                    hessian += lidar_hessian
+                    gradient += lidar_gradient
+                    cost += float(lidar_cost)
+                    batched_factor_ids.update(
+                        id(factor) for factor in lidar_factors
+                    )
+                    self._profile_stop(
+                        "factor_lidar_point_plane", factor_started
+                    )
         for factor in factors:
+            if id(factor) in batched_factor_ids:
+                continue
             factor_started = self._profile_start()
             _, _, factor_cost = self._factor_normal(
                 factor, states, hessian, gradient
@@ -1416,9 +2057,17 @@ class ManifoldSlidingWindowBackend:
         self._profile_stop("factor_graph_linearization", normal_started)
         return hessian, gradient, cost
 
-    def optimize(self):
+    def optimize(self, max_iterations=None):
         if not self._states:
             return []
+        iteration_budget = (
+            self.max_iterations
+            if max_iterations is None
+            else int(max_iterations)
+        )
+        if iteration_budget < 1:
+            raise ValueError("max_iterations must be positive")
+        self._last_iteration_budget = iteration_budget
         automatic_profile_cycle = (
             self.profiling_enabled and self._profile_cycle is None
         )
@@ -1432,7 +2081,7 @@ class ManifoldSlidingWindowBackend:
         hessian, gradient, current_cost = self._normal(states=states)
         self._last_initial_cost = float(current_cost)
         damping = self._lm_damping
-        for _ in range(self.max_iterations):
+        for _ in range(iteration_budget):
             if float(np.max(np.abs(gradient))) < 1.0e-10:
                 break
             diagonal_scale = np.maximum(np.abs(np.diag(hessian)), 1.0)

@@ -4,10 +4,12 @@ import unittest
 from multi_slam_uav_sim.s_curve_path import (
     backend_error_to_fcu_setpoint,
     clamp_route_altitude_setpoint,
+    feedback_error_to_fcu_setpoint,
     generate_calibration_figure_eight,
     generate_large_figure_eight,
     generate_s_curve,
     normalize_angle,
+    normalize_route_feedback_source,
     polyline_length,
     resample_polyline,
 )
@@ -135,6 +137,29 @@ class SCurvePathTest(unittest.TestCase):
         self.assertAlmostEqual(command[1], 21.0, places=6)
         self.assertAlmostEqual(command[2], 30.5, places=6)
         self.assertAlmostEqual(normalize_angle(3.0 * math.pi), -math.pi)
+
+    def test_truth_feedback_uses_the_same_bounded_fcu_adapter(self):
+        expected = backend_error_to_fcu_setpoint(
+            (1.0, 2.0, 3.0), (3.0, 2.0, 4.0),
+            (10.0, 20.0, 30.0), math.pi / 2.0, 1.0, 0.5,
+        )
+        actual = feedback_error_to_fcu_setpoint(
+            (1.0, 2.0, 3.0), (3.0, 2.0, 4.0),
+            (10.0, 20.0, 30.0), math.pi / 2.0, 1.0, 0.5,
+        )
+        self.assertEqual(actual, expected)
+
+    def test_route_feedback_source_is_explicit_and_closed(self):
+        self.assertEqual(
+            normalize_route_feedback_source(" Gazebo_Truth "),
+            "gazebo_truth",
+        )
+        self.assertEqual(
+            normalize_route_feedback_source("unified_backend"),
+            "unified_backend",
+        )
+        with self.assertRaises(ValueError):
+            normalize_route_feedback_source("fcu_local")
 
     def test_backend_setpoint_rejects_invalid_limits(self):
         with self.assertRaises(ValueError):

@@ -16,6 +16,9 @@ then
 fi
 export ROS_DOMAIN_ID="$VALIDATION_ROS_DOMAIN_ID"
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+VALIDATION_WORLD_NAME=${VALIDATION_WORLD_NAME:-${WORLD_NAME:-low_indoor_apm_rgbd_mid360}}
+VALIDATION_TAKEOFF_ALT=${VALIDATION_TAKEOFF_ALT:-2.2}
+VALIDATION_RANGE_FACET_ENABLED=${VALIDATION_RANGE_FACET_ENABLED:-false}
 if [[ "$VALIDATION_ROUTE" == "s_curve" &&
   "${VALIDATION_CALIBRATION_ONLY,,}" == "true" ]]; then
   METRICS_DURATION=${METRICS_DURATION:-105}
@@ -45,18 +48,93 @@ esac
 VALIDATION_MID360_SIM_BRIDGE_MODE=${VALIDATION_MID360_SIM_BRIDGE_MODE:-direct_livox}
 VALIDATION_PRESERVE_LIO_ANCHOR=${VALIDATION_PRESERVE_LIO_ANCHOR:-false}
 VALIDATION_PERFORMANCE_PROFILING=${VALIDATION_PERFORMANCE_PROFILING:-true}
+VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED=${VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED:-false}
+VALIDATION_GNSS_Z_REANCHOR_ENABLED=${VALIDATION_GNSS_Z_REANCHOR_ENABLED:-false}
+VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE=${VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE:-0.50}
+VALIDATION_BAROMETER_FALLBACK_ENABLED=${VALIDATION_BAROMETER_FALLBACK_ENABLED:-false}
+VALIDATION_RELIABILITY_MODE=${VALIDATION_RELIABILITY_MODE:-dynamic}
+case "$VALIDATION_RELIABILITY_MODE" in
+  dynamic|fixed) ;;
+  *)
+    printf 'VALIDATION_RELIABILITY_MODE must be dynamic or fixed.\n' >&2
+    exit 2
+    ;;
+esac
 VALIDATION_START_FASTLIO_CLOUD_MAPPER=${VALIDATION_START_FASTLIO_CLOUD_MAPPER:-0}
 VALIDATION_START_FASTLIO_OCCUPANCY_GRID=${VALIDATION_START_FASTLIO_OCCUPANCY_GRID:-0}
 VALIDATION_LOCALIZATION_SAFETY_ENABLED=${VALIDATION_LOCALIZATION_SAFETY_ENABLED:-true}
 VALIDATION_RECORD_REPLAY_BAG=${VALIDATION_RECORD_REPLAY_BAG:-true}
+VALIDATION_RECORD_RAW_LIDAR=${VALIDATION_RECORD_RAW_LIDAR:-false}
+VALIDATION_REQUIRE_FASTLIO_DRIFT=${VALIDATION_REQUIRE_FASTLIO_DRIFT:-true}
+VALIDATION_STOP_OBSERVERS_ON_LANDING=${VALIDATION_STOP_OBSERVERS_ON_LANDING:-true}
+case "${VALIDATION_REQUIRE_FASTLIO_DRIFT,,}" in
+  1|true|yes|on) validation_require_fastlio_drift=true ;;
+  0|false|no|off) validation_require_fastlio_drift=false ;;
+  *)
+    printf 'VALIDATION_REQUIRE_FASTLIO_DRIFT must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
+case "${VALIDATION_STOP_OBSERVERS_ON_LANDING,,}" in
+  1|true|yes|on) validation_stop_observers_on_landing=true ;;
+  0|false|no|off) validation_stop_observers_on_landing=false ;;
+  *)
+    printf 'VALIDATION_STOP_OBSERVERS_ON_LANDING must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
+if [[ -z "${VALIDATION_MINIMUM_SIM_DURATION:-}" ]]; then
+  if [[ "$validation_stop_observers_on_landing" == "true" ]]; then
+    VALIDATION_MINIMUM_SIM_DURATION=120
+  else
+    VALIDATION_MINIMUM_SIM_DURATION="$METRICS_DURATION"
+  fi
+fi
+if [[ ! "$VALIDATION_MINIMUM_SIM_DURATION" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  printf 'VALIDATION_MINIMUM_SIM_DURATION must be non-negative.\n' >&2
+  exit 2
+fi
+if [[ -z "${VALIDATION_ROUTE_FEEDBACK_SOURCE:-}" ]]; then
+  if [[ "$VALIDATION_ROUTE" == "rectangle" ]]; then
+    VALIDATION_ROUTE_FEEDBACK_SOURCE=fcu_local
+  else
+    VALIDATION_ROUTE_FEEDBACK_SOURCE=unified_backend
+  fi
+fi
 VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK=${VALIDATION_REQUIRE_VISUAL_TIME_CALIBRATION_LOCK:-false}
 VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED=${VALIDATION_REQUIRE_TIME_CALIBRATION_APPLIED:-false}
 VALIDATION_ENABLE_VISION=${VALIDATION_ENABLE_VISION:-0}
+VALIDATION_VISUAL_KEYFRAME_PROFILE=${VALIDATION_VISUAL_KEYFRAME_PROFILE:-balanced}
+VALIDATION_VISUAL_FACTOR_MODE=${VALIDATION_VISUAL_FACTOR_MODE:-paper_reprojection}
+VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M=${VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M:-35.0}
+VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS=${VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS:-19}
+if [[ ! "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  printf 'VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M must be non-negative.\n' >&2
+  exit 2
+fi
+if [[ ! "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS" =~ ^[0-9]+$ ]]; then
+  printf 'VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS must be a non-negative integer.\n' >&2
+  exit 2
+fi
+case "$VALIDATION_VISUAL_FACTOR_MODE" in
+  paper_reprojection|rgbd_direct) ;;
+  *)
+    printf 'VALIDATION_VISUAL_FACTOR_MODE must be paper_reprojection or rgbd_direct.\n' >&2
+    exit 2
+    ;;
+esac
+case "$VALIDATION_VISUAL_KEYFRAME_PROFILE" in
+  conservative|balanced_light|balanced|balanced_plus|dense|custom) ;;
+  *)
+    printf 'VALIDATION_VISUAL_KEYFRAME_PROFILE is unsupported.\n' >&2
+    exit 2
+    ;;
+esac
 case "${VALIDATION_ENABLE_VISION,,}" in
   1|true|yes|on)
     validation_enable_vision_arg=true
-    validation_visual_factor_mode=paper_reprojection
+    validation_visual_factor_mode="$VALIDATION_VISUAL_FACTOR_MODE"
     ;;
   0|false|no|off)
     validation_enable_vision_arg=false
@@ -68,6 +146,7 @@ case "${VALIDATION_ENABLE_VISION,,}" in
     ;;
 esac
 VALIDATION_REQUIRE_VISUAL_FACTORS=${VALIDATION_REQUIRE_VISUAL_FACTORS:-$VALIDATION_ENABLE_VISION}
+VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE=${VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE:-false}
 case "${VALIDATION_REQUIRE_VISUAL_FACTORS,,}" in
   1|true|yes|on) validation_require_visual_factors=true ;;
   0|false|no|off) validation_require_visual_factors=false ;;
@@ -148,6 +227,29 @@ case "$FASTLIO_BACKEND_TRAJECTORY_FRONTEND" in
 esac
 mkdir -p "$LOG_DIR"
 printf 'Validation ROS domain: %s\n' "$ROS_DOMAIN_ID"
+printf 'Validation reliability: mode=%s lidar=%s imu=%s gnss=%s flow=%s vision=%s\n' \
+  "$VALIDATION_RELIABILITY_MODE" \
+  "${FIXED_LIDAR_WEIGHT:-1.0}" \
+  "${FIXED_IMU_WEIGHT:-1.0}" \
+  "${FIXED_GNSS_WEIGHT:-1.0}" \
+  "${FIXED_OPTICAL_FLOW_WEIGHT:-1.0}" \
+  "${FIXED_VISION_WEIGHT:-1.0}"
+printf 'Validation visual cadence: profile=%s\n' \
+  "$VALIDATION_VISUAL_KEYFRAME_PROFILE"
+printf 'Validation Z recovery: lidar_axis_handoff=%s gnss_reanchor=%s barometer=%s\n' \
+  "$VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED" \
+  "$VALIDATION_GNSS_Z_REANCHOR_ENABLED" \
+  "$VALIDATION_BAROMETER_FALLBACK_ENABLED"
+printf 'Validation GNSS Z recovery information scale: %s\n' \
+  "$VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE"
+printf 'Validation FAST-LIO drift gate: required=%s\n' \
+  "$validation_require_fastlio_drift"
+printf 'Validation observer stop: on_landing=%s minimum_sim_duration=%s\n' \
+  "$validation_stop_observers_on_landing" \
+  "$VALIDATION_MINIMUM_SIM_DURATION"
+printf 'Validation figure-eight gates: minimum_distance_m=%s minimum_checkpoints=%s\n' \
+  "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M" \
+  "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS"
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
 if ! ros2 pkg prefix "$RMW_IMPLEMENTATION" >/dev/null 2>&1; then
@@ -243,6 +345,13 @@ setsid env HEADLESS=1 REQUIRE_GAZEBO_GPU=1 ENABLE_D435_POINTCLOUD=false \
   LOG_DIR="$LOG_DIR/sim" bash "$REPO_ROOT/tools/run_sim_with_unified_externalnav.sh" \
   >"$LOG_DIR/sim_launcher.log" 2>&1 &
 pids+=("$!")
+
+# The sensor stack creates the Livox/PointCloud bridge only after MAVROS has
+# produced the FCU IMU stream. Waiting for LiDAR first deadlocks startup: the
+# validation gate exits before the stack reaches its bridge initialization.
+wait_rate /mavros/imu/data_raw 20.0 40
+wait_rate /sim/barometer/pressure 5.0 40
+
 case "$VALIDATION_MID360_SIM_BRIDGE_MODE" in
   direct_livox)
     fastlio_pointcloud_bridge=0
@@ -261,7 +370,6 @@ case "$VALIDATION_MID360_SIM_BRIDGE_MODE" in
     exit 2
     ;;
 esac
-wait_rate /mavros/imu/data_raw 20.0 40
 
 if [[ "$validation_enable_vision_arg" == "true" ]]; then
   setsid ros2 run d435i_rgbd_bridge_cpp d435i_rgbd_bridge --ros-args \
@@ -283,6 +391,8 @@ if [[ "$validation_enable_vision_arg" == "true" ]]; then
     use_sim_time:=true \
     enabled:=true \
     start_fusion_stack:=false \
+    visual_factor_mode:="$validation_visual_factor_mode" \
+    visual_keyframe_profile:="$VALIDATION_VISUAL_KEYFRAME_PROFILE" \
     rgbd_minimum_depth_m:="$VALIDATION_RGBD_MINIMUM_DEPTH_M" \
     rgbd_maximum_depth_m:="$VALIDATION_RGBD_MAXIMUM_DEPTH_M" \
     >"$LOG_DIR/visual_frontend.log" 2>&1 &
@@ -301,7 +411,7 @@ setsid env LIDAR_WS="$LIDAR_WS" RVIZ=0 FASTLIO_INPUT_MODE=livox \
   FASTLIO_DIAGNOSTIC_TF=0 \
   FASTLIO_MAP_INSERTION_MODE="${FASTLIO_MAP_INSERTION_MODE:-backend_confirmed}" \
   FASTLIO_BACKEND_STATE_TOPIC=/fusion/unified/map_pose \
-  FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC=/fusion/unified/odom \
+  FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC=/fusion/unified/frontend_activation_odom \
   START_FASTLIO_CLOUD_MAPPER="$VALIDATION_START_FASTLIO_CLOUD_MAPPER" \
   START_FASTLIO_OCCUPANCY_GRID="$VALIDATION_START_FASTLIO_OCCUPANCY_GRID" \
   START_LIVOX_POINTCLOUD_BRIDGE="$fastlio_pointcloud_bridge" \
@@ -322,6 +432,12 @@ setsid env ENABLE_VISION="$validation_enable_vision_arg" \
   RELOCALIZATION_SEARCH_TIMEOUT_S="$VALIDATION_RELOCALIZATION_SEARCH_TIMEOUT_S" \
   EXTERNAL_NAV_OUTPUT_TOPIC="$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
   PERFORMANCE_PROFILING_ENABLED="$VALIDATION_PERFORMANCE_PROFILING" \
+  AXIS_INFORMATION_HANDOFF_ENABLED="$VALIDATION_AXIS_INFORMATION_HANDOFF_ENABLED" \
+  GNSS_Z_REANCHOR_ENABLED="$VALIDATION_GNSS_Z_REANCHOR_ENABLED" \
+  GNSS_Z_RECOVERY_INFORMATION_SCALE="$VALIDATION_GNSS_Z_RECOVERY_INFORMATION_SCALE" \
+  BAROMETER_FALLBACK_ENABLED="$VALIDATION_BAROMETER_FALLBACK_ENABLED" \
+  RANGE_FACET_ENABLED="$VALIDATION_RANGE_FACET_ENABLED" \
+  RELIABILITY_MODE="$VALIDATION_RELIABILITY_MODE" \
   VISUAL_TIME_CALIBRATION_APPLY_LOCKED="${VISUAL_TIME_CALIBRATION_APPLY_LOCKED:-false}" \
   LOG_DIR="$LOG_DIR/unified" \
   bash "$REPO_ROOT/tools/run_unified_backend_stack.sh" \
@@ -365,6 +481,7 @@ esac
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   -p use_sim_time:=true \
+  -p world_name:="$VALIDATION_WORLD_NAME" \
   -p odom_topic:=/Odometry \
   -p output_path:="$LOG_DIR/fastlio_accuracy.json" \
   >"$LOG_DIR/fastlio_accuracy.log" 2>&1 &
@@ -372,13 +489,20 @@ pids+=("$!")
 
 setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
   -p use_sim_time:=true \
+  -p world_name:="$VALIDATION_WORLD_NAME" \
   -p odom_topic:=/fusion/unified/odom \
   -p output_path:="$LOG_DIR/unified_accuracy.json" \
   >"$LOG_DIR/unified_accuracy.log" 2>&1 &
 pids+=("$!")
 
+observer_stop_args=()
+if [[ "$validation_stop_observers_on_landing" == "true" ]]; then
+  observer_stop_args+=(--stop-on-mission-phase landed)
+fi
+
 python3 "$REPO_ROOT/tools/unified_runtime_metrics.py" --duration "$METRICS_DURATION" \
   --output "$LOG_DIR/unified_runtime_metrics.json" \
+  "${observer_stop_args[@]}" \
   --ros-args -p use_sim_time:=true \
   -p external_nav_topic:="$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
   >"$LOG_DIR/unified_runtime_metrics.log" 2>&1 &
@@ -423,6 +547,7 @@ case "${ENABLE_RELIABILITY_RECORD:-0}" in
     setsid bash "$REPO_ROOT/tools/run_reliability_score_recorder.sh" \
       --duration "$METRICS_DURATION" \
       --output "$LOG_DIR/reliability_scores.csv" \
+      "${observer_stop_args[@]}" \
       --allow-missing \
       >"$LOG_DIR/reliability_scores.log" 2>&1 &
     reliability_pid=$!
@@ -433,6 +558,15 @@ esac
 replay_bag_pid=""
 case "$VALIDATION_RECORD_REPLAY_BAG" in
   1|true|TRUE|yes|YES)
+    raw_lidar_record_topic=()
+    case "$VALIDATION_RECORD_RAW_LIDAR" in
+      1|true|TRUE|yes|YES) raw_lidar_record_topic+=(/livox/lidar) ;;
+      0|false|FALSE|no|NO) ;;
+      *)
+        printf 'VALIDATION_RECORD_RAW_LIDAR must be true/false or 1/0.\n' >&2
+        exit 2
+        ;;
+    esac
     setsid ros2 bag record --use-sim-time \
       --compression-mode file --compression-format zstd \
       --compression-threads 1 \
@@ -440,10 +574,13 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /clock \
       /fast_lio/frontend_scan_request \
       /fast_lio/native_lidar_factor \
+      "${raw_lidar_record_topic[@]}" \
       /sensors/imu \
       /sensors/gnss/fix \
       /sensors/gnss/raw \
       /sensors/optical_flow/rad \
+      /sim/barometer/pressure \
+      /mavros/imu/static_pressure \
       /reliability/scheduler_state \
       /reliability/lidar_score \
       /reliability/imu_score \
@@ -452,10 +589,17 @@ case "$VALIDATION_RECORD_REPLAY_BAG" in
       /reliability/vision_score \
       /reliability/vision_factor_score \
       /vision/feature_tracks \
+      /vision/rgbd_geometry_tracks \
+      /vision/rgbd_direct_tracks \
       /fusion/unified/visual_timing \
       /calibration/lidar_relative_motion \
       /fusion/unified/odom \
+      /fusion/unified/map_pose \
+      /lio/odom \
       /fusion/unified/diagnostics \
+      /fusion/unified/epoch \
+      /relocalization/result \
+      /relocalization/ready \
       "$VALIDATION_EXTERNAL_NAV_OUTPUT_TOPIC" \
       /external_nav/diagnostics \
       /sim/mid360/ground_truth_odom \
@@ -487,7 +631,9 @@ case "$VALIDATION_ROUTE" in
     exit 2
     ;;
 esac
-env LOCALIZATION_SAFETY_ENABLED="$VALIDATION_LOCALIZATION_SAFETY_ENABLED" \
+env ROUTE_FEEDBACK_SOURCE="$VALIDATION_ROUTE_FEEDBACK_SOURCE" \
+  TAKEOFF_ALT="$VALIDATION_TAKEOFF_ALT" \
+  LOCALIZATION_SAFETY_ENABLED="$VALIDATION_LOCALIZATION_SAFETY_ENABLED" \
   POST_TAKEOFF_HOLD_TIME="$VALIDATION_POST_TAKEOFF_HOLD_TIME" \
   FINAL_HOLD_TIME="$VALIDATION_FINAL_HOLD_TIME" \
   CALIBRATION_ONLY="$validation_calibration_only_arg" \
@@ -502,6 +648,7 @@ pids+=("$route_pid")
 drift_status=0
 python3 "$REPO_ROOT/tools/analyze_slam_drift.py" --duration "$DRIFT_DURATION" \
   --output "$LOG_DIR/slam_drift.json" \
+  "${observer_stop_args[@]}" \
   --ros-args -p use_sim_time:=true \
   >"$LOG_DIR/slam_drift.log" 2>&1 || drift_status=$?
 metrics_status=0
@@ -526,10 +673,19 @@ if (( route_status != 0 )); then
     "$VALIDATION_ROUTE" "$route_status" >&2
   exit "$route_status"
 fi
-if (( drift_status != 0 || metrics_status != 0 )); then
-  printf 'metric_collection_failed: drift=%d runtime=%d\n' \
-    "$drift_status" "$metrics_status" >&2
+if (( metrics_status != 0 )); then
+  printf 'metric_collection_failed: runtime=%d\n' \
+    "$metrics_status" >&2
   exit 3
+fi
+if (( drift_status != 0 )); then
+  if [[ "$validation_require_fastlio_drift" == "true" ]]; then
+    printf 'metric_collection_failed: drift=%d runtime=%d\n' \
+      "$drift_status" "$metrics_status" >&2
+    exit 3
+  fi
+  printf 'fastlio_drift_diagnostic_failed_nonfatal: status %d\n' \
+    "$drift_status" >&2
 fi
 if [[ -n "$reliability_pid" ]] && (( reliability_status != 0 )); then
   printf 'reliability_collection_failed: status %d\n' \
@@ -560,7 +716,10 @@ validation_gate_args=(
   --mavros-log "$LOG_DIR/sim/mavros.log"
   --sitl-log "$LOG_DIR/sim/sitl.log"
   --output "$LOG_DIR/validation_acceptance.json"
-  --minimum-sim-duration "$METRICS_DURATION"
+  --minimum-sim-duration "$VALIDATION_MINIMUM_SIM_DURATION"
+  --expected-route-feedback "$VALIDATION_ROUTE_FEEDBACK_SOURCE"
+  --minimum-figure-eight-distance "$VALIDATION_MINIMUM_FIGURE_EIGHT_DISTANCE_M"
+  --minimum-figure-eight-checkpoints "$VALIDATION_MINIMUM_FIGURE_EIGHT_CHECKPOINTS"
 )
 case "$VALIDATION_ENABLE_EXTERNALNAV_EKF3" in
   1|true|TRUE|yes|YES) validation_gate_args+=(--require-external-nav) ;;
@@ -577,6 +736,14 @@ esac
 if [[ "$validation_require_visual_factors" == "true" ]]; then
   validation_gate_args+=(--require-visual-factors)
 fi
+case "${VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE,,}" in
+  1|true|yes|on) validation_gate_args+=(--require-automatic-loop-closure) ;;
+  0|false|no|off) ;;
+  *)
+    printf 'VALIDATION_REQUIRE_AUTOMATIC_LOOP_CLOSURE must be true/false or 1/0.\n' >&2
+    exit 2
+    ;;
+esac
 if [[ "$VALIDATION_ROUTE" == "rectangle" ]]; then
   python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
     "${validation_gate_args[@]}"
@@ -587,8 +754,14 @@ then
     "${validation_gate_args[@]}" \
     --mission-profile calibration \
     --expected-waypoints 0
+elif [[ "$VALIDATION_ROUTE" == "s_curve" ]]; then
+  python3 "$REPO_ROOT/tools/check_unified_validation_result.py" \
+    "${validation_gate_args[@]}" \
+    --mission-profile figure_eight \
+    --expected-waypoints 0
 else
-  printf 'Strict validation gate is currently defined for the rectangle route only.\n' >&2
+  printf 'Strict validation gate has no profile for VALIDATION_ROUTE=%s.\n' \
+    "$VALIDATION_ROUTE" >&2
   exit 2
 fi
 printf 'validation_complete: %s\n' "$LOG_DIR"

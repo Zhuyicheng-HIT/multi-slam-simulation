@@ -65,6 +65,230 @@ class LidarPoseObservability:
     weakest_direction: tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class LidarVerticalObservability:
+    raw_information: float
+    profile_information: float
+    coupling_retention_ratio: float
+    normal_z_energy_fraction: float
+    horizontal_plane_fraction: float
+    axis_raw_information: tuple[float, float, float]
+    axis_profile_information: tuple[float, float, float]
+    axis_coupling_retention_ratio: tuple[float, float, float]
+    axis_relative_support: tuple[float, float, float]
+    translation_profile_information: tuple[float, ...]
+    translation_normalized_eigenvalues: tuple[float, float, float]
+    weakest_translation_direction: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class LidarReliabilityLayers:
+    """Diagnostic-only LiDAR degradation split by physical meaning.
+
+    The scalar scheduler score remains unchanged.  These fields let later
+    scheduling preserve well-observed axes instead of disabling the complete
+    point-to-plane factor when only one translation direction is weak.
+    """
+
+    health_degradation: float
+    consistency_degradation: float
+    observability_degradation_xyz: tuple[float, float, float]
+    combined_degradation_xyz: tuple[float, float, float]
+    isotropic_information_support_xyz: tuple[float, float, float]
+
+
+def lidar_reliability_layers(
+    factor: NativeLidarPoseNormal,
+    observability: LidarVerticalObservability,
+    *,
+    chain_healthy: bool = True,
+    position_innovation_m: float | None = None,
+    yaw_innovation_rad: float | None = None,
+    position_innovation_scale_m: float = 1.0,
+    yaw_innovation_scale_rad: float = 0.5,
+) -> LidarReliabilityLayers:
+    """Split LiDAR risk into health, consistency and axis observability.
+
+    For point-to-plane translation rows, ``sum(n n^T) / variance`` is the
+    available information.  An isotropic set assigns one third of that trace
+    to each map axis, so ``3 * profile * variance / matched_points`` gives a
+    dimensionless axis support with one representing isotropic support.  The
+    Schur profile removes pose directions that can imitate that translation.
+
+    Missing innovation is neutral here: it means consistency evidence is not
+    yet available, not that the LiDAR disagrees.  Stream outage/staleness is
+    still owned by the existing scheduler timeout.
+    """
+    variance = float(factor.measurement_variance)
+    matched = int(factor.matched_points)
+    payload_valid = bool(
+        chain_healthy
+        and factor.correspondences_valid
+        and factor.stamp_ns > 0
+        and matched > 0
+        and math.isfinite(variance)
+        and variance > 0.0
+    )
+    health_degradation = 0.0 if payload_valid else 1.0
+
+    consistency_terms = []
+    for value, scale in (
+        (position_innovation_m, position_innovation_scale_m),
+        (yaw_innovation_rad, yaw_innovation_scale_rad),
+    ):
+        if value is None:
+            continue
+        value = float(value)
+        scale = float(scale)
+        if (
+            math.isfinite(value)
+            and value >= 0.0
+            and math.isfinite(scale)
+            and scale > 0.0
+        ):
+            consistency_terms.append(min(1.0, value / scale))
+    consistency_degradation = max(consistency_terms, default=0.0)
+
+    if payload_valid:
+        axis_profile = np.asarray(
+            observability.axis_profile_information, dtype=float
+        )
+        axis_support = np.clip(
+            3.0 * axis_profile * variance / float(matched), 0.0, 1.0
+        )
+    else:
+        axis_support = np.zeros(3, dtype=float)
+    observability_degradation = 1.0 - axis_support
+    combined = np.maximum(
+        observability_degradation,
+        max(health_degradation, consistency_degradation),
+    )
+    return LidarReliabilityLayers(
+        health_degradation=float(health_degradation),
+        consistency_degradation=float(consistency_degradation),
+        observability_degradation_xyz=tuple(
+            float(value) for value in observability_degradation
+        ),
+        combined_degradation_xyz=tuple(float(value) for value in combined),
+        isotropic_information_support_xyz=tuple(
+            float(value) for value in axis_support
+        ),
+    )
+
+
+def lidar_vertical_observability(
+    factor: NativeLidarPoseNormal,
+    horizontal_normal_threshold: float = 0.7,
+) -> LidarVerticalObservability:
+    """Characterize directional point-plane information in map translation.
+
+    ``H_zz`` alone can be misleading because a vertical translation may be
+    exchanged for roll, pitch, or horizontal translation. The profile
+    information eliminates nuisance pose directions with Schur complements.
+    The complete 3x3 translation profile preserves oblique weak directions;
+    map-axis values are projections for diagnostics and scheduling. Values are
+    divided by native measurement variance so runs remain comparable.
+    """
+    threshold = float(horizontal_normal_threshold)
+    if not math.isfinite(threshold) or threshold <= 0.0 or threshold > 1.0:
+        raise ValueError("horizontal normal threshold must be in (0, 1]")
+    hessian = np.asarray(factor.pose_hessian_right, dtype=float)
+    if hessian.shape != (6, 6) or np.any(~np.isfinite(hessian)):
+        raise ValueError("LiDAR vertical observability requires a finite 6x6 Hessian")
+    variance = float(factor.measurement_variance)
+    if not math.isfinite(variance) or variance <= 0.0:
+        raise ValueError("LiDAR measurement variance must be positive")
+
+    hessian = 0.5 * (hessian + hessian.T)
+    information = hessian / variance
+    axis_raw = np.maximum(np.diag(information)[:3], 0.0)
+    axis_profile = np.zeros(3, dtype=float)
+    for axis in range(3):
+        nuisance = np.asarray(
+            [index for index in range(6) if index != axis], dtype=int
+        )
+        nuisance_information = information[np.ix_(nuisance, nuisance)]
+        coupling = information[nuisance, axis]
+        profile = float(information[axis, axis]) - float(
+            coupling
+            @ np.linalg.pinv(nuisance_information, rcond=1.0e-9)
+            @ coupling
+        )
+        axis_profile[axis] = max(0.0, min(axis_raw[axis], profile))
+    axis_retention = np.divide(
+        axis_profile,
+        axis_raw,
+        out=np.zeros(3, dtype=float),
+        where=axis_raw > 1.0e-12,
+    )
+    maximum_axis_profile = max(1.0e-12, float(np.max(axis_profile)))
+    axis_relative_support = axis_profile / maximum_axis_profile
+
+    translation = information[:3, :3]
+    translation_rotation = information[:3, 3:]
+    rotation = information[3:, 3:]
+    translation_profile = translation - (
+        translation_rotation
+        @ np.linalg.pinv(rotation, rcond=1.0e-9)
+        @ translation_rotation.T
+    )
+    translation_profile = 0.5 * (
+        translation_profile + translation_profile.T
+    )
+    eigenvalues, eigenvectors = np.linalg.eigh(translation_profile)
+    eigenvalues = np.maximum(eigenvalues, 0.0)
+    translation_profile = (
+        eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+    )
+    maximum_eigenvalue = max(1.0e-12, float(eigenvalues[-1]))
+    weakest_direction = eigenvectors[:, 0]
+    pivot = int(np.argmax(np.abs(weakest_direction)))
+    if weakest_direction[pivot] < 0.0:
+        weakest_direction = -weakest_direction
+
+    raw = float(axis_raw[2])
+    profile = float(axis_profile[2])
+    retention = float(axis_retention[2])
+
+    translation_trace = max(0.0, float(np.trace(information[:3, :3])))
+    normal_z_energy = raw / translation_trace if translation_trace > 1.0e-12 else 0.0
+    horizontal_fraction = -1.0
+    if factor.plane_normals is not None:
+        normals = np.asarray(factor.plane_normals, dtype=float)
+        if normals.shape != (factor.matched_points, 3):
+            raise ValueError("LiDAR plane normals have an incompatible shape")
+        norms = np.linalg.norm(normals, axis=1)
+        valid = np.isfinite(norms) & (norms > 1.0e-9)
+        if np.any(valid):
+            normalized_z = np.abs(normals[valid, 2]) / norms[valid]
+            horizontal_fraction = float(np.mean(normalized_z >= threshold))
+
+    return LidarVerticalObservability(
+        raw_information=raw,
+        profile_information=profile,
+        coupling_retention_ratio=retention,
+        normal_z_energy_fraction=normal_z_energy,
+        horizontal_plane_fraction=horizontal_fraction,
+        axis_raw_information=tuple(float(value) for value in axis_raw),
+        axis_profile_information=tuple(float(value) for value in axis_profile),
+        axis_coupling_retention_ratio=tuple(
+            float(value) for value in axis_retention
+        ),
+        axis_relative_support=tuple(
+            float(value) for value in axis_relative_support
+        ),
+        translation_profile_information=tuple(
+            float(value) for value in translation_profile.reshape(-1)
+        ),
+        translation_normalized_eigenvalues=tuple(
+            float(value / maximum_eigenvalue) for value in eigenvalues
+        ),
+        weakest_translation_direction=tuple(
+            float(value) for value in weakest_direction
+        ),
+    )
+
+
 def lidar_pose_observability(
     factor: NativeLidarPoseNormal,
     relative_eigenvalue_threshold: float = 1.0e-3,

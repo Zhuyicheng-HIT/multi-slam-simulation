@@ -103,11 +103,15 @@ def evaluate_validation(
     require_visual_time_lock=False,
     require_time_applied=False,
     require_visual_factors=False,
+    require_automatic_loop_closure=False,
     mission_profile="rectangle",
+    expected_route_feedback="unified_backend",
     expected_waypoints=4,
     minimum_matched_samples=300,
     minimum_motion_samples=50,
     minimum_sim_duration_s=120.0,
+    minimum_figure_eight_distance_m=35.0,
+    minimum_figure_eight_checkpoints=19,
 ):
     causal = accuracy.get("causal_ate", {})
     three_d = causal.get("three_dimensional", {})
@@ -148,6 +152,14 @@ def evaluate_validation(
             "Mission phase: calibration_complete",
             "Mission phase: landing",
         )
+    elif mission_profile == "figure_eight":
+        route_phases = (
+            "Mission phase: preflight",
+            "Mission phase: post_takeoff_hold",
+            "Mission phase: calibration_excitation",
+            "Mission phase: route_active",
+            "Mission phase: landing",
+        )
     else:
         raise ValueError(f"unknown mission profile: {mission_profile}")
     waypoint_matches = re.findall(r"waypoint\s+(\d+)/(\d+):\s*\(", route_log)
@@ -161,6 +173,11 @@ def evaluate_validation(
             waypoint_indices == expected_indices
             and waypoint_totals == {int(expected_waypoints)}
         )
+    )
+    runtime_termination = str(runtime.get("termination_reason", ""))
+    runtime_completed = (
+        runtime_termination == "duration_complete"
+        or runtime_termination == "mission_phase:landed"
     )
 
     gates = {
@@ -178,7 +195,7 @@ def evaluate_validation(
         "horizontal_rmse_below_0_20_m": horizontal_rmse_m < 0.20,
         "vertical_rmse_below_0_20_m": vertical_rmse_m < 0.20,
         "runtime_completed_requested_duration": (
-            runtime.get("termination_reason") == "duration_complete"
+            runtime_completed
             and sim_duration_s >= float(minimum_sim_duration_s)
         ),
         "runtime_graph_contract_clean": _empty_violation(
@@ -196,6 +213,68 @@ def evaluate_validation(
         ),
         "mavros_odometry_tf_contract_clean": "ODOM: Ex:" not in mavros_log,
     }
+    figure_eight_observed = {}
+    if mission_profile == "figure_eight":
+        plan_match = re.search(
+            r"Large figure-eight plan: one closed traversal, "
+            r"planned_path_distance=([0-9.]+)m, .*"
+            r"ratio_at_or_below_8m=([0-9.]+)%",
+            route_log,
+        )
+        checkpoint_indices = {
+            int(index) for index in re.findall(
+                r"Mission checkpoint (\d+): large figure-eight single traversal",
+                route_log,
+            )
+        }
+        planned_distance_m = (
+            _number(plan_match.group(1), "figure_eight.planned_distance_m")
+            if plan_match else 0.0
+        )
+        low_altitude_ratio = (
+            _number(plan_match.group(2), "figure_eight.low_altitude_percent") / 100.0
+            if plan_match else 0.0
+        )
+        minimum_figure_eight_distance_m = _number(
+            minimum_figure_eight_distance_m,
+            "minimum_figure_eight_distance_m",
+        )
+        minimum_figure_eight_checkpoints = int(
+            _integer(
+                minimum_figure_eight_checkpoints,
+                "minimum_figure_eight_checkpoints",
+            )
+        )
+        if minimum_figure_eight_checkpoints < 0:
+            raise ValueError(
+                "minimum_figure_eight_checkpoints must be non-negative"
+            )
+        expected_checkpoint_indices = set(
+            range(1, minimum_figure_eight_checkpoints + 1)
+        )
+        gates.update({
+            "figure_eight_plan_present": plan_match is not None,
+            "figure_eight_nontrivial_distance": (
+                planned_distance_m >= minimum_figure_eight_distance_m
+            ),
+            "figure_eight_low_altitude_contract": low_altitude_ratio >= 0.50,
+            "figure_eight_uses_requested_feedback": (
+                "large figure-eight single traversal:" in route_log
+                and f"feedback={expected_route_feedback}" in route_log
+            ),
+            "figure_eight_route_completed": (
+                "large figure-eight single traversal: points=" in route_log
+                and checkpoint_indices.issuperset(expected_checkpoint_indices)
+                and "LAND completed and FCU disarm confirmed." in route_log
+            ),
+        })
+        figure_eight_observed = {
+            "planned_distance_m": planned_distance_m,
+            "low_altitude_ratio": low_altitude_ratio,
+            "checkpoint_indices": sorted(checkpoint_indices),
+            "minimum_distance_m": minimum_figure_eight_distance_m,
+            "minimum_checkpoints": minimum_figure_eight_checkpoints,
+        }
 
     unified_gates, unified_observed = _stream_gates(
         streams.get("unified_odom"), "unified_odom", 4.0, minimum_matched_samples
@@ -212,7 +291,10 @@ def evaluate_validation(
         )
         reasons = runtime.get("externalnav_diagnostic_reasons", {})
         publishing = _integer(reasons.get("publishing", 0), "externalnav.publish reasons")
-        total_reasons = sum(_integer(value, "externalnav diagnostic reason") for value in reasons.values())
+        total_reasons = sum(
+            _integer(value, "externalnav diagnostic reason")
+            for value in reasons.values()
+        )
         gates["externalnav_publishing_ratio"] = (
             total_reasons > 0 and publishing / total_reasons >= 0.98
         )
@@ -234,6 +316,68 @@ def evaluate_validation(
         gates["backend_visual_factors_active"] = (
             _integer(backend.get("visual_factors"), "visual_factors") > 0
         )
+    automatic_loop_observed = {}
+    if require_automatic_loop_closure:
+        automatic_searches = _integer(
+            runtime.get("automatic_loop_searches", 0),
+            "automatic_loop_searches",
+        )
+        automatic_successes = _integer(
+            runtime.get("automatic_loop_successes", 0),
+            "automatic_loop_successes",
+        )
+        epoch_applied = _integer(
+            runtime.get("fusion_epoch_applied", 0), "fusion_epoch_applied"
+        )
+        backend_resets = _integer(
+            backend.get("relocalization_resets", 0), "relocalization_resets"
+        )
+        continuity = runtime.get("fusion_epoch_continuity", [])
+        relocalization_timeline = runtime.get("relocalization_timeline", [])
+        route_active_successes = [
+            event for event in relocalization_timeline
+            if event.get("mission_phase") == "route_active"
+            and event.get("accepted") is True
+            and str(event.get("reason", "")).startswith(
+                "automatic_loop_candidate_accepted"
+            )
+        ]
+        continuity_samples = []
+        for event in continuity:
+            stream = _nested(event, "streams", "unified_odom")
+            if not isinstance(stream, dict) or not stream.get("available"):
+                continue
+            continuity_samples.append(stream)
+        gates.update({
+            "automatic_loop_search_executed": automatic_searches >= 1,
+            "automatic_loop_candidate_accepted": automatic_successes >= 1,
+            "automatic_loop_accepted_during_route": bool(
+                route_active_successes
+            ),
+            "automatic_loop_epoch_applied": epoch_applied >= automatic_successes,
+            "automatic_loop_backend_reset_applied": backend_resets >= automatic_successes,
+            "automatic_loop_epoch_continuity_observed": (
+                len(continuity_samples) >= automatic_successes
+            ),
+            "automatic_loop_position_step_bounded": (
+                bool(continuity_samples)
+                and max(_number(sample.get("position_step_m"), "position_step_m")
+                        for sample in continuity_samples) <= 0.30
+            ),
+            "automatic_loop_yaw_step_bounded": (
+                bool(continuity_samples)
+                and max(_number(sample.get("yaw_step_rad"), "yaw_step_rad")
+                        for sample in continuity_samples) <= 0.15
+            ),
+        })
+        automatic_loop_observed = {
+            "searches": automatic_searches,
+            "successes": automatic_successes,
+            "epoch_applied": epoch_applied,
+            "backend_resets": backend_resets,
+            "continuity": continuity_samples,
+            "route_active_successes": route_active_successes,
+        }
     gates["backend_covariance_is_not_fallback"] = backend.get("covariance_source") in {
         "window_marginal", "imu_propagated_anchor"
     }
@@ -261,6 +405,7 @@ def evaluate_validation(
         "matched_samples": matched_samples,
         "motion_samples": motion_samples,
         "sim_duration_s": sim_duration_s,
+        "runtime_termination_reason": runtime_termination,
         "causal_3d_rmse_m": rmse_m,
         "causal_3d_p95_m": p95_m,
         "causal_3d_max_m": max_m,
@@ -269,6 +414,8 @@ def evaluate_validation(
         "vertical_rmse_m": vertical_rmse_m,
         "maximum_displacement_m": displacement_m,
         "waypoint_indices": sorted(waypoint_indices),
+        "figure_eight": figure_eight_observed,
+        "automatic_loop_closure": automatic_loop_observed,
         "unified_odom": unified_observed,
         "externalnav": external_observed,
         "calibration_mode": backend.get("calibration_mode"),
@@ -285,11 +432,21 @@ def evaluate_validation(
             "require_visual_time_lock": bool(require_visual_time_lock),
             "require_time_applied": bool(require_time_applied),
             "require_visual_factors": bool(require_visual_factors),
+            "require_automatic_loop_closure": bool(
+                require_automatic_loop_closure
+            ),
             "mission_profile": str(mission_profile),
+            "expected_route_feedback": str(expected_route_feedback),
             "expected_waypoints": int(expected_waypoints),
             "minimum_matched_samples": int(minimum_matched_samples),
             "minimum_motion_samples": int(minimum_motion_samples),
             "minimum_sim_duration_s": float(minimum_sim_duration_s),
+            "minimum_figure_eight_distance_m": float(
+                minimum_figure_eight_distance_m
+            ),
+            "minimum_figure_eight_checkpoints": int(
+                minimum_figure_eight_checkpoints
+            ),
         },
         "observed": observed,
         "gates": gates,
@@ -311,14 +468,34 @@ def main():
     parser.add_argument("--require-visual-time-lock", action="store_true")
     parser.add_argument("--require-time-applied", action="store_true")
     parser.add_argument("--require-visual-factors", action="store_true")
+    parser.add_argument(
+        "--require-automatic-loop-closure", action="store_true"
+    )
     parser.add_argument("--expected-waypoints", type=int, default=4)
     parser.add_argument(
-        "--mission-profile", choices=("rectangle", "calibration"),
+        "--mission-profile", choices=("rectangle", "calibration", "figure_eight"),
         default="rectangle",
+    )
+    parser.add_argument(
+        "--expected-route-feedback",
+        choices=("fcu_local", "unified_backend", "gazebo_truth"),
+        default="unified_backend",
     )
     parser.add_argument("--minimum-matched-samples", type=int, default=300)
     parser.add_argument("--minimum-motion-samples", type=int, default=50)
     parser.add_argument("--minimum-sim-duration", type=float, default=120.0)
+    parser.add_argument(
+        "--minimum-figure-eight-distance",
+        type=float,
+        default=35.0,
+        help="Minimum planned route distance for figure-eight validation.",
+    )
+    parser.add_argument(
+        "--minimum-figure-eight-checkpoints",
+        type=int,
+        default=19,
+        help="Minimum consecutive route checkpoints for figure-eight validation.",
+    )
     args = parser.parse_args()
 
     try:
@@ -333,11 +510,15 @@ def main():
             require_visual_time_lock=args.require_visual_time_lock,
             require_time_applied=args.require_time_applied,
             require_visual_factors=args.require_visual_factors,
+            require_automatic_loop_closure=args.require_automatic_loop_closure,
             mission_profile=args.mission_profile,
+            expected_route_feedback=args.expected_route_feedback,
             expected_waypoints=args.expected_waypoints,
             minimum_matched_samples=args.minimum_matched_samples,
             minimum_motion_samples=args.minimum_motion_samples,
             minimum_sim_duration_s=args.minimum_sim_duration,
+            minimum_figure_eight_distance_m=args.minimum_figure_eight_distance,
+            minimum_figure_eight_checkpoints=args.minimum_figure_eight_checkpoints,
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         report = {

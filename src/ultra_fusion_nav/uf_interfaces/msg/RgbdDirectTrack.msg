@@ -1,0 +1,16 @@
+uint32 feature_id
+float32 previous_x
+float32 previous_y
+float32 previous_depth_m
+float32 previous_depth_variance_m2
+float32 current_x
+float32 current_y
+float32 current_depth_m
+float32 current_depth_variance_m2
+float32 previous_intensity
+float32 current_intensity
+float32 current_gradient_x_normalized
+float32 current_gradient_y_normalized
+float32 photometric_variance
+uint16 track_age
+uint16 grid_cell

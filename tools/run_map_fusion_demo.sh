@@ -11,6 +11,11 @@ DEMO_ROUTE=${DEMO_ROUTE:-short_s}
 DEMO_GUI=${DEMO_GUI:-1}
 DEMO_RVIZ=${DEMO_RVIZ:-1}
 KEEP_DEMO_OPEN=${KEEP_DEMO_OPEN:-1}
+DEMO_ROUTE_FEEDBACK_SOURCE=${DEMO_ROUTE_FEEDBACK_SOURCE:-unified_backend}
+DEMO_EXTERNAL_NAV_ENABLED=${DEMO_EXTERNAL_NAV_ENABLED:-1}
+DEMO_LOCALIZATION_SAFETY_ENABLED=${DEMO_LOCALIZATION_SAFETY_ENABLED:-true}
+DEMO_PERFORMANCE_PROFILING_ENABLED=${DEMO_PERFORMANCE_PROFILING_ENABLED:-0}
+DEMO_VISUAL_FACTOR_MODE=${DEMO_VISUAL_FACTOR_MODE:-paper_reprojection}
 
 case "$OFFLINE_METHOD" in
   gicp|hybrid) ;;
@@ -26,6 +31,31 @@ for value in "$DEMO_GUI" "$DEMO_RVIZ" "$KEEP_DEMO_OPEN"; do
     exit 2
   }
 done
+case "$DEMO_ROUTE_FEEDBACK_SOURCE" in
+  unified_backend|gazebo_truth) ;;
+  *)
+    printf 'DEMO_ROUTE_FEEDBACK_SOURCE must be unified_backend or gazebo_truth.\n' >&2
+    exit 2
+    ;;
+esac
+case "$DEMO_EXTERNAL_NAV_ENABLED" in
+  0|1) ;;
+  *) printf 'DEMO_EXTERNAL_NAV_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$DEMO_PERFORMANCE_PROFILING_ENABLED" in
+  0|1) ;;
+  *)
+    printf 'DEMO_PERFORMANCE_PROFILING_ENABLED must be 0 or 1.\n' >&2
+    exit 2
+    ;;
+esac
+case "$DEMO_VISUAL_FACTOR_MODE" in
+  paper_reprojection|rgbd_direct) ;;
+  *)
+    printf 'DEMO_VISUAL_FACTOR_MODE must be paper_reprojection or rgbd_direct.\n' >&2
+    exit 2
+    ;;
+esac
 
 source /opt/ros/humble/setup.bash
 source "$REPO_ROOT/install/setup.bash"
@@ -167,11 +197,13 @@ setsid env \
   RUN_ID="$RUN_ID" RUN_DIR="$RUN_DIR/stack" \
   PR6_HEADLESS=$((1 - DEMO_GUI)) PR6_START_RTABMAP=1 \
   VISUAL_BRIDGE_ENABLED=1 VISUAL_FRONTEND_ENABLED=1 \
-  VISUAL_FACTOR_MODE=paper_reprojection VISUAL_KEYFRAME_PROFILE=balanced \
+  VISUAL_FACTOR_MODE="$DEMO_VISUAL_FACTOR_MODE" VISUAL_KEYFRAME_PROFILE=balanced \
+  EXTERNAL_NAV_ENABLED="$DEMO_EXTERNAL_NAV_ENABLED" \
   ONLINE_MAPPING_MODE=joint EXPECT_EXTERNAL_VISUAL_MOTION=1 \
   SIM_RGBD_MIN_DEPTH_M=0.30 SIM_RGBD_MAX_DEPTH_M=10.0 \
   RUN_SMALL_RECTANGLE=0 EXIT_AFTER_RECTANGLE=0 \
-  PERFORMANCE_PROFILING_ENABLED=0 REQUIRE_GAZEBO_GPU=1 \
+  PERFORMANCE_PROFILING_ENABLED="$DEMO_PERFORMANCE_PROFILING_ENABLED" \
+  REQUIRE_GAZEBO_GPU=1 \
   BACKEND_NUMERIC_THREADS=1 LIDAR_WS="$LIDAR_WS" \
   bash "$STACK_RUNNER" >"$RUN_DIR/stack_supervisor.log" 2>&1 &
 STACK_PID=$!
@@ -195,10 +227,22 @@ RGBD_EXPORT_PID=$!
 record_group "$RGBD_EXPORT_PID"
 
 wait_for_publisher /fusion/unified/odom 300
-wait_for_publisher /fusion/runtime_external_nav 300
+if [[ "$DEMO_EXTERNAL_NAV_ENABLED" == 1 ]]; then
+  wait_for_publisher /fusion/runtime_external_nav 300
+fi
 wait_for_publisher /mapping/shared/points 180
 wait_for_service /mapping/shared/export 90
 wait_for_service /hybridfusion_rgbd_map_exporter/save 90
+
+setsid ros2 run multi_slam_uav_sim external_nav_accuracy --ros-args \
+  -p use_sim_time:=true \
+  -p odom_topic:=/fusion/unified/odom \
+  -p truth_odom_topic:=/sim/mid360/ground_truth_odom \
+  -p output_path:="$RUN_DIR/unified_accuracy.json" \
+  -p samples_output_path:="$RUN_DIR/unified_accuracy.samples.csv" \
+  >"$RUN_DIR/unified_accuracy.log" 2>&1 &
+ACCURACY_PID=$!
+record_group "$ACCURACY_PID"
 
 if [[ "$DEMO_RVIZ" == 1 ]]; then
   setsid rviz2 -d "$RVIZ_CONFIG" --ros-args -p use_sim_time:=true \
@@ -209,7 +253,8 @@ fi
 
 route_environment=(
   LOG_DIR="$RUN_DIR/route"
-  LOCALIZATION_SAFETY_ENABLED=true
+  ROUTE_FEEDBACK_SOURCE="$DEMO_ROUTE_FEEDBACK_SOURCE"
+  LOCALIZATION_SAFETY_ENABLED="$DEMO_LOCALIZATION_SAFETY_ENABLED"
   LAND_AT_END=true
 )
 if [[ "$DEMO_ROUTE" == short_s ]]; then

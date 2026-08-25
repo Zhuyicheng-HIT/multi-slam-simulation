@@ -200,7 +200,7 @@ def image_feature_support(msg):
     return feature_count, spatial_uniformity, blur_energy
 
 
-def visual_factor_track_metrics(message):
+def visual_factor_track_metrics(message, require_pnp=True):
     """Measure exactly the visual tracks eligible for backend factor creation."""
     tracks = list(message.tracks)
     geometry_eligible = []
@@ -214,7 +214,7 @@ def visual_factor_track_metrics(message):
         ))
         geometry_valid = bool(
             track.klt_inlier
-            and track.geometric_inlier
+            and (track.geometric_inlier or not require_pnp)
             and int(track.track_age) >= 2
             and coordinates_finite
         )
@@ -229,6 +229,7 @@ def visual_factor_track_metrics(message):
             selected.append(track)
     reprojection = [
         float(track.reprojection_error_px) for track in selected
+        if require_pnp
         if math.isfinite(float(track.reprojection_error_px))
         and float(track.reprojection_error_px) >= 0.0
     ]
@@ -322,15 +323,27 @@ class ReliabilityMonitor(Node):
             "vision.weights": [0.30, 0.25, 0.25, 0.20],
             "vision.minimum_features": 20,
             "vision.track_evidence_enabled": True,
+            "vision.factor_mode": "paper_reprojection",
             "vision.klt_weight": 0.15,
             "vision.factor_score_topic": VISION_FACTOR_SCORE_TOPIC,
             "vision.camera_cache_size": 4,
             "vision.minimum_camera_evidence_coverage": 0.75,
+            "vision.minimum_direct_factor_evidence_coverage": 0.75,
             "vision.minimum_depth_m": 0.30,
             "vision.maximum_depth_m": 6.0,
         }
         for name, value in parameters.items():
             self.declare_parameter(name, value)
+        # The monitor is shared by vision-enabled and four-source launches.
+        # In the latter case the backend deliberately sets vision to disabled;
+        # keep publishing non-authoritative vision diagnostics without making
+        # the reliability process crash and taking the scheduler with it.
+        if self.get_parameter("vision.factor_mode").value not in (
+            "disabled", "paper_reprojection", "rgbd_direct"
+        ):
+            raise ValueError(
+                "vision.factor_mode must be disabled, paper_reprojection or rgbd_direct"
+            )
         self.score_publishers = {
             name: self.create_publisher(
                 ReliabilityScore,
@@ -1186,7 +1199,9 @@ class ReliabilityMonitor(Node):
         if self.last_visual_tracks_ns is not None and current_ns <= self.last_visual_tracks_ns:
             return
         self.last_visual_tracks_ns = current_ns
-        metrics = visual_factor_track_metrics(msg)
+        factor_mode = str(self.get_parameter("vision.factor_mode").value)
+        require_pnp = factor_mode == "paper_reprojection"
+        metrics = visual_factor_track_metrics(msg, require_pnp=require_pnp)
         feature_count = int(metrics["selected_track_count"])
         depth_ratio = float(metrics["depth_valid_ratio"])
         result = vision_score(
@@ -1216,11 +1231,12 @@ class ReliabilityMonitor(Node):
         evidence["factor_selected_track_ratio"] = selection_ratio
         evidence["klt_extension_weight"] = klt_weight
         evidence["pnp_geometric_verification"] = 1.0 if msg.pnp_valid else 0.0
+        evidence["rgbd_direct_factor_mode"] = 0.0 if require_pnp else 1.0
         evidence["valid_depth_track_ratio"] = depth_ratio
         evidence["factor_candidate_score"] = 1.0
         if selection_ratio < 0.5:
             reasons.append("weak_selected_track_retention")
-        if not msg.pnp_valid:
+        if require_pnp and not msg.pnp_valid:
             reasons.append("pnp_geometric_verification_failed")
         self._publish(
             "vision",
@@ -1229,13 +1245,20 @@ class ReliabilityMonitor(Node):
              evidence,
              reasons),
             bool(
-                msg.pnp_valid
+                (msg.pnp_valid or not require_pnp)
                 and feature_count >= self.get_parameter(
                     "vision.minimum_features"
                 ).value
             ),
             feature_count,
             self.get_parameter("vision.minimum_features").value,
+            (
+                1.0
+                if require_pnp
+                else self.get_parameter(
+                    "vision.minimum_direct_factor_evidence_coverage"
+                ).value
+            ),
             publisher=self.vision_factor_publisher,
         )
 

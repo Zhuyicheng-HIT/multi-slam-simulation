@@ -40,7 +40,8 @@ gnss_metadata_relay:
     fix_output_topic: /sensors/gnss/fix
     # Companion-estimator rate only. MAVROS and ArduPilot retain their native
     # GPS stream rates for FCU navigation, arming and flight control.
-    output_rate_hz: 2.5
+    # ATGM336H-class companion GNSS is measured at 5 Hz on the target link.
+    output_rate_hz: 5.0
     # Existing simulation bags show P99=26 ms and max=51 ms nearest fix/raw
     # stamp separation. Raw metadata outside this window is omitted; the fix
     # itself is never blocked.
@@ -56,8 +57,8 @@ pointcloud_body_filter:
     body_max_y_m: 0.45
     body_min_z_m: -0.35
     body_max_z_m: 0.15
-    # R_body_lidar: MID360 optical axis pitches 10 deg nose-down.
-    lidar_to_body_rotation: [0.984807753, 0.0, 0.173648178, 0.0, 1.0, 0.0, -0.173648178, 0.0, 0.984807753]
+    # R_body_lidar: MID360 optical axis pitches 15 deg nose-down.
+    lidar_to_body_rotation: [0.9659258263, 0.0, 0.2588190451, 0.0, 1.0, 0.0, -0.2588190451, 0.0, 0.9659258263]
     # Measured simulation mount: 5 cm forward and 10 cm above body origin.
     lidar_to_body_translation: [0.05, 0.0, 0.10]
     min_range_m: 0.10

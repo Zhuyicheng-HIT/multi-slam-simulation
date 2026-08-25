@@ -1,0 +1,12 @@
+{
+  "datasets": [
+    {
+      "id": "m2dgr-anomaly",
+      "name": "M2DGR-Plus / Anomaly"
+    },
+    {
+      "id": "r3live-degenerate-02",
+      "name": "R3LIVE / degenerate_seq_02"
+    }
+  ]
+}

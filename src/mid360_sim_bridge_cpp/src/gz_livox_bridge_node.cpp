@@ -85,9 +85,9 @@ public:
     lidar_to_body_rotation_ = finite_parameter_array<9>(
       declare_parameter<std::vector<double>>(
         "lidar_to_body_rotation",
-        {0.984807753, 0.0, 0.173648178,
+        {0.9659258263, 0.0, 0.2588190451,
           0.0, 1.0, 0.0,
-          -0.173648178, 0.0, 0.984807753}),
+          -0.2588190451, 0.0, 0.9659258263}),
       "lidar_to_body_rotation");
     lidar_to_body_translation_ = finite_parameter_array<3>(
       declare_parameter<std::vector<double>>(

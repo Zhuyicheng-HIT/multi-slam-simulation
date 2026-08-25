@@ -6,6 +6,10 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 
 export MULTI_SLAM_WS="$WS_ROOT"
 export MULTI_SLAM_UAV_SIM_SHARE="$PKG_SHARE"
+# Fast DDS is unreliable in the restored WSL image.  Keep all ROS 2 sensor
+# and bridge processes on the validated Cyclone DDS transport unless the
+# caller explicitly selects another RMW implementation.
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 export GZ_SIM_RESOURCE_PATH="$PKG_SHARE/worlds:$PKG_SHARE/models:$WS_ROOT/src/multi_slam_worlds/worlds:$WS_ROOT/src/multi_slam_worlds/models:${ARDUPILOT_GAZEBO_DIR:-$HOME/ardupilot_gazebo}/worlds:${ARDUPILOT_GAZEBO_DIR:-$HOME/ardupilot_gazebo}/models:${GZ_SIM_RESOURCE_PATH:-}"
 export GZ_SIM_SYSTEM_PLUGIN_PATH="${ARDUPILOT_GAZEBO_DIR:-$HOME/ardupilot_gazebo}/build:${GZ_SIM_SYSTEM_PLUGIN_PATH:-}"
 export GZ_RENDER_ENGINE="${GZ_RENDER_ENGINE:-ogre2}"

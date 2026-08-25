@@ -62,6 +62,22 @@ FLOW_MIN_QUALITY=${FLOW_MIN_QUALITY:-0}
 ACCURACY_DURATION_S=${ACCURACY_DURATION_S:-150.0}
 ENABLE_FLOW_ACCURACY=${ENABLE_FLOW_ACCURACY:-1}
 MAVLINK_TAKEOFF_URL=${MAVLINK_TAKEOFF_URL:-tcp:127.0.0.1:5763}
+ROUTE_FEEDBACK_SOURCE=${ROUTE_FEEDBACK_SOURCE:-fcu_local}
+LOCALIZATION_SAFETY_ENABLED=${LOCALIZATION_SAFETY_ENABLED:-true}
+GAZEBO_TRUTH_ODOM_TOPIC=${GAZEBO_TRUTH_ODOM_TOPIC:-/sim/mid360/ground_truth_odom}
+case "$ROUTE_FEEDBACK_SOURCE" in
+  fcu_local|gazebo_truth) ;;
+  *)
+    printf 'ROUTE_FEEDBACK_SOURCE must be fcu_local or gazebo_truth.\n' >&2
+    exit 2
+    ;;
+esac
+if [[ "$ROUTE_FEEDBACK_SOURCE" == "gazebo_truth" &&
+  "${LOCALIZATION_SAFETY_ENABLED,,}" != "false" ]]
+then
+  printf 'Gazebo-truth rectangle requires LOCALIZATION_SAFETY_ENABLED=false.\n' >&2
+  exit 2
+fi
 
 float_param() {
   case "$1" in
@@ -105,6 +121,7 @@ Parameters:
   accuracy_duration_s=$ACCURACY_DURATION_S
   enable_flow_accuracy=$ENABLE_FLOW_ACCURACY
   mavlink_takeoff_url=$MAVLINK_TAKEOFF_URL
+  route_feedback_source=$ROUTE_FEEDBACK_SOURCE
 
 Required first-window stack:
   run_sim_with_flow.sh
@@ -126,8 +143,19 @@ else
   printf 'Gazebo optical-flow accuracy diagnostic disabled.\\n' >"$LOG_DIR/flow_gazebo_accuracy.log"
 fi
 
+rectangle_executable=guided_rectangle_waypoints
+truth_route_args=()
+if [[ "$ROUTE_FEEDBACK_SOURCE" == "gazebo_truth" ]]; then
+  rectangle_executable=guided_truth_rectangle_waypoints
+  truth_route_args+=(
+    -p route_feedback_source:=gazebo_truth
+    -p localization_safety_enabled:=false
+    -p gazebo_truth_odom_topic:="$GAZEBO_TRUTH_ODOM_TOPIC"
+  )
+fi
+
 set +e
-ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
+ros2 run multi_slam_uav_sim "$rectangle_executable" --ros-args \
   -p use_sim_time:=true \
   -p takeoff_alt:="$TAKEOFF_ALT_PARAM" \
   -p length_x:="$RECTANGLE_LENGTH_X_PARAM" \
@@ -142,6 +170,7 @@ ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args \
   -p navigation_source:="$NAVIGATION_SOURCE" \
   -p flow_min_quality:="$FLOW_MIN_QUALITY" \
   -p mavlink_takeoff_url:="$MAVLINK_TAKEOFF_URL" \
+  "${truth_route_args[@]}" \
   2>&1 | tee "$LOG_DIR/guided_rectangle_waypoints.log"
 state_status="${PIPESTATUS[0]}"
 

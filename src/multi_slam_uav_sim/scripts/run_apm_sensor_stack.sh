@@ -12,8 +12,10 @@ source "$PKG_SHARE/scripts/env.sh"
 
 ARDUPILOT_DIR=${ARDUPILOT_DIR:-$HOME/ardupilot}
 ARDUPILOT_GAZEBO_DIR=${ARDUPILOT_GAZEBO_DIR:-$HOME/ardupilot_gazebo}
-WORLD=${WORLD:-$PKG_SHARE/worlds/simple_apm_rgbd_mid360.sdf}
-WORLD_NAME=${WORLD_NAME:-simple_apm_rgbd_mid360}
+# The default demo is a low-altitude indoor route. The legacy urban scene
+# remains selectable with WORLD/WORLD_NAME for regression and high-wall tests.
+WORLD=${WORLD:-$PKG_SHARE/worlds/low_indoor_apm_rgbd_mid360.sdf}
+WORLD_NAME=${WORLD_NAME:-low_indoor_apm_rgbd_mid360}
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/apm_sensor_stack_$(date +%Y%m%d_%H%M%S)}
 LOCK_FILE=${LOCK_FILE:-/tmp/multi_slam_apm_sensor_stack.lock}
 # Keep FCU source configuration separate from the estimator that publishes
@@ -55,7 +57,9 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     printf 'Direct Livox simulation bridge requires %s/install/setup.bash\n' "$LIDAR_WS" >&2
     exit 2
   fi
-  source "$LIDAR_WS/install/setup.bash"
+  # Keep the dependency workspace's environment local. Its full setup can
+  # overwrite simulator plugin paths needed by ArduPilot Gazebo.
+  source "$LIDAR_WS/install/local_setup.bash"
   source "$WS_INSTALL/setup.bash"
 fi
 
@@ -130,7 +134,7 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     "$MID360_BODY_MIN_X_M" "$MID360_BODY_MAX_X_M" \
     "$MID360_BODY_MIN_Y_M" "$MID360_BODY_MAX_Y_M" \
     "$MID360_BODY_MIN_Z_M" "$MID360_BODY_MAX_Z_M"
-  printf 'MID360 body extrinsic: lidar origin [%.3f, %.3f, %.3f] m; pitch=+10 deg\n' \
+  printf 'MID360 body extrinsic: lidar origin [%.3f, %.3f, %.3f] m; pitch=+15 deg\n' \
     "$MID360_LIDAR_TO_BODY_X_M" "$MID360_LIDAR_TO_BODY_Y_M" \
     "$MID360_LIDAR_TO_BODY_Z_M"
 fi
@@ -240,7 +244,10 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p gazebo_range_topic:=/flow/range
     -p gazebo_imu_topic:=/flow/imu
     -p imu_topic:=/mavros/imu/data_raw
-    -p max_rate_hz:=30.0
+    # The MTF companion path is consumed by a 10 Hz LiDAR-triggered backend.
+    # A deterministic 15 Hz stream preserves fresh zero-motion observations
+    # without spending CPU on frames the estimator cannot consume.
+    -p max_rate_hz:=${FLOW_RATE_HZ:-15.0}
     -p angular_scale:=1.0
     # The camera intrinsics define the metric scale. Keep an explicit override
     # for A/B tests, but do not hide geometry errors behind an empirical gain.
@@ -272,7 +279,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p range_topic:=/sim/optical_flow/range \
     -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
     -p imu_topic:=/mavros/imu/data_raw \
-    -p nominal_rate_hz:=30.0 \
+    -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
     -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
     -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
     >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
@@ -373,10 +380,23 @@ if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
 fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
+  if [[ -z "${MAVROS_PLUGINLISTS_FILE+x}" ]]; then
+    if [[ "${ENABLE_FCU_FLOW:-0}" == "1" ||
+      "${ENABLE_FCU_RANGE:-0}" == "1" ||
+      "${ENABLE_NONGPS_FLOW:-0}" == "1" ]]; then
+      MAVROS_PLUGINLISTS_FILE="$PKG_SHARE/config/mavros_validation_flow_pluginlists.yaml"
+    else
+      MAVROS_PLUGINLISTS_FILE="$PKG_SHARE/config/mavros_validation_pluginlists.yaml"
+    fi
+  fi
+  if [[ ! -f "$MAVROS_PLUGINLISTS_FILE" ]]; then
+    printf 'MAVROS plugin list is missing: %s\n' "$MAVROS_PLUGINLISTS_FILE" >&2
+    exit 2
+  fi
   setsid ros2 run mavros mavros_node --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     --params-file /opt/ros/humble/share/mavros/launch/apm_config.yaml \
-    --params-file /opt/ros/humble/share/mavros/launch/apm_pluginlists.yaml \
+    --params-file "$MAVROS_PLUGINLISTS_FILE" \
     --params-file "$PKG_SHARE/config/mavros_apm_rgbd.yaml" \
     >"$LOG_DIR/mavros.log" 2>&1 &
   pids+=("$!")
@@ -390,7 +410,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     fi
     sleep 1
   done
-  printf 'Requesting ArduPilot telemetry streams for MAVROS pose/IMU/GPS topics...\n'
+  printf 'Requesting ArduPilot telemetry streams for MAVROS pose/IMU/GPS/barometer topics...\n'
   : >"$LOG_DIR/mavros_stream_requester.log"
   mavros_imu_ready=0
   for stream_attempt in 1 2; do
@@ -404,6 +424,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
       -p position_rate_hz:=20.0 \
       -p imu_rate_hz:=100.0 \
       -p gps_rate_hz:=10.0 \
+      -p barometer_rate_hz:=10.0 \
       >>"$LOG_DIR/mavros_stream_requester.log" 2>&1 || true
     if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
         --topic /mavros/imu/data_raw --timeout 15 \
@@ -423,6 +444,24 @@ setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
   -p use_sim_time:="$USE_SIM_TIME" \
   -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
 pids+=("$!")
+
+if [[ "${ENABLE_SIM_BAROMETER:-1}" == "1" ]]; then
+  BARO_REFERENCE_ALTITUDE_M=${BARO_REFERENCE_ALTITUDE_M:-584.0}
+  setsid ros2 run multi_slam_uav_sim gz_barometer_sim --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
+    -p world_name:="$WORLD_NAME" \
+    -p model_name:=apm_iris \
+    -p link_name:=front_d435i_link \
+    -p sensor_name:=barometer \
+    -p publish_sim_topic:=true \
+    -p publish_ros_topic:=false \
+    -p reference_altitude_m:="$BARO_REFERENCE_ALTITUDE_M" \
+    >"$LOG_DIR/gz_barometer_sim.log" 2>&1 &
+  pids+=("$!")
+  printf 'Gazebo barometer simulation: enabled (/sim/barometer/pressure)\n'
+else
+  printf 'Gazebo barometer simulation: disabled\n'
+fi
 
 if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
   setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
@@ -525,12 +564,12 @@ FCU-routed MTF01P observation path:
 
 Optional companion GPS/flow ExternalNav:
   ENABLE_EXTERNALNAV_FUSION=1 starts /fusion/gps_flow/odom -> /mavros/odometry/out
-  ENABLE_EXTERNALNAV_EKF3=1 configures EKF3 to consume ExternalNav without selecting a publisher
-  ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=1 starts only the legacy GPS/flow publisher
+  ENABLE_EXTERNALNAV_EKF3=1 configures EKF3 to consume ExternalNav without selecting a publishe
+  ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV=1 starts only the legacy GPS/flow publishe
   FLOW_USE_PHYSICS=false is required for algorithm-quality evaluation
   MID360_SIM_BRIDGE_MODE=direct_livox uses C++: Gazebo LaserScan -> /livox/lidar CustomMsg
   MID360_SIM_BRIDGE_MODE=pointcloud_python retains /sim/mid360/points_raw for legacy testing
-  MID360_SIM_BRIDGE_MODE=disabled starts no MID360 ROS adapter
+  MID360_SIM_BRIDGE_MODE=disabled starts no MID360 ROS adapte
   Real MID-360S must use the official livox_ros_driver2 and the same /livox/* interface;
   do not run the simulation adapter against real hardware.
   ENABLE_D435_BRIDGE=0 disables the D435 ROS bridge; the Gazebo sensor is lazy

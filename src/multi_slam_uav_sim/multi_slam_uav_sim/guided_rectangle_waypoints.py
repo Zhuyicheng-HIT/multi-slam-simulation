@@ -362,6 +362,9 @@ class GuidedRectangleWaypoints(Node):
     def mission_safety_checkpoint(self, label):
         """Hook for missions that supervise estimator health while moving."""
 
+    def activate_route_control(self):
+        """Hook for diagnostic controllers that adapt another feedback frame."""
+
     def ensure_guided(self, label):
         if not self.state.armed:
             raise RuntimeError(
@@ -704,6 +707,7 @@ class GuidedRectangleWaypoints(Node):
         self.hold_setpoint(
             *start, seconds=self.post_takeoff_hold_time_s, yaw=self.home_yaw,
             label="post-takeoff hold", require_guided=True)
+        self.activate_route_control()
 
         edge_yaws = (
             [self.home_yaw, self.home_yaw + math.pi / 2.0,
@@ -754,6 +758,7 @@ class GuidedRectangleWaypoints(Node):
                         self.get_logger().info(
                             "LAND completed and FCU disarm confirmed."
                         )
+                        self._publish_mission_phase("landed")
                         break
                 else:
                     raise RuntimeError(

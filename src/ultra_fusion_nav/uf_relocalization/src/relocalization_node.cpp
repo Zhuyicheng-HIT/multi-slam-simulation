@@ -1,3 +1,4 @@
+#include "uf_relocalization/automatic_loop_closure_policy.hpp"
 #include "uf_relocalization/descriptor_core.hpp"
 #include "uf_relocalization/keyframe_database.hpp"
 #include "uf_relocalization/keyframe_synchronization.hpp"
@@ -21,7 +22,6 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -130,6 +130,17 @@ public:
     declare_parameter("request_topic", "/relocalization/request");
     declare_parameter("result_topic", "/relocalization/result");
     declare_parameter("ready_topic", "/relocalization/ready");
+    declare_parameter("automatic_loop_closure_enabled", true);
+    declare_parameter(
+      "automatic_loop_allowed_scheduler_states",
+      std::vector<std::string>{"NORMAL", "RECOVERED"});
+    declare_parameter("automatic_loop_search_cooldown_s", 15.0);
+    declare_parameter("automatic_loop_minimum_keyframe_age_s", 20.0);
+    declare_parameter("automatic_loop_maximum_candidate_distance_m", 3.0);
+    declare_parameter("automatic_loop_maximum_candidates", 2);
+    declare_parameter("automatic_loop_maximum_search_attempts", 3);
+    declare_parameter("automatic_loop_maximum_correction_translation_m", 0.75);
+    declare_parameter("automatic_loop_maximum_correction_rotation_rad", 0.25);
     declare_parameter("keyframe_attempt_period_s", 0.5);
     declare_parameter("query_attempt_period_s", 0.5);
     declare_parameter("maximum_candidates", 3);
@@ -240,6 +251,28 @@ public:
       get_parameter("expected_keyframe_frame_id").as_string();
     expected_query_frame_id_ =
       get_parameter("expected_query_frame_id").as_string();
+    automatic_loop_config_.enabled =
+      get_parameter("automatic_loop_closure_enabled").as_bool();
+    automatic_loop_config_.minimum_database_keyframes =
+      static_cast<std::size_t>(minimum_database_keyframes_);
+    automatic_loop_config_.search_cooldown_s =
+      get_parameter("automatic_loop_search_cooldown_s").as_double();
+    automatic_loop_config_.minimum_keyframe_age_s =
+      get_parameter("automatic_loop_minimum_keyframe_age_s").as_double();
+    automatic_loop_config_.maximum_candidate_distance_m =
+      get_parameter("automatic_loop_maximum_candidate_distance_m").as_double();
+    automatic_loop_config_.maximum_correction_translation_m =
+      get_parameter("automatic_loop_maximum_correction_translation_m").as_double();
+    automatic_loop_config_.maximum_correction_rotation_rad =
+      get_parameter("automatic_loop_maximum_correction_rotation_rad").as_double();
+    automatic_loop_allowed_scheduler_states_ =
+      get_parameter("automatic_loop_allowed_scheduler_states").as_string_array();
+    automatic_loop_maximum_search_attempts_ = std::max(
+      1, static_cast<int>(
+        get_parameter("automatic_loop_maximum_search_attempts").as_int()));
+    automatic_loop_maximum_candidates_ = std::max(
+      1, static_cast<int>(
+        get_parameter("automatic_loop_maximum_candidates").as_int()));
     if (registration_method_ != "icp" && registration_method_ != "gicp" &&
       registration_method_ != "point_to_plane")
     {
@@ -272,6 +305,9 @@ public:
     {
       throw std::invalid_argument("invalid relocalization node limits");
     }
+    // Validate the independent policy before any ROS subscriptions are live.
+    (void)evaluate_automatic_loop_closure(
+      automatic_loop_config_, AutomaticLoopClosureEvidence{});
     success_consistency_gate_ = MultiFrameConsistencyGate(
       MultiFrameConsistencyConfig{
         static_cast<std::size_t>(success_consistency_required_queries_),
@@ -288,6 +324,9 @@ public:
       [this](const std_msgs::msg::Bool::SharedPtr message) {
         if (!message->data) {
           request_asserted_ = false;
+          if (automatic_loop_search_active_) {
+            return;
+          }
           request_active_ = false;
           pending_query_cloud_.reset();
           success_consistency_gate_.reset();
@@ -301,8 +340,19 @@ public:
         if (request_asserted_) {
           return;
         }
+        if (automatic_loop_search_active_ && request_active_) {
+          // A fault-triggered/manual request adopts the in-flight geometric
+          // search instead of racing a second transaction.
+          request_asserted_ = true;
+          automatic_loop_search_active_ = false;
+          publish_status(
+            ResultMessage::SEARCHING, true, false, 0U, 0.0, 0.0,
+            "manual_request_adopted_automatic_search");
+          return;
+        }
         request_asserted_ = true;
         request_active_ = true;
+        automatic_loop_search_active_ = false;
         pending_query_cloud_.reset();
         success_consistency_gate_.reset();
         const auto request_time = now();
@@ -338,6 +388,7 @@ public:
           fused_pose_history_.pop_front();
         }
         process_pending_keyframe_cloud();
+        process_pending_query_cloud();
       });
     lio_pose_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       get_parameter("source_lio_pose_topic").as_string(), rclcpp::SensorDataQoS(),
@@ -854,16 +905,96 @@ private:
     // function and therefore do not consume the failure budget.
     success_consistency_gate_.reset();
     ++search_attempt_count_;
-    if (search_attempt_count_ >= maximum_search_attempts_) {
-      publish_status(ResultMessage::FAILED, false, false, 0U, 0.0, 0.0,
-        "search_attempt_limit_reached:" + reason);
-      RCLCPP_ERROR(
-        get_logger(), "relocalization failed after %d attempts: %s",
-        search_attempt_count_, reason.c_str());
+    const int attempt_limit = automatic_loop_search_active_ ?
+      automatic_loop_maximum_search_attempts_ : maximum_search_attempts_;
+    if (search_attempt_count_ >= attempt_limit) {
+      const bool automatic = automatic_loop_search_active_;
+      publish_status(
+        automatic ? ResultMessage::IDLE : ResultMessage::FAILED,
+        false, false, 0U, 0.0, 0.0,
+        (automatic ? "automatic_loop_no_verified_candidate:" :
+        "search_attempt_limit_reached:") + reason);
+      if (automatic) {
+        RCLCPP_INFO(
+          get_logger(), "automatic loop search ended after %d attempts: %s",
+          search_attempt_count_, reason.c_str());
+      } else {
+        RCLCPP_ERROR(
+          get_logger(), "relocalization failed after %d attempts: %s",
+          search_attempt_count_, reason.c_str());
+      }
       request_active_ = false;
+      automatic_loop_search_active_ = false;
       return;
     }
     publish_status(ResultMessage::SEARCHING, true, false, 0U, 0.0, 0.0, reason);
+  }
+
+  bool automatic_loop_scheduler_healthy() const
+  {
+    return scheduler_lidar_enabled_ &&
+      std::find(
+      automatic_loop_allowed_scheduler_states_.begin(),
+      automatic_loop_allowed_scheduler_states_.end(), scheduler_health_) !=
+      automatic_loop_allowed_scheduler_states_.end();
+  }
+
+  bool maybe_start_automatic_loop_search(
+    const builtin_interfaces::msg::Time & query_stamp)
+  {
+    const double query_stamp_s = stamp_seconds(query_stamp);
+    AutomaticLoopClosureEvidence evidence;
+    evidence.request_active = request_active_;
+    evidence.manual_request_asserted = request_asserted_;
+    evidence.scheduler_healthy = automatic_loop_scheduler_healthy();
+    evidence.lidar_enabled = scheduler_lidar_enabled_;
+    evidence.database_keyframes = database_.keyframes().size();
+    evidence.query_stamp_s = query_stamp_s;
+    evidence.last_search_started_s = last_automatic_loop_search_started_s_;
+    const auto fused_pose_message = nearest_pose(
+      fused_pose_history_, query_stamp, query_pose_tolerance_s_);
+    if (fused_pose_message && finite_pose(fused_pose_message->pose.pose)) {
+      const auto current_fused_pose =
+        pose_to_isometry(fused_pose_message->pose.pose);
+      for (const auto & keyframe : database_.keyframes()) {
+        const double candidate_distance_m =
+          (keyframe.world_from_sensor.translation() -
+          current_fused_pose.translation()).norm();
+        if (automatic_loop_candidate_is_historical(
+            automatic_loop_config_, query_stamp_s, keyframe.stamp_s) &&
+          automatic_loop_candidate_is_spatially_near(
+            automatic_loop_config_, candidate_distance_m))
+        {
+          ++evidence.nearby_historical_keyframes;
+        }
+      }
+    }
+    const auto decision = evaluate_automatic_loop_closure(
+      automatic_loop_config_, evidence);
+    if (!decision.start_search) {
+      return false;
+    }
+
+    request_active_ = true;
+    automatic_loop_search_active_ = true;
+    pending_query_cloud_.reset();
+    success_consistency_gate_.reset();
+    const auto query_ns = static_cast<uint64_t>(std::max<double>(
+      1.0, std::round(query_stamp_s * 1.0e9)));
+    active_transaction_id_ = std::max(last_transaction_id_ + 1U, query_ns);
+    last_transaction_id_ = active_transaction_id_;
+    search_attempt_count_ = 0;
+    request_started_s_ = now().seconds();
+    last_automatic_loop_search_started_s_ = query_stamp_s;
+    publish_status(
+      ResultMessage::SEARCHING, true, false, 0U, 0.0, 0.0,
+      "automatic_loop_searching_historical_keyframes");
+    RCLCPP_INFO(
+      get_logger(),
+      "automatic loop transaction=%llu started with %zu static keyframes",
+      static_cast<unsigned long long>(active_transaction_id_),
+      database_.keyframes().size());
+    return true;
   }
 
   void query_cloud_callback(const CloudMessage::SharedPtr message)
@@ -890,6 +1021,9 @@ private:
     // tuple. Wake keyframe synchronization immediately on its arrival.
     process_pending_keyframe_cloud();
     if (!request_active_) {
+      maybe_start_automatic_loop_search(message->header.stamp);
+    }
+    if (!request_active_) {
       return;
     }
     pending_query_cloud_ = message;
@@ -909,6 +1043,15 @@ private:
       return;
     }
     if (stamp_seconds(latest_lio_pose_->header.stamp) < stamp_s) {
+      return;
+    }
+    if (automatic_loop_search_active_ &&
+      (!latest_fused_pose_ ||
+      stamp_seconds(latest_fused_pose_->header.stamp) < stamp_s))
+    {
+      // The map pose and query scan are published by different callbacks for
+      // the same LiDAR cycle. Keep the newest scan pending until the map pose
+      // catches up instead of consuming it as a timestamp mismatch.
       return;
     }
     pending_query_cloud_.reset();
@@ -939,10 +1082,53 @@ private:
       search_failed_attempt(std::string("descriptor_failed:") + error.what());
       return;
     }
-    const auto candidates = database_.query(
-      descriptor, static_cast<std::size_t>(maximum_candidates_), exclude_recent_keyframes_);
+    const auto source_pose = pose_to_isometry(source_pose_message->pose.pose);
+    std::optional<Eigen::Isometry3d> current_fused_pose;
+    std::optional<Eigen::Isometry3d> current_map_from_lio;
+    if (automatic_loop_search_active_) {
+      const auto fused_pose_message = nearest_pose(
+        fused_pose_history_, message->header.stamp, query_pose_tolerance_s_);
+      if (!fused_pose_message || !finite_pose(fused_pose_message->pose.pose)) {
+        search_failed_attempt("missing_time_aligned_current_fused_pose");
+        return;
+      }
+      current_fused_pose = pose_to_isometry(fused_pose_message->pose.pose);
+      current_map_from_lio = *current_fused_pose * source_pose.inverse();
+    }
+    const std::size_t retrieval_limit = automatic_loop_search_active_ ?
+      database_.keyframes().size() : static_cast<std::size_t>(maximum_candidates_);
+    auto candidates = database_.query(
+      descriptor, retrieval_limit, exclude_recent_keyframes_);
+    if (automatic_loop_search_active_) {
+      candidates.erase(
+        std::remove_if(
+          candidates.begin(), candidates.end(),
+          [this, stamp_s, &current_fused_pose](const CandidateMatch & candidate) {
+            const auto * keyframe = database_.find(candidate.keyframe_id);
+            if (keyframe == nullptr ||
+              !automatic_loop_candidate_is_historical(
+                automatic_loop_config_, stamp_s, keyframe->stamp_s))
+            {
+              return true;
+            }
+            const double candidate_distance_m =
+              (keyframe->world_from_sensor.translation() -
+              current_fused_pose->translation()).norm();
+            return !automatic_loop_candidate_is_spatially_near(
+              automatic_loop_config_, candidate_distance_m);
+          }),
+        candidates.end());
+      if (candidates.size() >
+        static_cast<std::size_t>(automatic_loop_maximum_candidates_))
+      {
+        candidates.resize(
+          static_cast<std::size_t>(automatic_loop_maximum_candidates_));
+      }
+    }
     if (candidates.empty()) {
-      search_failed_attempt("no_descriptor_candidate");
+      search_failed_attempt(
+        automatic_loop_search_active_ ?
+        "no_nearby_historical_descriptor_candidate" : "no_descriptor_candidate");
       return;
     }
     std::ostringstream retrieval_summary;
@@ -956,7 +1142,6 @@ private:
     RCLCPP_INFO(
       get_logger(), "relocalization retrieval candidates: %s",
       retrieval_summary.str().c_str());
-    const auto source_pose = pose_to_isometry(source_pose_message->pose.pose);
     struct VerifiedCandidate
     {
       std::size_t keyframe_id{0U};
@@ -974,6 +1159,7 @@ private:
     std::size_t reverse_registration_rejections = 0U;
     std::size_t cycle_rejections = 0U;
     std::size_t alignment_rejections = 0U;
+    std::size_t automatic_correction_rejections = 0U;
     std::size_t registration_exceptions = 0U;
     struct CandidateDiagnostic
     {
@@ -1011,6 +1197,10 @@ private:
       double alignment_translation_m{std::numeric_limits<double>::infinity()};
       double alignment_rotation_rad{std::numeric_limits<double>::infinity()};
       double alignment_tilt_rad{std::numeric_limits<double>::infinity()};
+      double automatic_correction_translation_m{
+        std::numeric_limits<double>::quiet_NaN()};
+      double automatic_correction_rotation_rad{
+        std::numeric_limits<double>::quiet_NaN()};
       int stage_depth{0};
       std::string rejection_stage{"forward"};
     };
@@ -1021,8 +1211,9 @@ private:
       Eigen::AngleAxisd(-source_yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix() *
       source_pose.rotation();
     constexpr double quarter_turn = 0.5 * 3.14159265358979323846;
-    const std::array<double, 4> yaw_offsets = {
-      0.0, quarter_turn, -quarter_turn, 2.0 * quarter_turn};
+    const std::vector<double> yaw_offsets = automatic_loop_search_active_ ?
+      std::vector<double>{0.0} :
+      std::vector<double>{0.0, quarter_turn, -quarter_turn, 2.0 * quarter_turn};
     for (const auto & candidate : candidates) {
       if (candidate.descriptor_distance > maximum_descriptor_distance_) {
         ++descriptor_gate_rejections;
@@ -1057,14 +1248,17 @@ private:
           {
             best_attempt_for_keyframe = diagnostic;
           }
-        };
+      };
       for (const double yaw_offset : yaw_offsets) {
-        Eigen::Matrix4f initial = candidate_pose;
-        const Eigen::Matrix3d rotation =
-          Eigen::AngleAxisd(
-          source_yaw + yaw_offset,
-          Eigen::Vector3d::UnitZ()).toRotationMatrix() * source_tilt;
-        initial.block<3, 3>(0, 0) = rotation.cast<float>();
+        Eigen::Matrix4f initial = automatic_loop_search_active_ ?
+          current_fused_pose->matrix().cast<float>() : candidate_pose;
+        if (!automatic_loop_search_active_) {
+          const Eigen::Matrix3d rotation =
+            Eigen::AngleAxisd(
+            source_yaw + yaw_offset,
+            Eigen::Vector3d::UnitZ()).toRotationMatrix() * source_tilt;
+          initial.block<3, 3>(0, 0) = rotation.cast<float>();
+        }
         try {
           const auto registration = align_registration(
             cloud, keyframe->cloud, initial, config);
@@ -1189,6 +1383,24 @@ private:
             record_attempt(diagnostic);
             continue;
           }
+          if (automatic_loop_search_active_) {
+            const Eigen::Isometry3d epoch_correction =
+              map_from_lio * current_map_from_lio->inverse();
+            diagnostic.automatic_correction_translation_m =
+              epoch_correction.translation().norm();
+            diagnostic.automatic_correction_rotation_rad =
+              rotation_angle(epoch_correction.rotation());
+            if (!automatic_loop_correction_is_safe(
+                automatic_loop_config_,
+                diagnostic.automatic_correction_translation_m,
+                diagnostic.automatic_correction_rotation_rad))
+            {
+              ++automatic_correction_rejections;
+              diagnostic.rejection_stage = "automatic_correction";
+              record_attempt(diagnostic);
+              continue;
+            }
+          }
           diagnostic.stage_depth = 4;
           diagnostic.rejection_stage = "verified";
           record_attempt(diagnostic);
@@ -1220,6 +1432,7 @@ private:
           "matches=%zu,fitness=%.6f,overlap=%.3f,objective_rmse=%.3f,euclidean_rmse=%.3f,"
           "rank=%d,condition=%.3g) cycle=(translation=%.3f,rotation=%.3f) "
           "alignment=(translation=%.3f,rotation=%.3f,tilt=%.3f) "
+          "automatic_correction=(translation=%.3f,rotation=%.3f) "
           "exceptions=%zu elapsed_ms=%.1f",
           best_attempt_for_keyframe->keyframe_id, registration_method_.c_str(),
           best_attempt_for_keyframe->descriptor_distance,
@@ -1256,6 +1469,8 @@ private:
           best_attempt_for_keyframe->alignment_translation_m,
           best_attempt_for_keyframe->alignment_rotation_rad,
           best_attempt_for_keyframe->alignment_tilt_rad,
+          best_attempt_for_keyframe->automatic_correction_translation_m,
+          best_attempt_for_keyframe->automatic_correction_rotation_rad,
           candidate_registration_exceptions, candidate_elapsed_ms);
       } else {
         RCLCPP_WARN(
@@ -1349,18 +1564,23 @@ private:
           consistency.maximum_rotation_delta_rad);
         return;
       }
+      const bool automatic_loop = automatic_loop_search_active_;
       publish_status(
         ResultMessage::SUCCESS, false, true, static_cast<uint32_t>(best.keyframe_id),
         best.descriptor_distance, best.registration.fitness,
+        automatic_loop ?
+        "automatic_loop_candidate_accepted_awaiting_backend_epoch" :
         "registration_candidate_accepted_awaiting_backend_epoch", &best.recovered_pose,
         &source_pose, &best.map_from_lio, &message->header.stamp);
       RCLCPP_WARN(
         get_logger(),
-        "relocalization candidate accepted: id=%zu descriptor=%.4f score=%.4f "
+        "%s candidate accepted: id=%zu descriptor=%.4f score=%.4f "
         "fitness=%.6f; awaiting unified backend reset acknowledgement",
+        automatic_loop ? "automatic loop" : "relocalization",
         best.keyframe_id, best.descriptor_distance, best.score,
         best.registration.fitness);
       request_active_ = false;
+      automatic_loop_search_active_ = false;
       success_consistency_gate_.reset();
       return;
     }
@@ -1372,7 +1592,8 @@ private:
            << reciprocal_support_rejections << ",reverse_registration="
            << reverse_registration_rejections << ",cycle=" << cycle_rejections
            << ",alignment=" << alignment_rejections << ",exceptions="
-           << registration_exceptions;
+           << registration_exceptions << ",automatic_correction="
+           << automatic_correction_rejections;
     if (best_forward_attempt) {
       reason << ",best_candidate=" << best_forward_attempt->keyframe_id
              << ",registration_method=" << registration_method_
@@ -1412,12 +1633,22 @@ private:
       return;
     }
     if (now_s - request_started_s_ >= search_timeout_s_) {
-      publish_status(ResultMessage::FAILED, false, false, 0U, 0.0, 0.0,
-        "search_timeout");
-      RCLCPP_ERROR(
-        get_logger(), "relocalization timed out after %.2f ROS seconds",
-        now_s - request_started_s_);
+      const bool automatic = automatic_loop_search_active_;
+      publish_status(
+        automatic ? ResultMessage::IDLE : ResultMessage::FAILED,
+        false, false, 0U, 0.0, 0.0,
+        automatic ? "automatic_loop_search_timeout" : "search_timeout");
+      if (automatic) {
+        RCLCPP_INFO(
+          get_logger(), "automatic loop search timed out after %.2f ROS seconds",
+          now_s - request_started_s_);
+      } else {
+        RCLCPP_ERROR(
+          get_logger(), "relocalization timed out after %.2f ROS seconds",
+          now_s - request_started_s_);
+      }
       request_active_ = false;
+      automatic_loop_search_active_ = false;
       success_consistency_gate_.reset();
     }
   }
@@ -1451,11 +1682,14 @@ private:
   bool readiness_published_{false};
   bool request_active_{false};
   bool request_asserted_{false};
+  bool automatic_loop_search_active_{false};
   uint64_t active_transaction_id_{0U};
   uint64_t last_transaction_id_{0U};
   double last_keyframe_attempt_s_{-std::numeric_limits<double>::infinity()};
   double last_query_attempt_s_{-std::numeric_limits<double>::infinity()};
   double request_started_s_{0.0};
+  double last_automatic_loop_search_started_s_{
+    -std::numeric_limits<double>::infinity()};
   double keyframe_attempt_period_s_{0.5};
   double query_attempt_period_s_{0.5};
   double search_timeout_s_{6.0};
@@ -1464,6 +1698,8 @@ private:
   int maximum_cloud_points_{1800};
   int minimum_registration_points_{30};
   int maximum_search_attempts_{10};
+  int automatic_loop_maximum_search_attempts_{3};
+  int automatic_loop_maximum_candidates_{2};
   int minimum_database_keyframes_{4};
   int search_attempt_count_{0};
   int success_consistency_required_queries_{3};
@@ -1496,6 +1732,8 @@ private:
   bool keyframe_consistency_diagnostics_enabled_{true};
   std::string expected_keyframe_frame_id_{"camera_init"};
   std::string expected_query_frame_id_{"body"};
+  AutomaticLoopClosureConfig automatic_loop_config_;
+  std::vector<std::string> automatic_loop_allowed_scheduler_states_;
   std::size_t keyframe_quality_rejections_{0U};
   std::size_t keyframe_quality_stale_rejections_{0U};
   std::size_t keyframe_frame_rejections_{0U};

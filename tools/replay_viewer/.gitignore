@@ -1,0 +1,7 @@
+node_modules/
+dist/
+screenshots/*.png
+!screenshots/desktop-midpoint.png
+public/replay/*
+!public/replay/.gitignore
+!public/replay/catalog.json

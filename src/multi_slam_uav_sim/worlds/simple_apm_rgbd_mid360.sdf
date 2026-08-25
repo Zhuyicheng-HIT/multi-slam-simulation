@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+﻿<?xml version="1.0"?>
 <sdf version="1.10">
   <world name="simple_apm_rgbd_mid360">
     <physics name="apm_1ms_physics" type="ignored">
@@ -6,6 +6,7 @@
       <real_time_factor>1.0</real_time_factor>
     </physics>
     <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-air-pressure-system" name="gz::sim::systems::AirPressure"/>
     <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
       <render_engine>ogre2</render_engine>
     </plugin>
@@ -263,6 +264,19 @@
         <visual name="marker_30"><pose>-4.6 15.6 0.035 0 0 -0.48</pose><geometry><box><size>0.50 1.48 0.025</size></box></geometry><material><diffuse>0.12 0.62 0.34 1</diffuse></material></visual>
         <visual name="marker_31"><pose>8.2 14.9 0.035 0 0 0.12</pose><geometry><box><size>1.55 0.40 0.025</size></box></geometry><material><diffuse>0.82 0.12 0.10 1</diffuse></material></visual>
 
+      </link>
+    </model>
+
+    <!-- Low relief keeps the ground non-planar for range-facet evaluation. -->
+    <model name="range_facet_ground_relief">
+      <static>true</static>
+      <link name="relief_link">
+        <collision name="relief_0"><pose>-5.0 -4.5 0.12 0 0 0.2</pose><geometry><cylinder><radius>0.65</radius><length>0.24</length></cylinder></geometry></collision>
+        <visual name="relief_0_v"><pose>-5.0 -4.5 0.12 0 0 0.2</pose><geometry><cylinder><radius>0.65</radius><length>0.24</length></cylinder></geometry><material><ambient>0.42 0.30 0.18 1</ambient><diffuse>0.55 0.38 0.20 1</diffuse></material></visual>
+        <collision name="relief_1"><pose>-2.5 -5.5 0.17 0 0 0.0</pose><geometry><box><size>1.1 0.8 0.34</size></box></geometry></collision>
+        <visual name="relief_1_v"><pose>-2.5 -5.5 0.17 0 0 0.0</pose><geometry><box><size>1.1 0.8 0.34</size></box></geometry><material><ambient>0.18 0.38 0.52 1</ambient><diffuse>0.26 0.55 0.72 1</diffuse></material></visual>
+        <collision name="relief_2"><pose>4.8 4.6 0.19 0 0 0.3</pose><geometry><cylinder><radius>0.55</radius><length>0.38</length></cylinder></geometry></collision>
+        <visual name="relief_2_v"><pose>4.8 4.6 0.19 0 0 0.3</pose><geometry><cylinder><radius>0.55</radius><length>0.38</length></cylinder></geometry><material><ambient>0.50 0.28 0.12 1</ambient><diffuse>0.72 0.40 0.16 1</diffuse></material></visual>
       </link>
     </model>
 

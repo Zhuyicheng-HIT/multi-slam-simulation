@@ -13,6 +13,16 @@ WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 source /opt/ros/humble/setup.bash
 source "$WS_INSTALL/setup.bash"
 
+ROUTE_FEEDBACK_SOURCE=${ROUTE_FEEDBACK_SOURCE:-unified_backend}
+GAZEBO_TRUTH_ODOM_TOPIC=${GAZEBO_TRUTH_ODOM_TOPIC:-/sim/mid360/ground_truth_odom}
+case "$ROUTE_FEEDBACK_SOURCE" in
+  unified_backend|gazebo_truth) ;;
+  *)
+    printf 'ROUTE_FEEDBACK_SOURCE must be unified_backend or gazebo_truth.\n' >&2
+    exit 2
+    ;;
+esac
+
 mavros_ready=false
 for _attempt in $(seq 1 10); do
   mavros_topics=$(timeout 5s ros2 topic list --no-daemon --spin-time 2.0 2>/dev/null || true)
@@ -36,21 +46,30 @@ if ! python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
     --topic /fusion/unified/odom --timeout 45 --reliability best_effort \
     >/dev/null 2>&1; then
   cat >&2 <<'EOF'
-The strict figure-eight mission did not receive /fusion/unified/odom.
+The figure-eight observer mission did not receive /fusion/unified/odom.
 Start the FAST-LIO frontend and unified backend stack before this command.
-The mission is aborting before arming; FCU local position and Gazebo truth are
-not accepted as navigation fallbacks.
+The mission is aborting before arming because there would be no SLAM trajectory
+to diagnose. This readiness check does not make SLAM a control input when the
+selected feedback source is gazebo_truth.
 EOF
+  exit 2
+fi
+if [[ "$ROUTE_FEEDBACK_SOURCE" == "gazebo_truth" ]] && \
+   ! python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \
+      --topic "$GAZEBO_TRUTH_ODOM_TOPIC" --timeout 45 \
+      --reliability best_effort >/dev/null 2>&1; then
+  printf 'Gazebo-truth route feedback is unavailable: %s\n' \
+    "$GAZEBO_TRUTH_ODOM_TOPIC" >&2
   exit 2
 fi
 
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/s_curve_state_machine_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
 
-TAKEOFF_ALT=${TAKEOFF_ALT:-5.0}
+TAKEOFF_ALT=${TAKEOFF_ALT:-2.2}
 S_CURVE_SPAN=${S_CURVE_SPAN:-9.0}
 S_CURVE_AMPLITUDE=${S_CURVE_AMPLITUDE:-1.5}
-S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-4.5}
+S_CURVE_VERTICAL_AMPLITUDE=${S_CURVE_VERTICAL_AMPLITUDE:-0.8}
 S_CURVE_VERTICAL_CYCLES=${S_CURVE_VERTICAL_CYCLES:-2}
 S_CURVE_PASSES=${S_CURVE_PASSES:-1}
 FIGURE8_ROTATION_DEG=${FIGURE8_ROTATION_DEG:-158.0}
@@ -67,7 +86,7 @@ POST_TAKEOFF_HOLD_TIME=${POST_TAKEOFF_HOLD_TIME:-3.0}
 FINAL_HOLD_TIME=${FINAL_HOLD_TIME:-0.0}
 LOCALIZATION_SAFETY_ENABLED=${LOCALIZATION_SAFETY_ENABLED:-auto}
 LOCALIZATION_HOLD_S=${LOCALIZATION_HOLD_S:-1.0}
-MINIMUM_CLEARANCE_ALT=${MINIMUM_CLEARANCE_ALT:-3.5}
+MINIMUM_CLEARANCE_ALT=${MINIMUM_CLEARANCE_ALT:-1.5}
 CALIBRATION_YAW_SWEEP_DEG=${CALIBRATION_YAW_SWEEP_DEG:-12.0}
 CALIBRATION_YAW_CYCLES=${CALIBRATION_YAW_CYCLES:-3.0}
 CALIBRATION_MOTION_ENABLED=${CALIBRATION_MOTION_ENABLED:-true}
@@ -165,6 +184,13 @@ case "${LOCALIZATION_SAFETY_ENABLED,,}" in
     ;;
   *) printf 'LOCALIZATION_SAFETY_ENABLED must be auto, true/false, or 1/0, got %s.\n' "$LOCALIZATION_SAFETY_ENABLED" >&2; exit 2 ;;
 esac
+if [[ "$ROUTE_FEEDBACK_SOURCE" == "gazebo_truth" ]] && \
+   [[ "$LOCALIZATION_SAFETY_ENABLED_ARG" != "false" ]]; then
+  printf '%s\n' \
+    'Gazebo-truth observer mode disables SLAM-triggered mission holds.' \
+    'The unified backend remains active only for mapping and error evidence.'
+  LOCALIZATION_SAFETY_ENABLED_ARG=false
+fi
 
 cat <<EOF
 GUIDED 3D large figure-eight state machine starting.
@@ -178,7 +204,7 @@ Stops: every $S_CURVE_WAYPOINT_SPACING m for at least $S_CURVE_WAYPOINT_HOLD s,
        endpoint hold=$S_CURVE_HOLD_TIME s, tolerance=$S_CURVE_WAYPOINT_TOLERANCE m
 Safety: requested=$LOCALIZATION_SAFETY_ENABLED, enabled=$LOCALIZATION_SAFETY_ENABLED_ARG,
         minimum localization-loss hold=$LOCALIZATION_HOLD_S s
-Feedback: strict /fusion/unified/odom; no FCU/Gazebo navigation fallback,
+Feedback: $ROUTE_FEEDBACK_SOURCE; unified SLAM is observer-only when gazebo_truth,
           command offset limits=$MAX_ROUTE_COMMAND_OFFSET m horizontal / $MAX_ROUTE_VERTICAL_OFFSET m vertical
 Altitude guard: base FCU altitude +/- $MAX_ROUTE_ALTITUDE_MARGIN m, planned rise + margin
 Yaw: calibration_sweep=$CALIBRATION_YAW_SWEEP_DEG deg x $CALIBRATION_YAW_CYCLES cycles;
@@ -206,7 +232,8 @@ ros2 run multi_slam_uav_sim guided_s_curve_waypoints --ros-args \
   -p waypoint_spacing_m:="$S_CURVE_WAYPOINT_SPACING_ARG" \
   -p waypoint_hold_s:="$S_CURVE_WAYPOINT_HOLD_ARG" \
   -p waypoint_position_tolerance_m:="$S_CURVE_WAYPOINT_TOLERANCE_ARG" \
-  -p route_feedback_source:=unified_backend \
+  -p route_feedback_source:="$ROUTE_FEEDBACK_SOURCE" \
+  -p gazebo_truth_odom_topic:="$GAZEBO_TRUTH_ODOM_TOPIC" \
   -p max_route_command_offset_m:="$MAX_ROUTE_COMMAND_OFFSET_ARG" \
   -p max_route_vertical_offset_m:="$MAX_ROUTE_VERTICAL_OFFSET_ARG" \
   -p route_altitude_margin_m:="$MAX_ROUTE_ALTITUDE_MARGIN_ARG" \
