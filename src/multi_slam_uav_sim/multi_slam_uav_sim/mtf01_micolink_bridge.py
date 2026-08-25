@@ -42,7 +42,7 @@ class Mtf01MicoLinkBridge(Node):
             "flow_topic": "/sim/optical_flow/rad",
             "range_topic": "/sim/optical_flow/range_micolink",
             "raw_frame_topic": "/sim/mtf01/micolink_frame",
-            "imu_topic": "/mavros/imu/data_raw",
+            "imu_topic": "/livox/imu",
             "tcp_host": "127.0.0.1",
             "tcp_port": 5764,
             "device_id": MICOLINK_MTF01_DEVICE_ID,

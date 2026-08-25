@@ -187,7 +187,7 @@ Logs:
 
 Inputs:
   $FASTLIO_CLOUD_TOPIC  -> /livox/lidar  (livox_ros_driver2/msg/CustomMsg, protocol reference)
-  /mavros/imu/data_raw    -> /livox/imu    (FCU HIGHRES_IMU sensor_msgs/msg/Imu)
+  /mid360/imu             -> /livox/imu    (MID360 Gazebo IMU, base_link SI units)
   FASTLIO_INPUT_MODE=$FASTLIO_INPUT_MODE
   START_LIVOX_POINTCLOUD_BRIDGE=$START_LIVOX_POINTCLOUD_BRIDGE
 
@@ -231,7 +231,7 @@ if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "1" ]]; then
   setsid ros2 run multi_slam_uav_sim livox_mid360_bridge --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p input_cloud_topic:="$FASTLIO_CLOUD_TOPIC" \
-    -p input_imu_topic:=/mavros/imu/data_raw \
+    -p input_imu_topic:=/sim/mid360/imu_raw \
     -p livox_lidar_topic:=/livox/lidar \
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \

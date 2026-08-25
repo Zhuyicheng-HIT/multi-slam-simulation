@@ -224,7 +224,7 @@ setsid env SHOW_FLOW_WINDOW=0 FLOW_DEBUG="${FLOW_DEBUG:-false}" \
   >"$OUTPUT_DIR/sim.stdout.log" 2>"$OUTPUT_DIR/sim.stderr.log" &
 pids+=("$!")
 wait_for_message /mavros/state 90
-wait_for_message /mavros/imu/data_raw 90
+wait_for_message /livox/imu 90
 case "$FASTLIO_INPUT_MODE" in
   livox)
     wait_for_message /livox/lidar 90

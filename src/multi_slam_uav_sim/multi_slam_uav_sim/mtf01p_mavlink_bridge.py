@@ -43,7 +43,7 @@ class Mtf01pMavlinkBridge(Node):
             "flow_topic": "/sim/optical_flow/rad",
             "range_topic": "/sim/optical_flow/range",
             "raw_frame_topic": "/sim/mtf01/mavlink_frame",
-            "imu_topic": "/mavros/imu/data_raw",
+            "imu_topic": "/livox/imu",
             "tcp_host": "127.0.0.1",
             "tcp_port": 5764,
             "source_system": 200,

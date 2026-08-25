@@ -4,6 +4,7 @@ import threading
 
 import rclpy
 from geometry_msgs.msg import TransformStamped
+from gz.msgs10.imu_pb2 import IMU as GzImu
 from gz.msgs10.laserscan_pb2 import LaserScan as GzLaserScan
 from gz.msgs10.pose_v_pb2 import Pose_V
 from gz.transport13 import Node as GzNode
@@ -11,7 +12,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node as RosNode
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import Imu, PointCloud2, PointField
 from tf2_ros import TransformBroadcaster
 
 from multi_slam_uav_sim.mid360_protocol import (
@@ -40,14 +41,24 @@ def rotate_vec(q, v):
     return (r[0], r[1], r[2])
 
 
+def rotate_matrix_vector(rotation, vector):
+    return tuple(
+        sum(rotation[3 * row + column] * vector[column] for column in range(3))
+        for row in range(3)
+    )
+
+
 class GzMid360PointCloudBridge(RosNode):
     def __init__(self):
         super().__init__("gz_mid360_pointcloud_bridge")
         self.declare_parameter("gz_topic", "/mid360/lidar")
+        self.declare_parameter("gz_imu_topic", "/mid360/imu")
         self.declare_parameter("raw_topic", "/sim/mid360/points_raw")
+        self.declare_parameter("imu_topic", "/sim/mid360/imu_raw")
         self.declare_parameter("registered_topic", "/sim/mid360/cloud_registered")
         self.declare_parameter("odom_topic", "/sim/mid360/ground_truth_odom")
         self.declare_parameter("sensor_frame", "mid360_link")
+        self.declare_parameter("imu_frame", "base_link")
         self.declare_parameter("map_frame", "camera_init")
         self.declare_parameter("gazebo_world_name", "simple_apm_rgbd_mid360")
         self.declare_parameter("gazebo_model", "apm_iris")
@@ -55,14 +66,25 @@ class GzMid360PointCloudBridge(RosNode):
         self.declare_parameter("publish_registered", True)
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("point_stride", 1)
-        self.declare_parameter("restamp", True)
+        self.declare_parameter("restamp", False)
         self.declare_parameter("livox_scan_lines", MID360_LINE_COUNT)
+        self.declare_parameter(
+            "imu_to_body_rotation",
+            [
+                0.9659258263, 0.0, 0.2588190451,
+                0.0, 1.0, 0.0,
+                -0.2588190451, 0.0, 0.9659258263,
+            ],
+        )
 
         self.gz_topic = self.get_parameter("gz_topic").value
+        self.gz_imu_topic = self.get_parameter("gz_imu_topic").value
         self.raw_topic = self.get_parameter("raw_topic").value
+        self.imu_topic = self.get_parameter("imu_topic").value
         self.registered_topic = self.get_parameter("registered_topic").value
         self.odom_topic = self.get_parameter("odom_topic").value
         self.sensor_frame = self.get_parameter("sensor_frame").value
+        self.imu_frame = self.get_parameter("imu_frame").value
         self.map_frame = self.get_parameter("map_frame").value
         self.world_name = str(self.get_parameter("gazebo_world_name").value)
         self.model_name = str(self.get_parameter("gazebo_model").value)
@@ -74,7 +96,13 @@ class GzMid360PointCloudBridge(RosNode):
         self.livox_scan_lines = max(
             1, int(self.get_parameter("livox_scan_lines").value)
         )
+        self.imu_to_body_rotation = tuple(
+            float(value) for value in self.get_parameter("imu_to_body_rotation").value
+        )
+        if len(self.imu_to_body_rotation) != 9:
+            raise ValueError("imu_to_body_rotation must contain 9 values")
         self.last_stamp_ns = 0
+        self.last_imu_stamp_ns = 0
         self.adjusted_stamp_count = 0
         self.pose_lock = threading.Lock()
         self.latest_model_pose = None
@@ -92,20 +120,28 @@ class GzMid360PointCloudBridge(RosNode):
             durability=DurabilityPolicy.VOLATILE,
         )
         self.raw_pub = self.create_publisher(PointCloud2, self.raw_topic, sensor_qos)
+        self.imu_pub = self.create_publisher(Imu, self.imu_topic, sensor_qos)
         self.registered_pub = self.create_publisher(PointCloud2, self.registered_topic, reliable_qos)
         self.odom_pub = self.create_publisher(Odometry, self.odom_topic, 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.gz_node = GzNode()
         self.gz_node.subscribe(GzLaserScan, self.gz_topic, self._scan_cb)
+        self.gz_node.subscribe(GzImu, self.gz_imu_topic, self._imu_cb)
         self.gz_node.subscribe(
             Pose_V, f"/world/{self.world_name}/dynamic_pose/info", self._gz_pose_cb)
         self.gz_node.subscribe(
             Pose_V, f"/world/{self.world_name}/pose/info", self._gz_pose_cb)
         self.get_logger().info(
             f"Gazebo MID360 bridge active: {self.gz_topic} -> "
-            f"{self.raw_topic}, {self.registered_topic}"
+            f"{self.raw_topic}, {self.registered_topic}; "
+            f"{self.gz_imu_topic} -> {self.imu_topic}"
         )
+
+    @staticmethod
+    def _source_stamp(msg):
+        stamp = msg.header.stamp
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nsec)
 
     def _stamp(self, msg):
         stamp = self.get_clock().now().to_msg()
@@ -124,6 +160,44 @@ class GzMid360PointCloudBridge(RosNode):
                 self.get_logger().warning("Adjusted non-monotonic MID360 timestamp")
         self.last_stamp_ns = stamp_ns
         return stamp
+
+    def _imu_cb(self, msg):
+        stamp_ns = self._source_stamp(msg)
+        if stamp_ns <= self.last_imu_stamp_ns:
+            stamp_ns = self.last_imu_stamp_ns + 1
+        self.last_imu_stamp_ns = stamp_ns
+
+        angular = rotate_matrix_vector(
+            self.imu_to_body_rotation,
+            (msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z),
+        )
+        acceleration = rotate_matrix_vector(
+            self.imu_to_body_rotation,
+            (
+                msg.linear_acceleration.x,
+                msg.linear_acceleration.y,
+                msg.linear_acceleration.z,
+            ),
+        )
+        output = Imu()
+        output.header.stamp.sec, output.header.stamp.nanosec = divmod(
+            max(1, stamp_ns), 1_000_000_000
+        )
+        output.header.frame_id = self.imu_frame
+        output.orientation_covariance[0] = -1.0
+        output.angular_velocity.x, output.angular_velocity.y, output.angular_velocity.z = angular
+        (
+            output.linear_acceleration.x,
+            output.linear_acceleration.y,
+            output.linear_acceleration.z,
+        ) = acceleration
+        output.angular_velocity_covariance[0] = 0.0002 ** 2
+        output.angular_velocity_covariance[4] = 0.0002 ** 2
+        output.angular_velocity_covariance[8] = 0.0002 ** 2
+        output.linear_acceleration_covariance[0] = 0.02 ** 2
+        output.linear_acceleration_covariance[4] = 0.02 ** 2
+        output.linear_acceleration_covariance[8] = 0.02 ** 2
+        self.imu_pub.publish(output)
 
     def _gz_pose_cb(self, msg):
         for pose in msg.pose:

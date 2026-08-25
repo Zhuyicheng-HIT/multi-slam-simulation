@@ -1,4 +1,5 @@
 #include <gz/msgs/laserscan.pb.h>
+#include <gz/msgs/imu.pb.h>
 #include <gz/msgs/pose_v.pb.h>
 #include <gz/msgs/world_stats.pb.h>
 #include <gz/transport/Node.hh>
@@ -40,8 +41,7 @@ public:
   {
     gz_topic_ = declare_parameter<std::string>("gz_topic", "/mid360/lidar");
     lidar_topic_ = declare_parameter<std::string>("livox_lidar_topic", "/livox/lidar");
-    input_imu_topic_ =
-      declare_parameter<std::string>("input_imu_topic", "/mavros/imu/data_raw");
+    gz_imu_topic_ = declare_parameter<std::string>("gz_imu_topic", "/mid360/imu");
     output_imu_topic_ = declare_parameter<std::string>("livox_imu_topic", "/livox/imu");
     lidar_frame_id_ = declare_parameter<std::string>("lidar_frame_id", "mid360_link");
     imu_frame_id_ = declare_parameter<std::string>("imu_frame_id", "base_link");
@@ -60,12 +60,11 @@ public:
     rtf_topic_ = declare_parameter<std::string>("rtf_topic", "/simulation/rtf");
     publish_ground_truth_odom_ =
       declare_parameter<bool>("publish_ground_truth_odom", true);
-    restamp_lidar_ = declare_parameter<bool>("restamp_lidar", true);
+    restamp_lidar_ = declare_parameter<bool>("restamp_lidar", false);
     stamp_lidar_from_latest_imu_ =
       declare_parameter<bool>("stamp_lidar_from_latest_imu", false);
     preserve_sim_scan_clock_ =
       declare_parameter<bool>("preserve_sim_scan_clock", false);
-    restamp_imu_ = declare_parameter<bool>("restamp_imu", false);
     point_stride_ = static_cast<int>(std::max<std::int64_t>(
       1, declare_parameter<std::int64_t>("point_stride", 1)));
     max_points_ = static_cast<int>(std::max<std::int64_t>(
@@ -96,6 +95,17 @@ public:
         // measured FAST-Calib translation.
         "lidar_to_body_translation", {0.05, 0.0, 0.10}),
       "lidar_to_body_translation");
+    imu_to_body_rotation_ = finite_parameter_array<9>(
+      declare_parameter<std::vector<double>>(
+        "imu_to_body_rotation",
+        {0.9659258263, 0.0, 0.2588190451,
+          0.0, 1.0, 0.0,
+          -0.2588190451, 0.0, 0.9659258263}),
+      "imu_to_body_rotation");
+    imu_angular_velocity_stddev_ = std::max(
+      0.0, declare_parameter<double>("imu_angular_velocity_stddev", 0.0002));
+    imu_linear_acceleration_stddev_ = std::max(
+      0.0, declare_parameter<double>("imu_linear_acceleration_stddev", 0.02));
     if (body_bounds_[0] > body_bounds_[1] ||
       body_bounds_[2] > body_bounds_[3] ||
       body_bounds_[4] > body_bounds_[5])
@@ -121,12 +131,11 @@ public:
       rtf_topic_, rclcpp::QoS(rclcpp::KeepLast(2)).best_effort());
     body_removed_ratio_pub_ = create_publisher<std_msgs::msg::Float32>(
       body_removed_ratio_topic_, rclcpp::SensorDataQoS());
-    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-      input_imu_topic_, rclcpp::SensorDataQoS(),
-      std::bind(&GzLivoxBridgeNode::on_imu, this, std::placeholders::_1));
-
     if (!gz_node_.Subscribe(gz_topic_, &GzLivoxBridgeNode::on_scan, this)) {
       throw std::runtime_error("Failed to subscribe to Gazebo topic " + gz_topic_);
+    }
+    if (!gz_node_.Subscribe(gz_imu_topic_, &GzLivoxBridgeNode::on_imu, this)) {
+      throw std::runtime_error("Failed to subscribe to Gazebo topic " + gz_imu_topic_);
     }
     if (!gz_node_.Subscribe(
         world_stats_topic_, &GzLivoxBridgeNode::on_world_stats, this))
@@ -154,10 +163,10 @@ public:
       get_logger(),
       "Direct MID360 adapter active: %s -> %s, %s -> %s, stride=%d, max_points=%d, "
       "point_timing=%s, stamp_mode=%s, body_filter=%s",
-      gz_topic_.c_str(), lidar_topic_.c_str(), input_imu_topic_.c_str(),
+      gz_topic_.c_str(), lidar_topic_.c_str(), gz_imu_topic_.c_str(),
       output_imu_topic_.c_str(), point_stride_, max_points_,
       synthetic_scan_timing_ ? "synthetic_scan" : "snapshot_at_packet_end",
-      stamp_lidar_from_latest_imu_ ? "latest_fcu_imu" :
+      stamp_lidar_from_latest_imu_ ? "latest_mid360_imu" :
       (preserve_sim_scan_clock_ ? "sim_rate_epoch_aligned" :
       (restamp_lidar_ ? "wall_each_frame" : "raw_gazebo")),
       body_filter_enabled_ ? "enabled" : "disabled");
@@ -450,14 +459,52 @@ private:
     }
   }
 
-  void on_imu(const sensor_msgs::msg::Imu::SharedPtr input)
+  static std::array<double, 9> covariance_or_diagonal(
+    const gz::msgs::Float_V & covariance, const double variance)
   {
-    sensor_msgs::msg::Imu output = *input;
+    std::array<double, 9> output{};
+    if (covariance.data_size() == 9) {
+      bool valid = true;
+      for (std::size_t index = 0; index < output.size(); ++index) {
+        output[index] = covariance.data(static_cast<int>(index));
+        valid = valid && std::isfinite(output[index]);
+      }
+      if (valid) {
+        return output;
+      }
+      output.fill(0.0);
+    }
+    output[0] = variance;
+    output[4] = variance;
+    output[8] = variance;
+    return output;
+  }
+
+  void on_imu(const gz::msgs::IMU & input)
+  {
+    const std::array<double, 3> angular_sensor{
+      input.angular_velocity().x(), input.angular_velocity().y(),
+      input.angular_velocity().z()};
+    const std::array<double, 3> acceleration_sensor{
+      input.linear_acceleration().x(), input.linear_acceleration().y(),
+      input.linear_acceleration().z()};
+    if (!std::all_of(angular_sensor.begin(), angular_sensor.end(), [](const double value) {
+        return std::isfinite(value);
+      }) || !std::all_of(
+        acceleration_sensor.begin(), acceleration_sensor.end(), [](const double value) {
+          return std::isfinite(value);
+        }))
+    {
+      dropped_invalid_imu_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+
+    sensor_msgs::msg::Imu output;
     const auto fallback_ns = now().nanoseconds();
-    const auto input_stamp_ns = checked_nonnegative_stamp_ns(
-      static_cast<std::int64_t>(input->header.stamp.sec),
-      static_cast<std::int64_t>(input->header.stamp.nanosec));
-    const auto candidate_ns = restamp_imu_ ? fallback_ns : input_stamp_ns;
+    const auto candidate_ns = input.has_header() && input.header().has_stamp() ?
+      checked_nonnegative_stamp_ns(
+      static_cast<std::int64_t>(input.header().stamp().sec()),
+      static_cast<std::int64_t>(input.header().stamp().nsec())) : 0;
     const auto previous = last_imu_stamp_ns_.load(std::memory_order_relaxed);
     const auto stamp_ns = monotonic_positive_stamp_ns(candidate_ns, previous, fallback_ns);
     if (stamp_ns != candidate_ns) {
@@ -468,6 +515,29 @@ private:
       return;
     }
     output.header.frame_id = imu_frame_id_;
+    output.orientation_covariance[0] = -1.0;
+    const auto angular_body = rotate_vector(imu_to_body_rotation_, angular_sensor);
+    const auto acceleration_body = rotate_vector(imu_to_body_rotation_, acceleration_sensor);
+    output.angular_velocity.x = angular_body[0];
+    output.angular_velocity.y = angular_body[1];
+    output.angular_velocity.z = angular_body[2];
+    output.linear_acceleration.x = acceleration_body[0];
+    output.linear_acceleration.y = acceleration_body[1];
+    output.linear_acceleration.z = acceleration_body[2];
+    const auto angular_covariance = rotate_covariance(
+      imu_to_body_rotation_, covariance_or_diagonal(
+        input.angular_velocity_covariance(),
+        imu_angular_velocity_stddev_ * imu_angular_velocity_stddev_));
+    const auto acceleration_covariance = rotate_covariance(
+      imu_to_body_rotation_, covariance_or_diagonal(
+        input.linear_acceleration_covariance(),
+        imu_linear_acceleration_stddev_ * imu_linear_acceleration_stddev_));
+    std::copy(
+      angular_covariance.begin(), angular_covariance.end(),
+      output.angular_velocity_covariance.begin());
+    std::copy(
+      acceleration_covariance.begin(), acceleration_covariance.end(),
+      output.linear_acceleration_covariance.begin());
     last_imu_stamp_ns_.store(stamp_ns, std::memory_order_relaxed);
     imu_count_.fetch_add(1, std::memory_order_relaxed);
     imu_pub_->publish(std::move(output));
@@ -527,7 +597,8 @@ private:
       "direct bridge clouds=%lu points=%u input_valid=%u body_removed=%u "
       "body_removed_ratio=%.5f cloud_hz=%.2f imu_hz=%.2f "
       "cloud_minus_imu_ms=%.1f adjusted_lidar=%lu adjusted_imu=%lu "
-      "truth_model_pose=%lu truth_scan_pose_fallback=%lu dropped_invalid=%lu",
+      "truth_model_pose=%lu truth_scan_pose_fallback=%lu dropped_invalid=%lu "
+      "dropped_invalid_imu=%lu",
       static_cast<unsigned long>(clouds), last_point_count_.load(std::memory_order_relaxed),
       last_valid_input_point_count_.load(std::memory_order_relaxed),
       last_body_removed_point_count_.load(std::memory_order_relaxed),
@@ -542,7 +613,9 @@ private:
       static_cast<unsigned long>(
         ground_truth_scan_pose_fallback_count_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
-        dropped_invalid_stamps_.load(std::memory_order_relaxed)));
+        dropped_invalid_stamps_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(
+        dropped_invalid_imu_.load(std::memory_order_relaxed)));
     last_status_time_ = current_time;
     last_status_cloud_count_ = clouds;
     last_status_imu_count_ = imus;
@@ -550,7 +623,7 @@ private:
 
   std::string gz_topic_;
   std::string lidar_topic_;
-  std::string input_imu_topic_;
+  std::string gz_imu_topic_;
   std::string output_imu_topic_;
   std::string lidar_frame_id_;
   std::string imu_frame_id_;
@@ -564,10 +637,9 @@ private:
   std::string rtf_topic_;
   std::string body_removed_ratio_topic_;
   bool publish_ground_truth_odom_{true};
-  bool restamp_lidar_{true};
+  bool restamp_lidar_{false};
   bool stamp_lidar_from_latest_imu_{false};
   bool preserve_sim_scan_clock_{false};
-  bool restamp_imu_{false};
   bool synthetic_scan_timing_{false};
   bool body_filter_enabled_{true};
   int point_stride_{1};
@@ -577,6 +649,9 @@ private:
   std::array<double, 6> body_bounds_{};
   std::array<double, 9> lidar_to_body_rotation_{};
   std::array<double, 3> lidar_to_body_translation_{};
+  std::array<double, 9> imu_to_body_rotation_{};
+  double imu_angular_velocity_stddev_{0.0002};
+  double imu_linear_acceleration_stddev_{0.02};
   std::mutex model_pose_mutex_;
   std::array<double, 3> latest_model_position_{};
   std::array<double, 4> latest_model_orientation_xyzw_{};
@@ -588,7 +663,6 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr ground_truth_odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr rtf_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr body_removed_ratio_pub_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::TimerBase::SharedPtr status_timer_;
   rclcpp::TimerBase::SharedPtr rtf_timer_;
 
@@ -607,6 +681,7 @@ private:
   std::atomic<std::uint64_t> adjusted_lidar_stamps_{0U};
   std::atomic<std::uint64_t> adjusted_imu_stamps_{0U};
   std::atomic<std::uint64_t> dropped_invalid_stamps_{0U};
+  std::atomic<std::uint64_t> dropped_invalid_imu_{0U};
   std::atomic<std::uint64_t> ground_truth_model_pose_count_{0U};
   std::atomic<std::uint64_t> ground_truth_scan_pose_fallback_count_{0U};
   std::atomic<std::uint32_t> last_point_count_{0U};

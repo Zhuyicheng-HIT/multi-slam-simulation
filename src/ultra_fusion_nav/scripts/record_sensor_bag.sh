@@ -17,7 +17,7 @@ case "$PROFILE" in
   nav)
     topics=(
       /clock /tf /tf_static
-      /mavros/imu/data
+      /livox/imu /sensors/imu
       /mavros/global_position/raw/fix /sim/optical_flow/rad
       /sensors/gnss/fix /sensors/optical_flow/rad
       /fusion/gps_flow/odom /mavros/odometry/out

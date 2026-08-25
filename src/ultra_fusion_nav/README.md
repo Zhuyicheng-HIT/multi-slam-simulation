@@ -12,7 +12,7 @@ The implementation order is deliberate:
 6. Add relocalization and the full fault-injection evaluation matrix.
 
 The online backend accepts native FAST-LIO point-to-plane LiDAR information,
-preintegration of FCU-calibrated HIGHRES_IMU measurements, GNSS, and
+preintegration of MID360 IMU measurements, GNSS, and
 optical-flow factors in one bounded window.
 The native LiDAR factor replaces the same-state LIO pose proxy and is validated
 against FAST-LIO's exported residual/Jacobian/normal equation. This is the first
@@ -73,9 +73,10 @@ The umbrella directory is not a ROS package. Each ROS package will be created at
 
 - Gazebo ground truth is evaluator-only and is never an estimator input.
 - MAVROS local position is a comparison signal, not a correction for FAST-LIO or the future backend.
-- `/mavros/imu/data_raw` remains the main LiDAR-IMU input. It is the FCU-scaled
-  HIGHRES_IMU measurement, not an uncalibrated ADC stream; D435i IMU is a
-  separate visual-inertial experiment input.
+- `/livox/imu` is the main LiDAR-IMU input. In simulation it comes from the
+  independent Gazebo MID360 IMU; on hardware it comes from the Livox driver.
+  The backend receives the same source as `/sensors/imu`. FCU IMU remains in
+  the ArduPilot control path and D435i IMU is a separate experiment input.
 - FCU fused local position never enters the estimator. FCU fused attitude may
   be considered for startup roll/pitch only after its source, frame, timestamp,
   and covariance have been validated.

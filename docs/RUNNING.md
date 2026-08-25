@@ -181,10 +181,10 @@ python3 tools/analyze_slam_drift.py --duration 125 \
 
 - 位置 RMSE 与最大位置误差；
 - 偏航 RMSE 与最大偏航误差；
-- FAST-LIO偏航角速度与飞控 HIGHRES_IMU 陀螺 Z 轴的延迟补偿相关系数；
-- 原始点云、注册点云和飞控 IMU时间戳回退次数；
+- FAST-LIO偏航角速度与 MID360 IMU 陀螺 Z 轴的延迟补偿相关系数；
+- 原始点云、注册点云和 MID360 IMU时间戳回退次数；
 - 连续注册点云体素重叠率和质心跳变。
 
 终端输出 `"passed": true` 表示所有阈值通过，完整 JSON 同时写入 `/tmp/multi_slam_slam_report.json`。
 
-FAST-LIO 的主 IMU 固定为飞控 `HIGHRES_IMU -> /mavros/imu/data_raw -> /livox/imu`，不会使用 D435i IMU。默认验收线为位置 RMSE 0.75 m、偏航 RMSE 12 度、稳态及终点偏航误差 15 度、延迟补偿后的 IMU 相关系数 0.65。
+FAST-LIO 的主 IMU 固定为 MID360 `Gazebo /mid360/imu -> /livox/imu`，Ultra-Fusion 经无重打时间戳的故障注入器消费同源 `/sensors/imu`；飞控 IMU仅保留给 ArduPilot。默认验收线为位置 RMSE 0.75 m、偏航 RMSE 12 度、稳态及终点偏航误差 15 度、延迟补偿后的 IMU 相关系数 0.65。

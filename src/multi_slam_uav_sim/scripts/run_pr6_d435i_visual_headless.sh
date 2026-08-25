@@ -459,8 +459,8 @@ record_pid simulation_performance "$!"
 # These checks are mission-readiness gates, not prerequisites for creating the
 # first native LiDAR state. Keeping them after first odom removes serial ROS CLI
 # startup latency without weakening any estimator observability condition.
-wait_for_topic /mavros/imu/data_raw 120
-trace_stage imu_ready
+wait_for_topic /livox/imu 120
+trace_stage mid360_imu_ready
 wait_for_topic /sim/optical_flow/rad 90
 trace_stage flow_ready
 wait_for_topic /mavros/global_position/raw/fix 120
