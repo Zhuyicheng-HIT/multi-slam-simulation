@@ -21,6 +21,10 @@ REGENERATE_LIDAR_SCHEDULER=${REGENERATE_LIDAR_SCHEDULER:-0}
 LIDAR_FACTOR_SCORE_MODE=${LIDAR_FACTOR_SCORE_MODE:-hybrid}
 LIDAR_ADMISSION_MODE=${LIDAR_ADMISSION_MODE:-adaptive}
 LIDAR_PAPER_ACTIVATION_THRESHOLD=${LIDAR_PAPER_ACTIVATION_THRESHOLD:-0.25}
+LIDAR_SUBSPACE_ENABLED=${LIDAR_SUBSPACE_ENABLED:-0}
+LIDAR_SUBSPACE_WEAK_THRESHOLD=${LIDAR_SUBSPACE_WEAK_THRESHOLD:-0.15}
+LIDAR_SUBSPACE_EXIT_THRESHOLD=${LIDAR_SUBSPACE_EXIT_THRESHOLD:-0.25}
+LIDAR_SUBSPACE_WEAK_SCALE=${LIDAR_SUBSPACE_WEAK_SCALE:-0.10}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 BACKEND_EXECUTOR_THREADS=${BACKEND_EXECUTOR_THREADS:-2}
@@ -193,6 +197,10 @@ esac
 case "$LIDAR_ADMISSION_MODE" in
   adaptive|paper_eq15) ;;
   *) printf 'LIDAR_ADMISSION_MODE must be adaptive or paper_eq15.\n' >&2; exit 2 ;;
+esac
+case "$LIDAR_SUBSPACE_ENABLED" in
+  0|1) ;;
+  *) printf 'LIDAR_SUBSPACE_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 if [[ ! -f "$REPLAY_QOS_OVERRIDES" ]]; then
   printf 'Missing rosbag QoS override file: %s\n' "$REPLAY_QOS_OVERRIDES" >&2
@@ -385,6 +393,14 @@ backend_command=(
 )
 if [[ "$LIDAR_ADMISSION_MODE" != adaptive ]]; then
   backend_command+=( -p lidar_admission_mode:="$LIDAR_ADMISSION_MODE" )
+fi
+if [[ "$LIDAR_SUBSPACE_ENABLED" == 1 ]]; then
+  backend_command+=(
+    -p lidar_subspace_enabled:=true
+    -p lidar_subspace_weak_threshold:="$LIDAR_SUBSPACE_WEAK_THRESHOLD"
+    -p lidar_subspace_exit_threshold:="$LIDAR_SUBSPACE_EXIT_THRESHOLD"
+    -p lidar_subspace_weak_scale:="$LIDAR_SUBSPACE_WEAK_SCALE"
+  )
 fi
 if [[ "$ENABLE_CYCLE_TRACE" == 1 ]]; then
   backend_command+=(
@@ -633,6 +649,10 @@ printf 'fixed_lidar_weight=%s\nfixed_gnss_weight=%s\nfixed_imu_weight=%s\nfixed_
 printf 'regenerate_lidar_scheduler=%s\nlidar_factor_score_mode=%s\nlidar_admission_mode=%s\nlidar_paper_activation_threshold=%s\n' \
   "$REGENERATE_LIDAR_SCHEDULER" "$LIDAR_FACTOR_SCORE_MODE" \
   "$LIDAR_ADMISSION_MODE" "$LIDAR_PAPER_ACTIVATION_THRESHOLD" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'lidar_subspace_enabled=%s\nlidar_subspace_weak_threshold=%s\nlidar_subspace_exit_threshold=%s\nlidar_subspace_weak_scale=%s\n' \
+  "$LIDAR_SUBSPACE_ENABLED" "$LIDAR_SUBSPACE_WEAK_THRESHOLD" \
+  "$LIDAR_SUBSPACE_EXIT_THRESHOLD" "$LIDAR_SUBSPACE_WEAK_SCALE" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'rgbd_depth_healthy_lidar_stride=%s\n' \
   "$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" >>"$OUTPUT_DIR/replay_result.env"
