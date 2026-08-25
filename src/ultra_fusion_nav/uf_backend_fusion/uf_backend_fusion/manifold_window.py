@@ -225,6 +225,19 @@ def lidar_translation_subspace_normal(hessian, gradient, scale):
     return 0.5 * (result_hessian + result_hessian.T), result_gradient
 
 
+def pose_translation_schur_information(hessian):
+    hessian = np.asarray(hessian, dtype=float)
+    if hessian.shape != (6, 6):
+        raise ValueError("pose information must be 6x6")
+    rotation = 0.5 * (hessian[3:, 3:] + hessian[3:, 3:].T)
+    coupling = hessian[:3, 3:]
+    schur = (
+        hessian[:3, :3]
+        - coupling @ np.linalg.pinv(rotation, rcond=1.0e-12) @ coupling.T
+    )
+    return 0.5 * (schur + schur.T)
+
+
 def huber_loss_and_weight(standardized_residual, delta):
     """Return Huber loss and IRLS weight in measurement-sigma units."""
     residual = np.asarray(standardized_residual, dtype=float)
@@ -1498,6 +1511,9 @@ class ManifoldSlidingWindowBackend:
                 local_hessian, local_gradient, cost = kernel(
                     *kernel_arguments
                 )
+                factor["last_solver_translation_information"] = (
+                    pose_translation_schur_information(local_hessian)
+                )
                 start = index * STATE_SIZE
                 pose = slice(start, start + 6)
                 hessian[pose, pose] += local_hessian
@@ -1531,6 +1547,9 @@ class ManifoldSlidingWindowBackend:
                         local_hessian, local_gradient, subspace_scale
                     )
                 )
+            factor["last_solver_translation_information"] = (
+                pose_translation_schur_information(local_hessian)
+            )
             hessian[pose, pose] += local_hessian
             gradient[pose] += local_gradient
             return (
@@ -2369,6 +2388,22 @@ class ManifoldSlidingWindowBackend:
             )
             for factor in self._factors
         ]
+
+    def active_lidar_solver_information(self):
+        """Sum cached active LiDAR Schur blocks from the last linearization."""
+        information = np.zeros((3, 3), dtype=float)
+        factor_count = 0
+        for factor in self._factors:
+            if factor["name"] != "lidar_point_plane" or not factor["enabled"]:
+                continue
+            factor_information = np.asarray(factor.get(
+                "last_solver_translation_information", np.zeros((3, 3))
+            ), dtype=float)
+            if np.any(~np.isfinite(factor_information)):
+                continue
+            information += 0.5 * (factor_information + factor_information.T)
+            factor_count += 1
+        return 0.5 * (information + information.T), factor_count
 
     def marginal_prior_translation_diagnostic(self, subspace_scale):
         """Project the live marginal prior onto the current LiDAR subspace."""

@@ -35,6 +35,7 @@ from uf_backend_fusion.online_backend import (
     apply_lidar_anchor_floor,
     associate_visual_states,
     combine_visual_reliability_decisions,
+    cap_weak_subspace_against_absolute_information,
     committed_state_missing_imu_factor,
     consume_timestamped_reliability_score,
     covariance_update_due,
@@ -63,6 +64,7 @@ from uf_backend_fusion.online_backend import (
     enqueue_latest,
     reanchor_imu_samples,
     delayed_frontend_map_commit_candidate,
+    directional_information,
     frontend_map_commit_decision,
     inflate_manifold_imu_covariance,
     lidar_bypass_allowed,
@@ -101,6 +103,32 @@ from uf_reliability.flow_rotation_gate import FlowRotationGateResult
 
 
 class OnlineBackendHelpersTest(unittest.TestCase):
+    def test_subspace_information_cap_preserves_strong_rotated_mode(self):
+        direction = np.asarray([1.0, 1.0, 0.0]) / math.sqrt(2.0)
+        weak = np.outer(direction, direction)
+        base = np.eye(3) - 0.999 * weak
+        previous = base.copy()
+        lidar = 50.0 * weak
+        absolute = 10.0 * weak
+
+        capped, ratios = cap_weak_subspace_against_absolute_information(
+            base, previous, lidar, absolute
+        )
+
+        self.assertAlmostEqual(float(direction @ capped @ direction), 0.0002)
+        strong = np.asarray([1.0, -1.0, 0.0]) / math.sqrt(2.0)
+        self.assertAlmostEqual(float(strong @ capped @ strong), 1.0)
+        self.assertAlmostEqual(float(ratios.min()), 0.2)
+
+    def test_directional_information_projects_onto_unit_direction(self):
+        information = np.diag([4.0, 9.0, 16.0])
+        self.assertAlmostEqual(
+            directional_information(information, [3.0, 4.0, 0.0]), 7.2
+        )
+        self.assertEqual(
+            directional_information(information, [0.0, 0.0, 0.0]), 0.0
+        )
+
     def test_nonlinear_iteration_budget_preserves_recovery_headroom(self):
         self.assertEqual(
             select_nonlinear_iteration_budget(2, 4, 5, state_count=20), 2

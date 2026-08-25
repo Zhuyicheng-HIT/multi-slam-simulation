@@ -445,6 +445,58 @@ def backend_diagnostic_level_message(
     )
 
 
+def directional_information(information, direction):
+    information = np.asarray(information, dtype=float)
+    direction = np.asarray(direction, dtype=float)
+    if information.shape != (3, 3) or direction.shape != (3,):
+        raise ValueError("directional information expects 3x3 and 3-vector")
+    if np.any(~np.isfinite(information)) or np.any(~np.isfinite(direction)):
+        return 0.0
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1.0e-12:
+        return 0.0
+    unit = direction / norm
+    return max(0.0, float(unit @ information @ unit))
+
+
+def cap_weak_subspace_against_absolute_information(
+    base_scale, previous_scale, lidar_information, absolute_information
+):
+    """Keep weak-mode LiDAR information no stronger than absolute aiding."""
+    matrices = [
+        np.asarray(value, dtype=float)
+        for value in (
+            base_scale, previous_scale, lidar_information,
+            absolute_information,
+        )
+    ]
+    if any(value.shape != (3, 3) for value in matrices):
+        raise ValueError("subspace information cap expects 3x3 matrices")
+    if any(np.any(~np.isfinite(value)) for value in matrices):
+        return matrices[0].copy(), np.ones(3, dtype=float)
+    base, previous, lidar, absolute = [
+        0.5 * (value + value.T) for value in matrices
+    ]
+    values, vectors = np.linalg.eigh(base)
+    result_values = values.copy()
+    information_ratios = np.ones(3, dtype=float)
+    for mode, (base_value, direction) in enumerate(zip(values, vectors.T)):
+        if base_value >= 1.0 - 1.0e-9:
+            result_values[mode] = 1.0
+            continue
+        previous_value = float(direction @ previous @ direction)
+        previous_value = float(np.clip(previous_value, 0.0, base_value))
+        lidar_value = directional_information(lidar, direction)
+        absolute_value = directional_information(absolute, direction)
+        ratio = (
+            min(1.0, absolute_value / lidar_value)
+            if lidar_value > 0.0 and absolute_value > 0.0 else 1.0
+        )
+        information_ratios[mode] = ratio
+        result_values[mode] = min(base_value, previous_value * ratio)
+    return vectors @ np.diag(result_values) @ vectors.T, information_ratios
+
+
 @dataclass(frozen=True)
 class StationaryImuInitialization:
     valid: bool
@@ -4433,6 +4485,7 @@ class UnifiedBackendNode(Node):
         self.last_gnss_factor_covariance = np.full(
             3, math.inf, dtype=float
         )
+        self.last_gnss_solver_information = np.zeros(3, dtype=float)
         self.gnss_z_reanchor_consecutive = 0
         self.last_gnss_z_reanchor_applied = False
         self.last_gnss_z_reanchor_target_m = math.nan
@@ -4528,6 +4581,8 @@ class UnifiedBackendNode(Node):
         )
         self.last_native_weakest_translation_direction = np.zeros(3, dtype=float)
         self.last_lidar_subspace_scale = np.eye(3, dtype=float)
+        self.previous_lidar_subspace_scale = np.eye(3, dtype=float)
+        self.last_lidar_subspace_absolute_information_ratio = np.ones(3)
         self.lidar_subspace_episode_active = False
         self.last_lidar_subspace_weak_modes = 0
         self.last_lidar_subspace_information_scale = np.ones(3, dtype=float)
@@ -6662,6 +6717,9 @@ class UnifiedBackendNode(Node):
 
     def _update_lidar_subspace_projector(self):
         """Update the raw-factor projector without touching marginal priors."""
+        self.previous_lidar_subspace_scale = (
+            self.last_lidar_subspace_scale.copy()
+        )
         eigenvalues = np.asarray(
             self.last_native_translation_normalized_eigenvalues, dtype=float
         )
@@ -6701,6 +6759,31 @@ class UnifiedBackendNode(Node):
         )
         if self.backend_solver_mode == "manifold":
             self.backend.set_lidar_subspace_scale(self.last_lidar_subspace_scale)
+
+    def _cap_lidar_subspace_with_current_gnss(self):
+        if (
+            not self.lidar_subspace_episode_active
+            or self.backend_solver_mode != "manifold"
+        ):
+            self.last_lidar_subspace_absolute_information_ratio = np.ones(3)
+            return
+        information_diagnostic = getattr(
+            self.backend, "active_lidar_solver_information", None
+        )
+        if not callable(information_diagnostic):
+            return
+        lidar_information, _ = information_diagnostic()
+        absolute_information = np.diag(self.last_gnss_solver_information)
+        (
+            self.last_lidar_subspace_scale,
+            self.last_lidar_subspace_absolute_information_ratio,
+        ) = cap_weak_subspace_against_absolute_information(
+            self.last_lidar_subspace_scale,
+            self.previous_lidar_subspace_scale,
+            lidar_information,
+            absolute_information,
+        )
+        self.backend.set_lidar_subspace_scale(self.last_lidar_subspace_scale)
 
     def _axis_handoff_alternative_information(
         self, stamp_s, *, include_barometer=True
@@ -7619,6 +7702,31 @@ class UnifiedBackendNode(Node):
                 + effective_translation_information.T
             )
         )
+        weakest_direction = self.last_native_weakest_translation_direction
+        lidar_weak_information = directional_information(
+            effective_translation_information, weakest_direction
+        )
+        gnss_information_matrix = np.diag(
+            self.last_gnss_solver_information
+            if factor_counts.get("gnss", 0) > 0
+            else np.zeros(3, dtype=float)
+        )
+        gnss_weak_information = directional_information(
+            gnss_information_matrix, weakest_direction
+        )
+        active_lidar_information = np.zeros((3, 3), dtype=float)
+        active_lidar_information_count = 0
+        active_lidar_information_diagnostic = getattr(
+            self.backend, "active_lidar_solver_information", None
+        )
+        if callable(active_lidar_information_diagnostic):
+            (
+                active_lidar_information,
+                active_lidar_information_count,
+            ) = active_lidar_information_diagnostic()
+        active_lidar_weak_information = directional_information(
+            active_lidar_information, weakest_direction
+        )
         prior_projection = getattr(
             self.backend, "marginal_prior_translation_diagnostic", None
         )
@@ -7758,6 +7866,9 @@ class UnifiedBackendNode(Node):
                 "subspace_mode_information_scale": (
                     self.last_lidar_subspace_information_scale.tolist()
                 ),
+                "subspace_absolute_information_ratio": (
+                    self.last_lidar_subspace_absolute_information_ratio.tolist()
+                ),
                 "subspace_weak_mode_count": int(
                     self.last_lidar_subspace_weak_modes
                 ),
@@ -7852,6 +7963,37 @@ class UnifiedBackendNode(Node):
                 ),
                 "z_information_scale": float(
                     self.last_gnss_z_information_scale
+                ),
+                "residual_xyz_m": [
+                    float(value) if np.isfinite(value) else None
+                    for value in self.last_gnss_prefit_residual_xyz
+                ],
+                "solver_information_diagonal": (
+                    np.diag(gnss_information_matrix).tolist()
+                ),
+                "weak_direction_information": float(gnss_weak_information),
+                "lidar_weak_direction_information": float(
+                    lidar_weak_information
+                ),
+                "active_window_lidar_factor_count": int(
+                    active_lidar_information_count
+                ),
+                "active_window_lidar_solver_information": (
+                    active_lidar_information.tolist()
+                ),
+                "active_window_lidar_solver_weak_direction_information": float(
+                    active_lidar_weak_information
+                ),
+                "lidar_to_gnss_weak_information_ratio": (
+                    float(lidar_weak_information / gnss_weak_information)
+                    if gnss_weak_information > 0.0 else None
+                ),
+                "active_window_lidar_solver_to_gnss_weak_information_ratio": (
+                    float(
+                        active_lidar_weak_information
+                        / gnss_weak_information
+                    )
+                    if gnss_weak_information > 0.0 else None
                 ),
                 "reason": str(self.last_gnss_admission_reason),
                 "time_compensation_age_s": float(
@@ -7958,6 +8100,7 @@ class UnifiedBackendNode(Node):
         prediction_reason="unavailable", scheduler_factor_decision=None,
         factor_velocity=None,
     ):
+        self.last_gnss_solver_information = np.zeros(3, dtype=float)
         if self.projector is None or self.lio_origin is None:
             return
         with self.gnss_lock:
@@ -8213,6 +8356,13 @@ class UnifiedBackendNode(Node):
             self.counts["gnss_prefit_recovery_floor"] += 1
         solver_covariance[:2] /= decision["gnss_xy_information_scale"]
         solver_covariance[2] /= decision["gnss_z_information_scale"]
+        effective_weight = (
+            float(decision["reliability_weight"])
+            / float(decision["covariance_inflation"])
+        )
+        self.last_gnss_solver_information = (
+            effective_weight / solver_covariance
+        )
         self.backend.add_gnss(
             index,
             solver_gnss_position,
@@ -10008,6 +10158,8 @@ class UnifiedBackendNode(Node):
                 initial_state[6:9],
             )
             self._record_phase_timing("gnss_factor", gnss_started)
+
+        self._cap_lidar_subspace_with_current_gnss()
 
         lidar_factor_started = time.perf_counter_ns()
         lidar_decision = self._decision("lidar", default_enabled=True)
