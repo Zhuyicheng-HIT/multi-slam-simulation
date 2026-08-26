@@ -481,6 +481,34 @@ class ManifoldWindowTest(unittest.TestCase):
             diagnostic["historical_lidar_pre_schur_translation_trace"], 0.0
         )
 
+    def test_historical_lidar_weak_suppression_is_opt_in(self):
+        def run(suppress):
+            backend = ManifoldSlidingWindowBackend(
+                max_states=2, cpp_math_core_enabled=False
+            )
+            backend.suppress_historical_lidar_weak = suppress
+            factor = plane_factor(
+                [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+            )
+            for _ in range(3):
+                index = backend.add_state(np.zeros(15))
+                backend.add_native_lidar_correspondences(index, factor)
+                backend.set_lidar_subspace_scale(np.diag([0.001, 1.0, 1.0]))
+            return backend.last_marginal_prior_diagnostic
+
+        baseline = run(False)
+        suppressed = run(True)
+        self.assertFalse(
+            baseline.get("historical_lidar_weak_suppression_active", False)
+        )
+        self.assertTrue(
+            suppressed.get("historical_lidar_weak_suppression_active", False)
+        )
+        self.assertLessEqual(
+            suppressed["lidar_weak_translation_trace_suppressed"],
+            suppressed["lidar_weak_translation_trace"],
+        )
+
     def test_barometer_factor_constrains_only_vertical_position(self):
         backend = ManifoldSlidingWindowBackend(max_states=2)
         state = np.zeros(15)

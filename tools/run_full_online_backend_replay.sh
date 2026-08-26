@@ -50,6 +50,7 @@ BAROMETER_FALLBACK_ENABLED=${BAROMETER_FALLBACK_ENABLED:-false}
 BAROMETER_TOPIC=${BAROMETER_TOPIC:-/mavros/imu/static_pressure}
 BACKEND_RELIABILITY_MODE=${BACKEND_RELIABILITY_MODE:-dynamic}
 TRANSACTIONAL_UPDATE_ENABLED=${TRANSACTIONAL_UPDATE_ENABLED:-true}
+MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK=${MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK:-false}
 FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
 FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
 FIXED_IMU_WEIGHT=${FIXED_IMU_WEIGHT:-1.0}
@@ -117,6 +118,11 @@ fi
 if [[ "$TRANSACTIONAL_UPDATE_ENABLED" != true && \
       "$TRANSACTIONAL_UPDATE_ENABLED" != false ]]; then
   printf 'TRANSACTIONAL_UPDATE_ENABLED must be true or false.\n' >&2
+  exit 2
+fi
+if [[ "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" != true && \
+      "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" != false ]]; then
+  printf 'MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK must be true or false.\n' >&2
   exit 2
 fi
 for value in \
@@ -378,6 +384,7 @@ backend_command=(
   -p barometer_topic:="$BAROMETER_TOPIC"
   -p reliability_mode:="$BACKEND_RELIABILITY_MODE"
   -p transactional_update_enabled:="$TRANSACTIONAL_UPDATE_ENABLED"
+  -p marginal_prior_suppress_historical_lidar_weak:="$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK"
   -p fixed_lidar_weight:="$FIXED_LIDAR_WEIGHT"
   -p fixed_gnss_weight:="$FIXED_GNSS_WEIGHT"
   -p fixed_imu_weight:="$FIXED_IMU_WEIGHT"
@@ -641,6 +648,8 @@ printf 'numeric_threads=%s\ncpp_math_core_enabled=%s\nvisual_factor_mode_request
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'transactional_update_enabled=%s\n' \
   "$TRANSACTIONAL_UPDATE_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
+printf 'marginal_prior_suppress_historical_lidar_weak=%s\n' \
+  "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" >>"$OUTPUT_DIR/replay_result.env"
 printf 'executor_threads=%s\nnative_lidar_qos_depth=%s\nnative_worker_queue_size=%s\n' \
   "$BACKEND_EXECUTOR_THREADS" "$NATIVE_LIDAR_QOS_DEPTH" \
   "$NATIVE_WORKER_QUEUE_SIZE" >>"$OUTPUT_DIR/replay_result.env"

@@ -728,6 +728,7 @@ class ManifoldSlidingWindowBackend:
         self._last_hessian = None
         self._last_marginalization_ms = 0.0
         self.last_marginal_prior_diagnostic = {}
+        self.suppress_historical_lidar_weak = False
         self.profiling_enabled = bool(profiling_enabled)
         self.profiling_capacity = max(64, int(profiling_capacity))
         self._profile_samples = defaultdict(
@@ -2455,6 +2456,17 @@ class ManifoldSlidingWindowBackend:
                 "historical_lidar_attenuated_weak_trace": float(
                     factor.get("marginal_lidar_weak_translation_trace", 0.0)
                 ),
+                "historical_lidar_attenuated_weak_trace_suppressed": float(
+                    factor.get(
+                        "marginal_lidar_weak_translation_trace_suppressed",
+                        0.0,
+                    )
+                ),
+                "historical_lidar_weak_suppression_active": bool(
+                    factor.get(
+                        "historical_lidar_weak_suppression_active", False
+                    )
+                ),
             }
         return {
             "active": False,
@@ -2480,6 +2492,7 @@ class ManifoldSlidingWindowBackend:
             source_counts = defaultdict(int)
             lidar_translation_trace = 0.0
             lidar_weak_translation_trace = 0.0
+            lidar_weak_translation_trace_suppressed = 0.0
             lidar_weak_mode_count = 0
             for factor in eliminated:
                 if factor["name"] == "marginal_prior":
@@ -2493,6 +2506,12 @@ class ManifoldSlidingWindowBackend:
                     lidar_weak_translation_trace += float(factor.get(
                         "marginal_lidar_weak_translation_trace", 0.0
                     ))
+                    lidar_weak_translation_trace_suppressed += float(
+                        factor.get(
+                            "marginal_lidar_weak_translation_trace_suppressed",
+                            0.0,
+                        )
+                    )
                     lidar_weak_mode_count += int(factor.get(
                         "marginal_lidar_weak_mode_count", 0
                     ))
@@ -2514,6 +2533,29 @@ class ManifoldSlidingWindowBackend:
                 lidar_weak_translation_trace += float(
                     np.trace(weak_projector @ block)
                 )
+                if self.suppress_historical_lidar_weak:
+                    suppressed_factor = dict(factor)
+                    values, vectors = np.linalg.eigh(
+                        0.5 * (
+                            np.asarray(scale, dtype=float)
+                            + np.asarray(scale, dtype=float).T
+                        )
+                    )
+                    values[values < 1.0 - 1.0e-6] = 0.0
+                    suppressed_factor["translation_subspace_scale"] = (
+                        vectors @ np.diag(values) @ vectors.T
+                    )
+                    suppressed_hessian = np.zeros_like(local_hessian)
+                    suppressed_gradient = np.zeros_like(local_gradient)
+                    self._factor_normal(
+                        suppressed_factor,
+                        self._states,
+                        suppressed_hessian,
+                        suppressed_gradient,
+                    )
+                    lidar_weak_translation_trace_suppressed += float(
+                        np.trace(weak_projector @ suppressed_hessian[:3, :3])
+                    )
                 lidar_weak_mode_count += int(
                     np.count_nonzero(
                         np.linalg.eigvalsh(weak_projector) > 1.0e-6
@@ -2523,7 +2565,26 @@ class ManifoldSlidingWindowBackend:
                 factor for factor in self._factors if 0 not in factor["indices"]]
             references = [state.copy() for state in self._states[1:]]
             if eliminated:
-                hessian, gradient, _ = self._normal(eliminated, self._states)
+                normal_factors = eliminated
+                if self.suppress_historical_lidar_weak:
+                    normal_factors = []
+                    for factor in eliminated:
+                        candidate = dict(factor)
+                        if factor["name"] == "lidar_point_plane":
+                            values, vectors = np.linalg.eigh(
+                                0.5 * (
+                                    factor["translation_subspace_scale"]
+                                    + factor["translation_subspace_scale"].T
+                                )
+                            )
+                            values[values < 1.0 - 1.0e-6] = 0.0
+                            candidate["translation_subspace_scale"] = (
+                                vectors @ np.diag(values) @ vectors.T
+                            )
+                        normal_factors.append(candidate)
+                hessian, gradient, _ = self._normal(
+                    normal_factors, self._states
+                )
                 first = slice(0, STATE_SIZE)
                 rest = slice(STATE_SIZE, hessian.shape[0])
                 eliminated_hessian = 0.5 * (
@@ -2585,6 +2646,12 @@ class ManifoldSlidingWindowBackend:
                     "lidar_weak_translation_trace": (
                         lidar_weak_translation_trace
                     ),
+                    "lidar_weak_translation_trace_suppressed": (
+                        lidar_weak_translation_trace_suppressed
+                    ),
+                    "historical_lidar_weak_suppression_active": bool(
+                        self.suppress_historical_lidar_weak
+                    ),
                     "lidar_weak_mode_count": lidar_weak_mode_count,
                 }
                 self._factors.append({
@@ -2604,6 +2671,9 @@ class ManifoldSlidingWindowBackend:
                     ),
                     "marginal_lidar_weak_translation_trace": (
                         lidar_weak_translation_trace
+                    ),
+                    "marginal_lidar_weak_translation_trace_suppressed": (
+                        lidar_weak_translation_trace_suppressed
                     ),
                     "marginal_lidar_weak_mode_count": (
                         lidar_weak_mode_count
