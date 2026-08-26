@@ -79,6 +79,7 @@ from .visual_initialization import (
 from .live_propagation import (
     auxiliary_keyframe_admission,
     live_propagation_admission,
+    unified_odom_publication_decision,
     make_optimization_anchor,
     propagate_optimization_anchor,
     state_covariance_to_odometry_covariances,
@@ -2763,6 +2764,8 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("live_propagation_enabled", True)
         self.declare_parameter("live_propagation_rate_hz", 10.0)
         self.declare_parameter(
+            "unified_odom_output_mode", "fixed_rate_propagated")
+        self.declare_parameter(
             "live_propagation_lidar_silence_timeout_s", 0.25)
         self.declare_parameter(
             "live_propagation_maximum_output_age_s", 0.20)
@@ -3393,6 +3396,23 @@ class UnifiedBackendNode(Node):
         self.live_propagation_enabled = bool(
             self.get_parameter("live_propagation_enabled").value
         )
+        self.unified_odom_output_mode = str(
+            self.get_parameter("unified_odom_output_mode").value
+        ).lower()
+        if self.unified_odom_output_mode not in {
+            "fixed_rate_propagated", "legacy_hybrid"
+        }:
+            raise ValueError(
+                "unified_odom_output_mode must be fixed_rate_propagated or "
+                "legacy_hybrid"
+            )
+        if (
+            self.unified_odom_output_mode == "fixed_rate_propagated"
+            and not self.live_propagation_enabled
+        ):
+            raise ValueError(
+                "fixed_rate_propagated requires live_propagation_enabled"
+            )
         self.live_propagation_rate_hz = float(
             self.get_parameter("live_propagation_rate_hz").value
         )
@@ -4393,6 +4413,9 @@ class UnifiedBackendNode(Node):
             "optimized_states_committed": 0,
             "optimized_odom_published": 0,
             "optimized_odom_nonmonotonic_suppressed": 0,
+            "optimized_odom_mode_suppressed": 0,
+            "optimized_odom_anchor_only": 0,
+            "frontend_activation_published": 0,
             "live_propagation_attempts": 0,
             "live_propagation_published": 0,
             "live_propagation_rejected": 0,
@@ -7057,16 +7080,8 @@ class UnifiedBackendNode(Node):
             )
 
     def _latest_lidar_frontend_activity_s(self):
-        # Live propagation must be gated by the last *published* state, not
-        # by a scan request. Requests can be retried while the native worker
-        # is busy; treating those retries as fresh LiDAR would let the
-        # authoritative odometry age past the ExternalNav freshness limit.
-        with self.output_lock:
-            published_stamp = getattr(
-                self, "last_unified_output_stamp_s", None
-            )
-        if published_stamp is not None and math.isfinite(float(published_stamp)):
-            return float(published_stamp)
+        # LiDAR activity is an input fact. Unified output timestamps include
+        # IMU propagation and must never feed back into this gate.
         activities = (getattr(self, "last_native_input_arrival_s", None),)
         valid = [
             float(value) for value in activities
@@ -7192,6 +7207,8 @@ class UnifiedBackendNode(Node):
             self.live_propagation_maximum_output_age_s,
             self.live_propagation_minimum_interval_s,
             self.live_propagation_maximum_imu_age_s,
+            getattr(self, "unified_odom_output_mode", "legacy_hybrid")
+            == "fixed_rate_propagated",
         )
         if not admitted:
             self._reject_live_propagation(reason)
@@ -7239,6 +7256,8 @@ class UnifiedBackendNode(Node):
                 self.live_propagation_maximum_output_age_s,
                 self.live_propagation_minimum_interval_s,
                 self.live_propagation_maximum_imu_age_s,
+                getattr(self, "unified_odom_output_mode", "legacy_hybrid")
+                == "fixed_rate_propagated",
             )
             if not admitted:
                 self._reject_live_propagation(reason)
@@ -11125,12 +11144,20 @@ class UnifiedBackendNode(Node):
             self.counts["scan_prediction_contract_output_suppressed"] += 1
             return False
         with self.output_lock:
-            if (
-                self.last_unified_output_stamp_s is not None
-                and output_stamp_s <= self.last_unified_output_stamp_s
-            ):
+            admitted, reason = unified_odom_publication_decision(
+                getattr(self, "unified_odom_output_mode", "legacy_hybrid"),
+                source,
+                output_stamp_s,
+                self.last_unified_output_stamp_s,
+            )
+            if not admitted:
                 if source == "optimized":
-                    self.counts["optimized_odom_nonmonotonic_suppressed"] += 1
+                    if reason == "source_not_owner":
+                        self.counts["optimized_odom_mode_suppressed"] += 1
+                    else:
+                        self.counts[
+                            "optimized_odom_nonmonotonic_suppressed"
+                        ] += 1
                 return False
             pose_diagonal = [
                 float(output.pose.covariance[index])
@@ -11194,13 +11221,18 @@ class UnifiedBackendNode(Node):
             self._commit_optimization_anchor(
                 output_stamp_s, state, state_covariance
             )
-            output_published = self._publish_unified_odom(output, "optimized")
-            if output_published:
-                self.frontend_activation_pose_pub.publish(
-                    frontend_activation_odometry(
-                        local_output, self.map_frame, self.body_frame
-                    )
+            if getattr(
+                self, "unified_odom_output_mode", "legacy_hybrid"
+            ) == "legacy_hybrid":
+                self._publish_unified_odom(output, "optimized")
+            else:
+                self.counts["optimized_odom_anchor_only"] += 1
+            self.frontend_activation_pose_pub.publish(
+                frontend_activation_odometry(
+                    local_output, self.map_frame, self.body_frame
                 )
+            )
+            self.counts["frontend_activation_published"] += 1
         map_output = local_output
         map_lidar_eligible = bool(self.last_lidar_map_eligible)
         map_lidar_reason = str(self.last_lidar_map_reason)
@@ -11396,8 +11428,18 @@ class UnifiedBackendNode(Node):
             f"last_state_trigger={self.last_state_trigger_source};"
             "optimized_states_committed="
             f"{self.counts['optimized_states_committed']};"
+            "unified_odom_output_mode="
+            f"{self.unified_odom_output_mode};"
             "optimized_odom_published="
             f"{self.counts['optimized_odom_published']};"
+            "optimized_odom_anchor_only="
+            f"{self.counts['optimized_odom_anchor_only']};"
+            "optimized_odom_nonmonotonic_suppressed="
+            f"{self.counts['optimized_odom_nonmonotonic_suppressed']};"
+            "optimized_odom_mode_suppressed="
+            f"{self.counts['optimized_odom_mode_suppressed']};"
+            "frontend_activation_published="
+            f"{self.counts['frontend_activation_published']};"
             "live_propagation_published="
             f"{self.counts['live_propagation_published']};"
             "live_propagation_rejected="
@@ -12136,6 +12178,45 @@ class UnifiedBackendNode(Node):
             self._key(
                 "live_propagation_reason",
                 self.last_live_propagation_reason,
+            ),
+            self._key(
+                "unified_odom_output_mode", self.unified_odom_output_mode
+            ),
+            self._key(
+                "optimized_states_committed",
+                self.counts["optimized_states_committed"],
+            ),
+            self._key(
+                "optimized_odom_published",
+                self.counts["optimized_odom_published"],
+            ),
+            self._key(
+                "optimized_odom_anchor_only",
+                self.counts["optimized_odom_anchor_only"],
+            ),
+            self._key(
+                "optimized_odom_nonmonotonic_suppressed",
+                self.counts["optimized_odom_nonmonotonic_suppressed"],
+            ),
+            self._key(
+                "optimized_odom_mode_suppressed",
+                self.counts["optimized_odom_mode_suppressed"],
+            ),
+            self._key(
+                "live_propagation_attempts",
+                self.counts["live_propagation_attempts"],
+            ),
+            self._key(
+                "live_propagation_published",
+                self.counts["live_propagation_published"],
+            ),
+            self._key(
+                "live_propagation_rejected",
+                self.counts["live_propagation_rejected"],
+            ),
+            self._key(
+                "frontend_activation_published",
+                self.counts["frontend_activation_published"],
             ),
             self._key(
                 "auxiliary_keyframe_reason",

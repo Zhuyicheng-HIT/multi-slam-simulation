@@ -16,6 +16,7 @@ from uf_backend_fusion.live_propagation import (
     make_optimization_anchor,
     propagate_optimization_anchor,
     state_covariance_to_odometry_covariances,
+    unified_odom_publication_decision,
 )
 
 
@@ -42,6 +43,30 @@ def measurement_with_covariance(covariance):
 
 
 class LivePropagationTest(unittest.TestCase):
+    def test_fixed_rate_owner_prevents_propagation_optimized_timestamp_race(self):
+        # Legacy dual publishing lets a newer IMU stamp suppress the optimizer
+        # output that commits immediately afterwards.
+        self.assertEqual(
+            unified_odom_publication_decision(
+                "legacy_hybrid", "optimized", 9.95, 10.0
+            ),
+            (False, "nonmonotonic_output"),
+        )
+        # Fixed-rate mode makes that optimized state an anchor-only update;
+        # the next timer tick remains the sole monotonic odometry writer.
+        self.assertEqual(
+            unified_odom_publication_decision(
+                "fixed_rate_propagated", "optimized", 9.95, 10.0
+            ),
+            (False, "source_not_owner"),
+        )
+        self.assertEqual(
+            unified_odom_publication_decision(
+                "fixed_rate_propagated", "imu_propagated", 10.10, 10.0
+            ),
+            (True, "ready"),
+        )
+
     def test_auxiliary_keyframe_requires_native_outage_and_fresh_imu(self):
         arguments = dict(
             now_s=10.0,
@@ -102,6 +127,40 @@ class LivePropagationTest(unittest.TestCase):
                     **arguments,
                     "last_output_stamp_s": 9.70,
                     "latest_lidar_activity_s": 9.90,
+                }
+            ),
+            (True, "ready"),
+        )
+        self.assertEqual(
+            live_propagation_admission(
+                **{**arguments, "last_output_stamp_s": 9.95}
+            ),
+            (False, "output_not_advanced"),
+        )
+
+    def test_continuous_output_ignores_lidar_recency_but_keeps_timestamp_gate(self):
+        arguments = dict(
+            now_s=10.0,
+            latest_imu_stamp_s=9.98,
+            target_stamp_s=9.98,
+            anchor_stamp_s=9.70,
+            last_output_stamp_s=9.80,
+            latest_lidar_activity_s=9.99,
+            lidar_silence_timeout_s=0.25,
+            maximum_output_age_s=0.20,
+            minimum_output_interval_s=0.08,
+            maximum_imu_age_s=0.20,
+            continuous_output=True,
+        )
+        self.assertEqual(
+            live_propagation_admission(**arguments), (True, "ready")
+        )
+        self.assertEqual(
+            live_propagation_admission(
+                **{
+                    **arguments,
+                    "anchor_stamp_s": 9.94,
+                    "last_output_stamp_s": 9.80,
                 }
             ),
             (True, "ready"),

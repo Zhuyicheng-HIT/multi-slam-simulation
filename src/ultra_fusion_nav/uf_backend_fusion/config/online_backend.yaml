@@ -337,6 +337,9 @@ unified_backend_fusion:
     # states. These propagated samples never update the map or optimizer anchor.
     live_propagation_enabled: true
     live_propagation_rate_hz: 10.0
+    # Single-writer output: optimizer commits anchors; the IMU timer publishes.
+    # Set legacy_hybrid to restore direct optimized + fallback propagation.
+    unified_odom_output_mode: fixed_rate_propagated
     live_propagation_lidar_silence_timeout_s: 0.25
     # Repeated stale FAST-LIO scan requests do not count as fresh localization.
     # Publish IMU propagation whenever the last unified state is this old.
