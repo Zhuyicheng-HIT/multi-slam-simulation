@@ -2947,6 +2947,9 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("path_minimum_rotation_rad", 0.02)
         self.declare_parameter("relocalization_enabled", True)
         self.declare_parameter("transactional_update_enabled", True)
+        self.declare_parameter(
+            "marginal_prior_suppress_historical_lidar_weak", False
+        )
         self.declare_parameter("lidar_prediction_gate_enabled", True)
         self.declare_parameter("lidar_prediction_gate_max_position_m", 1.0)
         self.declare_parameter("lidar_prediction_gate_max_yaw_rad", 0.50)
@@ -3885,6 +3888,11 @@ class UnifiedBackendNode(Node):
         self.transactional_update_enabled = bool(
             self.get_parameter("transactional_update_enabled").value
         )
+        self.marginal_prior_suppress_historical_lidar_weak = bool(
+            self.get_parameter(
+                "marginal_prior_suppress_historical_lidar_weak"
+            ).value
+        )
         self.lidar_prediction_gate_enabled = bool(
             self.get_parameter("lidar_prediction_gate_enabled").value
         )
@@ -4093,6 +4101,9 @@ class UnifiedBackendNode(Node):
                 ),
                 profiling_enabled=self.performance_profiling_enabled,
                 profiling_capacity=self.performance_profiling_capacity,
+            )
+            self.backend.suppress_historical_lidar_weak = (
+                self.marginal_prior_suppress_historical_lidar_weak
             )
         else:
             self.backend = SlidingWindowBackend(max_states=window_size)
