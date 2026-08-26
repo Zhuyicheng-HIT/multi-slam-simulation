@@ -93,7 +93,7 @@ public:
         0, declare_parameter<int>("filter.endpoint_guard_voxels", 1)));
     config.dynamic_growth_voxels =
       static_cast<int>(std::max<std::int64_t>(
-        0, declare_parameter<int>("filter.dynamic_growth_voxels", 1)));
+        0, declare_parameter<int>("filter.dynamic_growth_voxels", 2)));
     config.ray_stride = static_cast<int>(std::max<std::int64_t>(
       1, declare_parameter<int>("filter.ray_stride", 4)));
     config.max_voxels = static_cast<std::size_t>(
@@ -114,9 +114,9 @@ public:
       0, declare_parameter<int>("filter.static_support_radius_voxels", 1)));
     config.min_static_neighbor_voxels = static_cast<std::size_t>(std::max<std::int64_t>(
       0, declare_parameter<int>("filter.min_static_neighbor_voxels", 0)));
-    config.far_range_m = declare_parameter<double>("filter.far_range_m", 15.0);
+    config.far_range_m = declare_parameter<double>("filter.far_range_m", 20.0);
     config.far_static_confirmations = static_cast<std::uint16_t>(
-      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 12)));
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 4)));
     if (filter_implementation_ == "visibility_v2") {
       visibility_observer_ = std::make_unique<VisibilityAwareDynamicObserver>(config);
     } else if (filter_implementation_ == "conservative_v1") {

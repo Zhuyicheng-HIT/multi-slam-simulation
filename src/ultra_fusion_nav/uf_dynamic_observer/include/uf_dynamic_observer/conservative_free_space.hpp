@@ -41,7 +41,7 @@ struct FilterConfig
   std::uint16_t static_confirmations{2};
   std::uint16_t occupied_recovery{20};
   int endpoint_guard_voxels{1};
-  int dynamic_growth_voxels{1};
+  int dynamic_growth_voxels{2};
   int ray_stride{4};
   std::size_t max_voxels{1500000U};
   std::uint64_t stale_after_scans{600U};
@@ -59,8 +59,8 @@ struct VisibilityFilterConfig : public FilterConfig
   int vacated_surface_radius_voxels{1};
   int static_support_radius_voxels{1};
   std::size_t min_static_neighbor_voxels{0U};
-  double far_range_m{15.0};
-  std::uint16_t far_static_confirmations{12U};
+  double far_range_m{20.0};
+  std::uint16_t far_static_confirmations{4U};
 };
 
 struct FilterStats
