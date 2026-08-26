@@ -6,6 +6,22 @@ import numpy as np
 from sensor_msgs.msg import PointField
 
 
+def standardize_imu_acceleration(msg, scale):
+    """Convert linear acceleration to SI units, preserving unknown covariance."""
+    output = copy.deepcopy(msg)
+    scale = float(scale)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("imu_acceleration_scale must be finite and positive")
+    output.linear_acceleration.x *= scale
+    output.linear_acceleration.y *= scale
+    output.linear_acceleration.z *= scale
+    covariance = list(output.linear_acceleration_covariance)
+    if not covariance or covariance[0] != -1.0:
+        scale_squared = scale * scale
+        output.linear_acceleration_covariance = [value * scale_squared for value in covariance]
+    return output
+
+
 _POINT_FIELD_FORMATS = {
     PointField.FLOAT32: "f",
     PointField.FLOAT64: "d",

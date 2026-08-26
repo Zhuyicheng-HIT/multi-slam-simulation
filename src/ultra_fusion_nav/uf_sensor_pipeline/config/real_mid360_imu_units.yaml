@@ -1,0 +1,8 @@
+# Overlay for the real MID360S sensor pipeline. The Livox SDK publishes
+# linear acceleration in g; the backend-facing ROS IMU contract is SI.
+fault_injector_imu:
+  ros__parameters:
+    input_topic: /livox/imu
+    output_topic: /sensors/imu
+    imu_acceleration_scale: 9.80665
+

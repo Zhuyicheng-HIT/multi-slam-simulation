@@ -81,6 +81,7 @@ fault_injector_imu:
     modality: imu
     input_topic: /livox/imu
     output_topic: /sensors/imu
+    imu_acceleration_scale: 1.0
     # Preserve the MID360 Gazebo acquisition timestamp through to the backend.
     restamp_output: false
     fault_type: none
