@@ -48,3 +48,21 @@ def test_simulation_estimator_configuration_does_not_subscribe_fcu_imu():
     for path in files:
         text = path.read_text(encoding="utf-8")
         assert all(topic not in text for topic in forbidden), path
+
+
+def test_simulator_imu_unit_scale_is_identity():
+    config = yaml.safe_load(
+        (REPO / "ultra_fusion_nav/uf_sensor_pipeline/config/sim_sensor_config.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["fault_injector_imu"]["ros__parameters"]["imu_acceleration_scale"] == 1.0
+
+
+def test_real_mid360_imu_unit_overlay_uses_g_to_si_scale():
+    config = yaml.safe_load(
+        (REPO / "ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360_imu_units.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["fault_injector_imu"]["ros__parameters"]["imu_acceleration_scale"] == 9.80665
