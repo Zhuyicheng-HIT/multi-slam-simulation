@@ -14,6 +14,7 @@ def generate_launch_description():
     default_config = get_package_share_directory("uf_sensor_pipeline") + "/config/sim_sensor_config.yaml"
     config = LaunchConfiguration("config")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    imu_acceleration_scale = LaunchConfiguration("imu_acceleration_scale")
     enable_fcu_observation_bridge = LaunchConfiguration("enable_fcu_observation_bridge")
     enable_vision = LaunchConfiguration("enable_vision")
     enable_nmea_gnss = LaunchConfiguration("enable_nmea_gnss")
@@ -135,7 +136,9 @@ def generate_launch_description():
                     config,
                     fault_parameters,
                     source_parameters,
-                    {"use_sim_time": use_sim_time},
+                    {"use_sim_time": use_sim_time,
+                     "imu_acceleration_scale": imu_acceleration_scale}
+                    if modality == "imu" else {"use_sim_time": use_sim_time},
                 ],
                 output="screen",
                 condition=(
@@ -189,6 +192,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config),
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument("imu_acceleration_scale", default_value="1.0"),
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
         DeclareLaunchArgument("enable_nmea_gnss", default_value="false"),

@@ -589,6 +589,73 @@ std::tuple<MatrixXd, VectorXd, double> lidar_point_plane_normal_axis_scaled(
       translation_jacobian_scale, variance, effective_weight, huber_delta);
 }
 
+void apply_lidar_subspace_scale(
+    Eigen::Matrix<double, 6, 6> &hessian,
+    Eigen::Matrix<double, 6, 1> &gradient,
+    const Eigen::Ref<const Matrix3d> &scale) {
+  if (!scale.allFinite()) {
+    throw std::invalid_argument("LiDAR subspace scale must be finite");
+  }
+  const Matrix3d symmetric = 0.5 * (scale + scale.transpose());
+  Eigen::SelfAdjointEigenSolver<Matrix3d> solver(symmetric);
+  if (solver.info() != Eigen::Success
+      || (solver.eigenvalues().array() < -1.0e-9).any()
+      || (solver.eigenvalues().array() > 1.0 + 1.0e-9).any()) {
+    throw std::invalid_argument("LiDAR subspace scale must be PSD");
+  }
+  const Vector3d values = solver.eigenvalues().cwiseMax(0.0);
+  const Matrix3d root = solver.eigenvectors()
+      * values.cwiseSqrt().asDiagonal()
+      * solver.eigenvectors().transpose();
+  const Matrix3d h_rr = 0.5 * (
+      hessian.bottomRightCorner<3, 3>()
+      + hessian.bottomRightCorner<3, 3>().transpose());
+  const Matrix3d coupling = hessian.topRightCorner<3, 3>();
+  const Matrix3d inverse = h_rr.completeOrthogonalDecomposition().pseudoInverse();
+  const Matrix3d conditional_map = coupling * inverse;
+  const Matrix3d schur = 0.5 * (
+      hessian.topLeftCorner<3, 3>() - conditional_map * coupling.transpose()
+      + (hessian.topLeftCorner<3, 3>() - conditional_map * coupling.transpose()).transpose());
+  const Vector3d conditional_gradient =
+      gradient.head<3>() - conditional_map * gradient.tail<3>();
+  hessian.topLeftCorner<3, 3>() =
+      root * schur * root + conditional_map * h_rr * conditional_map.transpose();
+  gradient.head<3>() = scale * conditional_gradient
+      + conditional_map * gradient.tail<3>();
+  hessian = 0.5 * (hessian + hessian.transpose());
+}
+
+std::tuple<MatrixXd, VectorXd, double> lidar_point_plane_normal_subspace(
+    const Eigen::Ref<const VectorXd> &pose,
+    const Eigen::Ref<const MatrixXd> &lidar_points,
+    const Eigen::Ref<const MatrixXd> &plane_normals,
+    const Eigen::Ref<const MatrixXd> &plane_points,
+    const Eigen::Ref<const Matrix3d> &lidar_to_body_rotation,
+    const Eigen::Ref<const Vector3d> &lidar_to_body_translation,
+    const Eigen::Ref<const Vector3d> &translation_information_scale,
+    const Eigen::Ref<const Matrix3d> &translation_subspace_scale,
+    const Eigen::Ref<const VectorXd> &variance,
+    double effective_weight,
+    double huber_delta) {
+  if (!translation_information_scale.allFinite()
+      || (translation_information_scale.array() < 0.0).any()
+      || (translation_information_scale.array() > 1.0).any()) {
+    throw std::invalid_argument(
+        "LiDAR translation information scale must be within [0, 1]");
+  }
+  const Vector3d translation_jacobian_scale =
+      translation_information_scale.array().sqrt().matrix();
+  auto result = lidar_point_plane_normal_impl(
+      pose, lidar_points, plane_normals, plane_points,
+      lidar_to_body_rotation, lidar_to_body_translation,
+      translation_jacobian_scale,
+      variance, effective_weight, huber_delta);
+  Eigen::Matrix<double, 6, 6> hessian = std::get<0>(result);
+  Eigen::Matrix<double, 6, 1> gradient = std::get<1>(result);
+  apply_lidar_subspace_scale(hessian, gradient, translation_subspace_scale);
+  return {hessian, gradient, std::get<2>(result)};
+}
+
 double lidar_point_plane_cost(
     const Eigen::Ref<const VectorXd> &pose,
     const Eigen::Ref<const MatrixXd> &lidar_points,
@@ -1427,6 +1494,9 @@ PYBIND11_MODULE(_core, module) {
   module.def(
       "lidar_point_plane_normal_axis_scaled",
       &lidar_point_plane_normal_axis_scaled);
+  module.def(
+      "lidar_point_plane_normal_subspace",
+      &lidar_point_plane_normal_subspace);
   module.def(
       "lidar_point_plane_graph_normal", &lidar_point_plane_graph_normal);
   module.def(
