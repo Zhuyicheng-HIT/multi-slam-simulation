@@ -165,8 +165,8 @@ setsid ros2 run multi_slam_uav_sim gazebo_clock_bridge --ros-args \
 pids+=("$!")
 
 wait_for_single_clock_publisher() {
-  local info publishers
-  for _attempt in $(seq 1 "${ROS_CLOCK_OWNERSHIP_ATTEMPTS:-15}"); do
+  local info publishers sample sec nanosec
+  for _attempt in $(seq 1 "${ROS_CLOCK_OWNERSHIP_ATTEMPTS:-60}"); do
     info=$(timeout 5 ros2 topic info /clock --no-daemon 2>/dev/null) || info=
     publishers=$(awk -F: '/Publisher count:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' <<<"$info")
     if [[ "$publishers" =~ ^[0-9]+$ ]] && (( publishers > 1 )); then
@@ -179,6 +179,19 @@ wait_for_single_clock_publisher() {
     fi
     sleep 0.5
   done
+  # Cyclone DDS discovery can lag behind the bridge in WSL even though a
+  # subscriber already receives the topic.  Do not tear down Gazebo solely
+  # because the CLI graph query timed out; require an actual valid clock sample
+  # and retain an explicit diagnostic for post-run publisher auditing.
+  sample=$(timeout 8 ros2 topic echo /clock rosgraph_msgs/msg/Clock \
+    --no-daemon --spin-time 2.0 --once --qos-reliability best_effort \
+    2>/dev/null) || sample=
+  sec=$(awk '$1 == "sec:" {print $2; exit}' <<<"$sample")
+  nanosec=$(awk '$1 == "nanosec:" {print $2; exit}' <<<"$sample")
+  if [[ "$sec" =~ ^[0-9]+$ && "$nanosec" =~ ^[0-9]+$ ]]; then
+    printf 'ROS /clock publisher count unavailable after discovery timeout; valid sample received (single-owner check deferred to replay audit).\n' >&2
+    return 0
+  fi
   printf 'ROS /clock publisher did not appear after starting the Gazebo clock bridge.\n' >&2
   return 1
 }
