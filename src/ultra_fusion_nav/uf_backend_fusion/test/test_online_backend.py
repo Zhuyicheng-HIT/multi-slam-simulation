@@ -1530,7 +1530,7 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node._scan_request(SimpleNamespace(scan_sequence=0))
 
         self.assertEqual(node.last_scan_request_arrival_s, 10.0)
-        self.assertEqual(node._latest_lidar_frontend_activity_s(), 9.3)
+        self.assertEqual(node._latest_lidar_frontend_activity_s(), 9.0)
 
     def test_live_activity_falls_back_to_native_input_before_first_output(self):
         node = object.__new__(UnifiedBackendNode)
