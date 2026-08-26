@@ -306,11 +306,18 @@ if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 || \
   exit 3
 fi
 
+FASTLIO_RUNTIME_CONFIG_DIR="$LOG_DIR/runtime_config"
+mkdir -p "$FASTLIO_RUNTIME_CONFIG_DIR"
+cp "$PKG_SHARE/config/$FASTLIO_CONFIG" "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG"
+awk -v topic="$FASTLIO_LIDAR_TOPIC" \
+  '{ if ($0 ~ /^[[:space:]]*lid_topic:/) { sub(/:.*/, ":  \"" topic "\"") } print }' \
+  "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG" > "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG.tmp"
+mv "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG.tmp" "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG"
+
 setsid ros2 launch fast_lio mapping.launch.py \
   use_sim_time:="$USE_SIM_TIME" \
-  config_path:="$PKG_SHARE/config" \
+  config_path:="$FASTLIO_RUNTIME_CONFIG_DIR" \
   config_file:="$FASTLIO_CONFIG" \
-  -r /livox/lidar:="$FASTLIO_LIDAR_TOPIC" \
   rviz:="$RVIZ" \
   native_factor_export_enable:="$FASTLIO_NATIVE_FACTOR_EXPORT_BOOL" \
   native_factor_export_topic:="$FASTLIO_NATIVE_FACTOR_TOPIC" \
