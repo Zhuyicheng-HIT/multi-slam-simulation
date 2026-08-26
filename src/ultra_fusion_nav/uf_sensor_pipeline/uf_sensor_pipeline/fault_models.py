@@ -18,10 +18,14 @@ def shift_stamp(stamp, offset_s):
     stamp.sec, stamp.nanosec = divmod(total_ns, 1_000_000_000)
 
 
-def ensure_monotonic_stamp(stamp, last_stamp_ns):
+def ensure_monotonic_stamp(stamp, last_stamp_ns, repair=True):
     stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
     repaired = stamp_ns <= last_stamp_ns and stamp_ns != 0
     if repaired:
+        if not repair:
+            raise ValueError(
+                f"non-monotonic timestamp: {stamp_ns} <= {last_stamp_ns}"
+            )
         stamp_ns = last_stamp_ns + 1
         stamp.sec, stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
     return max(last_stamp_ns, stamp_ns), repaired
