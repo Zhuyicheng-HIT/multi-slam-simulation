@@ -109,7 +109,7 @@ public:
     filter_config.endpoint_guard_voxels = std::max<std::int64_t>(
       0, declare_parameter<int>("filter.endpoint_guard_voxels", 1));
     filter_config.dynamic_growth_voxels = std::max<std::int64_t>(
-      0, declare_parameter<int>("filter.dynamic_growth_voxels", 1));
+      0, declare_parameter<int>("filter.dynamic_growth_voxels", 2));
     filter_config.ray_stride = std::max<std::int64_t>(
       1, declare_parameter<int>("filter.ray_stride", 1));
     filter_config.max_voxels = static_cast<std::size_t>(std::max<std::int64_t>(
@@ -130,9 +130,9 @@ public:
       0, declare_parameter<int>("filter.static_support_radius_voxels", 1));
     filter_config.min_static_neighbor_voxels = static_cast<std::size_t>(
       std::max<std::int64_t>(0, declare_parameter<int>("filter.min_static_neighbor_voxels", 0)));
-    filter_config.far_range_m = declare_parameter<double>("filter.far_range_m", 15.0);
+    filter_config.far_range_m = declare_parameter<double>("filter.far_range_m", 20.0);
     filter_config.far_static_confirmations = static_cast<std::uint16_t>(
-      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 12)));
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 4)));
     min_range_m_ = filter_config.min_range_m;
     max_range_m_ = filter_config.max_range_m;
     observer_ = std::make_unique<VisibilityAwareDynamicObserver>(filter_config);

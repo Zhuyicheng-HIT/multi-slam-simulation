@@ -562,7 +562,7 @@ int main(int argc, char ** argv)
   v2_config.static_confirmations = 2U;
   v2_config.occupied_recovery = 24U;
   v2_config.endpoint_guard_voxels = 1;
-  v2_config.dynamic_growth_voxels = 1;
+  v2_config.dynamic_growth_voxels = 2;
   v2_config.ray_stride = 1;
   v2_config.dynamic_confirmations = 1U;
   v2_config.dynamic_hold_scans = 12U;
@@ -571,8 +571,8 @@ int main(int argc, char ** argv)
   v2_config.vacated_surface_radius_voxels = 1;
   v2_config.static_support_radius_voxels = 1;
   v2_config.min_static_neighbor_voxels = 0U;
-  v2_config.far_range_m = 15.0;
-  v2_config.far_static_confirmations = 12U;
+  v2_config.far_range_m = 20.0;
+  v2_config.far_static_confirmations = 4U;
   VisibilityAwareDynamicObserver v2(v2_config);
   TemporalVoxelBaseline temporal(0.25, 5U, 2U, 1);
 
