@@ -153,7 +153,10 @@ else
   setsid gz sim -r -v 2 --render-engine-gui ogre2 "$WORLD" >"$LOG_DIR/gazebo.log" 2>&1 &
 fi
 pids+=("$!")
-sleep 6
+# Headless rendering can take several seconds to initialise before the world
+# transport topic is discoverable. Start the bridge after that settling period;
+# the ROS-side advancing-clock check below remains the authoritative gate.
+sleep "${GAZEBO_CLOCK_STARTUP_DELAY_S:-10}"
 
 setsid ros2 run multi_slam_uav_sim gazebo_clock_bridge --ros-args \
   -p use_sim_time:=false \
@@ -161,9 +164,30 @@ setsid ros2 run multi_slam_uav_sim gazebo_clock_bridge --ros-args \
   >"$LOG_DIR/ros_clock_bridge.log" 2>&1 &
 pids+=("$!")
 
+wait_for_single_clock_publisher() {
+  local info publishers
+  for _attempt in $(seq 1 "${ROS_CLOCK_OWNERSHIP_ATTEMPTS:-15}"); do
+    info=$(timeout 5 ros2 topic info /clock --no-daemon 2>/dev/null) || info=
+    publishers=$(awk -F: '/Publisher count:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' <<<"$info")
+    if [[ "$publishers" =~ ^[0-9]+$ ]] && (( publishers > 1 )); then
+      printf 'ROS /clock ownership error: publishers=%s; expected exactly one Gazebo clock bridge.\n' \
+        "$publishers" >&2
+      return 1
+    fi
+    if [[ "$publishers" == "1" ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  printf 'ROS /clock publisher did not appear after starting the Gazebo clock bridge.\n' >&2
+  return 1
+}
+
+wait_for_single_clock_publisher
+
 read_clock_ns() {
   local sample sec nanosec
-  for _attempt in 1 2 3 4 5 6; do
+  for _attempt in $(seq 1 "${ROS_CLOCK_ATTEMPTS:-15}"); do
     # Humble's ros2topic CLI does not reliably emit the nested Clock.clock
     # field when --field is combined with --no-daemon.  Read the complete
     # one-message sample; the parser below already selects sec/nanosec.
