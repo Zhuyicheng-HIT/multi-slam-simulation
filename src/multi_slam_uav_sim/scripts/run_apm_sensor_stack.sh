@@ -307,7 +307,9 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p rad_topic:=/sim/optical_flow/rad_native
     -p range_topic:=/sim/optical_flow/range_native
     -p gazebo_range_topic:=/flow/range
-    -p gazebo_imu_topic:=/flow/imu
+    # Consume the body-FLU, source-stamped MID360 bridge output. Do not also
+    # integrate the raw pitched mount-frame Gazebo IMU.
+    -p "gazebo_imu_topic:=''"
     -p imu_topic:=/livox/imu
     # The MTF companion path is consumed by a 10 Hz LiDAR-triggered backend.
     # A deterministic 15 Hz stream preserves fresh zero-motion observations

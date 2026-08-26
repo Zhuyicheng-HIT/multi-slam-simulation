@@ -12,6 +12,9 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
 WORLD = PACKAGE_ROOT / "worlds" / "simple_apm_rgbd_mid360.sdf"
 LOW_WORLD = PACKAGE_ROOT / "worlds" / "low_indoor_apm_rgbd_mid360.sdf"
+TUNNEL_WORLD = (
+    PACKAGE_ROOT / "worlds" / "large_indoor_tunnel_apm_rgbd_mid360.sdf"
+)
 LANDMARKS = (
     PACKAGE_ROOT / "models" / "s_curve_lidar_landmarks" / "model.sdf"
 )
@@ -246,6 +249,24 @@ def test_flow_texture_covers_the_expanded_floor():
     flow_markers = named_children(root, "visual", "marker_")
     assert len(flow_markers) >= 32
     assert max(max(abs(value) for value in pose_xy(item)) for item in flow_markers) >= 15.0
+
+
+def test_tunnel_floor_has_visual_texture_without_changing_lidar_geometry():
+    root = ET.parse(TUNNEL_WORLD).getroot()
+    shell = root.find(".//model[@name='long_repetitive_tunnel']/link[@name='tunnel_shell']")
+    assert shell is not None
+    floor = shell.find("visual[@name='floor_visual']")
+    assert floor is not None
+    assert floor.findtext("material/pbr/metal/albedo_map") == (
+        "model://uav_test_assets/materials/textures/checker_floor.png"
+    )
+    # The texture is visual-only. The LiDAR still sees exactly the original
+    # single planar floor collision used by the degeneracy benchmark.
+    floor_collisions = [
+        item for item in shell.findall("collision")
+        if "floor" in item.get("name", "")
+    ]
+    assert [item.get("name") for item in floor_collisions] == ["floor"]
 
 
 def test_central_visual_grid_keeps_the_persisted_rtab_contract():

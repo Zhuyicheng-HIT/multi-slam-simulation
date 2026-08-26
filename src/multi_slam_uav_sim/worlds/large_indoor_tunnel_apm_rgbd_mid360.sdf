@@ -41,7 +41,7 @@
       <static>true</static>
       <link name="tunnel_shell">
         <collision name="floor"><pose>0 0 -0.10 0 0 0</pose><geometry><box><size>8 96 0.20</size></box></geometry></collision>
-        <visual name="floor_visual"><pose>0 0 -0.10 0 0 0</pose><geometry><box><size>8 96 0.20</size></box></geometry><material><diffuse>0.34 0.35 0.37 1</diffuse></material></visual>
+        <visual name="floor_visual"><pose>0 0 -0.10 0 0 0</pose><geometry><box><size>8 96 0.20</size></box></geometry><material><diffuse>0.34 0.35 0.37 1</diffuse><pbr><metal><albedo_map>model://uav_test_assets/materials/textures/checker_floor.png</albedo_map><roughness>0.95</roughness></metal></pbr></material></visual>
         <collision name="west_wall"><pose>-4 0 2.5 0 0 0</pose><geometry><box><size>0.25 96 5</size></box></geometry></collision>
         <visual name="west_wall_visual"><pose>-4 0 2.5 0 0 0</pose><geometry><box><size>0.25 96 5</size></box></geometry><material><diffuse>0.42 0.43 0.46 1</diffuse></material></visual>
         <collision name="east_wall"><pose>4 0 2.5 0 0 0</pose><geometry><box><size>0.25 96 5</size></box></geometry></collision>

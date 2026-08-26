@@ -50,7 +50,11 @@ class GazeboOpticalFlowToMavros(Node):
         self.declare_parameter("fcu_flow_topic", "")
         self.declare_parameter("fcu_range_topic", "")
         self.declare_parameter("imu_topic", "/livox/imu")
-        self.declare_parameter("gazebo_imu_topic", "/flow/imu")
+        # /livox/imu is already timestamped in the Gazebo sensor clock and
+        # rotated from the pitched MID360 mount into ROS base_link FLU.  A
+        # direct Gazebo subscription would expose mount-frame angular rates
+        # and create two competing copies of the same physical IMU.
+        self.declare_parameter("gazebo_imu_topic", "")
         self.declare_parameter("gazebo_range_topic", "/flow/range")
         self.declare_parameter("camera_fov_x_rad", 1.21126)
         self.declare_parameter("camera_width_px", 100)
@@ -473,7 +477,7 @@ class GazeboOpticalFlowToMavros(Node):
         )
         gyro_source = {
             "primary": "gazebo_internal",
-            "fallback": "fcu_fallback",
+            "fallback": "mid360_ros",
             "unavailable": "unavailable",
         }[gyro_selection]
         gyro_valid = gyro is not None

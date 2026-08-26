@@ -59,6 +59,20 @@ def test_simulator_imu_unit_scale_is_identity():
     assert config["fault_injector_imu"]["ros__parameters"]["imu_acceleration_scale"] == 1.0
 
 
+def test_optical_flow_gyro_uses_only_the_body_frame_mid360_route():
+    generator = (
+        REPO / "multi_slam_uav_sim/multi_slam_uav_sim/gazebo_optical_flow_to_mavros.py"
+    ).read_text(encoding="utf-8")
+    runner = (
+        REPO / "multi_slam_uav_sim/scripts/run_apm_sensor_stack.sh"
+    ).read_text(encoding="utf-8")
+    assert 'declare_parameter("imu_topic", "/livox/imu")' in generator
+    assert 'declare_parameter("gazebo_imu_topic", "")' in generator
+    assert "-p imu_topic:=/livox/imu" in runner
+    assert "-p \"gazebo_imu_topic:=''\"" in runner
+    assert "-p gazebo_imu_topic:=/flow/imu" not in runner
+
+
 def test_real_mid360_imu_unit_overlay_uses_g_to_si_scale():
     config = yaml.safe_load(
         (REPO / "ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360_imu_units.yaml").read_text(
