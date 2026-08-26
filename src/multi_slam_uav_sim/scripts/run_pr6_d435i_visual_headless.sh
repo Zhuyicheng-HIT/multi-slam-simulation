@@ -400,6 +400,9 @@ trace_stage livox_ownership_stable
 setsid env \
   LOG_DIR="$RUN_DIR/fastlio" RVIZ=0 LIDAR_WS="$LIDAR_WS" \
   FASTLIO_INPUT_MODE=livox START_LIVOX_POINTCLOUD_BRIDGE=0 \
+  START_DYNAMIC_CLEAN_GATEWAY="${START_DYNAMIC_CLEAN_GATEWAY:-0}" \
+  DYNAMIC_CLEAN_CONFIG="${DYNAMIC_CLEAN_CONFIG:-$WS_ROOT/src/ultra_fusion_nav/uf_dynamic_observer/config/clean_gateway.yaml}" \
+  DYNAMIC_CLEAN_TOPIC="${DYNAMIC_CLEAN_TOPIC:-/dynamic_observer/clean/livox}" \
   FASTLIO_NATIVE_FACTOR_EXPORT=1 \
   FASTLIO_DOWNSTREAM_BACKEND=1 \
   FASTLIO_MAP_INSERTION_MODE=backend_confirmed \
