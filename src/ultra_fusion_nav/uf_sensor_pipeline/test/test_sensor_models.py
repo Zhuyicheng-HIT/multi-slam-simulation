@@ -74,6 +74,14 @@ class SensorModelsTest(unittest.TestCase):
         self.assertEqual(last, 10_000_000_101)
         self.assertEqual((stamp.sec, stamp.nanosec), (10, 101))
 
+    def test_nonmonotonic_stamp_can_fail_without_repair(self):
+        stamp = Time(sec=10, nanosec=99)
+
+        with self.assertRaisesRegex(ValueError, "non-monotonic timestamp"):
+            ensure_monotonic_stamp(stamp, 10_000_000_100, repair=False)
+
+        self.assertEqual((stamp.sec, stamp.nanosec), (10, 99))
+
     def test_gnss_jump_is_meter_scale(self):
         msg = NavSatFix()
         msg.latitude = 45.0

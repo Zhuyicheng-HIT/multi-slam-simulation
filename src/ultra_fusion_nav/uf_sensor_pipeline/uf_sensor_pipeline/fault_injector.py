@@ -45,9 +45,13 @@ class FaultInjector(Node):
         # Simulation-only clock alignment. Real hardware and rosbag replay
         # keep source timestamps unless this option is explicitly enabled.
         self.declare_parameter("restamp_output", False)
+        self.declare_parameter("repair_nonmonotonic_timestamps", True)
 
         self.modality = str(self.get_parameter("modality").value)
         self.restamp_output = bool(self.get_parameter("restamp_output").value)
+        self.repair_nonmonotonic_timestamps = bool(
+            self.get_parameter("repair_nonmonotonic_timestamps").value
+        )
         if self.modality not in MESSAGE_TYPES:
             raise ValueError(f"Unsupported modality: {self.modality}")
         message_type = MESSAGE_TYPES[self.modality]
@@ -170,7 +174,9 @@ class FaultInjector(Node):
             output = copy.deepcopy(output)
             output.header.stamp = self.get_clock().now().to_msg()
         self.last_output_stamp_ns, repaired = ensure_monotonic_stamp(
-            output.header.stamp, self.last_output_stamp_ns
+            output.header.stamp,
+            self.last_output_stamp_ns,
+            repair=self.repair_nonmonotonic_timestamps,
         )
         if repaired:
             self.timestamp_repairs += 1
