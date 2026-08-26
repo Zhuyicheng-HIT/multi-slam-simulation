@@ -159,11 +159,22 @@ trace_stage() {
     >>"$STARTUP_TRACE"
 }
 
-if [[ -f "$ACTIVE_FILE" ]] && d435i_active_read "$ACTIVE_FILE" && \
-   kill -0 "$D435I_ACTIVE_PID" 2>/dev/null; then
-  printf 'A D435i headless stack is already active: pid=%s run=%s\n' \
-    "$D435I_ACTIVE_PID" "$D435I_ACTIVE_RUN_DIR" >&2
-  exit 2
+if [[ -f "$ACTIVE_FILE" ]] && d435i_active_read "$ACTIVE_FILE"; then
+  if kill -0 "$D435I_ACTIVE_PID" 2>/dev/null; then
+    printf 'A D435i headless stack is already active: pid=%s run=%s\n' \
+      "$D435I_ACTIVE_PID" "$D435I_ACTIVE_RUN_DIR" >&2
+    exit 2
+  fi
+  # A killed wrapper can leave its children alive and the marker behind.  The
+  # stale manifest is trusted only when its run directory belongs to this
+  # workspace; the helper additionally checks command ownership and start
+  # ticks before signalling each process group.
+  if d435i_run_dir_owned "$D435I_ACTIVE_RUN_DIR" "$WS_ROOT"; then
+    d435i_cleanup_run_manifests "$D435I_ACTIVE_RUN_DIR" "$WS_ROOT" \
+      "$D435I_ACTIVE_RUN_DIR/stale_recovery_cleanup.log"
+    d435i_active_archive "$ACTIVE_FILE" "$WS_ROOT/logs/d435i_visual_slam" \
+      stale_wrapper_marker
+  fi
 fi
 
 RUN_TOKEN="$$-$(date +%s%N)"
