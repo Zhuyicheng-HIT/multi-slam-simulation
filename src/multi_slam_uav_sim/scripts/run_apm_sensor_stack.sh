@@ -236,6 +236,34 @@ printf 'ROS simulation clock active: delta=%.6fs\n' \
   "$(awk -v a="$clock_first_ns" -v b="$clock_second_ns" \
     'BEGIN {printf "%.6f", (b-a)/1e9}')"
 
+# Start the MID360 bridge as soon as Gazebo and /clock are ready.  The bridge
+# is an independent companion sensor and must not be delayed by the FCU/MAVROS
+# telemetry handshake; the PR6 wrapper waits for /livox/lidar while bringing up
+# FAST-LIO, so starting it later creates a circular startup dependency.
+if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
+  setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
+    -p gz_topic:=/mid360/lidar \
+    -p gz_imu_topic:=/mid360/imu \
+    -p livox_lidar_topic:=/livox/lidar \
+    -p livox_imu_topic:=/livox/imu \
+    -p lidar_frame_id:=mid360_link \
+    -p imu_frame_id:=base_link \
+    -p point_stride:=${MID360_POINT_STRIDE:-1} \
+    -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
+    -p body_min_x_m:="$MID360_BODY_MIN_X_M" \
+    -p body_max_x_m:="$MID360_BODY_MAX_X_M" \
+    -p body_min_y_m:="$MID360_BODY_MIN_Y_M" \
+    -p body_max_y_m:="$MID360_BODY_MAX_Y_M" \
+    -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
+    -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
+    -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
+    -p restamp_lidar:=false \
+    -p publish_ground_truth_odom:=true \
+    >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
+  pids+=("$!")
+fi
+
 if [[ "${ENABLE_D435_BRIDGE:-1}" == "1" ]]; then
   setsid ros2 run multi_slam_uav_sim d435i_sim_bridge --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
@@ -514,29 +542,6 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
     -p publish_registered:=${MID360_PUBLISH_REGISTERED:-true} \
     -p publish_tf:=${MID360_PUBLISH_TF:-true} \
     >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
-  pids+=("$!")
-elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
-  # Bridge the independently simulated MID360 IMU and LiDAR from Gazebo.
-  setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
-    -p use_sim_time:="$USE_SIM_TIME" \
-    -p gz_topic:=/mid360/lidar \
-    -p gz_imu_topic:=/mid360/imu \
-    -p livox_lidar_topic:=/livox/lidar \
-    -p livox_imu_topic:=/livox/imu \
-    -p lidar_frame_id:=mid360_link \
-    -p imu_frame_id:=base_link \
-    -p point_stride:=${MID360_POINT_STRIDE:-1} \
-    -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
-    -p body_min_x_m:="$MID360_BODY_MIN_X_M" \
-    -p body_max_x_m:="$MID360_BODY_MAX_X_M" \
-    -p body_min_y_m:="$MID360_BODY_MIN_Y_M" \
-    -p body_max_y_m:="$MID360_BODY_MAX_Y_M" \
-    -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
-    -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
-    -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
-    -p restamp_lidar:=false \
-    -p publish_ground_truth_odom:=true \
-    >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")
 fi
 
