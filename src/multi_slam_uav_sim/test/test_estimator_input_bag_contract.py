@@ -4,6 +4,11 @@ import unittest
 
 
 TOOL_PATH = Path(__file__).resolve().parents[3] / "tools" / "verify_estimator_input_bag.py"
+CAPTURE_TOOL_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "tools"
+    / "capture_full_online_backend_replay.sh"
+)
 SPEC = importlib.util.spec_from_file_location("verify_estimator_input_bag", TOOL_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -24,6 +29,10 @@ def metadata(*topics):
 
 
 class EstimatorInputBagContractTest(unittest.TestCase):
+    def test_full_capture_records_rgbd_direct_input(self):
+        capture_script = CAPTURE_TOOL_PATH.read_text(encoding="utf-8")
+        self.assertIn("/vision/rgbd_direct_tracks", capture_script)
+
     def test_rgbd_geometry_is_optional_for_four_source_replay(self):
         report = MODULE.build_report(metadata(*MODULE.CORE_TOPICS))
         self.assertTrue(report["valid"])

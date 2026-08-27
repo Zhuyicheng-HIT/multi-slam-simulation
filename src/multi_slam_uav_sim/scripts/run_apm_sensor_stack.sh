@@ -249,6 +249,8 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \
     -p imu_frame_id:=base_link \
+    -p gazebo_world_name:="$WORLD_NAME" \
+    -p gazebo_model:=apm_iris \
     -p point_stride:=${MID360_POINT_STRIDE:-1} \
     -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
     -p body_min_x_m:="$MID360_BODY_MIN_X_M" \

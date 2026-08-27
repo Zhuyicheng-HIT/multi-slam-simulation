@@ -100,6 +100,7 @@ setsid ros2 bag record --storage sqlite3 --output "$BAG_DIR" \
   /sensors/optical_flow/rad \
   /vision/feature_tracks \
   /vision/rgbd_geometry_tracks \
+  /vision/rgbd_direct_tracks \
   /reliability/scheduler_state \
   /reliability/lidar_score \
   /reliability/imu_score \

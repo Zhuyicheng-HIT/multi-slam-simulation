@@ -34,6 +34,16 @@ class TruthObserverRouteContractTest(unittest.TestCase):
         self.assertIn('-p route_feedback_source:=gazebo_truth', runner)
         self.assertIn('-p gazebo_truth_odom_topic:="$GAZEBO_TRUTH_ODOM_TOPIC"', runner)
 
+    def test_direct_mid360_bridge_tracks_the_selected_gazebo_world(self):
+        runner = (
+            SIM_ROOT / "scripts" / "run_apm_sensor_stack.sh"
+        ).read_text(encoding="utf-8")
+        direct_bridge = runner.split(
+            "ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node", 1
+        )[1].split(">\"$LOG_DIR/gz_livox_bridge.log\"", 1)[0]
+        self.assertIn('-p gazebo_world_name:="$WORLD_NAME"', direct_bridge)
+        self.assertIn("-p gazebo_model:=apm_iris", direct_bridge)
+
     def test_validation_bag_records_barometer(self):
         runner = (
             REPO_ROOT / "tools" / "run_unified_rectangle_validation.sh"
