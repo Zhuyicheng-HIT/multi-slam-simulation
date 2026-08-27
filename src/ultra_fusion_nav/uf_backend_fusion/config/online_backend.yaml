@@ -41,7 +41,7 @@ unified_backend_fusion:
     cpp_math_core_required: true
     # Native LiDAR/scan handshakes and FCU IMU ingress use separate mutually
     # exclusive callback groups. Numeric kernels remain single-threaded.
-    executor_threads: 3
+    executor_threads: 4
     # At 100 Hz this retains 0.32 s, enough for several LiDAR windows while
     # dropping stale DDS backlog before it can become navigation latency.
     flow_qos_depth: 32

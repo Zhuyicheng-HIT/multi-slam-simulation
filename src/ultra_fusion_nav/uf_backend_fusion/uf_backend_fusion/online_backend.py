@@ -2620,7 +2620,7 @@ class UnifiedBackendNode(Node):
             self.declare_parameter(name, value)
         # Keep high-rate flow ingress independent from native LiDAR and IMU;
         # the optimizer itself remains a single worker with one numeric thread.
-        self.declare_parameter("executor_threads", 3)
+        self.declare_parameter("executor_threads", 4)
         self.executor_threads = int(
             self.get_parameter("executor_threads").value
         )
@@ -7161,7 +7161,7 @@ class UnifiedBackendNode(Node):
         self.last_live_propagation_reason = str(reason)
         self.counts["live_propagation_rejected"] += 1
 
-    def _publish_live_propagation(self):
+    def _publish_live_propagation(self, _anchor_retry=True):
         """Publish dead-reckoned odometry without touching the factor graph."""
         if (
             not self.live_propagation_enabled
@@ -7241,6 +7241,18 @@ class UnifiedBackendNode(Node):
                 != propagated.anchor_reset_counter
             ):
                 self._reject_live_propagation("anchor_changed")
+                if _anchor_retry:
+                    # Retry once from the newest committed anchor.  This keeps
+                    # the fixed-rate timer as the sole unified-odom writer.
+                    try:
+                        published_before_retry = self.counts["live_propagation_published"]
+                        self._publish_live_propagation(_anchor_retry=False)
+                        if self.counts["live_propagation_published"] == published_before_retry:
+                            self.last_live_propagation_reason = "anchor_changed"
+                    except Exception:
+                        # A concurrently changing test/epoch may invalidate
+                        # the retry; retain the causal rejection reason.
+                        self.last_live_propagation_reason = "anchor_changed"
                 return
             if current_anchor.reset_counter != self.state_reset_counter:
                 self._reject_live_propagation("epoch_changed")
