@@ -71,6 +71,8 @@ REGENERATE_VISION_FACTOR_SCORE=${REGENERATE_VISION_FACTOR_SCORE:-auto}
 REPLAY_VISION_FACTOR_SCORE_TOPIC=${REPLAY_VISION_FACTOR_SCORE_TOPIC:-/replay/reliability/vision_factor_score}
 REPLAY_RGBD_MAX_DEPTH_M=${REPLAY_RGBD_MAX_DEPTH_M:-10.0}
 REPLAY_REQUIRE_RGBD_GEOMETRY=${REPLAY_REQUIRE_RGBD_GEOMETRY:-auto}
+REPLAY_DISABLE_LIDAR=${REPLAY_DISABLE_LIDAR:-false}
+REPLAY_DISABLE_GNSS=${REPLAY_DISABLE_GNSS:-false}
 STRICT_REPLAY_ACCEPTANCE=${STRICT_REPLAY_ACCEPTANCE:-1}
 REPLAY_REQUIRE_TIME_CALIBRATION_LOCK=${REPLAY_REQUIRE_TIME_CALIBRATION_LOCK:-false}
 REPLAY_REQUIRE_TIME_CALIBRATION_APPLIED=${REPLAY_REQUIRE_TIME_CALIBRATION_APPLIED:-false}
@@ -160,6 +162,12 @@ for value in \
   "$REPLAY_EXTERNAL_NAV_GATE_ENABLED"; do
   if [[ "$value" != true && "$value" != false ]]; then
     printf 'Calibration apply switches must be true or false.\n' >&2
+    exit 2
+  fi
+done
+for value in "$REPLAY_DISABLE_LIDAR" "$REPLAY_DISABLE_GNSS"; do
+  if [[ "$value" != true && "$value" != false ]]; then
+    printf 'Replay LiDAR/GNSS disable switches must be true or false.\n' >&2
     exit 2
   fi
 done
@@ -362,6 +370,20 @@ cleanup() {
   done
 }
 trap cleanup EXIT INT TERM
+
+scheduler_mask_args=()
+if [[ "$REPLAY_DISABLE_LIDAR" == true ]]; then
+  scheduler_mask_args+=(--disable lidar)
+fi
+if [[ "$REPLAY_DISABLE_GNSS" == true ]]; then
+  scheduler_mask_args+=(--disable gnss)
+fi
+if (( ${#scheduler_mask_args[@]} > 0 )); then
+  setsid python3 "$REPO_ROOT/tools/replay_scheduler_mask.py" \
+    "${scheduler_mask_args[@]}" \
+    >"$OUTPUT_DIR/scheduler_mask.log" 2>&1 &
+  pids+=("$!")
+fi
 
 backend_command=(
   ros2 run uf_backend_fusion online_backend_fusion
@@ -585,6 +607,12 @@ play_command=(
   --topics
   "${play_topics[@]}"
 )
+if (( ${#scheduler_mask_args[@]} > 0 )); then
+  play_command+=(
+    --remap
+    /reliability/scheduler_state:=/replay/reliability/scheduler_state_input
+  )
+fi
 set +e
 timeout "${REPLAY_WALL_TIMEOUT_S}s" "${play_command[@]}" \
   </dev/null >"$OUTPUT_DIR/rosbag_play.log" 2>&1
@@ -675,6 +703,9 @@ printf 'fixed_lidar_weight=%s\nfixed_gnss_weight=%s\nfixed_imu_weight=%s\nfixed_
 printf 'regenerate_lidar_scheduler=%s\nlidar_factor_score_mode=%s\nlidar_admission_mode=%s\nlidar_paper_activation_threshold=%s\n' \
   "$REGENERATE_LIDAR_SCHEDULER" "$LIDAR_FACTOR_SCORE_MODE" \
   "$LIDAR_ADMISSION_MODE" "$LIDAR_PAPER_ACTIVATION_THRESHOLD" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'replay_disable_lidar=%s\nreplay_disable_gnss=%s\n' \
+  "$REPLAY_DISABLE_LIDAR" "$REPLAY_DISABLE_GNSS" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'lidar_subspace_enabled=%s\nlidar_subspace_weak_threshold=%s\nlidar_subspace_exit_threshold=%s\nlidar_subspace_weak_scale=%s\n' \
   "$LIDAR_SUBSPACE_ENABLED" "$LIDAR_SUBSPACE_WEAK_THRESHOLD" \
