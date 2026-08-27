@@ -11,6 +11,14 @@ clean_scan_gateway:
     max_pending_scans: 8
     max_state_wait_ms: 250.0
     max_processing_ms: 20.0
+    # Optional body-frame box mask for MID360 self returns; raw input remains untouched.
+    self_body_mask.enabled: false
+    self_body_mask.x_min_m: -0.35
+    self_body_mask.x_max_m: 0.35
+    self_body_mask.y_min_m: -0.30
+    self_body_mask.y_max_m: 0.30
+    self_body_mask.z_min_m: -0.25
+    self_body_mask.z_max_m: 0.25
 
     deskew.max_imu_gap_s: 0.025
     deskew.max_prediction_horizon_s: 0.20
