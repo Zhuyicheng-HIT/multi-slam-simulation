@@ -2953,6 +2953,10 @@ class UnifiedBackendNode(Node):
         self.declare_parameter(
             "marginal_prior_suppress_historical_lidar_weak", False
         )
+        self.declare_parameter("prior_causal_diagnostics_enabled", False)
+        self.declare_parameter(
+            "diagnostic_marginal_prior_exclude_visual", False
+        )
         self.declare_parameter("lidar_prediction_gate_enabled", True)
         self.declare_parameter("lidar_prediction_gate_max_position_m", 1.0)
         self.declare_parameter("lidar_prediction_gate_max_yaw_rad", 0.50)
@@ -3913,6 +3917,14 @@ class UnifiedBackendNode(Node):
                 "marginal_prior_suppress_historical_lidar_weak"
             ).value
         )
+        self.prior_causal_diagnostics_enabled = bool(
+            self.get_parameter("prior_causal_diagnostics_enabled").value
+        )
+        self.diagnostic_marginal_prior_exclude_visual = bool(
+            self.get_parameter(
+                "diagnostic_marginal_prior_exclude_visual"
+            ).value
+        )
         self.lidar_prediction_gate_enabled = bool(
             self.get_parameter("lidar_prediction_gate_enabled").value
         )
@@ -4124,6 +4136,9 @@ class UnifiedBackendNode(Node):
             )
             self.backend.suppress_historical_lidar_weak = (
                 self.marginal_prior_suppress_historical_lidar_weak
+            )
+            self.backend.diagnostic_exclude_visual_from_marginal_prior = (
+                self.diagnostic_marginal_prior_exclude_visual
             )
         else:
             self.backend = SlidingWindowBackend(max_states=window_size)
@@ -7622,7 +7637,11 @@ class UnifiedBackendNode(Node):
             "flow": int(
                 counts["optical_flow"] + counts["optical_flow_body"]
             ),
-            "visual": int(counts["visual_reprojection"]),
+            "visual": int(
+                counts["visual_reprojection"]
+                + counts["rgbd_depth"]
+                + counts["rgbd_direct"]
+            ),
             "prior": int(counts["prior"] + counts["marginal_prior"]),
             "total": int(sum(counts.values())),
         }
@@ -7768,6 +7787,16 @@ class UnifiedBackendNode(Node):
         marginal_prior_diagnostic.update(dict(getattr(
             self.backend, "last_marginal_prior_diagnostic", {}
         )))
+        marginal_prior_full = context.get("marginal_prior_proposed", {})
+        if not marginal_prior_full:
+            full_prior_diagnostic = getattr(
+                self.backend, "marginal_prior_full_diagnostic", None
+            )
+            if (
+                self.prior_causal_diagnostics_enabled
+                and callable(full_prior_diagnostic)
+            ):
+                marginal_prior_full = full_prior_diagnostic()
         optimized_state = None
         if state_committed and self.backend.state_count > 0:
             optimized_state = self.backend.state(
@@ -7920,6 +7949,16 @@ class UnifiedBackendNode(Node):
                 backend_profile.get("marginalization_happened", False)
             ),
             "marginal_prior_diagnostic": marginal_prior_diagnostic,
+            "marginal_prior_initial": context.get(
+                "marginal_prior_initial", {}
+            ),
+            "marginal_prior_full": marginal_prior_full,
+            "factor_sources_initial": context.get(
+                "factor_sources_initial", {}
+            ),
+            "factor_sources_proposed": context.get(
+                "factor_sources_proposed", {}
+            ),
             "state_committed": bool(state_committed),
             "optimized_state": optimized_state,
             "last_reason": str(self.last_reason),
@@ -7971,6 +8010,14 @@ class UnifiedBackendNode(Node):
                 ),
                 "gyro_bias_correction_radps": float(
                     self.last_optimization_integrity.gyro_bias_correction_radps
+                ),
+                "initial_state": context.get("integrity_initial_state"),
+                "proposed_state": context.get("integrity_proposed_state"),
+                "translation_correction_xyz_m": context.get(
+                    "integrity_translation_correction_xyz_m"
+                ),
+                "velocity_correction_xyz_mps": context.get(
+                    "integrity_velocity_correction_xyz_mps"
                 ),
             },
             "scan_prediction": {
@@ -10583,6 +10630,10 @@ class UnifiedBackendNode(Node):
                 performance_context["nonlinear_iteration_budget"] = int(
                     nonlinear_iteration_budget
                 )
+                if self.prior_causal_diagnostics_enabled:
+                    performance_context["_diagnostic_initial_states"] = (
+                        self.backend.states()
+                    )
             if self.backend_solver_mode == "manifold":
                 self.backend.optimize(max_iterations=nonlinear_iteration_budget)
             else:
@@ -10686,6 +10737,58 @@ class UnifiedBackendNode(Node):
                         self.last_visual_reprojection_residual_dimension,
                     ) = visual_residual
             estimate = self.backend.state(current_index)
+            if performance_context is not None:
+                performance_context["integrity_initial_state"] = (
+                    np.asarray(initial_state, dtype=float).tolist()
+                )
+                performance_context["integrity_proposed_state"] = (
+                    np.asarray(estimate, dtype=float).tolist()
+                )
+                performance_context[
+                    "integrity_translation_correction_xyz_m"
+                ] = (
+                    np.asarray(estimate[:3], dtype=float)
+                    - np.asarray(initial_state[:3], dtype=float)
+                ).tolist()
+                performance_context[
+                    "integrity_velocity_correction_xyz_mps"
+                ] = (
+                    np.asarray(estimate[6:9], dtype=float)
+                    - np.asarray(initial_state[6:9], dtype=float)
+                ).tolist()
+                if (
+                    self.prior_causal_diagnostics_enabled
+                    and float(np.linalg.norm(
+                        np.asarray(estimate[:3], dtype=float)
+                        - np.asarray(initial_state[:3], dtype=float)
+                    )) >= 0.10
+                ):
+                    source_diagnostic = getattr(
+                        self.backend, "factor_source_normal_diagnostic", None
+                    )
+                    prior_diagnostic = getattr(
+                        self.backend, "marginal_prior_full_diagnostic", None
+                    )
+                    if callable(source_diagnostic):
+                        initial_states = performance_context.get(
+                            "_diagnostic_initial_states"
+                        )
+                        performance_context["factor_sources_initial"] = (
+                            source_diagnostic(initial_states)
+                        )
+                        performance_context["factor_sources_proposed"] = (
+                            source_diagnostic()
+                        )
+                    if callable(prior_diagnostic):
+                        initial_states = performance_context.get(
+                            "_diagnostic_initial_states"
+                        )
+                        performance_context["marginal_prior_initial"] = (
+                            prior_diagnostic(initial_states)
+                        )
+                        performance_context["marginal_prior_proposed"] = (
+                            prior_diagnostic()
+                        )
             if self.transactional_update_enabled:
                 integrity_started = time.perf_counter_ns()
                 self.last_optimization_integrity = validate_optimized_state(

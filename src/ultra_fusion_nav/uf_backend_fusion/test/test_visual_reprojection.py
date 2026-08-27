@@ -90,6 +90,32 @@ class VisualReprojectionTest(unittest.TestCase):
         self.assertEqual(dimension, 8)
         self.assertLess(rmse, before / np.sqrt(8.0) * 0.1)
 
+    def test_visual_prior_exclusion_is_explicit_and_attributed(self):
+        def marginalize(exclude):
+            backend = ManifoldSlidingWindowBackend(
+                max_states=2, cpp_math_core_enabled=False
+            )
+            backend.diagnostic_exclude_visual_from_marginal_prior = exclude
+            first = backend.add_state(self.anchor)
+            second = backend.add_state(self.current)
+            backend.add_prior(first, self.anchor, covariance=1.0e-4)
+            backend.add_visual_reprojection(first, second, self.tracks)
+            backend.add_state(self.current)
+            return backend.marginal_prior_full_diagnostic()
+
+        baseline = marginalize(False)
+        excluded = marginalize(True)
+        self.assertEqual(
+            baseline["excluded_source_factor_counts"].get(
+                "visual_reprojection", 0
+            ),
+            0,
+        )
+        self.assertEqual(
+            excluded["excluded_source_factor_counts"]["visual_reprojection"],
+            1,
+        )
+
     def test_rgbd_depth_completes_metric_line_of_sight_constraint(self):
         anchor_pixels = np.asarray([
             [-0.2, -0.1], [0.1, -0.15], [0.2, 0.2], [-0.1, 0.25]

@@ -1,3 +1,4 @@
+import json
 import unittest
 from dataclasses import replace
 import threading
@@ -480,6 +481,39 @@ class ManifoldWindowTest(unittest.TestCase):
         self.assertGreater(
             diagnostic["historical_lidar_pre_schur_translation_trace"], 0.0
         )
+
+    def test_full_marginal_prior_diagnostic_reports_spectrum_and_gradient(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=False
+        )
+        first = backend.add_state(np.zeros(15))
+        backend.add_prior(first, np.zeros(15), covariance=np.ones(15))
+        second = backend.add_state(np.zeros(15))
+        backend.add_optical_flow(first, second, [0.2, -0.1, 0.0])
+        backend.add_state(np.zeros(15))
+
+        diagnostic = backend.marginal_prior_full_diagnostic()
+        self.assertTrue(diagnostic["active"])
+        self.assertEqual(diagnostic["state_count"], 2)
+        self.assertGreater(diagnostic["stored_spectrum"]["rank"], 0)
+        self.assertEqual(len(diagnostic["latest_gradient"]), 15)
+        self.assertEqual(len(diagnostic["latest_position_gradient_xyz"]), 3)
+        self.assertEqual(len(diagnostic["aggregate_position_gradient_xyz"]), 3)
+        self.assertEqual(
+            len(diagnostic["position_gradient_xyz_by_state"]),
+            diagnostic["state_count"],
+        )
+        self.assertIn("position", diagnostic["group_gradient_norms"])
+        json.dumps(diagnostic, allow_nan=False)
+
+        sources = backend.factor_source_normal_diagnostic()
+        self.assertIn("marginal_prior", sources)
+        self.assertEqual(len(sources["marginal_prior"]["latest_gradient"]), 15)
+        self.assertEqual(
+            len(sources["marginal_prior"]["position_gradient_xyz_by_state"]),
+            backend.state_count,
+        )
+        json.dumps(sources, allow_nan=False)
 
     def test_historical_lidar_weak_suppression_is_opt_in(self):
         def run(suppress):

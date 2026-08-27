@@ -729,6 +729,7 @@ class ManifoldSlidingWindowBackend:
         self._last_marginalization_ms = 0.0
         self.last_marginal_prior_diagnostic = {}
         self.suppress_historical_lidar_weak = False
+        self.diagnostic_exclude_visual_from_marginal_prior = False
         self.profiling_enabled = bool(profiling_enabled)
         self.profiling_capacity = max(64, int(profiling_capacity))
         self._profile_samples = defaultdict(
@@ -2480,6 +2481,209 @@ class ManifoldSlidingWindowBackend:
             "historical_lidar_attenuated_weak_trace": 0.0,
         }
 
+    @staticmethod
+    def _normal_spectrum_diagnostic(hessian, rank_tolerance):
+        symmetric = 0.5 * (
+            np.asarray(hessian, dtype=float)
+            + np.asarray(hessian, dtype=float).T
+        )
+        eigenvalues = np.linalg.eigvalsh(symmetric)
+        if not eigenvalues.size:
+            return {
+                "rank": 0,
+                "condition": None,
+                "minimum_eigenvalue": 0.0,
+                "maximum_eigenvalue": 0.0,
+                "trace": 0.0,
+            }
+        scale = max(1.0, float(np.max(np.abs(eigenvalues))))
+        active = eigenvalues > float(rank_tolerance) * scale
+        rank = int(np.count_nonzero(active))
+        return {
+            "rank": rank,
+            "condition": (
+                float(eigenvalues[-1] / eigenvalues[active][0])
+                if rank else None
+            ),
+            "minimum_eigenvalue": float(eigenvalues[0]),
+            "maximum_eigenvalue": float(eigenvalues[-1]),
+            "trace": float(np.trace(symmetric)),
+        }
+
+    def marginal_prior_full_diagnostic(self, states=None):
+        """Return read-only prior spectrum and current linearized gradient."""
+        diagnostic_states = self._states if states is None else states
+        for factor in reversed(self._factors):
+            if factor["name"] != "marginal_prior" or not factor["enabled"]:
+                continue
+            stored_hessian = np.asarray(factor["normal_hessian"], dtype=float)
+            stored_gradient = np.asarray(factor["normal_gradient"], dtype=float)
+            current_hessian, current_gradient, current_cost = self._factor_normal(
+                factor, diagnostic_states
+            )
+            indices = np.concatenate([
+                np.arange(index * STATE_SIZE, (index + 1) * STATE_SIZE)
+                for index in factor["indices"]
+            ])
+            current_hessian = current_hessian[np.ix_(indices, indices)]
+            current_gradient = current_gradient[indices]
+            state_count = len(factor["indices"])
+            position_indices = np.concatenate([
+                np.arange(block * STATE_SIZE, block * STATE_SIZE + 3)
+                for block in range(state_count)
+            ])
+            position_hessian = current_hessian[np.ix_(
+                position_indices, position_indices
+            )]
+            latest = slice(
+                (state_count - 1) * STATE_SIZE, state_count * STATE_SIZE
+            )
+            latest_gradient = current_gradient[latest]
+            latest_hessian = current_hessian[latest, latest]
+            group_slices = {
+                "position": POSITION,
+                "rotation": ROTATION,
+                "velocity": VELOCITY,
+                "accel_bias": ACCEL_BIAS,
+                "gyro_bias": GYRO_BIAS,
+            }
+            group_gradient_norms = {}
+            for name, group in group_slices.items():
+                values = np.concatenate([
+                    current_gradient[
+                        block * STATE_SIZE + group.start:
+                        block * STATE_SIZE + group.stop
+                    ]
+                    for block in range(state_count)
+                ])
+                group_gradient_norms[name] = float(np.linalg.norm(values))
+            position_information = np.zeros((3, 3), dtype=float)
+            position_gradient = np.zeros(3, dtype=float)
+            position_gradient_by_state = []
+            position_information_trace_by_state = []
+            for block in range(state_count):
+                position = slice(
+                    block * STATE_SIZE, block * STATE_SIZE + 3
+                )
+                block_information = current_hessian[position, position]
+                block_gradient = current_gradient[position]
+                position_information += block_information
+                position_gradient += block_gradient
+                position_gradient_by_state.append(block_gradient.tolist())
+                position_information_trace_by_state.append(float(
+                    np.trace(block_information)
+                ))
+            position_information = 0.5 * (
+                position_information + position_information.T
+            )
+            position_eigenvalues, position_eigenvectors = np.linalg.eigh(
+                position_information
+            )
+            result = {
+                "active": True,
+                "state_count": int(state_count),
+                "stored_spectrum": self._normal_spectrum_diagnostic(
+                    stored_hessian, self.marginal_rank_tolerance
+                ),
+                "current_spectrum": self._normal_spectrum_diagnostic(
+                    current_hessian, self.marginal_rank_tolerance
+                ),
+                "position_spectrum": self._normal_spectrum_diagnostic(
+                    position_hessian, self.marginal_rank_tolerance
+                ),
+                "latest_state_spectrum": self._normal_spectrum_diagnostic(
+                    latest_hessian, self.marginal_rank_tolerance
+                ),
+                "stored_gradient_norm": float(np.linalg.norm(stored_gradient)),
+                "current_gradient_norm": float(np.linalg.norm(current_gradient)),
+                "current_cost": float(current_cost),
+                "group_gradient_norms": group_gradient_norms,
+                "aggregate_position_information": position_information.tolist(),
+                "aggregate_position_eigenvalues": position_eigenvalues.tolist(),
+                "aggregate_position_eigenvectors_row_major": (
+                    position_eigenvectors.tolist()
+                ),
+                "aggregate_position_gradient_xyz": position_gradient.tolist(),
+                "position_gradient_xyz_by_state": position_gradient_by_state,
+                "position_information_trace_by_state": (
+                    position_information_trace_by_state
+                ),
+                "latest_gradient": latest_gradient.tolist(),
+                "latest_position_gradient_xyz": latest_gradient[:3].tolist(),
+                "latest_position_gradient_norm": float(
+                    np.linalg.norm(latest_gradient[:3])
+                ),
+                "latest_position_information": (
+                    0.5 * (latest_hessian[:3, :3] + latest_hessian[:3, :3].T)
+                ).tolist(),
+                "excluded_source_factor_counts": dict(factor.get(
+                    "marginal_excluded_source_factor_counts", {}
+                )),
+            }
+            return result
+        return {"active": False}
+
+    def factor_source_normal_diagnostic(self, states=None):
+        """Aggregate each active source's normal equation at current states."""
+        diagnostic_states = self._states if states is None else states
+        dimension = len(diagnostic_states) * STATE_SIZE
+        if dimension == 0:
+            return {}
+        accumulated = {}
+        for factor in self._factors:
+            if not factor["enabled"]:
+                continue
+            hessian, gradient, cost = self._factor_normal(
+                factor, diagnostic_states
+            )
+            source = str(factor["name"])
+            item = accumulated.setdefault(source, {
+                "hessian": np.zeros((dimension, dimension), dtype=float),
+                "gradient": np.zeros(dimension, dtype=float),
+                "cost": 0.0,
+                "count": 0,
+            })
+            item["hessian"] += hessian
+            item["gradient"] += gradient
+            item["cost"] += float(cost)
+            item["count"] += 1
+        latest = slice(dimension - STATE_SIZE, dimension)
+        result = {}
+        for source, item in accumulated.items():
+            latest_hessian = item["hessian"][latest, latest]
+            latest_gradient = item["gradient"][latest]
+            position_gradient_by_state = [
+                item["gradient"][
+                    block * STATE_SIZE:block * STATE_SIZE + 3
+                ].tolist()
+                for block in range(len(diagnostic_states))
+            ]
+            position_information_trace_by_state = [
+                float(np.trace(item["hessian"][
+                    block * STATE_SIZE:block * STATE_SIZE + 3,
+                    block * STATE_SIZE:block * STATE_SIZE + 3,
+                ]))
+                for block in range(len(diagnostic_states))
+            ]
+            result[source] = {
+                "count": int(item["count"]),
+                "cost": float(item["cost"]),
+                "global_gradient_norm": float(np.linalg.norm(item["gradient"])),
+                "latest_gradient": latest_gradient.tolist(),
+                "latest_position_gradient_xyz": latest_gradient[:3].tolist(),
+                "latest_position_gradient_norm": float(
+                    np.linalg.norm(latest_gradient[:3])
+                ),
+                "latest_position_information": (
+                    0.5 * (latest_hessian[:3, :3] + latest_hessian[:3, :3].T)
+                ).tolist(),
+                "position_gradient_xyz_by_state": position_gradient_by_state,
+                "position_information_trace_by_state": (
+                    position_information_trace_by_state
+                ),
+            }
+        return result
+
     def _marginalize_if_needed(self):
         started = time.perf_counter()
         profile_started = self._profile_start()
@@ -2490,6 +2694,7 @@ class ManifoldSlidingWindowBackend:
                 factor for factor in self._factors if 0 in factor["indices"]
             ]
             source_counts = defaultdict(int)
+            excluded_source_counts = defaultdict(int)
             lidar_translation_trace = 0.0
             lidar_weak_translation_trace = 0.0
             lidar_weak_translation_trace_suppressed = 0.0
@@ -2515,6 +2720,18 @@ class ManifoldSlidingWindowBackend:
                     lidar_weak_mode_count += int(factor.get(
                         "marginal_lidar_weak_mode_count", 0
                     ))
+                    for name, count in factor.get(
+                        "marginal_excluded_source_factor_counts", {}
+                    ).items():
+                        excluded_source_counts[name] += int(count)
+                    continue
+                if (
+                    self.diagnostic_exclude_visual_from_marginal_prior
+                    and factor["name"] in {
+                        "visual_reprojection", "rgbd_depth", "rgbd_direct"
+                    }
+                ):
+                    excluded_source_counts[factor["name"]] += 1
                     continue
                 source_counts[factor["name"]] += 1
                 if factor["name"] != "lidar_point_plane":
@@ -2566,6 +2783,13 @@ class ManifoldSlidingWindowBackend:
             references = [state.copy() for state in self._states[1:]]
             if eliminated:
                 normal_factors = eliminated
+                if self.diagnostic_exclude_visual_from_marginal_prior:
+                    normal_factors = [
+                        factor for factor in normal_factors
+                        if factor["name"] not in {
+                            "visual_reprojection", "rgbd_depth", "rgbd_direct"
+                        }
+                    ]
                 if self.suppress_historical_lidar_weak:
                     normal_factors = []
                     for factor in eliminated:
@@ -2653,6 +2877,9 @@ class ManifoldSlidingWindowBackend:
                         self.suppress_historical_lidar_weak
                     ),
                     "lidar_weak_mode_count": lidar_weak_mode_count,
+                    "excluded_source_factor_counts": dict(
+                        excluded_source_counts
+                    ),
                 }
                 self._factors.append({
                     "name": "marginal_prior",
@@ -2677,6 +2904,9 @@ class ManifoldSlidingWindowBackend:
                     ),
                     "marginal_lidar_weak_mode_count": (
                         lidar_weak_mode_count
+                    ),
+                    "marginal_excluded_source_factor_counts": dict(
+                        excluded_source_counts
                     ),
                 })
         self._last_marginalization_ms = (

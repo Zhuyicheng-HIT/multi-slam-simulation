@@ -51,6 +51,8 @@ BAROMETER_TOPIC=${BAROMETER_TOPIC:-/mavros/imu/static_pressure}
 BACKEND_RELIABILITY_MODE=${BACKEND_RELIABILITY_MODE:-dynamic}
 TRANSACTIONAL_UPDATE_ENABLED=${TRANSACTIONAL_UPDATE_ENABLED:-true}
 MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK=${MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK:-false}
+PRIOR_CAUSAL_DIAGNOSTICS_ENABLED=${PRIOR_CAUSAL_DIAGNOSTICS_ENABLED:-false}
+DIAGNOSTIC_MARGINAL_PRIOR_EXCLUDE_VISUAL=${DIAGNOSTIC_MARGINAL_PRIOR_EXCLUDE_VISUAL:-false}
 FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
 FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
 FIXED_IMU_WEIGHT=${FIXED_IMU_WEIGHT:-1.0}
@@ -127,6 +129,14 @@ if [[ "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" != true && \
   printf 'MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK must be true or false.\n' >&2
   exit 2
 fi
+for value in \
+  "$PRIOR_CAUSAL_DIAGNOSTICS_ENABLED" \
+  "$DIAGNOSTIC_MARGINAL_PRIOR_EXCLUDE_VISUAL"; do
+  if [[ "$value" != true && "$value" != false ]]; then
+    printf 'Prior causal diagnostic switches must be true or false.\n' >&2
+    exit 2
+  fi
+done
 for value in \
   "$FIXED_LIDAR_WEIGHT" "$FIXED_GNSS_WEIGHT" "$FIXED_IMU_WEIGHT" \
   "$FIXED_OPTICAL_FLOW_WEIGHT" "$FIXED_VISION_WEIGHT"; do
@@ -407,6 +417,8 @@ backend_command=(
   -p reliability_mode:="$BACKEND_RELIABILITY_MODE"
   -p transactional_update_enabled:="$TRANSACTIONAL_UPDATE_ENABLED"
   -p marginal_prior_suppress_historical_lidar_weak:="$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK"
+  -p prior_causal_diagnostics_enabled:="$PRIOR_CAUSAL_DIAGNOSTICS_ENABLED"
+  -p diagnostic_marginal_prior_exclude_visual:="$DIAGNOSTIC_MARGINAL_PRIOR_EXCLUDE_VISUAL"
   -p fixed_lidar_weight:="$FIXED_LIDAR_WEIGHT"
   -p fixed_gnss_weight:="$FIXED_GNSS_WEIGHT"
   -p fixed_imu_weight:="$FIXED_IMU_WEIGHT"
@@ -706,6 +718,10 @@ printf 'regenerate_lidar_scheduler=%s\nlidar_factor_score_mode=%s\nlidar_admissi
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'replay_disable_lidar=%s\nreplay_disable_gnss=%s\n' \
   "$REPLAY_DISABLE_LIDAR" "$REPLAY_DISABLE_GNSS" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'prior_causal_diagnostics_enabled=%s\ndiagnostic_marginal_prior_exclude_visual=%s\n' \
+  "$PRIOR_CAUSAL_DIAGNOSTICS_ENABLED" \
+  "$DIAGNOSTIC_MARGINAL_PRIOR_EXCLUDE_VISUAL" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'lidar_subspace_enabled=%s\nlidar_subspace_weak_threshold=%s\nlidar_subspace_exit_threshold=%s\nlidar_subspace_weak_scale=%s\n' \
   "$LIDAR_SUBSPACE_ENABLED" "$LIDAR_SUBSPACE_WEAK_THRESHOLD" \
