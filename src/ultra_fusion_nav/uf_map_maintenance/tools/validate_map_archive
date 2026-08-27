@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+from uf_map_maintenance.manifest import main
+
+raise SystemExit(main())

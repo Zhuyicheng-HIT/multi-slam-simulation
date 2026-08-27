@@ -11,6 +11,8 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
+include_directories(include)
+
 add_executable(fastlio_cloud_mapper_node src/fastlio_cloud_mapper_node.cpp)
 ament_target_dependencies(
   fastlio_cloud_mapper_node
@@ -34,6 +36,8 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(DIRECTORY include/ DESTINATION include)
+
 install(DIRECTORY
   config
   launch
@@ -44,5 +48,10 @@ install(FILES
   README.md
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_voxel_retention_policy test/test_voxel_retention_policy.cpp)
+endif()
 
 ament_package()

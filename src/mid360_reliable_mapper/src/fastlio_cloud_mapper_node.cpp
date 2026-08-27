@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "nav_msgs/msg/odometry.hpp"
+#include "mid360_reliable_mapper/voxel_retention_policy.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/point_field.hpp"
@@ -157,6 +158,9 @@ public:
     max_map_voxels_ = declare_parameter<int>("max_map_voxels", 160000);
     map_window_frames_ = declare_parameter<int>("map_window_frames", 90);
     map_publish_every_ = declare_parameter<int>("map_publish_every", 2);
+    map_stable_support_hits_ = declare_parameter<int>("map_stable_support_hits", 4);
+    map_isolated_neighbor_threshold_ =
+      declare_parameter<int>("map_isolated_neighbor_threshold", 1);
 
     enable_quality_gate_ = declare_parameter<bool>("enable_quality_gate", true);
     require_odom_for_map_ = declare_parameter<bool>("require_odom_for_map", true);
@@ -496,16 +500,50 @@ private:
       return;
     }
 
-    for (auto it = map_.begin(); it != map_.end() && map_.size() > max_voxels; ) {
-      if (static_cast<int>(it->second.count) < min_map_hits_) {
-        it = map_.erase(it);
-      } else {
-        ++it;
+    using mid360_reliable_mapper::VoxelRetentionEvidence;
+    using mid360_reliable_mapper::VoxelRetentionPolicy;
+    struct Candidate
+    {
+      VoxelKey key;
+      VoxelRetentionEvidence evidence;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.reserve(map_.size());
+    for (const auto & item : map_) {
+      uint16_t neighbors = 0U;
+      bool has_lower_support = false;
+      for (int dx = -1; dx <= 1; ++dx) {
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dz = -1; dz <= 1; ++dz) {
+            if (dx == 0 && dy == 0 && dz == 0) {
+              continue;
+            }
+            const VoxelKey neighbor{item.first.x + dx, item.first.y + dy, item.first.z + dz};
+            if (map_.find(neighbor) != map_.end()) {
+              ++neighbors;
+              has_lower_support = has_lower_support || dz < 0;
+            }
+          }
+        }
       }
+      candidates.push_back(Candidate{
+        item.first,
+        VoxelRetentionEvidence{
+          item.first.x, item.first.y, item.first.z, item.second.count,
+          item.second.last_update, neighbors, has_lower_support}});
     }
 
-    while (map_.size() > max_voxels && !map_.empty()) {
-      map_.erase(map_.begin());
+    const VoxelRetentionPolicy policy(
+      static_cast<uint32_t>(std::max(1, map_stable_support_hits_)),
+      static_cast<uint16_t>(std::max(0, map_isolated_neighbor_threshold_)));
+    std::sort(candidates.begin(), candidates.end(), [&](const auto & lhs, const auto & rhs) {
+      return policy.should_evict_before(lhs.evidence, rhs.evidence, frame_index_);
+    });
+
+    const std::size_t remove_count = map_.size() - max_voxels;
+    for (std::size_t index = 0; index < remove_count; ++index) {
+      map_.erase(candidates[index].key);
     }
   }
   void publishCloud(
@@ -623,6 +661,8 @@ private:
   int max_map_voxels_{160000};
   int map_window_frames_{90};
   int map_publish_every_{2};
+  int map_stable_support_hits_{4};
+  int map_isolated_neighbor_threshold_{1};
   bool enable_quality_gate_{true};
   bool require_odom_for_map_{true};
   double max_odom_speed_mps_{2.5};
