@@ -172,6 +172,18 @@ def select_nonlinear_iteration_budget(
     return normal
 
 
+def diagnostic_imu_factor_disabled(
+        always_disabled, disable_after_s, current_stamp_s):
+    """Return whether a diagnostic replay should omit this solver factor."""
+    if bool(always_disabled):
+        return True
+    cutoff = float(disable_after_s)
+    if cutoff < 0.0 or current_stamp_s is None:
+        return False
+    stamp = float(current_stamp_s)
+    return math.isfinite(cutoff) and math.isfinite(stamp) and stamp >= cutoff
+
+
 def lidar_calibration_motion_from_message(msg):
     """Validate that OSC motion is independent of IMU/backend estimation."""
     if not bool(msg.accepted) or not bool(msg.converged):
@@ -2751,6 +2763,10 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("flow_sensor_offset_body_m", [0.0, 0.0, -0.35])
         self.declare_parameter("flow_lever_arm_compensation_enabled", True)
         self.declare_parameter("imu_factor_enabled", True)
+        self.declare_parameter("diagnostic_backend_imu_factor_disabled", False)
+        self.declare_parameter(
+            "diagnostic_backend_imu_factor_disable_after_s", -1.0
+        )
         self.declare_parameter("preserve_lio_anchor", False)
         self.declare_parameter("lidar_anchor_minimum_effective_weight", 0.10)
         self.declare_parameter(
@@ -3347,6 +3363,16 @@ class UnifiedBackendNode(Node):
         )
         self.imu_factor_enabled = bool(
             self.get_parameter("imu_factor_enabled").value)
+        self.diagnostic_backend_imu_factor_disabled = bool(
+            self.get_parameter(
+                "diagnostic_backend_imu_factor_disabled"
+            ).value
+        )
+        self.diagnostic_backend_imu_factor_disable_after_s = float(
+            self.get_parameter(
+                "diagnostic_backend_imu_factor_disable_after_s"
+            ).value
+        )
         self.preserve_lio_anchor = bool(
             self.get_parameter("preserve_lio_anchor").value)
         self.lidar_anchor_minimum_effective_weight = float(
@@ -7550,8 +7576,15 @@ class UnifiedBackendNode(Node):
             self,
             previous_index,
             current_index,
-            measurement):
+            measurement,
+            current_stamp_s=None):
         if measurement is None:
+            return None
+        if diagnostic_imu_factor_disabled(
+                self.diagnostic_backend_imu_factor_disabled,
+                self.diagnostic_backend_imu_factor_disable_after_s,
+                current_stamp_s):
+            self.last_imu_reason = "diagnostic_factor_disabled"
             return None
         self.backend.add_imu_preintegrated(
             previous_index,
@@ -10600,7 +10633,7 @@ class UnifiedBackendNode(Node):
             imu_factor_started = time.perf_counter_ns()
             if self.backend_solver_mode == "manifold":
                 imu_diagnostic_covariance = self._add_manifold_imu_factor(
-                    previous_index, current_index, manifold_measurement
+                    previous_index, current_index, manifold_measurement, stamp
                 )
             else:
                 imu_diagnostic_covariance = self._imu_factor(

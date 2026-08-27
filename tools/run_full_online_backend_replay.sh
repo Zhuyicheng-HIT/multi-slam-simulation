@@ -28,6 +28,8 @@ LIDAR_SUBSPACE_WEAK_SCALE=${LIDAR_SUBSPACE_WEAK_SCALE:-0.10}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 BACKEND_EXECUTOR_THREADS=${BACKEND_EXECUTOR_THREADS:-2}
+DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLED=${DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLED:-false}
+DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLE_AFTER_S=${DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLE_AFTER_S:--1.0}
 NONLINEAR_MAX_ITERATIONS=${NONLINEAR_MAX_ITERATIONS:-2}
 NONLINEAR_INITIALIZATION_MAX_ITERATIONS=${NONLINEAR_INITIALIZATION_MAX_ITERATIONS:-4}
 NONLINEAR_RECOVERY_MAX_ITERATIONS=${NONLINEAR_RECOVERY_MAX_ITERATIONS:-4}
@@ -122,6 +124,17 @@ fi
 if [[ "$TRANSACTIONAL_UPDATE_ENABLED" != true && \
       "$TRANSACTIONAL_UPDATE_ENABLED" != false ]]; then
   printf 'TRANSACTIONAL_UPDATE_ENABLED must be true or false.\n' >&2
+  exit 2
+fi
+if [[ "$DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLED" != true && \
+      "$DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLED" != false ]]; then
+  printf 'DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLED must be true or false.\n' >&2
+  exit 2
+fi
+if ! python3 -c \
+    'import math,sys; value=float(sys.argv[1]); raise SystemExit(not math.isfinite(value))' \
+    "$DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLE_AFTER_S"; then
+  printf 'DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLE_AFTER_S must be finite.\n' >&2
   exit 2
 fi
 if [[ "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" != true && \
@@ -436,6 +449,8 @@ backend_command=(
   -p frontend_scan_prediction_enabled:="$FRONTEND_SCAN_PREDICTION_ENABLED"
   -p allow_lio_pose_fallback:=false
   -p imu_factor_enabled:=true
+  -p diagnostic_backend_imu_factor_disabled:="$DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLED"
+  -p diagnostic_backend_imu_factor_disable_after_s:="$DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLE_AFTER_S"
   -p executor_threads:="$BACKEND_EXECUTOR_THREADS"
   -p nonlinear_max_iterations:="$NONLINEAR_MAX_ITERATIONS"
   -p nonlinear_initialization_max_iterations:="$NONLINEAR_INITIALIZATION_MAX_ITERATIONS"
@@ -722,6 +737,12 @@ printf 'replay_disable_lidar=%s\nreplay_disable_gnss=%s\n' \
 printf 'prior_causal_diagnostics_enabled=%s\ndiagnostic_marginal_prior_exclude_visual=%s\n' \
   "$PRIOR_CAUSAL_DIAGNOSTICS_ENABLED" \
   "$DIAGNOSTIC_MARGINAL_PRIOR_EXCLUDE_VISUAL" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'diagnostic_backend_imu_factor_disabled=%s\n' \
+  "$DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLED" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'diagnostic_backend_imu_factor_disable_after_s=%s\n' \
+  "$DIAGNOSTIC_BACKEND_IMU_FACTOR_DISABLE_AFTER_S" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'lidar_subspace_enabled=%s\nlidar_subspace_weak_threshold=%s\nlidar_subspace_exit_threshold=%s\nlidar_subspace_weak_scale=%s\n' \
   "$LIDAR_SUBSPACE_ENABLED" "$LIDAR_SUBSPACE_WEAK_THRESHOLD" \

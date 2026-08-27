@@ -64,6 +64,7 @@ from uf_backend_fusion.online_backend import (
     enqueue_latest,
     reanchor_imu_samples,
     delayed_frontend_map_commit_candidate,
+    diagnostic_imu_factor_disabled,
     directional_information,
     frontend_map_commit_decision,
     inflate_manifold_imu_covariance,
@@ -103,6 +104,12 @@ from uf_reliability.flow_rotation_gate import FlowRotationGateResult
 
 
 class OnlineBackendHelpersTest(unittest.TestCase):
+    def test_diagnostic_imu_factor_switch_uses_measurement_time(self):
+        self.assertTrue(diagnostic_imu_factor_disabled(True, -1.0, 10.0))
+        self.assertFalse(diagnostic_imu_factor_disabled(False, -1.0, 100.0))
+        self.assertFalse(diagnostic_imu_factor_disabled(False, 60.0, 59.999))
+        self.assertTrue(diagnostic_imu_factor_disabled(False, 60.0, 60.0))
+
     def test_subspace_information_cap_preserves_strong_rotated_mode(self):
         direction = np.asarray([1.0, 1.0, 0.0]) / math.sqrt(2.0)
         weak = np.outer(direction, direction)
