@@ -100,6 +100,16 @@ class LivePropagationTest(unittest.TestCase):
             live_propagation_admission(
                 **{
                     **arguments,
+                    "latest_lidar_activity_s": 9.90,
+                    "allow_recent_lidar": True,
+                }
+            ),
+            (True, "ready"),
+        )
+        self.assertEqual(
+            live_propagation_admission(
+                **{
+                    **arguments,
                     "last_output_stamp_s": 9.70,
                     "latest_lidar_activity_s": 9.90,
                 }

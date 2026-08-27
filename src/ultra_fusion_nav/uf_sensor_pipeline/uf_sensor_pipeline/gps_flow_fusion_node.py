@@ -48,7 +48,7 @@ class GpsFlowFusionNode(Node):
         defaults = {
             "gnss_topic": "/sensors/gnss/fix",
             "flow_topic": "/sensors/optical_flow/rad",
-            "imu_topic": "/mavros/imu/data",
+            "imu_topic": "/sensors/imu",
             "gnss_reliability_topic": "/reliability/gnss_score",
             "flow_reliability_topic": "/reliability/optical_flow_score",
             "scheduler_topic": "/reliability/scheduler_state",

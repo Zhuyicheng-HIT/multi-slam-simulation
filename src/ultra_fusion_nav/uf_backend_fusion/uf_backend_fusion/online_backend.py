@@ -430,6 +430,73 @@ def reanchor_imu_samples(samples, boundary_s):
     return ordered[max(0, first_newer - 1):]
 
 
+def backend_diagnostic_level_message(
+    last_reason, optimization_errors, contract_violated, contract_reason
+):
+    if contract_violated:
+        return (
+            DiagnosticStatus.ERROR,
+            f"scan_prediction_contract_violation:{contract_reason}",
+        )
+    healthy = str(last_reason) == "ok" and int(optimization_errors) == 0
+    return (
+        DiagnosticStatus.OK if healthy else DiagnosticStatus.WARN,
+        str(last_reason),
+    )
+
+
+def directional_information(information, direction):
+    information = np.asarray(information, dtype=float)
+    direction = np.asarray(direction, dtype=float)
+    if information.shape != (3, 3) or direction.shape != (3,):
+        raise ValueError("directional information expects 3x3 and 3-vector")
+    if np.any(~np.isfinite(information)) or np.any(~np.isfinite(direction)):
+        return 0.0
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1.0e-12:
+        return 0.0
+    unit = direction / norm
+    return max(0.0, float(unit @ information @ unit))
+
+
+def cap_weak_subspace_against_absolute_information(
+    base_scale, previous_scale, lidar_information, absolute_information
+):
+    """Keep weak-mode LiDAR information no stronger than absolute aiding."""
+    matrices = [
+        np.asarray(value, dtype=float)
+        for value in (
+            base_scale, previous_scale, lidar_information,
+            absolute_information,
+        )
+    ]
+    if any(value.shape != (3, 3) for value in matrices):
+        raise ValueError("subspace information cap expects 3x3 matrices")
+    if any(np.any(~np.isfinite(value)) for value in matrices):
+        return matrices[0].copy(), np.ones(3, dtype=float)
+    base, previous, lidar, absolute = [
+        0.5 * (value + value.T) for value in matrices
+    ]
+    values, vectors = np.linalg.eigh(base)
+    result_values = values.copy()
+    information_ratios = np.ones(3, dtype=float)
+    for mode, (base_value, direction) in enumerate(zip(values, vectors.T)):
+        if base_value >= 1.0 - 1.0e-9:
+            result_values[mode] = 1.0
+            continue
+        previous_value = float(direction @ previous @ direction)
+        previous_value = float(np.clip(previous_value, 0.0, base_value))
+        lidar_value = directional_information(lidar, direction)
+        absolute_value = directional_information(absolute, direction)
+        ratio = (
+            min(1.0, absolute_value / lidar_value)
+            if lidar_value > 0.0 and absolute_value > 0.0 else 1.0
+        )
+        information_ratios[mode] = ratio
+        result_values[mode] = min(base_value, previous_value * ratio)
+    return vectors @ np.diag(result_values) @ vectors.T, information_ratios
+
+
 @dataclass(frozen=True)
 class StationaryImuInitialization:
     valid: bool
@@ -2227,11 +2294,12 @@ def lidar_prediction_factor_admission(
     A rejected local-map factor must not stop IMU propagation or prevent GNSS
     and optical-flow factors at the same timestamp from updating the window.
     The next LiDAR packet is evaluated independently so a transient mismatch
-    can recover without waiting for a relocalization reset. A persistent
-    mismatch may admit a separately downweighted recovery factor, but only
-    when the caller has verified the native point-plane geometry. The caller
-    must still enforce sensor-health scheduling and keep recovery observations
-    out of map insertion and calibration.
+    can recover without waiting for a relocalization reset. Local point-plane
+    rank cannot prove that FAST-LIO's local map is aligned with the backend
+    map, so a factor that fails this frame-consistency gate must never be
+    reintroduced merely because its local geometry is well conditioned.  The
+    recovery arguments remain in the helper contract for configuration
+    compatibility; they cannot override a failed gate.
     """
     allowed, reason = lidar_prediction_gate(
         innovation, maximum_position_m, maximum_yaw_rad
@@ -2249,17 +2317,12 @@ def lidar_prediction_factor_admission(
             "recovery_floor": False,
         }
     consecutive = previous + 1
-    recovery_floor = bool(
-        recovery_geometry_usable and consecutive >= recovery_after
-    )
     return {
-        "factor_enabled": recovery_floor,
-        "reason": (
-            f"{reason}_recovery_floor" if recovery_floor else reason
-        ),
+        "factor_enabled": False,
+        "reason": reason,
         "consecutive_rejections": consecutive,
         "recovered": False,
-        "recovery_floor": recovery_floor,
+        "recovery_floor": False,
     }
 
 
@@ -2556,7 +2619,13 @@ class UnifiedBackendNode(Node):
             self.declare_parameter(name, value)
         # Keep high-rate flow ingress independent from native LiDAR and IMU;
         # the optimizer itself remains a single worker with one numeric thread.
-        self.declare_parameter("executor_threads", 3)
+        # Native LiDAR ingress, IMU ingress, the publication-only IMU
+        # propagation timer and ordinary ROS callbacks each have their own
+        # callback group.  Three workers can starve the propagation timer on
+        # an onboard system while the first three groups are busy, causing the
+        # external-navigation odometry to arrive in bursts.  Keep one worker
+        # available for the propagation/publication path by default.
+        self.declare_parameter("executor_threads", 4)
         self.executor_threads = int(
             self.get_parameter("executor_threads").value
         )
@@ -2692,6 +2761,10 @@ class UnifiedBackendNode(Node):
         self.declare_parameter(
             "lidar_anchor_maximum_covariance_inflation", 5.0)
         self.declare_parameter("native_lidar_factor_enabled", True)
+        self.declare_parameter("lidar_subspace_enabled", False)
+        self.declare_parameter("lidar_subspace_weak_threshold", 0.15)
+        self.declare_parameter("lidar_subspace_exit_threshold", 0.25)
+        self.declare_parameter("lidar_subspace_weak_scale", 0.10)
         self.declare_parameter("input_trigger_mode", "native_factor")
         self.declare_parameter("live_propagation_enabled", True)
         self.declare_parameter("live_propagation_rate_hz", 10.0)
@@ -2711,6 +2784,7 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("native_lidar_minimum_matches", 50)
         self.declare_parameter("native_lidar_qos_depth", 1)
         self.declare_parameter("native_worker_queue_size", 1)
+        self.declare_parameter("native_worker_latest_only_enabled", True)
         self.declare_parameter("imu_qos_depth", 64)
         self.declare_parameter("imu_covariance_scale", 50.0)
         self.declare_parameter("imu_bias_random_walk_variance", 1.0e-4)
@@ -2879,6 +2953,9 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("path_minimum_rotation_rad", 0.02)
         self.declare_parameter("relocalization_enabled", True)
         self.declare_parameter("transactional_update_enabled", True)
+        self.declare_parameter(
+            "marginal_prior_suppress_historical_lidar_weak", False
+        )
         self.declare_parameter("lidar_prediction_gate_enabled", True)
         self.declare_parameter("lidar_prediction_gate_max_position_m", 1.0)
         self.declare_parameter("lidar_prediction_gate_max_yaw_rad", 0.50)
@@ -2929,6 +3006,8 @@ class UnifiedBackendNode(Node):
         self.declare_parameter("scan_prediction_state_tolerance", 1.0e-8)
         self.declare_parameter("scan_prediction_cache_size", 8)
         self.declare_parameter("scan_prediction_missing_factor_grace_s", 0.5)
+        self.declare_parameter("scan_prediction_contract_failure_threshold", 3)
+        self.declare_parameter("scan_prediction_contract_request_timeout_s", 1.0)
 
         self.performance_profiling_enabled = bool(
             self.get_parameter("performance_profiling_enabled").value
@@ -3285,8 +3364,29 @@ class UnifiedBackendNode(Node):
         native_requested = bool(
             self.get_parameter("native_lidar_factor_enabled").value
         )
+        self.lidar_subspace_enabled = bool(
+            self.get_parameter("lidar_subspace_enabled").value
+        )
+        self.lidar_subspace_weak_threshold = float(
+            self.get_parameter("lidar_subspace_weak_threshold").value
+        )
+        self.lidar_subspace_exit_threshold = float(
+            self.get_parameter("lidar_subspace_exit_threshold").value
+        )
+        self.lidar_subspace_weak_scale = float(
+            self.get_parameter("lidar_subspace_weak_scale").value
+        )
+        if not (
+            0.0 < self.lidar_subspace_weak_threshold
+            < self.lidar_subspace_exit_threshold <= 1.0
+            and 0.0 < self.lidar_subspace_weak_scale <= 1.0
+        ):
+            raise ValueError("LiDAR subspace limits are invalid")
         self.native_lidar_enabled = bool(
             native_requested and NativeLidarFactor is not None)
+        self.native_worker_latest_only_enabled = bool(
+            self.get_parameter("native_worker_latest_only_enabled").value
+        )
         requested_trigger_mode = str(
             self.get_parameter("input_trigger_mode").value
         ).lower()
@@ -3794,6 +3894,11 @@ class UnifiedBackendNode(Node):
         self.transactional_update_enabled = bool(
             self.get_parameter("transactional_update_enabled").value
         )
+        self.marginal_prior_suppress_historical_lidar_weak = bool(
+            self.get_parameter(
+                "marginal_prior_suppress_historical_lidar_weak"
+            ).value
+        )
         self.lidar_prediction_gate_enabled = bool(
             self.get_parameter("lidar_prediction_gate_enabled").value
         )
@@ -3876,6 +3981,16 @@ class UnifiedBackendNode(Node):
         self.scan_prediction_missing_factor_grace_s = float(
             self.get_parameter("scan_prediction_missing_factor_grace_s").value
         )
+        self.scan_prediction_contract_failure_threshold = int(
+            self.get_parameter(
+                "scan_prediction_contract_failure_threshold"
+            ).value
+        )
+        self.scan_prediction_contract_request_timeout_s = float(
+            self.get_parameter(
+                "scan_prediction_contract_request_timeout_s"
+            ).value
+        )
         if self.frontend_scan_prediction_enabled:
             if self.backend_solver_mode != "manifold":
                 raise ValueError(
@@ -3898,6 +4013,9 @@ class UnifiedBackendNode(Node):
             or self.scan_prediction_state_tolerance <= 0.0
             or self.scan_prediction_cache_size < 1
             or self.scan_prediction_missing_factor_grace_s <= 0.0
+            or self.scan_prediction_contract_failure_threshold < 1
+            or self.scan_prediction_contract_request_timeout_s
+            <= self.scan_prediction_missing_factor_grace_s
         ):
             raise ValueError("scan prediction limits are invalid")
         self.native_lidar_qos_depth = int(
@@ -3989,6 +4107,9 @@ class UnifiedBackendNode(Node):
                 ),
                 profiling_enabled=self.performance_profiling_enabled,
                 profiling_capacity=self.performance_profiling_capacity,
+            )
+            self.backend.suppress_historical_lidar_weak = (
+                self.marginal_prior_suppress_historical_lidar_weak
             )
         else:
             self.backend = SlidingWindowBackend(max_states=window_size)
@@ -4317,6 +4438,9 @@ class UnifiedBackendNode(Node):
             "scan_prediction_duplicate_requests": 0,
             "scan_prediction_stale_requests": 0,
             "scan_prediction_missing_factor_skips": 0,
+            "scan_prediction_contract_trips": 0,
+            "scan_prediction_contract_recoveries": 0,
+            "scan_prediction_contract_output_suppressed": 0,
             "native_consumed_without_state_commit": 0,
             "frontend_map_pose_published": 0,
             "frontend_map_pose_rejected": 0,
@@ -4378,6 +4502,7 @@ class UnifiedBackendNode(Node):
         self.last_gnss_factor_covariance = np.full(
             3, math.inf, dtype=float
         )
+        self.last_gnss_solver_information = np.zeros(3, dtype=float)
         self.gnss_z_reanchor_consecutive = 0
         self.last_gnss_z_reanchor_applied = False
         self.last_gnss_z_reanchor_target_m = math.nan
@@ -4468,7 +4593,16 @@ class UnifiedBackendNode(Node):
         self.last_native_translation_normalized_eigenvalues = np.zeros(
             3, dtype=float
         )
+        self.last_native_translation_eigenvectors = np.zeros(
+            (3, 3), dtype=float
+        )
         self.last_native_weakest_translation_direction = np.zeros(3, dtype=float)
+        self.last_lidar_subspace_scale = np.eye(3, dtype=float)
+        self.previous_lidar_subspace_scale = np.eye(3, dtype=float)
+        self.last_lidar_subspace_absolute_information_ratio = np.ones(3)
+        self.lidar_subspace_episode_active = False
+        self.last_lidar_subspace_weak_modes = 0
+        self.last_lidar_subspace_information_scale = np.ones(3, dtype=float)
         self.last_native_health_degradation = 1.0
         self.last_native_consistency_degradation = 0.0
         self.last_native_observability_degradation = np.ones(3, dtype=float)
@@ -4497,6 +4631,13 @@ class UnifiedBackendNode(Node):
             maxlen=self.scan_prediction_cache_size
         )
         self.scan_prediction_by_sequence = {}
+        self.scan_prediction_contract_lock = threading.RLock()
+        self.scan_prediction_contract_established = False
+        self.scan_prediction_contract_violated = False
+        self.scan_prediction_contract_consecutive_failures = 0
+        self.scan_prediction_contract_reason = "waiting_for_handshake"
+        self.scan_prediction_contract_first_failure_sequence = -1
+        self.scan_prediction_contract_first_failure_stamp_s = -1.0
         self.last_native_consumed_sequence = -1
         self.pending_scan_requests = {}
         self.pending_scan_request_first_seen_s = {}
@@ -4693,6 +4834,79 @@ class UnifiedBackendNode(Node):
         if received_s is None or received_s > now_s:
             return math.inf
         return now_s - received_s
+
+    def _set_scan_prediction_contract_violation(
+        self, reason, sequence, stamp_s
+    ):
+        if self.scan_prediction_contract_violated:
+            return
+        if self.scan_prediction_contract_first_failure_sequence < 0:
+            self.scan_prediction_contract_first_failure_sequence = int(sequence)
+            self.scan_prediction_contract_first_failure_stamp_s = float(stamp_s)
+        self.scan_prediction_contract_violated = True
+        self.scan_prediction_contract_reason = str(reason)
+        self.counts["scan_prediction_contract_trips"] += 1
+        logger = self.get_logger() if hasattr(self, "_logger") else None
+        if logger is not None:
+            logger.error(
+                "Scan prediction contract violated: "
+                f"reason={reason}; sequence={sequence}; stamp_s={stamp_s:.9g}; "
+                "suppressing unified fusion output until a valid cache hit"
+            )
+
+    def _record_scan_prediction_contract_failure(
+        self, reason, sequence, stamp_s
+    ):
+        if not self.frontend_scan_prediction_enabled:
+            return
+        with self.scan_prediction_contract_lock:
+            if self.scan_prediction_contract_consecutive_failures == 0:
+                self.scan_prediction_contract_first_failure_sequence = int(sequence)
+                self.scan_prediction_contract_first_failure_stamp_s = float(stamp_s)
+            self.scan_prediction_contract_consecutive_failures += 1
+            if (
+                self.scan_prediction_contract_consecutive_failures
+                >= self.scan_prediction_contract_failure_threshold
+            ):
+                self._set_scan_prediction_contract_violation(
+                    f"consecutive_{reason}", sequence, stamp_s
+                )
+
+    def _record_scan_prediction_contract_success(self):
+        if not self.frontend_scan_prediction_enabled:
+            return
+        with self.scan_prediction_contract_lock:
+            recovered = self.scan_prediction_contract_violated
+            self.scan_prediction_contract_established = True
+            self.scan_prediction_contract_violated = False
+            self.scan_prediction_contract_consecutive_failures = 0
+            self.scan_prediction_contract_reason = "ok"
+            if recovered:
+                self.counts["scan_prediction_contract_recoveries"] += 1
+                logger = self.get_logger() if hasattr(self, "_logger") else None
+                if logger is not None:
+                    logger.warning(
+                        "Scan prediction contract recovered after a valid cache hit"
+                    )
+
+    def _scan_prediction_contract_allows_output(self, now_s=None):
+        if not getattr(self, "frontend_scan_prediction_enabled", False):
+            return True
+        if now_s is None:
+            now_s = self._now_s()
+        with self.scan_prediction_contract_lock:
+            if (
+                not self.scan_prediction_contract_violated
+                and self.scan_prediction_contract_established
+                and self._age_s(now_s, self.last_scan_request_arrival_s)
+                > self.scan_prediction_contract_request_timeout_s
+            ):
+                self._set_scan_prediction_contract_violation(
+                    "request_timeout",
+                    getattr(self, "last_native_sequence", -1),
+                    now_s,
+                )
+            return not self.scan_prediction_contract_violated
 
     def _effective_visual_time_offset_s(self):
         update = self.last_visual_time_calibration
@@ -6518,6 +6732,76 @@ class UnifiedBackendNode(Node):
         decision["reasons"] = ("scheduler_unavailable_default",)
         return decision
 
+    def _update_lidar_subspace_projector(self):
+        """Update the raw-factor projector without touching marginal priors."""
+        self.previous_lidar_subspace_scale = (
+            self.last_lidar_subspace_scale.copy()
+        )
+        eigenvalues = np.asarray(
+            self.last_native_translation_normalized_eigenvalues, dtype=float
+        )
+        eigenvectors = np.asarray(
+            self.last_native_translation_eigenvectors, dtype=float
+        )
+        if (
+            not self.lidar_subspace_enabled
+            or eigenvalues.shape != (3,)
+            or eigenvectors.shape != (3, 3)
+            or np.any(~np.isfinite(eigenvalues))
+            or np.any(~np.isfinite(eigenvectors))
+            or float(np.max(eigenvalues)) <= 0.0
+        ):
+            self.lidar_subspace_episode_active = False
+            self.last_lidar_subspace_weak_modes = 0
+            self.last_lidar_subspace_information_scale = np.ones(3)
+            self.last_lidar_subspace_scale = np.eye(3)
+            return
+        weak = eigenvalues < (
+            self.lidar_subspace_exit_threshold
+            if self.lidar_subspace_episode_active
+            else self.lidar_subspace_weak_threshold
+        )
+        weak_modes = int(np.count_nonzero(weak))
+        self.lidar_subspace_episode_active = weak_modes > 0
+        if not self.lidar_subspace_episode_active:
+            self.last_lidar_subspace_weak_modes = 0
+            self.last_lidar_subspace_information_scale = np.ones(3)
+            self.last_lidar_subspace_scale = np.eye(3)
+            return
+        mode_scale = np.where(weak, self.lidar_subspace_weak_scale, 1.0)
+        self.last_lidar_subspace_weak_modes = weak_modes
+        self.last_lidar_subspace_information_scale = mode_scale.copy()
+        self.last_lidar_subspace_scale = (
+            eigenvectors @ np.diag(mode_scale) @ eigenvectors.T
+        )
+        if self.backend_solver_mode == "manifold":
+            self.backend.set_lidar_subspace_scale(self.last_lidar_subspace_scale)
+
+    def _cap_lidar_subspace_with_current_gnss(self):
+        if (
+            not self.lidar_subspace_episode_active
+            or self.backend_solver_mode != "manifold"
+        ):
+            self.last_lidar_subspace_absolute_information_ratio = np.ones(3)
+            return
+        information_diagnostic = getattr(
+            self.backend, "active_lidar_solver_information", None
+        )
+        if not callable(information_diagnostic):
+            return
+        lidar_information, _ = information_diagnostic()
+        absolute_information = np.diag(self.last_gnss_solver_information)
+        (
+            self.last_lidar_subspace_scale,
+            self.last_lidar_subspace_absolute_information_ratio,
+        ) = cap_weak_subspace_against_absolute_information(
+            self.last_lidar_subspace_scale,
+            self.previous_lidar_subspace_scale,
+            lidar_information,
+            absolute_information,
+        )
+        self.backend.set_lidar_subspace_scale(self.last_lidar_subspace_scale)
+
     def _axis_handoff_alternative_information(
         self, stamp_s, *, include_barometer=True
     ):
@@ -6868,7 +7152,8 @@ class UnifiedBackendNode(Node):
         self.last_live_propagation_reason = str(reason)
         self.counts["live_propagation_rejected"] += 1
 
-    def _publish_live_propagation(self):
+    def _publish_live_propagation(
+            self, retry_on_anchor_change=True, force_fresh_anchor=False):
         """Publish dead-reckoned odometry without touching the factor graph."""
         if (
             not self.live_propagation_enabled
@@ -6876,6 +7161,10 @@ class UnifiedBackendNode(Node):
             or not self.imu_factor_enabled
             or self.native_worker_stop.is_set()
         ):
+            return
+        if not self._scan_prediction_contract_allows_output():
+            self.counts["scan_prediction_contract_output_suppressed"] += 1
+            self._reject_live_propagation("scan_prediction_contract_violation")
             return
         anchor = self._optimization_anchor_snapshot()
         if anchor is None:
@@ -6910,6 +7199,7 @@ class UnifiedBackendNode(Node):
             self.live_propagation_maximum_output_age_s,
             self.live_propagation_minimum_interval_s,
             self.live_propagation_maximum_imu_age_s,
+            allow_recent_lidar=force_fresh_anchor,
         )
         if not admitted:
             self._reject_live_propagation(reason)
@@ -6933,6 +7223,7 @@ class UnifiedBackendNode(Node):
 
         # A scan request or optimizer commit may arrive while preintegration is
         # running. Recheck both barriers before publishing the derived state.
+        anchor_changed = False
         with self.state_publication_lock:
             current_anchor = self._optimization_anchor_snapshot()
             if (
@@ -6941,36 +7232,50 @@ class UnifiedBackendNode(Node):
                 or current_anchor.reset_counter
                 != propagated.anchor_reset_counter
             ):
-                self._reject_live_propagation("anchor_changed")
-                return
-            if current_anchor.reset_counter != self.state_reset_counter:
+                anchor_changed = True
+            elif current_anchor.reset_counter != self.state_reset_counter:
                 self._reject_live_propagation("epoch_changed")
                 return
-            admitted, reason = live_propagation_admission(
-                self._now_s(),
-                latest_imu_stamp_s,
-                target_stamp_s,
-                current_anchor.stamp_s,
-                self._last_unified_output_stamp_snapshot(),
-                self._latest_lidar_frontend_activity_s(),
-                self.live_propagation_lidar_silence_timeout_s,
-                self.live_propagation_maximum_output_age_s,
-                self.live_propagation_minimum_interval_s,
-                self.live_propagation_maximum_imu_age_s,
-            )
-            if not admitted:
-                self._reject_live_propagation(reason)
-                return
-            header = Odometry().header
-            header.stamp = ros_time_from_seconds(propagated.stamp_s)
-            header.frame_id = self.map_frame
-            published = self._publish_live_odom(
-                header,
-                np.asarray(propagated.state, dtype=float),
-                np.asarray(propagated.covariance, dtype=float).reshape(15, 15),
-            )
+            else:
+                admitted, reason = live_propagation_admission(
+                    self._now_s(),
+                    latest_imu_stamp_s,
+                    target_stamp_s,
+                    current_anchor.stamp_s,
+                    self._last_unified_output_stamp_snapshot(),
+                    self._latest_lidar_frontend_activity_s(),
+                    self.live_propagation_lidar_silence_timeout_s,
+                    self.live_propagation_maximum_output_age_s,
+                    self.live_propagation_minimum_interval_s,
+                    self.live_propagation_maximum_imu_age_s,
+                    allow_recent_lidar=force_fresh_anchor,
+                )
+                if not admitted:
+                    self._reject_live_propagation(reason)
+                    return
+                header = Odometry().header
+                header.stamp = ros_time_from_seconds(propagated.stamp_s)
+                header.frame_id = self.map_frame
+                published = self._publish_live_odom(
+                    header,
+                    np.asarray(propagated.state, dtype=float),
+                    np.asarray(propagated.covariance, dtype=float).reshape(15, 15),
+                )
+        if anchor_changed:
+            # Native factors can commit while this timer is preintegrating.
+            # Retry once from the newly committed anchor rather than turning a
+            # harmless race into a missed external-navigation publication.
+            if retry_on_anchor_change:
+                return self._publish_live_propagation(
+                    retry_on_anchor_change=False,
+                    force_fresh_anchor=force_fresh_anchor,
+                )
+            self._reject_live_propagation("anchor_changed")
+            return
         if published:
-            self.last_live_propagation_reason = "ok"
+            self.last_live_propagation_reason = (
+                "fresh_anchor_ok" if force_fresh_anchor else "ok"
+            )
         else:
             self._reject_live_propagation("nonmonotonic_output")
 
@@ -7347,9 +7652,28 @@ class UnifiedBackendNode(Node):
             ) * int(os.sysconf("SC_PAGE_SIZE"))
         except (OSError, ValueError, IndexError):
             rss_bytes = -1
-        active_factor_counts = self._factor_name_counts(
-            self.backend.factor_summary()
-        )
+        factor_records = self.backend.factor_summary()
+        active_factor_counts = self._factor_name_counts(factor_records)
+        active_lidar_records = [
+            record for record in factor_records
+            if record.enabled
+            and record.name
+            in {"lidar_point_plane", "lidar_point_plane_condensed"}
+        ]
+        state_stamps = tuple(float(value) for value in self.visual_state_stamps)
+        active_lidar_ages = []
+        active_lidar_state_indices = []
+        for record in active_lidar_records:
+            for index in record.state_indices:
+                active_lidar_state_indices.append(int(index))
+                if 0 <= int(index) < len(state_stamps):
+                    active_lidar_ages.append(
+                        max(
+                            0.0,
+                            float(context["stamp_s"])
+                            - state_stamps[int(index)],
+                        )
+                    )
         factor_counters = {
             "lidar": int(self.counts["native_lidar_factors"]),
             "imu": int(self.counts["imu_factors"]),
@@ -7363,11 +7687,103 @@ class UnifiedBackendNode(Node):
             for name, value in factor_counters.items()
         }
         factor_counts["total"] = int(sum(factor_counts.values()))
+        current_lidar_record = (
+            active_lidar_records[-1]
+            if state_committed
+            and factor_counts.get("lidar", 0) > 0
+            and active_lidar_records
+            else None
+        )
+        lidar_effective_weight = (
+            float(current_lidar_record.effective_weight)
+            if current_lidar_record is not None
+            and current_lidar_record.enabled
+            else 0.0
+        )
+        axis_root_scale = np.diag(
+            np.sqrt(
+                np.clip(
+                    self.last_lidar_axis_information_scale, 0.0, 1.0
+                )
+            )
+        )
+        effective_translation_information = (
+            lidar_effective_weight
+            * axis_root_scale
+            @ self.last_native_translation_profile_information
+            @ axis_root_scale
+        )
+        subspace_eigenvalues, subspace_eigenvectors = np.linalg.eigh(
+            0.5 * (
+                self.last_lidar_subspace_scale
+                + self.last_lidar_subspace_scale.T
+            )
+        )
+        subspace_root_scale = (
+            subspace_eigenvectors
+            @ np.diag(np.sqrt(np.clip(subspace_eigenvalues, 0.0, 1.0)))
+            @ subspace_eigenvectors.T
+        )
+        effective_translation_information = (
+            subspace_root_scale
+            @ effective_translation_information
+            @ subspace_root_scale
+        )
+        effective_eigenvalues, effective_eigenvectors = np.linalg.eigh(
+            0.5
+            * (
+                effective_translation_information
+                + effective_translation_information.T
+            )
+        )
+        weakest_direction = self.last_native_weakest_translation_direction
+        lidar_weak_information = directional_information(
+            effective_translation_information, weakest_direction
+        )
+        gnss_information_matrix = np.diag(
+            self.last_gnss_solver_information
+            if factor_counts.get("gnss", 0) > 0
+            else np.zeros(3, dtype=float)
+        )
+        gnss_weak_information = directional_information(
+            gnss_information_matrix, weakest_direction
+        )
+        active_lidar_information = np.zeros((3, 3), dtype=float)
+        active_lidar_information_count = 0
+        active_lidar_information_diagnostic = getattr(
+            self.backend, "active_lidar_solver_information", None
+        )
+        if callable(active_lidar_information_diagnostic):
+            (
+                active_lidar_information,
+                active_lidar_information_count,
+            ) = active_lidar_information_diagnostic()
+        active_lidar_weak_information = directional_information(
+            active_lidar_information, weakest_direction
+        )
+        prior_projection = getattr(
+            self.backend, "marginal_prior_translation_diagnostic", None
+        )
+        marginal_prior_diagnostic = dict(
+            prior_projection(self.last_lidar_subspace_scale)
+            if callable(prior_projection)
+            else {}
+        )
+        marginal_prior_diagnostic.update(dict(getattr(
+            self.backend, "last_marginal_prior_diagnostic", {}
+        )))
+        optimized_state = None
+        if state_committed and self.backend.state_count > 0:
+            optimized_state = self.backend.state(
+                self.backend.state_count - 1
+            ).tolist()
         phases = dict(self.current_cycle_phase or {})
         phases["callback_total"] = float(callback_total_ms)
         trace = {
             "schema_version": 2,
             "stamp_s": context["stamp_s"],
+            "transaction_index": int(self.counts["lio"]),
+            "native_scan_sequence": int(self.last_native_sequence),
             "wall_started_s": context["wall_started_s"],
             "wall_finished_s": time.monotonic(),
             "nonlinear_iteration_budget": int(context.get(
@@ -7408,6 +7824,13 @@ class UnifiedBackendNode(Node):
                 "covariance_inflation": float(context.get(
                     "lidar_factor_inflation", MAX_COVARIANCE_INFLATION
                 )),
+                "effective_weight": float(lidar_effective_weight),
+                "solver_admitted": bool(
+                    state_committed
+                    and factor_counts.get("lidar", 0) > 0
+                    and current_lidar_record is not None
+                    and current_lidar_record.enabled
+                ),
                 "map_eligible": bool(context.get(
                     "lidar_map_eligible", False
                 )),
@@ -7459,6 +7882,33 @@ class UnifiedBackendNode(Node):
                 "translation_normalized_eigenvalues": (
                     self.last_native_translation_normalized_eigenvalues.tolist()
                 ),
+                "translation_eigenvectors_row_major": (
+                    self.last_native_translation_eigenvectors.tolist()
+                ),
+                "effective_translation_information": (
+                    effective_translation_information.tolist()
+                ),
+                "effective_translation_eigenvalues": (
+                    effective_eigenvalues.tolist()
+                ),
+                "effective_translation_eigenvectors_row_major": (
+                    effective_eigenvectors.tolist()
+                ),
+                "subspace_projector_row_major": (
+                    self.last_lidar_subspace_scale.tolist()
+                ),
+                "subspace_mode_information_scale": (
+                    self.last_lidar_subspace_information_scale.tolist()
+                ),
+                "subspace_absolute_information_ratio": (
+                    self.last_lidar_subspace_absolute_information_ratio.tolist()
+                ),
+                "subspace_weak_mode_count": int(
+                    self.last_lidar_subspace_weak_modes
+                ),
+                "subspace_episode_active": bool(
+                    self.lidar_subspace_episode_active
+                ),
                 "weakest_translation_direction": (
                     self.last_native_weakest_translation_direction.tolist()
                 ),
@@ -7467,10 +7917,15 @@ class UnifiedBackendNode(Node):
                 ),
             },
             "visual_candidates_staged": int(len(staged_visual_candidates)),
+            "active_lidar_state_indices": active_lidar_state_indices,
+            "active_lidar_ages_s": active_lidar_ages,
+            "active_lidar_factor_count": int(len(active_lidar_records)),
             "marginalization_happened": bool(
                 backend_profile.get("marginalization_happened", False)
             ),
+            "marginal_prior_diagnostic": marginal_prior_diagnostic,
             "state_committed": bool(state_committed),
+            "optimized_state": optimized_state,
             "last_reason": str(self.last_reason),
             "resource_delta": process_resource_delta(
                 context["resource"], resource_after
@@ -7542,6 +7997,37 @@ class UnifiedBackendNode(Node):
                 ),
                 "z_information_scale": float(
                     self.last_gnss_z_information_scale
+                ),
+                "residual_xyz_m": [
+                    float(value) if np.isfinite(value) else None
+                    for value in self.last_gnss_prefit_residual_xyz
+                ],
+                "solver_information_diagonal": (
+                    np.diag(gnss_information_matrix).tolist()
+                ),
+                "weak_direction_information": float(gnss_weak_information),
+                "lidar_weak_direction_information": float(
+                    lidar_weak_information
+                ),
+                "active_window_lidar_factor_count": int(
+                    active_lidar_information_count
+                ),
+                "active_window_lidar_solver_information": (
+                    active_lidar_information.tolist()
+                ),
+                "active_window_lidar_solver_weak_direction_information": float(
+                    active_lidar_weak_information
+                ),
+                "lidar_to_gnss_weak_information_ratio": (
+                    float(lidar_weak_information / gnss_weak_information)
+                    if gnss_weak_information > 0.0 else None
+                ),
+                "active_window_lidar_solver_to_gnss_weak_information_ratio": (
+                    float(
+                        active_lidar_weak_information
+                        / gnss_weak_information
+                    )
+                    if gnss_weak_information > 0.0 else None
                 ),
                 "reason": str(self.last_gnss_admission_reason),
                 "time_compensation_age_s": float(
@@ -7648,6 +8134,7 @@ class UnifiedBackendNode(Node):
         prediction_reason="unavailable", scheduler_factor_decision=None,
         factor_velocity=None,
     ):
+        self.last_gnss_solver_information = np.zeros(3, dtype=float)
         if self.projector is None or self.lio_origin is None:
             return
         with self.gnss_lock:
@@ -7903,6 +8390,13 @@ class UnifiedBackendNode(Node):
             self.counts["gnss_prefit_recovery_floor"] += 1
         solver_covariance[:2] /= decision["gnss_xy_information_scale"]
         solver_covariance[2] /= decision["gnss_z_information_scale"]
+        effective_weight = (
+            float(decision["reliability_weight"])
+            / float(decision["covariance_inflation"])
+        )
+        self.last_gnss_solver_information = (
+            effective_weight / solver_covariance
+        )
         self.backend.add_gnss(
             index,
             solver_gnss_position,
@@ -8888,7 +9382,10 @@ class UnifiedBackendNode(Node):
                 # source age and can trigger a rollback storm. Drop this
                 # frame before it mutates the backend; the newer frame remains
                 # the sole candidate for the next transaction.
-                if self._native_worker_frame_superseded(factor):
+                if (
+                    self.native_worker_latest_only_enabled
+                    and self._native_worker_frame_superseded(factor)
+                ):
                     continue
                 self._process_native_worker_frame(header, factor)
             except Exception as error:  # one bad packet must not kill the worker
@@ -9380,6 +9877,11 @@ class UnifiedBackendNode(Node):
             if native_factor.scan_end_s <= native_factor.scan_begin_s:
                 self.counts["optimization_rejected"] += 1
                 self.last_reason = "scan_prediction_missing_exact_interval"
+                self._record_scan_prediction_contract_failure(
+                    "missing_exact_interval",
+                    native_factor.scan_sequence,
+                    stamp,
+                )
                 return
             scan_prediction, prediction_reason = consume_cached_prediction(
                 self.scan_prediction_by_sequence,
@@ -9397,8 +9899,14 @@ class UnifiedBackendNode(Node):
                     self.counts["scan_prediction_reuse_rejected"] += 1
                 self.counts["optimization_rejected"] += 1
                 self.last_reason = f"scan_prediction_not_reusable:{prediction_reason}"
+                self._record_scan_prediction_contract_failure(
+                    prediction_reason,
+                    native_factor.scan_sequence,
+                    stamp,
+                )
                 return
             self.counts["scan_prediction_cache_hits"] += 1
+            self._record_scan_prediction_contract_success()
             self.scan_prediction_cache.append(scan_prediction)
             initial_state = scan_prediction.end_state.copy()
             manifold_measurement = scan_prediction.measurement
@@ -9488,9 +9996,13 @@ class UnifiedBackendNode(Node):
             self.last_native_translation_normalized_eigenvalues = np.asarray(
                 native_vertical.translation_normalized_eigenvalues, dtype=float
             )
+            self.last_native_translation_eigenvectors = np.asarray(
+                native_vertical.translation_eigenvectors, dtype=float
+            ).reshape(3, 3)
             self.last_native_weakest_translation_direction = np.asarray(
                 native_vertical.weakest_translation_direction, dtype=float
             )
+            self._update_lidar_subspace_projector()
             if native_observability.effective_rank < 6:
                 self.counts["native_lidar_directionally_degenerate"] += 1
 
@@ -9681,6 +10193,8 @@ class UnifiedBackendNode(Node):
             )
             self._record_phase_timing("gnss_factor", gnss_started)
 
+        self._cap_lidar_subspace_with_current_gnss()
+
         lidar_factor_started = time.perf_counter_ns()
         lidar_decision = self._decision("lidar", default_enabled=True)
         if native_prediction_recovery_floor:
@@ -9835,6 +10349,10 @@ class UnifiedBackendNode(Node):
                         self.last_lidar_axis_information_scale
                     ),
                 )
+                if self.lidar_subspace_episode_active:
+                    self.backend.set_lidar_subspace_scale(
+                        self.last_lidar_subspace_scale
+                    )
                 self.counts["native_lidar_relinearized"] += 1
                 if axis_scaled:
                     self.counts[
@@ -10626,6 +11144,9 @@ class UnifiedBackendNode(Node):
         output_stamp_s = stamp_seconds(output.header.stamp)
         if output_stamp_s <= 0.0:
             raise ValueError("backend output requires a source timestamp")
+        if not self._scan_prediction_contract_allows_output():
+            self.counts["scan_prediction_contract_output_suppressed"] += 1
+            return False
         with self.output_lock:
             if (
                 self.last_unified_output_stamp_s is not None
@@ -10703,6 +11224,15 @@ class UnifiedBackendNode(Node):
                         local_output, self.map_frame, self.body_frame
                     )
                 )
+        if not output_published:
+            # A periodic IMU propagation may have already published a newer
+            # stamp, so the just-committed optimized sample is suppressed by
+            # the monotonic-output contract.  Publish once from this fresh
+            # anchor on the native worker path instead of waiting for the
+            # timer to race another anchor update.  This bypasses only the
+            # "lidar_recent" throttle; all IMU, timing and monotonic guards
+            # remain active and the factor graph/map are untouched.
+            self._publish_live_propagation(force_fresh_anchor=True)
         map_output = local_output
         map_lidar_eligible = bool(self.last_lidar_map_eligible)
         map_lidar_reason = str(self.last_lidar_map_reason)
@@ -11154,6 +11684,7 @@ class UnifiedBackendNode(Node):
             f"{self.counts['marginal_covariance_errors']}", flush=True, )
 
     def _diagnostics(self):
+        self._scan_prediction_contract_allows_output()
         average_solve_ms = (
             self.backend_solve_ms_total / self.backend_solve_count
             if self.backend_solve_count else 0.0
@@ -11177,11 +11708,43 @@ class UnifiedBackendNode(Node):
         diagnostic = DiagnosticStatus()
         diagnostic.name = "unified_backend_fusion"
         diagnostic.hardware_id = "companion_computer"
-        healthy = self.last_reason == "ok" and self.counts["optimization_errors"] == 0
-        diagnostic.level = DiagnosticStatus.OK if healthy else DiagnosticStatus.WARN
-        diagnostic.message = self.last_reason
+        diagnostic.level, diagnostic.message = backend_diagnostic_level_message(
+            self.last_reason,
+            self.counts["optimization_errors"],
+            self.scan_prediction_contract_violated,
+            self.scan_prediction_contract_reason,
+        )
         diagnostic.values = [
             self._key("scheduler_health", self.scheduler_health),
+            # Keep the on-board output-path evidence first.  Some DDS/CLI
+            # paths truncate very long DiagnosticStatus value arrays.
+            self._key("state_trigger_source", self.last_state_trigger_source),
+            self._key("lidar_factor_source", self.last_lidar_source),
+            self._key("output_source", self.last_output_source),
+            self._key(
+                "live_propagation_reason", self.last_live_propagation_reason
+            ),
+            self._key(
+                "live_propagation_attempts",
+                self.counts["live_propagation_attempts"],
+            ),
+            self._key(
+                "live_propagation_published",
+                self.counts["live_propagation_published"],
+            ),
+            self._key(
+                "live_propagation_rejected",
+                self.counts["live_propagation_rejected"],
+            ),
+            self._key(
+                "optimized_odom_published",
+                self.counts["optimized_odom_published"],
+            ),
+            self._key(
+                "optimized_odom_nonmonotonic_suppressed",
+                self.counts["optimized_odom_nonmonotonic_suppressed"],
+            ),
+            self._key("odom_published", self.counts["published"]),
             self._key(
                 "frontend_map_pose_reason", self.last_frontend_map_pose_reason
             ),
@@ -11310,8 +11873,68 @@ class UnifiedBackendNode(Node):
             self._key(
                 "frontend_state_seed_enabled", self.frontend_state_seed_enabled
             ),
+            self._key(
+                "scan_prediction_contract_established",
+                self.scan_prediction_contract_established,
+            ),
+            self._key(
+                "scan_prediction_contract_valid",
+                not self.scan_prediction_contract_violated,
+            ),
+            self._key(
+                "scan_prediction_contract_reason",
+                self.scan_prediction_contract_reason,
+            ),
+            self._key(
+                "scan_prediction_contract_consecutive_failures",
+                self.scan_prediction_contract_consecutive_failures,
+            ),
+            self._key(
+                "scan_prediction_contract_failure_threshold",
+                self.scan_prediction_contract_failure_threshold,
+            ),
+            self._key(
+                "scan_prediction_contract_first_failure_sequence",
+                self.scan_prediction_contract_first_failure_sequence,
+            ),
+            self._key(
+                "scan_prediction_contract_first_failure_stamp_s",
+                f"{self.scan_prediction_contract_first_failure_stamp_s:.9g}",
+            ),
+            self._key(
+                "scan_prediction_contract_trips",
+                self.counts["scan_prediction_contract_trips"],
+            ),
+            self._key(
+                "scan_prediction_contract_recoveries",
+                self.counts["scan_prediction_contract_recoveries"],
+            ),
+            self._key(
+                "scan_prediction_contract_output_suppressed",
+                self.counts["scan_prediction_contract_output_suppressed"],
+            ),
             self._key("state_reset_counter", self.state_reset_counter),
             self._key("last_imu_reason", self.last_imu_reason),
+            self._key("imu_pair_timeouts", self.counts["imu_pair_timeouts"]),
+            self._key(
+                "native_consumed_without_state_commit",
+                self.counts["native_consumed_without_state_commit"],
+            ),
+            self._key(
+                "native_worker_queue_superseded",
+                self.counts["native_worker_queue_superseded"],
+            ),
+            self._key(
+                "native_worker_queue_discarded",
+                self.counts["native_worker_queue_discarded"],
+            ),
+            self._key(
+                "native_worker_latest_skipped",
+                self.counts["native_worker_latest_skipped"],
+            ),
+            self._key(
+                "native_worker_errors", self.counts["native_worker_errors"]
+            ),
             self._key("calibration_reason", self.last_calibration_update.reason),
             self._key(
                 "calibration_motion_reason", self.last_calibration_motion_reason
@@ -11588,12 +12211,6 @@ class UnifiedBackendNode(Node):
             self._key(
                 "native_lidar_prediction_recovery_inflation",
                 f"{self.lidar_prediction_recovery_inflation:.9g}",
-            ),
-            self._key("lidar_factor_source", self.last_lidar_source),
-            self._key("state_trigger_source", self.last_state_trigger_source),
-            self._key(
-                "live_propagation_reason",
-                self.last_live_propagation_reason,
             ),
             self._key(
                 "auxiliary_keyframe_reason",

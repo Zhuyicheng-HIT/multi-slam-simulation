@@ -153,7 +153,10 @@ else
   setsid gz sim -r -v 2 --render-engine-gui ogre2 "$WORLD" >"$LOG_DIR/gazebo.log" 2>&1 &
 fi
 pids+=("$!")
-sleep 6
+# Headless rendering can take several seconds to initialise before the world
+# transport topic is discoverable. Start the bridge after that settling period;
+# the ROS-side advancing-clock check below remains the authoritative gate.
+sleep "${GAZEBO_CLOCK_STARTUP_DELAY_S:-10}"
 
 setsid ros2 run multi_slam_uav_sim gazebo_clock_bridge --ros-args \
   -p use_sim_time:=false \
@@ -161,9 +164,43 @@ setsid ros2 run multi_slam_uav_sim gazebo_clock_bridge --ros-args \
   >"$LOG_DIR/ros_clock_bridge.log" 2>&1 &
 pids+=("$!")
 
+wait_for_single_clock_publisher() {
+  local info publishers sample sec nanosec
+  for _attempt in $(seq 1 "${ROS_CLOCK_OWNERSHIP_ATTEMPTS:-60}"); do
+    info=$(timeout 5 ros2 topic info /clock --no-daemon 2>/dev/null) || info=
+    publishers=$(awk -F: '/Publisher count:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' <<<"$info")
+    if [[ "$publishers" =~ ^[0-9]+$ ]] && (( publishers > 1 )); then
+      printf 'ROS /clock ownership error: publishers=%s; expected exactly one Gazebo clock bridge.\n' \
+        "$publishers" >&2
+      return 1
+    fi
+    if [[ "$publishers" == "1" ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  # Cyclone DDS discovery can lag behind the bridge in WSL even though a
+  # subscriber already receives the topic.  Do not tear down Gazebo solely
+  # because the CLI graph query timed out; require an actual valid clock sample
+  # and retain an explicit diagnostic for post-run publisher auditing.
+  sample=$(timeout 8 ros2 topic echo /clock rosgraph_msgs/msg/Clock \
+    --no-daemon --spin-time 2.0 --once --qos-reliability best_effort \
+    2>/dev/null) || sample=
+  sec=$(awk '$1 == "sec:" {print $2; exit}' <<<"$sample")
+  nanosec=$(awk '$1 == "nanosec:" {print $2; exit}' <<<"$sample")
+  if [[ "$sec" =~ ^[0-9]+$ && "$nanosec" =~ ^[0-9]+$ ]]; then
+    printf 'ROS /clock publisher count unavailable after discovery timeout; valid sample received (single-owner check deferred to replay audit).\n' >&2
+    return 0
+  fi
+  printf 'ROS /clock publisher did not appear after starting the Gazebo clock bridge.\n' >&2
+  return 1
+}
+
+wait_for_single_clock_publisher
+
 read_clock_ns() {
   local sample sec nanosec
-  for _attempt in 1 2 3 4 5 6; do
+  for _attempt in $(seq 1 "${ROS_CLOCK_ATTEMPTS:-15}"); do
     # Humble's ros2topic CLI does not reliably emit the nested Clock.clock
     # field when --field is combined with --no-daemon.  Read the complete
     # one-message sample; the parser below already selects sec/nanosec.
@@ -198,6 +235,34 @@ fi
 printf 'ROS simulation clock active: delta=%.6fs\n' \
   "$(awk -v a="$clock_first_ns" -v b="$clock_second_ns" \
     'BEGIN {printf "%.6f", (b-a)/1e9}')"
+
+# Start the MID360 bridge as soon as Gazebo and /clock are ready.  The bridge
+# is an independent companion sensor and must not be delayed by the FCU/MAVROS
+# telemetry handshake; the PR6 wrapper waits for /livox/lidar while bringing up
+# FAST-LIO, so starting it later creates a circular startup dependency.
+if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
+  setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
+    -p use_sim_time:="$USE_SIM_TIME" \
+    -p gz_topic:=/mid360/lidar \
+    -p gz_imu_topic:=/mid360/imu \
+    -p livox_lidar_topic:=/livox/lidar \
+    -p livox_imu_topic:=/livox/imu \
+    -p lidar_frame_id:=mid360_link \
+    -p imu_frame_id:=base_link \
+    -p point_stride:=${MID360_POINT_STRIDE:-1} \
+    -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
+    -p body_min_x_m:="$MID360_BODY_MIN_X_M" \
+    -p body_max_x_m:="$MID360_BODY_MAX_X_M" \
+    -p body_min_y_m:="$MID360_BODY_MIN_Y_M" \
+    -p body_max_y_m:="$MID360_BODY_MAX_Y_M" \
+    -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
+    -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
+    -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
+    -p restamp_lidar:=false \
+    -p publish_ground_truth_odom:=true \
+    >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
+  pids+=("$!")
+fi
 
 if [[ "${ENABLE_D435_BRIDGE:-1}" == "1" ]]; then
   setsid ros2 run multi_slam_uav_sim d435i_sim_bridge --ros-args \
@@ -243,7 +308,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p range_topic:=/sim/optical_flow/range_native
     -p gazebo_range_topic:=/flow/range
     -p gazebo_imu_topic:=/flow/imu
-    -p imu_topic:=/mavros/imu/data_raw
+    -p imu_topic:=/livox/imu
     # The MTF companion path is consumed by a 10 Hz LiDAR-triggered backend.
     # A deterministic 15 Hz stream preserves fresh zero-motion observations
     # without spending CPU on frames the estimator cannot consume.
@@ -269,8 +334,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
   pids+=("$!")
 
-  # The MTF device clock is kept in raw MAVLink frames. Its ROS observations
-  # must share MAVROS IMU's time domain for the companion fusion pipeline.
+  # Companion observations use the same Gazebo sensor clock as the MID360 IMU.
   setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p mode:=sim \
@@ -278,7 +342,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p flow_topic:=/sim/optical_flow/rad \
     -p range_topic:=/sim/optical_flow/range \
     -p raw_frame_topic:=/sim/mtf01/mavlink_frame \
-    -p imu_topic:=/mavros/imu/data_raw \
+    -p imu_topic:=/livox/imu \
     -p nominal_rate_hz:=${FLOW_RATE_HZ:-15.0} \
     -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
     -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
@@ -467,7 +531,9 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
   setsid ros2 run multi_slam_uav_sim gz_mid360_pointcloud_bridge --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
+    -p gz_imu_topic:=/mid360/imu \
     -p raw_topic:=/sim/mid360/points_raw \
+    -p imu_topic:=/sim/mid360/imu_raw \
     -p registered_topic:=/sim/mid360/cloud_registered \
     -p odom_topic:=/sim/mid360/ground_truth_odom \
     -p sensor_frame:=mid360_link \
@@ -476,31 +542,6 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
     -p publish_registered:=${MID360_PUBLISH_REGISTERED:-true} \
     -p publish_tf:=${MID360_PUBLISH_TF:-true} \
     >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
-  pids+=("$!")
-elif [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
-  # The simulation FCU timestamp can regress when Gazebo RTF drops. Keep raw
-  # timestamps as the default for hardware, but align the simulation Livox
-  # adapter to the ROS clock when explicitly requested.
-  setsid ros2 run mid360_sim_bridge_cpp gz_livox_bridge_node --ros-args \
-    -p use_sim_time:="$USE_SIM_TIME" \
-    -p gz_topic:=/mid360/lidar \
-    -p livox_lidar_topic:=/livox/lidar \
-    -p input_imu_topic:=/mavros/imu/data_raw \
-    -p livox_imu_topic:=/livox/imu \
-    -p lidar_frame_id:=mid360_link \
-    -p imu_frame_id:=base_link \
-    -p point_stride:=${MID360_POINT_STRIDE:-1} \
-    -p body_filter_enabled:="$MID360_BODY_FILTER_ENABLED" \
-    -p body_min_x_m:="$MID360_BODY_MIN_X_M" \
-    -p body_max_x_m:="$MID360_BODY_MAX_X_M" \
-    -p body_min_y_m:="$MID360_BODY_MIN_Y_M" \
-    -p body_max_y_m:="$MID360_BODY_MAX_Y_M" \
-    -p body_min_z_m:="$MID360_BODY_MIN_Z_M" \
-    -p body_max_z_m:="$MID360_BODY_MAX_Z_M" \
-    -p lidar_to_body_translation:="[$MID360_LIDAR_TO_BODY_X_M, $MID360_LIDAR_TO_BODY_Y_M, $MID360_LIDAR_TO_BODY_Z_M]" \
-    -p restamp_imu:=${MID360_SIM_RESTAMP_IMU:-true} \
-    -p publish_ground_truth_odom:=true \
-    >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
   pids+=("$!")
 fi
 

@@ -110,6 +110,7 @@ def live_propagation_admission(
     maximum_output_age_s,
     minimum_output_interval_s,
     maximum_imu_age_s,
+    allow_recent_lidar=False,
 ):
     """Gate publication-only propagation without advancing the factor graph."""
     required = (
@@ -152,7 +153,8 @@ def live_propagation_admission(
             return False, "last_output_invalid"
         output_age_s = now_s - last_output_stamp_s
     if (
-        now_s - latest_lidar_activity_s <= float(lidar_silence_timeout_s)
+        not bool(allow_recent_lidar)
+        and now_s - latest_lidar_activity_s <= float(lidar_silence_timeout_s)
         and output_age_s <= float(maximum_output_age_s)
     ):
         return False, "lidar_recent"

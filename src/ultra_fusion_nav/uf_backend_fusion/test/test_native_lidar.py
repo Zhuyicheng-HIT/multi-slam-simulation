@@ -20,6 +20,7 @@ from uf_backend_fusion.native_lidar import (
     validate_native_frame_contract,
     with_yaw_reference,
 )
+from uf_backend_fusion.manifold import state_plus
 
 
 def make_message(stamp_s=10.0):
@@ -341,6 +342,54 @@ class NativeLidarConversionTest(unittest.TestCase):
             missing_mount_pitch, body_pose
         )
         self.assertGreater(float(np.linalg.norm(uncompensated_mount)), 0.1)
+
+    def test_point_plane_jacobian_matches_right_local_finite_difference(self):
+        msg = make_message()
+        msg.lidar_points_xyz = [
+            2.0, 0.3, -0.2,
+            0.4, 1.7, 0.5,
+            -0.6, 0.2, 2.2,
+        ]
+        msg.plane_normals_xyz = [
+            0.8, -0.3, 0.5,
+            -0.2, 0.9, 0.4,
+            0.3, 0.1, -0.95,
+        ]
+        msg.plane_points_xyz = [
+            1.2, -0.4, 0.7,
+            -0.3, 1.1, 0.2,
+            0.6, -0.8, 1.5,
+        ]
+        msg.lidar_to_body_translation = [0.15, -0.04, 0.09]
+        msg.lidar_to_body_quaternion = list(
+            rpy_to_quaternion_xyzw([0.08, -0.12, 0.05])
+        )
+        factor = native_factor_from_message(msg)
+        pose = np.asarray([0.4, -0.2, 0.3, 0.15, -0.1, 0.25])
+        residual, analytic = point_plane_residual_jacobian(factor, pose)
+        state = np.zeros(15)
+        state[:6] = pose
+        numerical = np.zeros_like(analytic)
+        epsilon = 1.0e-7
+        for column in range(6):
+            increment = np.zeros(15)
+            increment[column] = epsilon
+            plus = state_plus(state, increment)
+            minus = state_plus(state, -increment)
+            plus_residual, _ = point_plane_residual_jacobian(
+                factor, plus[:6]
+            )
+            minus_residual, _ = point_plane_residual_jacobian(
+                factor, minus[:6]
+            )
+            numerical[:, column] = (
+                plus_residual - minus_residual
+            ) / (2.0 * epsilon)
+
+        self.assertTrue(np.all(np.isfinite(residual)))
+        np.testing.assert_allclose(
+            analytic, numerical, atol=2.0e-8, rtol=2.0e-8
+        )
 
     def test_map_alignment_preserves_point_plane_residuals(self):
         msg = make_message()
