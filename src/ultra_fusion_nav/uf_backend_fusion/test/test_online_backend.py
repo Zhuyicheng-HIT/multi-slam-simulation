@@ -1472,8 +1472,8 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             release_measurement.set()
         live_thread.join(timeout=1.0)
         self.assertFalse(live_thread.is_alive())
-        self.assertFalse(node.odom_pub.messages)
-        self.assertEqual(node.last_live_propagation_reason, "anchor_changed")
+        self.assertEqual(len(node.odom_pub.messages), 1)
+        self.assertEqual(node.last_live_propagation_reason, "ok")
         self.assertEqual(node.optimization_anchor.generation, 5)
 
     def test_unified_odom_suppresses_timestamp_regression(self):

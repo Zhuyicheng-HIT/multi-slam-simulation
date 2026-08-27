@@ -2619,7 +2619,13 @@ class UnifiedBackendNode(Node):
             self.declare_parameter(name, value)
         # Keep high-rate flow ingress independent from native LiDAR and IMU;
         # the optimizer itself remains a single worker with one numeric thread.
-        self.declare_parameter("executor_threads", 3)
+        # Native LiDAR ingress, IMU ingress, the publication-only IMU
+        # propagation timer and ordinary ROS callbacks each have their own
+        # callback group.  Three workers can starve the propagation timer on
+        # an onboard system while the first three groups are busy, causing the
+        # external-navigation odometry to arrive in bursts.  Keep one worker
+        # available for the propagation/publication path by default.
+        self.declare_parameter("executor_threads", 4)
         self.executor_threads = int(
             self.get_parameter("executor_threads").value
         )
@@ -7146,7 +7152,8 @@ class UnifiedBackendNode(Node):
         self.last_live_propagation_reason = str(reason)
         self.counts["live_propagation_rejected"] += 1
 
-    def _publish_live_propagation(self):
+    def _publish_live_propagation(
+            self, retry_on_anchor_change=True, force_fresh_anchor=False):
         """Publish dead-reckoned odometry without touching the factor graph."""
         if (
             not self.live_propagation_enabled
@@ -7192,6 +7199,7 @@ class UnifiedBackendNode(Node):
             self.live_propagation_maximum_output_age_s,
             self.live_propagation_minimum_interval_s,
             self.live_propagation_maximum_imu_age_s,
+            allow_recent_lidar=force_fresh_anchor,
         )
         if not admitted:
             self._reject_live_propagation(reason)
@@ -7215,6 +7223,7 @@ class UnifiedBackendNode(Node):
 
         # A scan request or optimizer commit may arrive while preintegration is
         # running. Recheck both barriers before publishing the derived state.
+        anchor_changed = False
         with self.state_publication_lock:
             current_anchor = self._optimization_anchor_snapshot()
             if (
@@ -7223,36 +7232,50 @@ class UnifiedBackendNode(Node):
                 or current_anchor.reset_counter
                 != propagated.anchor_reset_counter
             ):
-                self._reject_live_propagation("anchor_changed")
-                return
-            if current_anchor.reset_counter != self.state_reset_counter:
+                anchor_changed = True
+            elif current_anchor.reset_counter != self.state_reset_counter:
                 self._reject_live_propagation("epoch_changed")
                 return
-            admitted, reason = live_propagation_admission(
-                self._now_s(),
-                latest_imu_stamp_s,
-                target_stamp_s,
-                current_anchor.stamp_s,
-                self._last_unified_output_stamp_snapshot(),
-                self._latest_lidar_frontend_activity_s(),
-                self.live_propagation_lidar_silence_timeout_s,
-                self.live_propagation_maximum_output_age_s,
-                self.live_propagation_minimum_interval_s,
-                self.live_propagation_maximum_imu_age_s,
-            )
-            if not admitted:
-                self._reject_live_propagation(reason)
-                return
-            header = Odometry().header
-            header.stamp = ros_time_from_seconds(propagated.stamp_s)
-            header.frame_id = self.map_frame
-            published = self._publish_live_odom(
-                header,
-                np.asarray(propagated.state, dtype=float),
-                np.asarray(propagated.covariance, dtype=float).reshape(15, 15),
-            )
+            else:
+                admitted, reason = live_propagation_admission(
+                    self._now_s(),
+                    latest_imu_stamp_s,
+                    target_stamp_s,
+                    current_anchor.stamp_s,
+                    self._last_unified_output_stamp_snapshot(),
+                    self._latest_lidar_frontend_activity_s(),
+                    self.live_propagation_lidar_silence_timeout_s,
+                    self.live_propagation_maximum_output_age_s,
+                    self.live_propagation_minimum_interval_s,
+                    self.live_propagation_maximum_imu_age_s,
+                    allow_recent_lidar=force_fresh_anchor,
+                )
+                if not admitted:
+                    self._reject_live_propagation(reason)
+                    return
+                header = Odometry().header
+                header.stamp = ros_time_from_seconds(propagated.stamp_s)
+                header.frame_id = self.map_frame
+                published = self._publish_live_odom(
+                    header,
+                    np.asarray(propagated.state, dtype=float),
+                    np.asarray(propagated.covariance, dtype=float).reshape(15, 15),
+                )
+        if anchor_changed:
+            # Native factors can commit while this timer is preintegrating.
+            # Retry once from the newly committed anchor rather than turning a
+            # harmless race into a missed external-navigation publication.
+            if retry_on_anchor_change:
+                return self._publish_live_propagation(
+                    retry_on_anchor_change=False,
+                    force_fresh_anchor=force_fresh_anchor,
+                )
+            self._reject_live_propagation("anchor_changed")
+            return
         if published:
-            self.last_live_propagation_reason = "ok"
+            self.last_live_propagation_reason = (
+                "fresh_anchor_ok" if force_fresh_anchor else "ok"
+            )
         else:
             self._reject_live_propagation("nonmonotonic_output")
 
@@ -11201,6 +11224,15 @@ class UnifiedBackendNode(Node):
                         local_output, self.map_frame, self.body_frame
                     )
                 )
+        if not output_published:
+            # A periodic IMU propagation may have already published a newer
+            # stamp, so the just-committed optimized sample is suppressed by
+            # the monotonic-output contract.  Publish once from this fresh
+            # anchor on the native worker path instead of waiting for the
+            # timer to race another anchor update.  This bypasses only the
+            # "lidar_recent" throttle; all IMU, timing and monotonic guards
+            # remain active and the factor graph/map are untouched.
+            self._publish_live_propagation(force_fresh_anchor=True)
         map_output = local_output
         map_lidar_eligible = bool(self.last_lidar_map_eligible)
         map_lidar_reason = str(self.last_lidar_map_reason)
@@ -11684,6 +11716,35 @@ class UnifiedBackendNode(Node):
         )
         diagnostic.values = [
             self._key("scheduler_health", self.scheduler_health),
+            # Keep the on-board output-path evidence first.  Some DDS/CLI
+            # paths truncate very long DiagnosticStatus value arrays.
+            self._key("state_trigger_source", self.last_state_trigger_source),
+            self._key("lidar_factor_source", self.last_lidar_source),
+            self._key("output_source", self.last_output_source),
+            self._key(
+                "live_propagation_reason", self.last_live_propagation_reason
+            ),
+            self._key(
+                "live_propagation_attempts",
+                self.counts["live_propagation_attempts"],
+            ),
+            self._key(
+                "live_propagation_published",
+                self.counts["live_propagation_published"],
+            ),
+            self._key(
+                "live_propagation_rejected",
+                self.counts["live_propagation_rejected"],
+            ),
+            self._key(
+                "optimized_odom_published",
+                self.counts["optimized_odom_published"],
+            ),
+            self._key(
+                "optimized_odom_nonmonotonic_suppressed",
+                self.counts["optimized_odom_nonmonotonic_suppressed"],
+            ),
+            self._key("odom_published", self.counts["published"]),
             self._key(
                 "frontend_map_pose_reason", self.last_frontend_map_pose_reason
             ),
@@ -11854,6 +11915,26 @@ class UnifiedBackendNode(Node):
             ),
             self._key("state_reset_counter", self.state_reset_counter),
             self._key("last_imu_reason", self.last_imu_reason),
+            self._key("imu_pair_timeouts", self.counts["imu_pair_timeouts"]),
+            self._key(
+                "native_consumed_without_state_commit",
+                self.counts["native_consumed_without_state_commit"],
+            ),
+            self._key(
+                "native_worker_queue_superseded",
+                self.counts["native_worker_queue_superseded"],
+            ),
+            self._key(
+                "native_worker_queue_discarded",
+                self.counts["native_worker_queue_discarded"],
+            ),
+            self._key(
+                "native_worker_latest_skipped",
+                self.counts["native_worker_latest_skipped"],
+            ),
+            self._key(
+                "native_worker_errors", self.counts["native_worker_errors"]
+            ),
             self._key("calibration_reason", self.last_calibration_update.reason),
             self._key(
                 "calibration_motion_reason", self.last_calibration_motion_reason
@@ -12130,12 +12211,6 @@ class UnifiedBackendNode(Node):
             self._key(
                 "native_lidar_prediction_recovery_inflation",
                 f"{self.lidar_prediction_recovery_inflation:.9g}",
-            ),
-            self._key("lidar_factor_source", self.last_lidar_source),
-            self._key("state_trigger_source", self.last_state_trigger_source),
-            self._key(
-                "live_propagation_reason",
-                self.last_live_propagation_reason,
             ),
             self._key(
                 "auxiliary_keyframe_reason",
