@@ -66,6 +66,14 @@ std::string json_escape(const std::string & value)
   return stream.str();
 }
 
+double percentile(std::deque<double> values, double fraction)
+{
+  if (values.empty()) return 0.0;
+  std::sort(values.begin(), values.end());
+  const auto index = static_cast<std::size_t>(fraction * static_cast<double>(values.size() - 1U));
+  return values[index];
+}
+
 diagnostic_msgs::msg::KeyValue key_value(const std::string & key, const std::string & value)
 {
   diagnostic_msgs::msg::KeyValue output;
@@ -95,6 +103,13 @@ public:
       1, declare_parameter<int>("max_pending_scans", 8)));
     max_state_wait_ms_ = declare_parameter<double>("max_state_wait_ms", 250.0);
     max_processing_ms_ = declare_parameter<double>("max_processing_ms", 20.0);
+    self_mask_enabled_ = declare_parameter<bool>("self_body_mask.enabled", false);
+    self_mask_x_min_ = declare_parameter<double>("self_body_mask.x_min_m", -0.35);
+    self_mask_x_max_ = declare_parameter<double>("self_body_mask.x_max_m", 0.35);
+    self_mask_y_min_ = declare_parameter<double>("self_body_mask.y_min_m", -0.30);
+    self_mask_y_max_ = declare_parameter<double>("self_body_mask.y_max_m", 0.30);
+    self_mask_z_min_ = declare_parameter<double>("self_body_mask.z_min_m", -0.25);
+    self_mask_z_max_ = declare_parameter<double>("self_body_mask.z_max_m", 0.25);
 
     VisibilityFilterConfig filter_config;
     filter_config.voxel_size_m = declare_parameter<double>("filter.voxel_size_m", 0.25);
@@ -296,6 +311,7 @@ private:
 
   void on_raw(const livox_ros_driver2::msg::CustomMsg & message)
   {
+    ++received_scan_count_;
     PendingScan scan;
     scan.raw = message;
     scan.start_ns = stamp_ns(message.header.stamp);
@@ -318,8 +334,7 @@ private:
       return;
     }
     if (pending_.size() >= max_pending_scans_) {
-      ++queue_overflow_count_;
-      fail_open(std::move(pending_.front()), "queue_overflow", 0.0);
+      ++queue_dropped_count_;
       pending_.pop_front();
     }
     pending_.push_back(std::move(scan));
@@ -371,6 +386,8 @@ private:
       }
       PendingScan scan = std::move(pending_.front());
       pending_.pop_front();
+      ++processed_scan_count_;
+      if (residence_ms > max_state_wait_ms_ * 0.5) ++stale_dropped_count_;
       try {
         process_scan(scan, *anchor, residence_ms);
       } catch (const std::exception & error) {
@@ -429,6 +446,9 @@ private:
       if (!std::isfinite(source.x) || !std::isfinite(source.y) || !std::isfinite(source.z)) {
         continue;
       }
+      if (self_mask_enabled_ && source.x >= self_mask_x_min_ && source.x <= self_mask_x_max_ &&
+        source.y >= self_mask_y_min_ && source.y <= self_mask_y_max_ &&
+        source.z >= self_mask_z_min_ && source.z <= self_mask_z_max_) continue;
       Eigen::Isometry3d world_from_body = Eigen::Isometry3d::Identity();
       world_from_body.linear() = trajectory.poses[ordered_index].orientation.toRotationMatrix();
       world_from_body.translation() = trajectory.poses[ordered_index].position;
@@ -448,6 +468,8 @@ private:
       scan.raw.points.size(), classified_source_indices, filter_result.points);
     const double processing_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - processing_start).count();
+    processing_latencies_ms_.push_back(processing_ms);
+    while (processing_latencies_ms_.size() > 4096U) processing_latencies_ms_.pop_front();
     if (!admission.healthy) {
       fail_open(std::move(scan), "admission:" + admission.reason, residence_ms, processing_ms);
       return;
@@ -510,6 +532,12 @@ private:
       ",\"queue_residence_ms\":" << number(residence_ms) <<
       ",\"queue_depth\":" << pending_.size() <<
       ",\"queue_overflow\":" << queue_overflow_count_ <<
+      ",\"received\":" << received_scan_count_ <<
+      ",\"processed\":" << processed_scan_count_ <<
+      ",\"stale_dropped\":" << stale_dropped_count_ <<
+      ",\"queue_dropped\":" << queue_dropped_count_ <<
+      ",\"processing_p50_ms\":" << number(percentile(processing_latencies_ms_, 0.50)) <<
+      ",\"processing_p95_ms\":" << number(percentile(processing_latencies_ms_, 0.95)) <<
       ",\"pose_timeout\":" << pose_timeout_count_ <<
       ",\"deskew_reject\":" << deskew_reject_count_ <<
       ",\"input_regression\":" << input_regression_count_ <<
@@ -554,6 +582,10 @@ private:
   double max_processing_ms_{20.0};
   double max_imu_gap_s_{0.025};
   double max_prediction_horizon_s_{0.20};
+  bool self_mask_enabled_{false};
+  double self_mask_x_min_{-0.35}, self_mask_x_max_{0.35};
+  double self_mask_y_min_{-0.30}, self_mask_y_max_{0.30};
+  double self_mask_z_min_{-0.25}, self_mask_z_max_{0.25};
   double min_range_m_{0.5};
   double max_range_m_{35.0};
   std::int64_t last_raw_stamp_ns_{0};
@@ -563,6 +595,11 @@ private:
   std::uint64_t fail_open_scan_count_{0U};
   std::uint64_t removed_point_count_{0U};
   std::uint64_t queue_overflow_count_{0U};
+  std::uint64_t received_scan_count_{0U};
+  std::uint64_t processed_scan_count_{0U};
+  std::uint64_t stale_dropped_count_{0U};
+  std::uint64_t queue_dropped_count_{0U};
+  std::deque<double> processing_latencies_ms_;
   std::uint64_t pose_timeout_count_{0U};
   std::uint64_t deskew_reject_count_{0U};
   std::uint64_t input_regression_count_{0U};
