@@ -66,6 +66,18 @@ class LivePropagationTest(unittest.TestCase):
             ),
             (True, "ready"),
         )
+        self.assertEqual(
+            unified_odom_publication_decision(
+                "lidar_event_propagated", "optimized", 10.10, 10.0
+            ),
+            (False, "source_not_owner"),
+        )
+        self.assertEqual(
+            unified_odom_publication_decision(
+                "lidar_event_propagated", "imu_propagated", 10.10, 10.0
+            ),
+            (True, "ready"),
+        )
 
     def test_auxiliary_keyframe_requires_native_outage_and_fresh_imu(self):
         arguments = dict(
