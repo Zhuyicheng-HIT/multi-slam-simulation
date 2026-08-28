@@ -179,9 +179,12 @@ def unified_odom_publication_decision(
     output_mode, source, output_stamp_s, last_output_stamp_s
 ):
     """Select the single odometry writer and enforce timestamp monotonicity."""
-    if output_mode not in {"fixed_rate_propagated", "legacy_hybrid"}:
+    if output_mode not in {
+        "fixed_rate_propagated", "lidar_event_propagated", "legacy_hybrid"
+    }:
         return False, "invalid_output_mode"
-    if output_mode == "fixed_rate_propagated" and source != "imu_propagated":
+    if output_mode in {"fixed_rate_propagated", "lidar_event_propagated"} \
+            and source != "imu_propagated":
         return False, "source_not_owner"
     if not math.isfinite(float(output_stamp_s)) or float(output_stamp_s) <= 0.0:
         return False, "invalid_timestamp"

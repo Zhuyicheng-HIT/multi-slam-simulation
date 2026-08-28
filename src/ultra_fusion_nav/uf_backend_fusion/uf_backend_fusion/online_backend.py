@@ -3400,14 +3400,16 @@ class UnifiedBackendNode(Node):
             self.get_parameter("unified_odom_output_mode").value
         ).lower()
         if self.unified_odom_output_mode not in {
-            "fixed_rate_propagated", "legacy_hybrid"
+            "fixed_rate_propagated", "lidar_event_propagated", "legacy_hybrid"
         }:
             raise ValueError(
-                "unified_odom_output_mode must be fixed_rate_propagated or "
-                "legacy_hybrid"
+                "unified_odom_output_mode must be fixed_rate_propagated, "
+                "lidar_event_propagated, or legacy_hybrid"
             )
         if (
-            self.unified_odom_output_mode == "fixed_rate_propagated"
+            self.unified_odom_output_mode in {
+                "fixed_rate_propagated", "lidar_event_propagated"
+            }
             and not self.live_propagation_enabled
         ):
             raise ValueError(
@@ -7161,7 +7163,7 @@ class UnifiedBackendNode(Node):
         self.last_live_propagation_reason = str(reason)
         self.counts["live_propagation_rejected"] += 1
 
-    def _publish_live_propagation(self, _anchor_retry=True):
+    def _publish_live_propagation(self, _anchor_retry=True, _event_triggered=False):
         """Publish dead-reckoned odometry without touching the factor graph."""
         if (
             not self.live_propagation_enabled
@@ -7208,7 +7210,11 @@ class UnifiedBackendNode(Node):
             self.live_propagation_minimum_interval_s,
             self.live_propagation_maximum_imu_age_s,
             getattr(self, "unified_odom_output_mode", "legacy_hybrid")
-            == "fixed_rate_propagated",
+            == "fixed_rate_propagated"
+            or (
+                getattr(self, "unified_odom_output_mode", "legacy_hybrid")
+                == "lidar_event_propagated" and _event_triggered
+            ),
         )
         if not admitted:
             self._reject_live_propagation(reason)
@@ -7246,7 +7252,10 @@ class UnifiedBackendNode(Node):
                     # the fixed-rate timer as the sole unified-odom writer.
                     try:
                         published_before_retry = self.counts["live_propagation_published"]
-                        self._publish_live_propagation(_anchor_retry=False)
+                        self._publish_live_propagation(
+                            _anchor_retry=False,
+                            _event_triggered=_event_triggered,
+                        )
                         if self.counts["live_propagation_published"] == published_before_retry:
                             self.last_live_propagation_reason = "anchor_changed"
                     except Exception:
@@ -7269,7 +7278,11 @@ class UnifiedBackendNode(Node):
                 self.live_propagation_minimum_interval_s,
                 self.live_propagation_maximum_imu_age_s,
                 getattr(self, "unified_odom_output_mode", "legacy_hybrid")
-                == "fixed_rate_propagated",
+                == "fixed_rate_propagated"
+                or (
+                    getattr(self, "unified_odom_output_mode", "legacy_hybrid")
+                    == "lidar_event_propagated" and _event_triggered
+                ),
             )
             if not admitted:
                 self._reject_live_propagation(reason)
@@ -11245,6 +11258,14 @@ class UnifiedBackendNode(Node):
                 )
             )
             self.counts["frontend_activation_published"] += 1
+        if (
+            getattr(self, "unified_odom_output_mode", "legacy_hybrid")
+            == "lidar_event_propagated"
+            and self.live_propagation_enabled
+        ):
+            # Propagation runs after the anchor lock is released. The IMU
+            # callback remains ingestion-only and never performs this work.
+            self._publish_live_propagation(_event_triggered=True)
         map_output = local_output
         map_lidar_eligible = bool(self.last_lidar_map_eligible)
         map_lidar_reason = str(self.last_lidar_map_reason)
