@@ -11,6 +11,7 @@ import numpy as np
 
 from .association import PoseSample, associate_scan_to_pose
 from .manifest import sha256_file, write_manifest_atomic
+from .trajectory import write_pose_trajectory
 
 
 def livox_points_to_arrays(points):
@@ -114,6 +115,11 @@ def _read_poses(bag_directory, pose_topic, epoch_topic, storage_id):
     return output
 
 
+def write_full_pose_trajectory(path, poses):
+    """Persist every finite odometry sample, not only scan associations."""
+    write_pose_trajectory(path, poses)
+
+
 def materialize_archive(
     archive_root,
     scan_topic="/livox/lidar",
@@ -121,6 +127,7 @@ def materialize_archive(
     epoch_topic="/fusion/epoch",
     tolerance_ns=50_000_000,
     storage_id="sqlite3",
+    pose_bag_directory=None,
 ):
     from rclpy.serialization import deserialize_message
 
@@ -137,7 +144,9 @@ def materialize_archive(
     poses_directory.mkdir()
 
     raw_directory = root / "raw"
-    poses = _read_poses(raw_directory, pose_topic, epoch_topic, storage_id)
+    pose_directory = Path(pose_bag_directory) if pose_bag_directory else raw_directory
+    poses = _read_poses(pose_directory, pose_topic, epoch_topic, storage_id)
+    write_full_pose_trajectory(poses_directory / "trajectory_original.csv", poses)
     reader = _reader(raw_directory, storage_id)
     types = _topic_types(reader)
     if scan_topic not in types:
@@ -203,6 +212,8 @@ def materialize_archive(
         "association_tolerance_ns": tolerance_ns,
         "accepted_scans": len(accepted),
         "rejected_scans": len(rejected),
+        "trajectory_samples": len(poses),
+        "full_pose_trajectory": "poses/trajectory_original.csv",
     })
     manifest["artifacts"] = [
         {
@@ -225,6 +236,7 @@ def main(argv=None):
     parser.add_argument("--epoch-topic", default="/fusion/epoch")
     parser.add_argument("--tolerance-ms", type=float, default=50.0)
     parser.add_argument("--storage-id", default="sqlite3")
+    parser.add_argument("--pose-bag", type=Path)
     arguments = parser.parse_args(argv)
     materialize_archive(
         arguments.archive,
@@ -233,5 +245,6 @@ def main(argv=None):
         arguments.epoch_topic,
         int(arguments.tolerance_ms * 1_000_000),
         arguments.storage_id,
+        arguments.pose_bag,
     )
     return 0

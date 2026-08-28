@@ -54,10 +54,16 @@ The normalizer reads only the source bag and writes a new ROS 2 bag.
   `[0, 255]`.
 - Preserve `line` and `tag` byte values exactly.
 - Interpret the observed `timestamp` value as absolute nanoseconds and compute
-  `offset_time = round(timestamp) - scan_header_stamp_ns`.
-- Accept only finite timestamps whose offset is within the configured scan
-  interval. Negative offsets and offsets beyond the configured maximum are
-  rejected and counted; they are never clamped into apparently valid data.
+  `offset_time = round(float64(timestamp) - float64(scan_header_stamp_ns))`.
+  The subtraction deliberately happens before rounding in the same float64
+  precision domain. At this recording's Unix epoch one float64 ULP is 256 ns;
+  independently rounding the point timestamp before subtracting the exact
+  integer header creates artificial frame-start offsets in `[-127, 127]` ns.
+- Accept only finite timestamps whose derived offset is representable by the
+  Livox `uint32 offset_time` field. Negative or overflowing offsets are
+  rejected and counted; they are never clamped or restamped. The run manifest
+  records the observed minimum and maximum so the physical scan interval stays
+  auditable without inventing a data-dependent threshold.
 - Preserve finite XYZ values, including zero returns, in the normalized raw
   archive. Range/blind filtering remains the responsibility of the existing
   FAST-LIO and map-builder contracts, and zero-return counts remain auditable.

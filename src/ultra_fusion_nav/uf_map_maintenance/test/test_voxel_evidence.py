@@ -52,3 +52,11 @@ def test_small_low_support_floating_component_is_removed():
     cleaned, metrics = voxel_map.cleaned_points()
     assert len(cleaned) == 0
     assert metrics["removed_small_component"] == 2
+
+
+def test_all_points_exposes_deterministic_pre_cleanup_voxels():
+    voxel_map = EvidenceVoxelMap(MaintenanceConfig(voxel_size_m=1.0))
+    voxel_map.add_scan(1, np.array([[2.1, 0.1, 0.1, 2], [0.1, 0.1, 0.1, 1]]))
+    points = voxel_map.all_points()
+    np.testing.assert_allclose(points[:, 0], [0.1, 2.1])
+    np.testing.assert_allclose(points[:, 3], [1, 2])

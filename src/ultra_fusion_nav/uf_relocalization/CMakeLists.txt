@@ -11,7 +11,7 @@ find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
 find_package(nav_msgs REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common features filters registration)
+find_package(PCL REQUIRED COMPONENTS common features filters io registration)
 find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -108,6 +108,18 @@ ament_target_dependencies(lidar_calibration_motion_node
 )
 target_compile_definitions(lidar_calibration_motion_node PRIVATE ${PCL_DEFINITIONS})
 
+add_executable(offline_loop_smoke src/offline_loop_smoke.cpp)
+target_compile_features(offline_loop_smoke PUBLIC cxx_std_17)
+target_include_directories(offline_loop_smoke PRIVATE
+  ${PCL_INCLUDE_DIRS}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(offline_loop_smoke
+  registration_core keyframe_database descriptor_core
+  Eigen3::Eigen ${PCL_LIBRARIES}
+)
+target_compile_definitions(offline_loop_smoke PRIVATE ${PCL_DEFINITIONS})
+
 install(TARGETS active_relocalization_policy automatic_loop_closure_policy
   registration_core keyframe_database descriptor_core
   multi_frame_consistency_gate keyframe_synchronization
@@ -116,7 +128,7 @@ install(TARGETS active_relocalization_policy automatic_loop_closure_policy
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
-install(TARGETS relocalization_node lidar_calibration_motion_node
+install(TARGETS relocalization_node lidar_calibration_motion_node offline_loop_smoke
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)

@@ -7,6 +7,7 @@ from uf_map_maintenance.materialize import (
     epoch_for_stamp,
     livox_message_metadata,
     livox_points_to_arrays,
+    write_full_pose_trajectory,
 )
 
 
@@ -44,3 +45,18 @@ def test_livox_scan_level_timestamp_and_identity_are_preserved():
     message = SimpleNamespace(timebase=123456, lidar_id=7, rsvd=[1, 2, 3])
     metadata = livox_message_metadata(message)
     assert metadata == {"timebase": 123456, "lidar_id": 7, "rsvd": [1, 2, 3]}
+
+
+def test_materialization_persists_every_pose_for_per_point_deskew(tmp_path):
+    from uf_map_maintenance.association import PoseSample
+
+    path = tmp_path / "trajectory_original.csv"
+    poses = [
+        PoseSample(10, 1, (0, 0, 0), (0, 0, 0, 1)),
+        PoseSample(20, 1, (1, 0, 0), (0, 0, 0, 1)),
+        PoseSample(30, 1, (2, 0, 0), (0, 0, 0, 1)),
+    ]
+    write_full_pose_trajectory(path, poses)
+    rows = path.read_text().strip().splitlines()
+    assert len(rows) == 4
+    assert rows[0].startswith("stamp_ns,epoch,tx")

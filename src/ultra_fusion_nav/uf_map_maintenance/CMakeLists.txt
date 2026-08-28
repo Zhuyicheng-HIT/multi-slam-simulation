@@ -8,7 +8,9 @@ ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
   tools/archive_mid360_session
+  tools/export_offline_keyframes
   tools/materialize_mid360_archive
+  tools/normalize_mid360_pointcloud2_bag
   tools/offline_map_builder
   tools/validate_map_archive
   DESTINATION lib/${PROJECT_NAME}

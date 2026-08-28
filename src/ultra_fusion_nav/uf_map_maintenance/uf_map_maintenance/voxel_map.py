@@ -14,6 +14,9 @@ class MaintenanceConfig:
     minimum_component_voxels: int = 3
     isolation_neighbor_threshold: int = 1
     maximum_provenance_scan_ids: int = 8
+    maximum_pose_bracket_ns: int = 250_000_000
+    ghosting_voxel_size_m: float = 0.06
+    structural_sample_limit: int = 20000
 
 
 @dataclass
@@ -50,20 +53,39 @@ class EvidenceVoxelMap:
         if array.ndim != 2 or array.shape[1] not in (3, 4):
             raise ValueError("points must be an Nx3 or Nx4 array")
         finite = array[np.all(np.isfinite(array[:, :3]), axis=1)]
-        for row in finite:
-            value = np.zeros(4, dtype=np.float64)
-            value[:3] = row[:3]
-            if row.shape[0] == 4 and np.isfinite(row[3]):
-                value[3] = row[3]
-            evidence = self.voxels.setdefault(self._key(row), VoxelEvidence())
-            evidence.point_sum += value
-            evidence.point_count += 1
+        if not len(finite):
+            return
+        values = np.zeros((len(finite), 4), dtype=np.float64)
+        values[:, :3] = finite[:, :3]
+        if finite.shape[1] == 4:
+            valid_intensity = np.isfinite(finite[:, 3])
+            values[valid_intensity, 3] = finite[valid_intensity, 3]
+        keys = np.floor(
+            finite[:, :3] / self.config.voxel_size_m
+        ).astype(np.int64)
+        unique_keys, inverse = np.unique(keys, axis=0, return_inverse=True)
+        counts = np.bincount(inverse, minlength=len(unique_keys))
+        sums = np.column_stack([
+            np.bincount(inverse, weights=values[:, column], minlength=len(unique_keys))
+            for column in range(4)
+        ])
+        for index, key_values in enumerate(unique_keys):
+            key = tuple(int(value) for value in key_values)
+            evidence = self.voxels.setdefault(key, VoxelEvidence())
+            evidence.point_sum += sums[index]
+            evidence.point_count += int(counts[index])
             if evidence.last_scan_id != scan_id:
                 evidence.scan_support_count += 1
                 if len(evidence.scan_ids) < self.config.maximum_provenance_scan_ids:
                     evidence.scan_ids.add(int(scan_id))
             evidence.first_scan_id = scan_id if evidence.first_scan_id is None else min(evidence.first_scan_id, scan_id)
             evidence.last_scan_id = scan_id if evidence.last_scan_id is None else max(evidence.last_scan_id, scan_id)
+
+    def all_points(self):
+        ordered = sorted(self.voxels)
+        if not ordered:
+            return np.empty((0, 4), dtype=np.float64)
+        return np.asarray([self.voxels[key].centroid for key in ordered], dtype=np.float64)
 
     @staticmethod
     def _neighbor_keys(key):
