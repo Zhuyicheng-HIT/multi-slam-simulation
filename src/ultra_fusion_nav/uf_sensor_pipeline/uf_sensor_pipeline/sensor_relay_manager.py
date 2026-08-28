@@ -46,14 +46,14 @@ class SensorRelayManager(Node):
         self.declare_parameter("imu_acceleration_scale", 1.0)
         self.declare_parameter("restamp_gnss", True)
         self.relay_count = 0
-        self.publishers = {}
+        self.relay_publishers = {}
         active = {str(name) for name in self.get_parameter("active_modalities").value}
         for modality, message_type in MESSAGE_TYPES.items():
             if modality not in active:
                 continue
             input_topic = str(self.get_parameter(f"{modality}_input_topic").value)
             output_topic = str(self.get_parameter(f"{modality}_output_topic").value)
-            self.publishers[modality] = self.create_publisher(
+            self.relay_publishers[modality] = self.create_publisher(
                 message_type, output_topic, qos_profile_sensor_data
             )
             self.create_subscription(
@@ -73,7 +73,7 @@ class SensorRelayManager(Node):
         elif modality == "gnss" and bool(self.get_parameter("restamp_gnss").value):
             now = self.get_clock().now().to_msg()
             output.header.stamp = now
-        self.publishers[modality].publish(output)
+        self.relay_publishers[modality].publish(output)
         self.relay_count += 1
 
 

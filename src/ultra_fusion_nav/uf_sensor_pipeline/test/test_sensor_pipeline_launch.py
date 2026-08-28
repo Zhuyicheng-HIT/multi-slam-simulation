@@ -33,6 +33,24 @@ class SensorPipelineLaunchTest(unittest.TestCase):
         self.assertIn('condition=UnlessCondition(enable_fault_injection)', source)
         self.assertIn('condition=IfCondition(enable_fault_injection)', source)
 
+    def test_minimal_profile_declares_all_manager_topics_before_start(self):
+        description = MODULE.generate_launch_description()
+        entities = list(description.entities)
+        manager_index = next(
+            index for index, action in enumerate(entities)
+            if isinstance(action, Node)
+            and action.__dict__.get("_Node__node_name") == "sensor_relay_manager"
+        )
+        declared_before_manager = {
+            action.name for action in entities[:manager_index]
+            if isinstance(action, DeclareLaunchArgument)
+        }
+        for argument in (
+            "d435_depth_input_topic", "d435_color_input_topic",
+            "active_modalities", "enable_vision", "enable_fault_injection",
+        ):
+            self.assertIn(argument, declared_before_manager)
+
 
 if __name__ == "__main__":
     unittest.main()
