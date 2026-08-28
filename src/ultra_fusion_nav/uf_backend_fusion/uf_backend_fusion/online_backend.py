@@ -11235,15 +11235,20 @@ class UnifiedBackendNode(Node):
                 self.last_output_orientation_variance_rad2,
             )
             self.odom_pub.publish(output)
-            if self.last_unified_output_stamp_s > 0.0:
-                interval_s = output_stamp_s - self.last_unified_output_stamp_s
+            previous_output_stamp_s = self.last_unified_output_stamp_s
+            if previous_output_stamp_s is not None and previous_output_stamp_s > 0.0:
+                interval_s = output_stamp_s - previous_output_stamp_s
                 if interval_s > 0.0 and math.isfinite(interval_s):
+                    if not hasattr(self, "unified_output_intervals_s"):
+                        self.unified_output_intervals_s = deque(maxlen=5000)
                     self.unified_output_intervals_s.append(interval_s)
             self.last_unified_output_stamp_s = output_stamp_s
             self.last_output = output
             self.last_output_source = str(source)
             self.last_output_source_age_s = self._now_s() - output_stamp_s
             if math.isfinite(self.last_output_source_age_s):
+                if not hasattr(self, "unified_output_source_ages_s"):
+                    self.unified_output_source_ages_s = deque(maxlen=5000)
                 self.unified_output_source_ages_s.append(
                     max(0.0, self.last_output_source_age_s)
                 )
