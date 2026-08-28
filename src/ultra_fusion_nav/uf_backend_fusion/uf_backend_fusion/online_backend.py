@@ -4579,6 +4579,8 @@ class UnifiedBackendNode(Node):
         self.last_native_callback_source_age_s = -1.0
         self.last_native_worker_source_age_s = -1.0
         self.last_output_source_age_s = -1.0
+        self.unified_output_intervals_s = deque(maxlen=5000)
+        self.unified_output_source_ages_s = deque(maxlen=5000)
         self.last_output_position_variance_m2 = math.inf
         self.last_output_orientation_variance_rad2 = math.inf
         self.last_output_velocity_variance_m2ps2 = math.inf
@@ -11233,10 +11235,18 @@ class UnifiedBackendNode(Node):
                 self.last_output_orientation_variance_rad2,
             )
             self.odom_pub.publish(output)
+            if self.last_unified_output_stamp_s > 0.0:
+                interval_s = output_stamp_s - self.last_unified_output_stamp_s
+                if interval_s > 0.0 and math.isfinite(interval_s):
+                    self.unified_output_intervals_s.append(interval_s)
             self.last_unified_output_stamp_s = output_stamp_s
             self.last_output = output
             self.last_output_source = str(source)
             self.last_output_source_age_s = self._now_s() - output_stamp_s
+            if math.isfinite(self.last_output_source_age_s):
+                self.unified_output_source_ages_s.append(
+                    max(0.0, self.last_output_source_age_s)
+                )
             self.counts["published"] += 1
             if source == "optimized":
                 self.counts["optimized_odom_published"] += 1
@@ -11480,6 +11490,26 @@ class UnifiedBackendNode(Node):
                 self.optimization_integrity_reason_counts.items()
             )
         ) or "none"
+        output_interval_median = (
+            float(np.median(self.unified_output_intervals_s))
+            if self.unified_output_intervals_s else -1.0
+        )
+        output_interval_p95 = (
+            float(np.percentile(self.unified_output_intervals_s, 95))
+            if self.unified_output_intervals_s else -1.0
+        )
+        output_interval_max = (
+            float(max(self.unified_output_intervals_s))
+            if self.unified_output_intervals_s else -1.0
+        )
+        output_age_median = (
+            float(np.median(self.unified_output_source_ages_s))
+            if self.unified_output_source_ages_s else -1.0
+        )
+        output_age_p95 = (
+            float(np.percentile(self.unified_output_source_ages_s, 95))
+            if self.unified_output_source_ages_s else -1.0
+        )
         print(
             "Unified backend final summary: "
             f"solver={self.backend_solver_mode};"
@@ -11507,6 +11537,11 @@ class UnifiedBackendNode(Node):
             f"{self.counts['live_propagation_event_requests']};"
             "live_propagation_event_superseded="
             f"{self.counts['live_propagation_event_superseded']};"
+            f"unified_output_interval_median_s={output_interval_median:.9g};"
+            f"unified_output_interval_p95_s={output_interval_p95:.9g};"
+            f"unified_output_max_gap_s={output_interval_max:.9g};"
+            f"unified_output_source_age_median_s={output_age_median:.9g};"
+            f"unified_output_source_age_p95_s={output_age_p95:.9g};"
             "auxiliary_keyframe_attempts="
             f"{self.counts['auxiliary_keyframe_attempts']};"
             "auxiliary_keyframe_committed="
@@ -12284,6 +12319,31 @@ class UnifiedBackendNode(Node):
             self._key(
                 "live_propagation_event_superseded",
                 self.counts["live_propagation_event_superseded"],
+            ),
+            self._key(
+                "unified_output_interval_median_s",
+                f"{float(np.median(self.unified_output_intervals_s)):.9g}"
+                if self.unified_output_intervals_s else "-1",
+            ),
+            self._key(
+                "unified_output_interval_p95_s",
+                f"{float(np.percentile(self.unified_output_intervals_s, 95)):.9g}"
+                if self.unified_output_intervals_s else "-1",
+            ),
+            self._key(
+                "unified_output_max_gap_s",
+                f"{float(max(self.unified_output_intervals_s)):.9g}"
+                if self.unified_output_intervals_s else "-1",
+            ),
+            self._key(
+                "unified_output_source_age_median_s",
+                f"{float(np.median(self.unified_output_source_ages_s)):.9g}"
+                if self.unified_output_source_ages_s else "-1",
+            ),
+            self._key(
+                "unified_output_source_age_p95_s",
+                f"{float(np.percentile(self.unified_output_source_ages_s, 95)):.9g}"
+                if self.unified_output_source_ages_s else "-1",
             ),
             self._key(
                 "frontend_activation_published",
