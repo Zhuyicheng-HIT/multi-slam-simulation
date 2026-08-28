@@ -105,9 +105,9 @@ class MinimalLidarImuLaunchTest(unittest.TestCase):
                 "use_sim_time:=false",
                 "enable_vision:=false",
                 "enable_gnss:=false",
-                "enable_lidar:=false",
+                "enable_lidar:=true",
                 "enable_fault_injection:=false",
-                "active_modalities:=[imu]",
+                "active_modalities:=[lidar,imu]",
                 "imu_acceleration_scale:=1.0",
             ],
             stdout=cls.launch_log,
@@ -174,6 +174,7 @@ class MinimalLidarImuLaunchTest(unittest.TestCase):
         self.assertAlmostEqual(output.linear_acceleration.y, -2.5)
         self.assertAlmostEqual(output.linear_acceleration.z, 9.5)
         node_names = self.node.get_node_names()
+        self.assertIn("pointcloud_body_filter", node_names)
         self.assertFalse(any(name.startswith("fault_injector") for name in node_names))
         self.assertNotIn("d435i_mount_tf", node_names)
         self.assertNotIn("nmea_gnss", node_names)
