@@ -28,6 +28,7 @@ LIDAR_SUBSPACE_WEAK_SCALE=${LIDAR_SUBSPACE_WEAK_SCALE:-0.10}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 BACKEND_EXECUTOR_THREADS=${BACKEND_EXECUTOR_THREADS:-2}
+UNIFIED_ODOM_OUTPUT_MODE=${UNIFIED_ODOM_OUTPUT_MODE:-fixed_rate_propagated}
 NONLINEAR_MAX_ITERATIONS=${NONLINEAR_MAX_ITERATIONS:-2}
 NONLINEAR_INITIALIZATION_MAX_ITERATIONS=${NONLINEAR_INITIALIZATION_MAX_ITERATIONS:-4}
 NONLINEAR_RECOVERY_MAX_ITERATIONS=${NONLINEAR_RECOVERY_MAX_ITERATIONS:-4}
@@ -115,6 +116,10 @@ if [[ "$BACKEND_RELIABILITY_MODE" != dynamic && \
   printf 'BACKEND_RELIABILITY_MODE must be dynamic or fixed.\n' >&2
   exit 2
 fi
+case "$UNIFIED_ODOM_OUTPUT_MODE" in
+  fixed_rate_propagated|lidar_event_propagated|legacy_hybrid) ;;
+  *) printf 'UNIFIED_ODOM_OUTPUT_MODE must be fixed_rate_propagated, lidar_event_propagated, or legacy_hybrid.\n' >&2; exit 2 ;;
+esac
 if [[ "$TRANSACTIONAL_UPDATE_ENABLED" != true && \
       "$TRANSACTIONAL_UPDATE_ENABLED" != false ]]; then
   printf 'TRANSACTIONAL_UPDATE_ENABLED must be true or false.\n' >&2
@@ -417,6 +422,7 @@ backend_command=(
   -p allow_lio_pose_fallback:=false
   -p imu_factor_enabled:=true
   -p executor_threads:="$BACKEND_EXECUTOR_THREADS"
+  -p unified_odom_output_mode:="$UNIFIED_ODOM_OUTPUT_MODE"
   -p nonlinear_max_iterations:="$NONLINEAR_MAX_ITERATIONS"
   -p nonlinear_initialization_max_iterations:="$NONLINEAR_INITIALIZATION_MAX_ITERATIONS"
   -p nonlinear_recovery_max_iterations:="$NONLINEAR_RECOVERY_MAX_ITERATIONS"
@@ -676,6 +682,7 @@ printf 'executor_threads=%s\nnative_lidar_qos_depth=%s\nnative_worker_queue_size
   "$NATIVE_WORKER_QUEUE_SIZE" >>"$OUTPUT_DIR/replay_result.env"
 printf 'native_worker_latest_only_enabled=%s\n' \
   "$NATIVE_WORKER_LATEST_ONLY_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
+printf 'unified_odom_output_mode=%s\n' "$UNIFIED_ODOM_OUTPUT_MODE" >>"$OUTPUT_DIR/replay_result.env"
 printf 'qos_overrides=%s\n' "$REPLAY_QOS_OVERRIDES" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'read_ahead_queue_size=%s\ndiscovery_delay_s=%s\nack_timeout_ms=%s\npost_replay_drain_wall_s=%s\n' \
