@@ -9,6 +9,8 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 LOG_DIR=${LOG_DIR:-"$REPO_ROOT/logs/unified_backend_$(date +%Y%m%d_%H%M%S)"}
 LIDAR_WS=${LIDAR_WS:-"$HOME/multi-slam-deps/mid360_ws"}
 ENABLE_VISION=${ENABLE_VISION:-false}
+RUNTIME_PROFILE=${RUNTIME_PROFILE:-four_source}
+ENABLE_FAULT_INJECTION=${ENABLE_FAULT_INJECTION:-false}
 case "${ENABLE_VISION,,}" in
   1|true|yes|on)
     ENABLE_VISION_ARG=true
@@ -63,6 +65,23 @@ GNSS_INPUT_TOPIC=${GNSS_INPUT_TOPIC:-/mavros/global_position/raw/fix}
 GNSS_RAW_INPUT_TOPIC=${GNSS_RAW_INPUT_TOPIC:-/mavros/gpsstatus/gps1/raw}
 GNSS_ALGORITHM_RATE_HZ=${GNSS_ALGORITHM_RATE_HZ:-5.0}
 ACTIVE_MODALITIES=${ACTIVE_MODALITIES:-[lidar,imu,gnss,optical_flow]}
+if [[ -z "${SENSOR_ACTIVE_MODALITIES+x}" ]]; then
+  case "$RUNTIME_PROFILE" in
+    minimal_lidar_imu) SENSOR_ACTIVE_MODALITIES='[lidar,imu]'; ACTIVE_MODALITIES='[lidar,imu]' ;;
+    four_source) SENSOR_ACTIVE_MODALITIES='[lidar,imu,gnss,optical_flow]'; ACTIVE_MODALITIES='[lidar,imu,gnss,optical_flow]' ;;
+    five_source) SENSOR_ACTIVE_MODALITIES='[lidar,imu,gnss,optical_flow,depth,color]'; ACTIVE_MODALITIES='[lidar,imu,gnss,optical_flow,vision]'; ENABLE_VISION=true ;;
+    robustness|test) SENSOR_ACTIVE_MODALITIES='[lidar,imu,gnss,optical_flow,depth,color]'; ACTIVE_MODALITIES='[lidar,imu,gnss,optical_flow,vision]'; ENABLE_FAULT_INJECTION=true ;;
+    *) printf 'RUNTIME_PROFILE must be minimal_lidar_imu, four_source, five_source, or robustness/test.\n' >&2; exit 2 ;;
+  esac
+fi
+if [[ "$SENSOR_ACTIVE_MODALITIES" == *gnss* ]]; then ENABLE_GNSS_ARG=true; else ENABLE_GNSS_ARG=false; fi
+case "$RUNTIME_PROFILE" in
+  five_source|robustness|test)
+    ENABLE_VISION=true
+    [[ "$VISUAL_FACTOR_MODE" == disabled ]] && VISUAL_FACTOR_MODE=paper_reprojection
+    ENABLE_VISION_ARG=true
+    ;;
+esac
 if [[ -z "${BAROMETER_TOPIC+x}" ]]; then
   case "${USE_SIM_TIME,,}" in
     1|true|yes|on) BAROMETER_TOPIC=/sim/barometer/pressure ;;
@@ -156,7 +175,10 @@ setsid ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
   config:="$SENSOR_PIPELINE_CONFIG" \
   use_sim_time:="$USE_SIM_TIME" \
   enable_vision:="$ENABLE_VISION_ARG" \
-  active_modalities:="$ACTIVE_MODALITIES" \
+  active_modalities:="$SENSOR_ACTIVE_MODALITIES" \
+  enable_fault_injection:="$ENABLE_FAULT_INJECTION" \
+  enable_lidar:="true" \
+  enable_gnss:="$ENABLE_GNSS_ARG" \
   optical_flow_input_topic:="$OPTICAL_FLOW_INPUT_TOPIC" \
   d435_color_input_topic:="$D435_COLOR_INPUT_TOPIC" \
   d435_depth_input_topic:="$D435_DEPTH_INPUT_TOPIC" \
