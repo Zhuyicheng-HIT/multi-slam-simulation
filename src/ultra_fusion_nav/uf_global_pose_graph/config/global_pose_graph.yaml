@@ -1,0 +1,28 @@
+graph:
+  # Sequential edges come from the immutable original keyframe trajectory.
+  sequential_translation_sigma_m: 0.03
+  sequential_rotation_sigma_deg: 1.0
+  # Loop translation uncertainty is bounded by the measured registration RMSE.
+  loop_translation_sigma_floor_m: 0.04
+  loop_translation_sigma_ceiling_m: 0.20
+  loop_rotation_sigma_deg: 3.0
+
+correlation:
+  # Nearby endpoints with a similar SE(3) measurement represent one physical loop.
+  endpoint_index_radius: 2
+  translation_similarity_m: 0.25
+  rotation_similarity_deg: 10.0
+
+physical_loop_episode:
+  # Adjacent endpoints from one continuous revisit share one unit of information.
+  query_index_radius: 2
+  candidate_index_radius: 2
+
+optimizer:
+  robust_phi: 25.0
+  minimum_loop_weight: 0.05
+  maximum_function_evaluations: 300
+  maximum_translation_correction_m: 2.0
+  maximum_rotation_correction_deg: 45.0
+  maximum_sequential_translation_strain_m: 0.25
+  maximum_sequential_rotation_strain_deg: 15.0

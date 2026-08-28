@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+from uf_global_pose_graph.cli import main
+
+raise SystemExit(main())
