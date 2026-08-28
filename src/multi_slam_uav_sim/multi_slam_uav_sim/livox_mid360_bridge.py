@@ -58,7 +58,7 @@ class LivoxMid360Bridge(Node):
             )
         super().__init__("livox_mid360_bridge")
         self.declare_parameter("input_cloud_topic", "/sim/mid360/points_raw")
-        self.declare_parameter("input_imu_topic", "/mavros/imu/data_raw")
+        self.declare_parameter("input_imu_topic", "/sim/mid360/imu_raw")
         self.declare_parameter("livox_lidar_topic", "/livox/lidar")
         self.declare_parameter("livox_imu_topic", "/livox/imu")
         self.declare_parameter("lidar_frame_id", "mid360_link")

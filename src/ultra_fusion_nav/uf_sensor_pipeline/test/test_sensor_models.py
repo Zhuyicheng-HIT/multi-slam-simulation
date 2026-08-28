@@ -10,6 +10,7 @@ from uf_sensor_pipeline.fault_models import (
     add_gnss_jump,
     add_moving_lidar_cluster,
     ensure_monotonic_stamp,
+    standardize_imu_acceleration,
     shift_stamp,
 )
 from uf_sensor_pipeline.pointcloud_utils import filter_cloud
@@ -74,6 +75,14 @@ class SensorModelsTest(unittest.TestCase):
         self.assertEqual(last, 10_000_000_101)
         self.assertEqual((stamp.sec, stamp.nanosec), (10, 101))
 
+    def test_nonmonotonic_stamp_can_fail_without_repair(self):
+        stamp = Time(sec=10, nanosec=99)
+
+        with self.assertRaisesRegex(ValueError, "non-monotonic timestamp"):
+            ensure_monotonic_stamp(stamp, 10_000_000_100, repair=False)
+
+        self.assertEqual((stamp.sec, stamp.nanosec), (10, 99))
+
     def test_gnss_jump_is_meter_scale(self):
         msg = NavSatFix()
         msg.latitude = 45.0
@@ -83,6 +92,33 @@ class SensorModelsTest(unittest.TestCase):
 
         self.assertGreater(output.latitude, msg.latitude)
         self.assertAlmostEqual(output.longitude, msg.longitude, places=9)
+
+    def test_imu_g_units_convert_to_si_and_scale_covariance(self):
+        from sensor_msgs.msg import Imu
+
+        msg = Imu()
+        msg.linear_acceleration.x = 0.0
+        msg.linear_acceleration.y = 0.0
+        msg.linear_acceleration.z = 1.0
+        msg.linear_acceleration_covariance = [0.1] * 9
+        msg.angular_velocity.z = 0.25
+        output = standardize_imu_acceleration(msg, 9.80665)
+
+        self.assertAlmostEqual(output.linear_acceleration.z, 9.80665, places=6)
+        self.assertAlmostEqual(output.linear_acceleration_covariance[0], 0.1 * 9.80665 ** 2, places=6)
+        self.assertEqual(output.angular_velocity.z, msg.angular_velocity.z)
+        self.assertEqual(msg.linear_acceleration.z, 1.0)
+
+    def test_imu_unknown_covariance_sentinel_is_preserved(self):
+        from sensor_msgs.msg import Imu
+
+        msg = Imu()
+        msg.linear_acceleration.z = 1.0
+        msg.linear_acceleration_covariance[0] = -1.0
+        output = standardize_imu_acceleration(msg, 9.80665)
+
+        self.assertAlmostEqual(output.linear_acceleration.z, 9.80665, places=6)
+        self.assertEqual(list(output.linear_acceleration_covariance), list(msg.linear_acceleration_covariance))
 
     def test_depth_holes_are_repeatable(self):
         msg = Image()

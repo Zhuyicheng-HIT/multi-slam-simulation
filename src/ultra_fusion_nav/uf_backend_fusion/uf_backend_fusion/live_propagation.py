@@ -110,6 +110,7 @@ def live_propagation_admission(
     maximum_output_age_s,
     minimum_output_interval_s,
     maximum_imu_age_s,
+    continuous_output=False,
 ):
     """Gate publication-only propagation without advancing the factor graph."""
     required = (
@@ -137,21 +138,22 @@ def live_propagation_admission(
         or float(maximum_imu_age_s) <= 0.0
     ):
         raise ValueError("live propagation timing limits are invalid")
-    if latest_lidar_activity_s is None:
-        return False, "lidar_activity_unavailable"
-    latest_lidar_activity_s = float(latest_lidar_activity_s)
-    if (
-        not math.isfinite(latest_lidar_activity_s)
-        or latest_lidar_activity_s > now_s
-    ):
-        return False, "lidar_clock_invalid"
+    if not continuous_output:
+        if latest_lidar_activity_s is None:
+            return False, "lidar_activity_unavailable"
+        latest_lidar_activity_s = float(latest_lidar_activity_s)
+        if (
+            not math.isfinite(latest_lidar_activity_s)
+            or latest_lidar_activity_s > now_s
+        ):
+            return False, "lidar_clock_invalid"
     output_age_s = math.inf
     if last_output_stamp_s is not None:
         last_output_stamp_s = float(last_output_stamp_s)
         if not math.isfinite(last_output_stamp_s):
             return False, "last_output_invalid"
         output_age_s = now_s - last_output_stamp_s
-    if (
+    if (not continuous_output and
         now_s - latest_lidar_activity_s <= float(lidar_silence_timeout_s)
         and output_age_s <= float(maximum_output_age_s)
     ):
@@ -161,13 +163,36 @@ def live_propagation_admission(
         return False, "imu_from_future"
     if imu_age_s > float(maximum_imu_age_s):
         return False, "imu_stale"
-    if target_stamp_s <= anchor_stamp_s + float(minimum_output_interval_s):
+    anchor_advance_s = 0.0 if continuous_output else float(
+        minimum_output_interval_s)
+    if target_stamp_s <= anchor_stamp_s + anchor_advance_s:
         return False, "imu_not_advanced"
     if last_output_stamp_s is not None:
         if target_stamp_s <= (
             last_output_stamp_s + float(minimum_output_interval_s)
         ):
             return False, "output_not_advanced"
+    return True, "ready"
+
+
+def unified_odom_publication_decision(
+    output_mode, source, output_stamp_s, last_output_stamp_s
+):
+    """Select the single odometry writer and enforce timestamp monotonicity."""
+    if output_mode not in {
+        "fixed_rate_propagated", "lidar_event_propagated", "legacy_hybrid"
+    }:
+        return False, "invalid_output_mode"
+    if output_mode in {"fixed_rate_propagated", "lidar_event_propagated"} \
+            and source != "imu_propagated":
+        return False, "source_not_owner"
+    if not math.isfinite(float(output_stamp_s)) or float(output_stamp_s) <= 0.0:
+        return False, "invalid_timestamp"
+    if last_output_stamp_s is not None:
+        if not math.isfinite(float(last_output_stamp_s)):
+            return False, "last_output_invalid"
+        if float(output_stamp_s) <= float(last_output_stamp_s):
+            return False, "nonmonotonic_output"
     return True, "ready"
 
 
