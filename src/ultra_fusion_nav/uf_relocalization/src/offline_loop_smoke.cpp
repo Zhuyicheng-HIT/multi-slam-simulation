@@ -1,5 +1,7 @@
 #include "uf_relocalization/descriptor_core.hpp"
 #include "uf_relocalization/keyframe_database.hpp"
+#include "uf_relocalization/offline_esf_seed.hpp"
+#include "uf_relocalization/offline_loop_edge.hpp"
 #include "uf_relocalization/registration_core.hpp"
 
 #include <Eigen/Geometry>
@@ -148,13 +150,19 @@ struct BestResult
 void write_json(
   const std::filesystem::path & output, const std::size_t keyframes,
   const std::size_t retrieved, const std::size_t verified,
-  const BestResult & best)
+  const std::uint32_t descriptor_seed,
+  const BestResult & best,
+  const std::vector<uf_relocalization::OfflineLoopEdge> & verified_edges)
 {
   std::ofstream stream(output);
   if (!stream) {
     throw std::runtime_error("cannot write loop smoke output");
   }
   stream << std::setprecision(12) << "{\n"
+         << "  \"schema_version\": 2,\n"
+         << "  \"measurement_convention\": \"candidate_from_query\",\n"
+         << "  \"descriptor_sampling\": \"pcl_esf_fixed_seed_offline_only\",\n"
+         << "  \"descriptor_sampling_seed\": " << descriptor_seed << ",\n"
          << "  \"keyframes\": " << keyframes << ",\n"
          << "  \"retrieved_candidates\": " << retrieved << ",\n"
          << "  \"geometrically_verified\": " << verified << ",\n"
@@ -180,6 +188,42 @@ void write_json(
       stream << best.registration.target_from_source(row, column);
     }
   }
+  stream << "],\n"
+         << "  \"verified_edges\": [";
+  for (std::size_t edge_index = 0; edge_index < verified_edges.size(); ++edge_index) {
+    const auto & edge = verified_edges[edge_index];
+    if (edge_index != 0U) {
+      stream << ",";
+    }
+    stream << "\n    {\n"
+           << "      \"candidate_keyframe\": " << edge.candidate_keyframe << ",\n"
+           << "      \"query_keyframe\": " << edge.query_keyframe << ",\n"
+           << "      \"candidate_stamp_s\": " << edge.candidate_stamp_s << ",\n"
+           << "      \"query_stamp_s\": " << edge.query_stamp_s << ",\n"
+           << "      \"temporal_separation_s\": " << edge.temporal_separation_s << ",\n"
+           << "      \"descriptor_distance\": " << edge.descriptor_distance << ",\n"
+           << "      \"correspondence_points\": " << edge.registration.correspondence_points << ",\n"
+           << "      \"overlap_ratio\": " << edge.registration.overlap_ratio << ",\n"
+           << "      \"reciprocal_ratio\": " << edge.registration.reciprocal_ratio << ",\n"
+           << "      \"inlier_rmse_m\": " << edge.registration.inlier_rmse << ",\n"
+           << "      \"absolute_plane_error_p90_m\": " <<
+      edge.registration.absolute_plane_error_p90_m << ",\n"
+           << "      \"effective_rank\": " << edge.registration.effective_rank << ",\n"
+           << "      \"condition_number\": " << edge.registration.condition_number << ",\n"
+           << "      \"candidate_from_query\": [";
+    for (int row = 0; row < 4; ++row) {
+      for (int column = 0; column < 4; ++column) {
+        if (row != 0 || column != 0) {
+          stream << ", ";
+        }
+        stream << edge.candidate_from_query.matrix()(row, column);
+      }
+    }
+    stream << "]\n    }";
+  }
+  if (!verified_edges.empty()) {
+    stream << "\n  ";
+  }
   stream << "]\n}\n";
 }
 
@@ -193,6 +237,7 @@ int main(int argc, char ** argv)
     double minimum_separation_s = 20.0;
     std::size_t maximum_candidates = 5U;
     std::size_t exclude_recent = 3U;
+    std::uint32_t descriptor_seed = 1731U;
     float voxel_size_m = 0.15F;
     for (int index = 1; index < argc; ++index) {
       const std::string argument(argv[index]);
@@ -210,6 +255,8 @@ int main(int argc, char ** argv)
         maximum_candidates = static_cast<std::size_t>(std::stoull(value));
       } else if (argument == "--exclude-recent") {
         exclude_recent = static_cast<std::size_t>(std::stoull(value));
+      } else if (argument == "--descriptor-seed") {
+        descriptor_seed = static_cast<std::uint32_t>(std::stoul(value));
       } else if (argument == "--voxel-size-m") {
         voxel_size_m = std::stof(value);
       } else {
@@ -223,6 +270,7 @@ int main(int argc, char ** argv)
     }
 
     const auto rows = read_metadata(metadata);
+    uf_relocalization::set_offline_esf_seed(descriptor_seed);
     uf_relocalization::KeyframeDatabaseConfig database_config;
     database_config.minimum_translation_spacing_m = 0.0;
     database_config.minimum_rotation_spacing_rad = 0.0;
@@ -231,6 +279,7 @@ int main(int argc, char ** argv)
     std::unordered_map<std::size_t, double> candidate_stamps;
     std::size_t retrieved = 0U;
     std::size_t verified = 0U;
+    std::vector<uf_relocalization::OfflineLoopEdge> verified_edges;
     BestResult best;
     best.registration.inlier_rmse = std::numeric_limits<double>::infinity();
 
@@ -260,6 +309,10 @@ int main(int argc, char ** argv)
           result.inlier_rmse <= 0.20 && result.effective_rank >= 5;
         if (accepted) {
           ++verified;
+          verified_edges.push_back(uf_relocalization::make_offline_loop_edge(
+            candidate.keyframe_id, row.keyframe_id,
+            candidate_stamps.at(candidate.keyframe_id), row.stamp_s,
+            keyframe->world_from_sensor, candidate.descriptor_distance, result));
         }
         if (accepted && (!best.accepted || result.inlier_rmse < best.registration.inlier_rmse)) {
           best.accepted = true;
@@ -278,7 +331,8 @@ int main(int argc, char ** argv)
       }
       candidate_stamps[admission.keyframe_id] = row.stamp_s;
     }
-    write_json(output, rows.size(), retrieved, verified, best);
+    write_json(
+      output, rows.size(), retrieved, verified, descriptor_seed, best, verified_edges);
     std::cout << output << std::endl;
     return best.accepted ? 0 : 2;
   } catch (const std::exception & error) {

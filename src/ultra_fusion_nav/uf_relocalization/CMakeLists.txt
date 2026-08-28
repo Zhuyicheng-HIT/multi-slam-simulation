@@ -77,6 +77,20 @@ target_include_directories(descriptor_core PUBLIC
 target_link_libraries(descriptor_core PUBLIC ${PCL_LIBRARIES})
 target_compile_definitions(descriptor_core PUBLIC ${PCL_DEFINITIONS})
 
+add_library(offline_loop_edge src/offline_loop_edge.cpp)
+target_compile_features(offline_loop_edge PUBLIC cxx_std_17)
+target_include_directories(offline_loop_edge PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(offline_loop_edge PUBLIC registration_core Eigen3::Eigen)
+
+add_library(offline_esf_seed STATIC src/offline_esf_seed.cpp)
+target_compile_features(offline_esf_seed PUBLIC cxx_std_17)
+target_include_directories(offline_esf_seed PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
 add_executable(relocalization_node src/relocalization_node.cpp)
 target_compile_features(relocalization_node PUBLIC cxx_std_17)
 target_include_directories(relocalization_node PRIVATE
@@ -115,14 +129,14 @@ target_include_directories(offline_loop_smoke PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 target_link_libraries(offline_loop_smoke
-  registration_core keyframe_database descriptor_core
+  registration_core keyframe_database descriptor_core offline_loop_edge offline_esf_seed
   Eigen3::Eigen ${PCL_LIBRARIES}
 )
 target_compile_definitions(offline_loop_smoke PRIVATE ${PCL_DEFINITIONS})
 
 install(TARGETS active_relocalization_policy automatic_loop_closure_policy
   registration_core keyframe_database descriptor_core
-  multi_frame_consistency_gate keyframe_synchronization
+  multi_frame_consistency_gate keyframe_synchronization offline_loop_edge
   EXPORT export_registration_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -160,6 +174,10 @@ if(BUILD_TESTING)
     test_relocalization_pipeline registration_core keyframe_database)
   ament_add_gtest(test_descriptor_core test/test_descriptor_core.cpp)
   target_link_libraries(test_descriptor_core descriptor_core keyframe_database)
+  ament_add_gtest(test_offline_loop_edge test/test_offline_loop_edge.cpp)
+  target_link_libraries(test_offline_loop_edge offline_loop_edge)
+  ament_add_gtest(test_offline_esf_seed test/test_offline_esf_seed.cpp)
+  target_link_libraries(test_offline_esf_seed descriptor_core offline_esf_seed)
 endif()
 
 ament_export_targets(export_registration_core HAS_LIBRARY_TARGET)
