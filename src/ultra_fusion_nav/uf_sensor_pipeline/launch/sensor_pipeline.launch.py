@@ -5,7 +5,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -29,6 +29,9 @@ def generate_launch_description():
     active_modalities = ParameterValue(
         LaunchConfiguration("active_modalities"), value_type=List[str]
     )
+    enable_fault_injection = LaunchConfiguration("enable_fault_injection")
+    enable_gnss = LaunchConfiguration("enable_gnss")
+    enable_lidar = LaunchConfiguration("enable_lidar")
     scheduled_fault_modality = os.environ.get("UF_FAULT_MODALITY", "").strip()
     scheduled_fault = {}
     if scheduled_fault_modality:
@@ -55,7 +58,10 @@ def generate_launch_description():
                 },
             ],
             output="screen",
-            condition=IfCondition(enable_nmea_gnss),
+            condition=IfCondition(PythonExpression([
+                "'", enable_gnss, "' == 'true' and '",
+                enable_nmea_gnss, "' == 'true'"
+            ])),
         ),
         Node(
             package="uf_sensor_pipeline",
@@ -70,7 +76,10 @@ def generate_launch_description():
                 },
             ],
             output="screen",
-            condition=UnlessCondition(enable_nmea_gnss),
+            condition=IfCondition(PythonExpression([
+                "'", enable_gnss, "' == 'true' and '",
+                enable_nmea_gnss, "' == 'false'"
+            ])),
         ),
         Node(
             package="uf_sensor_pipeline",
@@ -94,6 +103,7 @@ def generate_launch_description():
             name="pointcloud_body_filter",
             parameters=[config, {"use_sim_time": use_sim_time}],
             output="screen",
+            condition=IfCondition(enable_lidar),
         ),
         Node(
             package="tf2_ros",
@@ -141,13 +151,7 @@ def generate_launch_description():
                     if modality == "imu" else {"use_sim_time": use_sim_time},
                 ],
                 output="screen",
-                condition=(
-                    IfCondition(enable_vision)
-                    if modality in ("depth", "color")
-                    else UnlessCondition(enable_nmea_gnss)
-                    if modality == "gnss"
-                    else None
-                ),
+                condition=IfCondition(enable_fault_injection),
             )
         )
     nodes.append(
@@ -160,7 +164,10 @@ def generate_launch_description():
                 {"input_topic": gnss_input_topic, "use_sim_time": use_sim_time},
             ],
             output="screen",
-            condition=IfCondition(enable_nmea_gnss),
+            condition=IfCondition(PythonExpression([
+                "'", enable_fault_injection, "' == 'true' and '",
+                enable_nmea_gnss, "' == 'true'"
+            ])),
         )
     )
     nodes.append(
@@ -170,7 +177,10 @@ def generate_launch_description():
             name="sensor_contract_monitor",
             parameters=[config, {"use_sim_time": use_sim_time}],
             output="screen",
-            condition=IfCondition(enable_vision),
+            condition=IfCondition(PythonExpression([
+                "'", enable_fault_injection, "' == 'true' and '",
+                enable_vision, "' == 'true'"
+            ])),
         )
     )
     nodes.append(
@@ -192,6 +202,13 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("config", default_value=default_config),
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument(
+            "enable_fault_injection",
+            default_value="true" if scheduled_fault_modality else "false",
+            description="Start per-modality fault injectors (test/robustness only)",
+        ),
+        DeclareLaunchArgument("enable_lidar", default_value="true"),
+        DeclareLaunchArgument("enable_gnss", default_value="true"),
         DeclareLaunchArgument("imu_acceleration_scale", default_value="1.0"),
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
@@ -216,6 +233,30 @@ def generate_launch_description():
             "gnss_algorithm_rate_hz",
             default_value="5.0",
             description="Paired fix/raw rate exposed to the companion estimator (5 Hz)",
+        ),
+        Node(
+            package="uf_sensor_pipeline",
+            executable="sensor_relay_manager",
+            name="sensor_relay_manager",
+            parameters=[config, {
+                "use_sim_time": use_sim_time,
+                "active_modalities": active_modalities,
+                "lidar_input_topic": "/sensors/lidar/points_body_filtered",
+                "lidar_output_topic": "/sensors/lidar/points",
+                "imu_input_topic": "/livox/imu",
+                "imu_output_topic": "/sensors/imu",
+                "imu_acceleration_scale": imu_acceleration_scale,
+                "gnss_input_topic": gnss_input_topic,
+                "gnss_output_topic": "/sensors/gnss/fix_unthrottled",
+                "optical_flow_input_topic": optical_flow_input_topic,
+                "optical_flow_output_topic": "/sensors/optical_flow/rad",
+                "depth_input_topic": d435_depth_input_topic,
+                "depth_output_topic": "/sensors/rgbd/depth",
+                "color_input_topic": d435_color_input_topic,
+                "color_output_topic": "/sensors/rgbd/color",
+            }],
+            output="screen",
+            condition=UnlessCondition(enable_fault_injection),
         ),
         DeclareLaunchArgument(
             "d435_color_input_topic",
