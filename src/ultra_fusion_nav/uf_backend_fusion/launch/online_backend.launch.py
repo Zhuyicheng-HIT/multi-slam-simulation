@@ -72,6 +72,14 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument("reliability_mode", default_value="dynamic"),
+        DeclareLaunchArgument(
+            "unified_odom_output_mode",
+            default_value="fixed_rate_propagated",
+            description=(
+                "Unified odom publisher mode: fixed-rate IMU propagation or "
+                "LiDAR-event-triggered propagation"
+            ),
+        ),
         DeclareLaunchArgument("fixed_lidar_weight", default_value="1.0"),
         DeclareLaunchArgument("fixed_gnss_weight", default_value="1.0"),
         DeclareLaunchArgument("fixed_imu_weight", default_value="1.0"),
@@ -109,6 +117,16 @@ def generate_launch_description():
             "frontend_scan_prediction_enabled",
             default_value="true",
             description="Serve backend-owned scan trajectories to the LiDAR front-end",
+        ),
+        DeclareLaunchArgument(
+            "scan_prediction_contract_failure_threshold",
+            default_value="3",
+            description="Consecutive cache failures before fusion output is suppressed",
+        ),
+        DeclareLaunchArgument(
+            "scan_prediction_contract_request_timeout_s",
+            default_value="1.0",
+            description="Maximum request silence after the trajectory handshake starts",
         ),
         DeclareLaunchArgument(
             "preserve_lio_anchor",
@@ -271,6 +289,9 @@ def generate_launch_description():
                         value_type=int,
                     ),
                     "reliability_mode": LaunchConfiguration("reliability_mode"),
+                    "unified_odom_output_mode": LaunchConfiguration(
+                        "unified_odom_output_mode"
+                    ),
                     "fixed_lidar_weight": ParameterValue(
                         LaunchConfiguration("fixed_lidar_weight"), value_type=float
                     ),
@@ -302,6 +323,18 @@ def generate_launch_description():
                     "frontend_scan_prediction_enabled": ParameterValue(
                         LaunchConfiguration("frontend_scan_prediction_enabled"),
                         value_type=bool,
+                    ),
+                    "scan_prediction_contract_failure_threshold": ParameterValue(
+                        LaunchConfiguration(
+                            "scan_prediction_contract_failure_threshold"
+                        ),
+                        value_type=int,
+                    ),
+                    "scan_prediction_contract_request_timeout_s": ParameterValue(
+                        LaunchConfiguration(
+                            "scan_prediction_contract_request_timeout_s"
+                        ),
+                        value_type=float,
                     ),
                     "performance_profiling_enabled": ParameterValue(
                         LaunchConfiguration("performance_profiling_enabled"),

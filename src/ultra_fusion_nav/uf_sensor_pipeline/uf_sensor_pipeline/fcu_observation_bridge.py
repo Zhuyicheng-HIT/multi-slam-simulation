@@ -28,7 +28,7 @@ class FcuObservationBridge(Node):
             "flow_input_topic": "/mavros/optical_flow/raw/optical_flow",
             "flow_rad_input_topic": "",
             "flow_output_topic": "/fcu/optical_flow/rad",
-            "imu_input_topic": "/mavros/imu/data_raw",
+            "imu_input_topic": "/livox/imu",
             "range_input_topic": "/mavros/rangefinder/rangefinder",
             "gnss_fix_input_topic": "/mavros/global_position/raw/fix",
             "gnss_fix_output_topic": "/fcu/gnss/fix",
@@ -117,7 +117,7 @@ class FcuObservationBridge(Node):
         )
         self.create_timer(1.0, self._diagnostics)
         self.get_logger().info(
-            "FCU-first observation bridge active: MAVROS optical flow and GNSS only"
+            "FCU observation bridge active: MAVROS flow/GNSS with MID360 gyro compensation"
         )
 
     def _touch(self, name):
