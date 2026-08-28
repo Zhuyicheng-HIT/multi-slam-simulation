@@ -363,6 +363,20 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+scheduler_mask_args=()
+if [[ "$REPLAY_DISABLE_LIDAR" == true ]]; then
+  scheduler_mask_args+=(--disable lidar)
+fi
+if [[ "$REPLAY_DISABLE_GNSS" == true ]]; then
+  scheduler_mask_args+=(--disable gnss)
+fi
+if (( ${#scheduler_mask_args[@]} > 0 )); then
+  setsid python3 "$REPO_ROOT/tools/replay_scheduler_mask.py" \
+    "${scheduler_mask_args[@]}" \
+    >"$OUTPUT_DIR/scheduler_mask.log" 2>&1 &
+  pids+=("$!")
+fi
+
 backend_command=(
   ros2 run uf_backend_fusion online_backend_fusion
   --ros-args
