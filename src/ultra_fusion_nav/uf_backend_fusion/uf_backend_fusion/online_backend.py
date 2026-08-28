@@ -11830,6 +11830,22 @@ class UnifiedBackendNode(Node):
         diagnostic.values = [
             self._key("scheduler_health", self.scheduler_health),
             self._key(
+                "scheduler_lidar_factor_enabled",
+                self.scheduler.get("lidar", (0.0, False, 1.0))[1],
+            ),
+            self._key(
+                "scheduler_gnss_factor_enabled",
+                self.scheduler.get("gnss", (0.0, False, 1.0))[1],
+            ),
+            self._key(
+                "scheduler_lidar_weight",
+                f"{self.scheduler.get('lidar', (0.0, False, 1.0))[0]:.9g}",
+            ),
+            self._key(
+                "scheduler_gnss_weight",
+                f"{self.scheduler.get('gnss', (0.0, False, 1.0))[0]:.9g}",
+            ),
+            self._key(
                 "frontend_map_pose_reason", self.last_frontend_map_pose_reason
             ),
             self._key(

@@ -579,12 +579,19 @@ play_command=(
   --start-offset "$REPLAY_START_OFFSET"
   --read-ahead-queue-size "$REPLAY_READ_AHEAD_QUEUE_SIZE"
   --delay "$REPLAY_DISCOVERY_DELAY_S"
-  --wait-for-all-acked "$REPLAY_ACK_TIMEOUT_MS"
   --disable-keyboard-controls
   --qos-profile-overrides-path "$REPLAY_QOS_OVERRIDES"
-  --topics
-  "${play_topics[@]}"
 )
+if [[ "${REPLAY_WAIT_FOR_ALL_ACKED:-true}" == true ]]; then
+  play_command+=(--wait-for-all-acked "$REPLAY_ACK_TIMEOUT_MS")
+fi
+if (( ${#scheduler_mask_args[@]} > 0 )); then
+  play_command+=(
+    --remap
+    /reliability/scheduler_state:=/replay/reliability/scheduler_state_input
+  )
+fi
+play_command+=(--topics "${play_topics[@]}")
 set +e
 timeout "${REPLAY_WALL_TIMEOUT_S}s" "${play_command[@]}" \
   </dev/null >"$OUTPUT_DIR/rosbag_play.log" 2>&1
