@@ -72,6 +72,14 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument("reliability_mode", default_value="dynamic"),
+        DeclareLaunchArgument(
+            "unified_odom_output_mode",
+            default_value="fixed_rate_propagated",
+            description=(
+                "Unified odom publisher mode: fixed-rate IMU propagation or "
+                "LiDAR-event-triggered propagation"
+            ),
+        ),
         DeclareLaunchArgument("fixed_lidar_weight", default_value="1.0"),
         DeclareLaunchArgument("fixed_gnss_weight", default_value="1.0"),
         DeclareLaunchArgument("fixed_imu_weight", default_value="1.0"),
@@ -281,6 +289,9 @@ def generate_launch_description():
                         value_type=int,
                     ),
                     "reliability_mode": LaunchConfiguration("reliability_mode"),
+                    "unified_odom_output_mode": LaunchConfiguration(
+                        "unified_odom_output_mode"
+                    ),
                     "fixed_lidar_weight": ParameterValue(
                         LaunchConfiguration("fixed_lidar_weight"), value_type=float
                     ),
