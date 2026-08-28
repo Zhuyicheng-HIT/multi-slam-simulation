@@ -4421,6 +4421,8 @@ class UnifiedBackendNode(Node):
             "live_propagation_attempts": 0,
             "live_propagation_published": 0,
             "live_propagation_rejected": 0,
+            "live_propagation_event_requests": 0,
+            "live_propagation_event_superseded": 0,
             "auxiliary_keyframe_attempts": 0,
             "auxiliary_keyframe_committed": 0,
             "auxiliary_keyframe_rejected": 0,
@@ -4585,6 +4587,7 @@ class UnifiedBackendNode(Node):
         self.maximum_auxiliary_position_variance_m2 = 0.0
         self.last_scan_request_arrival_s = None
         self.last_live_propagation_reason = "not_attempted"
+        self._event_propagation_pending = False
         self.last_auxiliary_keyframe_reason = "not_attempted"
         self.last_output_source = "none"
         self.last_state_trigger_source = "none"
@@ -4822,9 +4825,15 @@ class UnifiedBackendNode(Node):
             )
             self.native_worker_thread.start()
             if self.live_propagation_enabled:
+                timer_period = 1.0 / self.live_propagation_rate_hz
+                if self.unified_odom_output_mode == "lidar_event_propagated":
+                    # Poll a single latest-only request flag. The expensive
+                    # propagation runs here, never in the IMU callback or
+                    # the native-factor worker.
+                    timer_period = min(timer_period, 0.01)
                 self.create_timer(
-                    1.0 / self.live_propagation_rate_hz,
-                    self._publish_live_propagation,
+                    timer_period,
+                    self._live_propagation_timer,
                     callback_group=self.live_propagation_callback_group,
                 )
         self.create_timer(1.0, self._diagnostics)
@@ -7162,6 +7171,18 @@ class UnifiedBackendNode(Node):
     def _reject_live_propagation(self, reason):
         self.last_live_propagation_reason = str(reason)
         self.counts["live_propagation_rejected"] += 1
+
+    def _live_propagation_timer(self):
+        event_triggered = False
+        if getattr(self, "unified_odom_output_mode", "legacy_hybrid") == "lidar_event_propagated":
+            event_triggered = bool(self._event_propagation_pending)
+            self._event_propagation_pending = False
+        before = self.counts["live_propagation_published"]
+        self._publish_live_propagation(_event_triggered=event_triggered)
+        if event_triggered and self.counts["live_propagation_published"] == before:
+            # Keep the latest event pending if propagation was temporarily
+            # rejected (for example while IMU samples are still arriving).
+            self._event_propagation_pending = True
 
     def _publish_live_propagation(self, _anchor_retry=True, _event_triggered=False):
         """Publish dead-reckoned odometry without touching the factor graph."""
@@ -11262,10 +11283,15 @@ class UnifiedBackendNode(Node):
             getattr(self, "unified_odom_output_mode", "legacy_hybrid")
             == "lidar_event_propagated"
             and self.live_propagation_enabled
+            and self.last_state_trigger_source == "native_lidar"
         ):
-            # Propagation runs after the anchor lock is released. The IMU
-            # callback remains ingestion-only and never performs this work.
-            self._publish_live_propagation(_event_triggered=True)
+            # Native LiDAR commits only set one bounded/latest-only request.
+            # Propagation runs on its own callback group; the IMU callback and
+            # native worker remain free to ingest/solve newer measurements.
+            if self._event_propagation_pending:
+                self.counts["live_propagation_event_superseded"] += 1
+            self._event_propagation_pending = True
+            self.counts["live_propagation_event_requests"] += 1
         map_output = local_output
         map_lidar_eligible = bool(self.last_lidar_map_eligible)
         map_lidar_reason = str(self.last_lidar_map_reason)
@@ -11477,6 +11503,10 @@ class UnifiedBackendNode(Node):
             f"{self.counts['live_propagation_published']};"
             "live_propagation_rejected="
             f"{self.counts['live_propagation_rejected']};"
+            "live_propagation_event_requests="
+            f"{self.counts['live_propagation_event_requests']};"
+            "live_propagation_event_superseded="
+            f"{self.counts['live_propagation_event_superseded']};"
             "auxiliary_keyframe_attempts="
             f"{self.counts['auxiliary_keyframe_attempts']};"
             "auxiliary_keyframe_committed="
@@ -12246,6 +12276,14 @@ class UnifiedBackendNode(Node):
             self._key(
                 "live_propagation_rejected",
                 self.counts["live_propagation_rejected"],
+            ),
+            self._key(
+                "live_propagation_event_requests",
+                self.counts["live_propagation_event_requests"],
+            ),
+            self._key(
+                "live_propagation_event_superseded",
+                self.counts["live_propagation_event_superseded"],
             ),
             self._key(
                 "frontend_activation_published",
