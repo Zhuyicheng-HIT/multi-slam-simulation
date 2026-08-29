@@ -14,7 +14,6 @@ def generate_launch_description():
     default_config = get_package_share_directory("uf_sensor_pipeline") + "/config/sim_sensor_config.yaml"
     config = LaunchConfiguration("config")
     use_sim_time = LaunchConfiguration("use_sim_time")
-    imu_acceleration_scale = LaunchConfiguration("imu_acceleration_scale")
     enable_fcu_observation_bridge = LaunchConfiguration("enable_fcu_observation_bridge")
     enable_vision = LaunchConfiguration("enable_vision")
     enable_nmea_gnss = LaunchConfiguration("enable_nmea_gnss")
@@ -32,6 +31,7 @@ def generate_launch_description():
     enable_fault_injection = LaunchConfiguration("enable_fault_injection")
     enable_gnss = LaunchConfiguration("enable_gnss")
     enable_lidar = LaunchConfiguration("enable_lidar")
+    publish_d435i_mount_tf = LaunchConfiguration("publish_d435i_mount_tf")
     scheduled_fault_modality = os.environ.get("UF_FAULT_MODALITY", "").strip()
     scheduled_fault = {}
     if scheduled_fault_modality:
@@ -120,7 +120,10 @@ def generate_launch_description():
                 "--child-frame-id", LaunchConfiguration("d435_child_frame"),
             ],
             output="screen",
-            condition=IfCondition(enable_vision),
+            condition=IfCondition(PythonExpression([
+                "'", enable_vision, "' == 'true' and '",
+                publish_d435i_mount_tf, "' == 'true'"
+            ])),
         ),
     ]
     for modality in ("lidar", "imu", "gnss", "optical_flow", "depth", "color"):
@@ -146,9 +149,7 @@ def generate_launch_description():
                     config,
                     fault_parameters,
                     source_parameters,
-                    {"use_sim_time": use_sim_time,
-                     "imu_acceleration_scale": imu_acceleration_scale}
-                    if modality == "imu" else {"use_sim_time": use_sim_time},
+                    {"use_sim_time": use_sim_time},
                 ],
                 output="screen",
                 condition=IfCondition(enable_fault_injection),
@@ -209,9 +210,16 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("enable_lidar", default_value="true"),
         DeclareLaunchArgument("enable_gnss", default_value="true"),
-        DeclareLaunchArgument("imu_acceleration_scale", default_value="1.0"),
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
+        DeclareLaunchArgument(
+            "publish_d435i_mount_tf",
+            default_value="true",
+            description=(
+                "Publish the simulation D435i mount TF. Real hardware launch "
+                "must disable this until T_body_camera or T_body_lidar is measured."
+            ),
+        ),
         DeclareLaunchArgument("enable_nmea_gnss", default_value="false"),
         DeclareLaunchArgument(
             "active_modalities",
@@ -270,7 +278,6 @@ def generate_launch_description():
                 "lidar_output_topic": "/sensors/lidar/points",
                 "imu_input_topic": "/livox/imu",
                 "imu_output_topic": "/sensors/imu",
-                "imu_acceleration_scale": imu_acceleration_scale,
                 "gnss_input_topic": gnss_input_topic,
                 "gnss_output_topic": "/sensors/gnss/fix_unthrottled",
                 "optical_flow_input_topic": optical_flow_input_topic,

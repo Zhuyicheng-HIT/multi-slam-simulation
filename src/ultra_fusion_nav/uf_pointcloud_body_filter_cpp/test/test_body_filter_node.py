@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import signal
 import struct
 import subprocess
@@ -9,6 +10,7 @@ import pytest
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
+from livox_ros_driver2.msg import CustomMsg, CustomPoint
 from std_msgs.msg import Float32
 
 
@@ -107,6 +109,107 @@ def test_cpp_node_preserves_ros_contract_and_sensor_data_qos():
         assert publishers[0].qos_profile.depth == qos_profile_sensor_data.depth
     finally:
         del output_sub, ratio_sub, publisher
+        node.destroy_node()
+        rclpy.shutdown()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGINT)
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=2.0)
+        log.close()
+        if previous_domain is None:
+            os.environ.pop("ROS_DOMAIN_ID", None)
+        else:
+            os.environ["ROS_DOMAIN_ID"] = previous_domain
+        if previous_rmw is None:
+            os.environ.pop("RMW_IMPLEMENTATION", None)
+        else:
+            os.environ["RMW_IMPLEMENTATION"] = previous_rmw
+
+
+def test_real_livox_custom_path_fails_open_without_changing_point_semantics():
+    previous_domain = os.environ.get("ROS_DOMAIN_ID")
+    previous_rmw = os.environ.get("RMW_IMPLEMENTATION")
+    domain_id = 170 + os.getpid() % 20
+    os.environ["ROS_DOMAIN_ID"] = str(domain_id)
+    os.environ["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
+    namespace = f"/test/body_filter_livox/run_{os.getpid()}"
+    input_topic = f"{namespace}/input"
+    output_topic = f"{namespace}/output"
+    log = tempfile.TemporaryFile(mode="w+")
+    real_config = (
+        Path(__file__).resolve().parents[2]
+        / "uf_sensor_pipeline/config/real_mid360_imu_units.yaml"
+    )
+    process = subprocess.Popen(
+        [
+            "ros2", "run", "uf_pointcloud_body_filter_cpp", "pointcloud_body_filter_cpp",
+            "--ros-args",
+            "--params-file", str(real_config),
+            "-p", f"input_topic:={input_topic}",
+            "-p", f"output_topic:={output_topic}",
+        ],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    rclpy.init(domain_id=domain_id)
+    node = rclpy.create_node("body_filter_livox_contract_test")
+    outputs = []
+    output_sub = node.create_subscription(
+        CustomMsg, output_topic, outputs.append, qos_profile_sensor_data
+    )
+    publisher = node.create_publisher(CustomMsg, input_topic, qos_profile_sensor_data)
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                log.flush()
+                log.seek(0)
+                pytest.fail(f"C++ Livox body-filter node exited during startup:\n{log.read()}")
+            if publisher.get_subscription_count() > 0:
+                break
+            rclpy.spin_once(node, timeout_sec=0.05)
+        assert publisher.get_subscription_count() == 1
+
+        source = CustomMsg()
+        source.header.stamp.sec = 123
+        source.header.frame_id = "livox_frame"
+        source.timebase = 987654321
+        source.lidar_id = 7
+        source.rsvd = [1, 2, 3]
+        source.points = [
+            CustomPoint(offset_time=101, x=0.2, y=0.1, z=0.0,
+                        reflectivity=11, tag=0x10, line=2),
+            CustomPoint(offset_time=202, x=1.0, y=0.0, z=-0.25,
+                        reflectivity=22, tag=0x20, line=3),
+        ]
+        source.point_num = len(source.points)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not outputs:
+            publisher.publish(source)
+            rclpy.spin_once(node, timeout_sec=0.05)
+
+        assert outputs
+        output = outputs[-1]
+        assert output.header == source.header
+        assert output.timebase == source.timebase
+        assert output.point_num == source.point_num
+        assert output.lidar_id == source.lidar_id
+        assert list(output.rsvd) == list(source.rsvd)
+        assert len(output.points) == len(source.points)
+        for actual, expected in zip(output.points, source.points):
+            assert actual.offset_time == expected.offset_time
+            assert actual.x == pytest.approx(expected.x)
+            assert actual.y == pytest.approx(expected.y)
+            assert actual.z == pytest.approx(expected.z)
+            assert actual.reflectivity == expected.reflectivity
+            assert actual.tag == expected.tag
+            assert actual.line == expected.line
+    finally:
+        del output_sub, publisher
         node.destroy_node()
         rclpy.shutdown()
         if process.poll() is None:

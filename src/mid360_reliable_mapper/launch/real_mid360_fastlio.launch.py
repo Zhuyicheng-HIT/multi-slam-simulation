@@ -69,7 +69,7 @@ def _make_livox_node(context, *, package_share, start_livox):
     print(f"  lidar_ip: {lidar_ip}")
     print(f"  host_ip: {host_ip}")
     print(f"  frame_id: {frame_id}")
-    print("  lidar_imu_topic: /livox/lidar_imu (diagnostic only)")
+    print("  imu_topic: /livox/imu (MID360S internal IMU, unchanged raw topic)")
 
     return [
         Node(
@@ -87,9 +87,6 @@ def _make_livox_node(context, *, package_share, start_livox):
                 "user_config_path": runtime_config,
                 "cmdline_input_bd_code": "livox0000000001",
             }],
-            remappings=[
-                ("/livox/imu", "/livox/lidar_imu"),
-            ],
             condition=IfCondition(start_livox),
         )
     ]
@@ -170,7 +167,7 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz", default_value="false"),
         DeclareLaunchArgument("lidar_ip", default_value="192.168.1.123"),
         DeclareLaunchArgument("host_ip", default_value="192.168.1.50"),
-        DeclareLaunchArgument("livox_frame_id", default_value="mid360_link"),
+        DeclareLaunchArgument("livox_frame_id", default_value="livox_frame"),
         DeclareLaunchArgument("lidar_to_imu_x", default_value="-0.011"),
         DeclareLaunchArgument("lidar_to_imu_y", default_value="-0.02329"),
         DeclareLaunchArgument("lidar_to_imu_z", default_value="0.04412"),

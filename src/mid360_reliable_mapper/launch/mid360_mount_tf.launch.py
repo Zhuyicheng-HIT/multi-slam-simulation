@@ -73,6 +73,12 @@ def _make_static_tf(context):
     if not enabled:
         print(f"MID360 mount TF disabled by config: {config_path}")
         return []
+    if str(data.get("translation_status", "unknown")) != "measured":
+        raise RuntimeError(
+            "MID360 mount TF cannot be enabled until translation_status=measured"
+        )
+    if not isinstance(data.get("translation_m"), dict):
+        raise RuntimeError("MID360 mount TF requires measured translation_m x/y/z")
 
     base_frame = str(data.get("base_frame", "base_link"))
     sensor_frame = str(data.get("sensor_frame", "body"))

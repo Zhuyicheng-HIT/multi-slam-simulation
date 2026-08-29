@@ -17,8 +17,9 @@ from .fault_models import (
     ensure_monotonic_stamp,
     flatten_image,
     shift_stamp,
-    standardize_imu_acceleration,
+    standardize_imu_to_body,
 )
+from .geometry_contract import imu_parameters, load_geometry_contract
 
 
 MESSAGE_TYPES = {
@@ -48,23 +49,56 @@ class FaultInjector(Node):
         self.declare_parameter("restamp_output", False)
         self.declare_parameter("repair_nonmonotonic_timestamps", True)
         self.declare_parameter("imu_acceleration_scale", 1.0)
+        self.declare_parameter(
+            "mid360_to_body_rotation",
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        )
+        self.declare_parameter("imu_output_frame_id", "")
+        self.declare_parameter("geometry_contract_file", "")
 
         self.modality = str(self.get_parameter("modality").value)
         self.restamp_output = bool(self.get_parameter("restamp_output").value)
         self.repair_nonmonotonic_timestamps = bool(
             self.get_parameter("repair_nonmonotonic_timestamps").value
         )
-        self.imu_acceleration_scale = float(self.get_parameter("imu_acceleration_scale").value)
+        contract_file = str(self.get_parameter("geometry_contract_file").value)
+        contract_parameters = (
+            dict(imu_parameters(load_geometry_contract(contract_file)))
+            if self.modality == "imu" and contract_file else {}
+        )
+        self.imu_acceleration_scale = float(
+            contract_parameters.get(
+                "imu_acceleration_scale",
+                self.get_parameter("imu_acceleration_scale").value,
+            )
+        )
+        self.mid360_to_body_rotation = tuple(
+            float(value) for value in contract_parameters.get(
+                "mid360_to_body_rotation",
+                self.get_parameter("mid360_to_body_rotation").value,
+            )
+        )
+        self.imu_output_frame_id = str(
+            contract_parameters.get(
+                "imu_output_frame_id", self.get_parameter("imu_output_frame_id").value
+            )
+        )
         if self.modality not in MESSAGE_TYPES:
             raise ValueError(f"Unsupported modality: {self.modality}")
         message_type = MESSAGE_TYPES[self.modality]
+        self.input_topic = str(contract_parameters.get(
+            "imu_input_topic", self.get_parameter("input_topic").value
+        ))
+        self.output_topic = str(contract_parameters.get(
+            "imu_output_topic", self.get_parameter("output_topic").value
+        ))
         self.publisher = self.create_publisher(
-            message_type, str(self.get_parameter("output_topic").value), qos_profile_sensor_data
+            message_type, self.output_topic, qos_profile_sensor_data
         )
         self.state_pub = self.create_publisher(FaultState, "/fault/state", 20)
         self.create_subscription(
             message_type,
-            str(self.get_parameter("input_topic").value),
+            self.input_topic,
             self._callback,
             qos_profile_sensor_data,
         )
@@ -77,8 +111,8 @@ class FaultInjector(Node):
         self.active_fault_start_stamp_s = None
         self.get_logger().info(
             f"fault injector modality={self.modality} "
-            f"input={self.get_parameter('input_topic').value} "
-            f"output={self.get_parameter('output_topic').value} "
+            f"input={self.input_topic} "
+            f"output={self.output_topic} "
             f"restamp_output={self.restamp_output}"
         )
 
@@ -170,7 +204,12 @@ class FaultInjector(Node):
             self._state(msg, fault_type, magnitude, active)
             return
         normalized = (
-            standardize_imu_acceleration(msg, self.imu_acceleration_scale)
+            standardize_imu_to_body(
+                msg,
+                self.imu_acceleration_scale,
+                self.mid360_to_body_rotation,
+                self.imu_output_frame_id or msg.header.frame_id,
+            )
             if self.modality == "imu" else msg
         )
         output = (

@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import math
 import os
 from pathlib import Path
 import signal
@@ -16,9 +17,19 @@ from sensor_msgs.msg import Imu
 
 
 PATH = Path(__file__).resolve().parents[1] / "launch" / "sensor_pipeline.launch.py"
+REAL_MID360_CONFIG = (
+    Path(__file__).resolve().parents[1] / "config" / "real_mid360_imu_units.yaml"
+)
 SPEC = importlib.util.spec_from_file_location("sensor_pipeline_launch", PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+def test_launch_does_not_override_configured_imu_unit_or_geometry_contract():
+    source = PATH.read_text(encoding="utf-8")
+
+    assert 'DeclareLaunchArgument("imu_acceleration_scale"' not in source
+    assert '"imu_acceleration_scale": imu_acceleration_scale' not in source
 
 
 class SensorPipelineLaunchTest(unittest.TestCase):
@@ -124,7 +135,6 @@ class MinimalLidarImuLaunchTest(unittest.TestCase):
                 "enable_lidar:=true",
                 "enable_fault_injection:=false",
                 "active_modalities:=[lidar,imu]",
-                "imu_acceleration_scale:=1.0",
             ],
             stdout=cls.launch_log,
             stderr=subprocess.STDOUT,
@@ -201,6 +211,85 @@ class MinimalLidarImuLaunchTest(unittest.TestCase):
         self.launch_log.flush()
         self.launch_log.seek(0)
         return self.launch_log.read()
+
+
+class RealMid360RelayContractTest(unittest.TestCase):
+    def test_real_profile_rotates_static_gravity_to_body_flu(self):
+        previous_domain_id = os.environ.get("ROS_DOMAIN_ID")
+        previous_rmw = os.environ.get("RMW_IMPLEMENTATION")
+        domain_id = 160 + os.getpid() % 20
+        os.environ["ROS_DOMAIN_ID"] = str(domain_id)
+        os.environ["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
+        input_topic = f"/test/real_mid360/run_{os.getpid()}/imu_raw"
+        output_topic = f"/test/real_mid360/run_{os.getpid()}/imu_body"
+        launch_log = tempfile.TemporaryFile(mode="w+")
+        process = subprocess.Popen(
+            [
+                "ros2", "run", "uf_sensor_pipeline", "sensor_relay_manager",
+                "--ros-args", "--params-file", str(REAL_MID360_CONFIG),
+                "-p", "active_modalities:=[imu]",
+                "-p", f"imu_input_topic:={input_topic}",
+                "-p", f"imu_output_topic:={output_topic}",
+            ],
+            stdout=launch_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        rclpy.init(domain_id=domain_id)
+        node = rclpy.create_node("real_mid360_relay_contract_test")
+        received = []
+        subscription = node.create_subscription(
+            Imu, output_topic, received.append, qos_profile_sensor_data
+        )
+        publisher = node.create_publisher(Imu, input_topic, qos_profile_sensor_data)
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    launch_log.flush()
+                    launch_log.seek(0)
+                    self.fail(f"real MID360 relay exited during startup:\n{launch_log.read()}")
+                if publisher.get_subscription_count() > 0:
+                    break
+                rclpy.spin_once(node, timeout_sec=0.05)
+            self.assertEqual(publisher.get_subscription_count(), 1)
+
+            angle = math.radians(15.0)
+            message = Imu()
+            message.header.frame_id = "mid360_imu"
+            message.linear_acceleration.x = -math.sin(angle)
+            message.linear_acceleration.z = math.cos(angle)
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and not received:
+                publisher.publish(message)
+                rclpy.spin_once(node, timeout_sec=0.05)
+
+            self.assertTrue(received)
+            output = received[-1]
+            self.assertEqual(output.header.frame_id, "base_link")
+            self.assertAlmostEqual(output.linear_acceleration.x, 0.0, places=5)
+            self.assertAlmostEqual(output.linear_acceleration.y, 0.0, places=5)
+            self.assertAlmostEqual(output.linear_acceleration.z, 9.80665, places=5)
+        finally:
+            del subscription, publisher
+            node.destroy_node()
+            rclpy.shutdown()
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGINT)
+                try:
+                    process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=2.0)
+            launch_log.close()
+            if previous_domain_id is None:
+                os.environ.pop("ROS_DOMAIN_ID", None)
+            else:
+                os.environ["ROS_DOMAIN_ID"] = previous_domain_id
+            if previous_rmw is None:
+                os.environ.pop("RMW_IMPLEMENTATION", None)
+            else:
+                os.environ["RMW_IMPLEMENTATION"] = previous_rmw
 
 
 if __name__ == "__main__":

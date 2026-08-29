@@ -29,6 +29,7 @@ setup(
             "robustness_fault_injector = uf_sensor_pipeline.robustness_fault_injector:main",
             "gps_flow_fusion = uf_sensor_pipeline.gps_flow_fusion_node:main",
             "gnss_metadata_relay = uf_sensor_pipeline.gnss_metadata_relay:main",
+            "geometry_contract_check = uf_sensor_pipeline.geometry_contract_check:main",
             "nmea_gnss = uf_sensor_pipeline.nmea_gnss_node:main",
             "pointcloud_body_filter = uf_sensor_pipeline.pointcloud_body_filter:main",
             "sensor_contract_monitor = uf_sensor_pipeline.sensor_contract_monitor:main",

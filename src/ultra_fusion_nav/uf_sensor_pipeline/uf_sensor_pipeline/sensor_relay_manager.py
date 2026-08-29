@@ -14,7 +14,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2
 from mavros_msgs.msg import OpticalFlowRad
 
-from .fault_models import standardize_imu_acceleration
+from .fault_models import standardize_imu_to_body
+from .geometry_contract import imu_parameters, load_geometry_contract
 
 
 MESSAGE_TYPES = {
@@ -30,11 +31,21 @@ MESSAGE_TYPES = {
 class SensorRelayManager(Node):
     def __init__(self):
         super().__init__("sensor_relay_manager")
+        self.declare_parameter("geometry_contract_file", "")
+        contract_file = str(self.get_parameter("geometry_contract_file").value)
+        contract_parameters = (
+            dict(imu_parameters(load_geometry_contract(contract_file)))
+            if contract_file else {}
+        )
         self.declare_parameter("active_modalities", ["lidar", "imu", "gnss", "optical_flow"])
         self.declare_parameter("lidar_input_topic", "/sensors/lidar/points_body_filtered")
         self.declare_parameter("lidar_output_topic", "/sensors/lidar/points")
-        self.declare_parameter("imu_input_topic", "/livox/imu")
-        self.declare_parameter("imu_output_topic", "/sensors/imu")
+        self.declare_parameter(
+            "imu_input_topic", contract_parameters.get("imu_input_topic", "/livox/imu")
+        )
+        self.declare_parameter(
+            "imu_output_topic", contract_parameters.get("imu_output_topic", "/sensors/imu")
+        )
         self.declare_parameter("gnss_input_topic", "/mavros/global_position/raw/fix")
         self.declare_parameter("gnss_output_topic", "/sensors/gnss/fix")
         self.declare_parameter("optical_flow_input_topic", "/sim/optical_flow/rad")
@@ -43,8 +54,29 @@ class SensorRelayManager(Node):
         self.declare_parameter("depth_output_topic", "/sensors/rgbd/depth")
         self.declare_parameter("color_input_topic", "/front/d435i/color/image_raw")
         self.declare_parameter("color_output_topic", "/sensors/rgbd/color")
-        self.declare_parameter("imu_acceleration_scale", 1.0)
+        self.declare_parameter(
+            "imu_acceleration_scale",
+            contract_parameters.get("imu_acceleration_scale", 1.0),
+        )
+        self.declare_parameter(
+            "mid360_to_body_rotation",
+            contract_parameters.get(
+                "mid360_to_body_rotation",
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            ),
+        )
+        self.declare_parameter(
+            "imu_output_frame_id",
+            contract_parameters.get("imu_output_frame_id", ""),
+        )
         self.declare_parameter("restamp_gnss", True)
+        self.mid360_to_body_rotation = tuple(
+            float(value)
+            for value in self.get_parameter("mid360_to_body_rotation").value
+        )
+        self.imu_output_frame_id = str(
+            self.get_parameter("imu_output_frame_id").value
+        )
         self.relay_count = 0
         self.relay_publishers = {}
         active = {str(name) for name in self.get_parameter("active_modalities").value}
@@ -65,12 +97,16 @@ class SensorRelayManager(Node):
             self.get_logger().info(f"relay {modality}: {input_topic} -> {output_topic}")
 
     def _relay(self, modality, message):
-        output = copy.deepcopy(message)
         if modality == "imu":
-            output = standardize_imu_acceleration(
-                output, float(self.get_parameter("imu_acceleration_scale").value)
+            output = standardize_imu_to_body(
+                message,
+                float(self.get_parameter("imu_acceleration_scale").value),
+                self.mid360_to_body_rotation,
+                self.imu_output_frame_id or message.header.frame_id,
             )
-        elif modality == "gnss" and bool(self.get_parameter("restamp_gnss").value):
+        else:
+            output = copy.deepcopy(message)
+        if modality == "gnss" and bool(self.get_parameter("restamp_gnss").value):
             now = self.get_clock().now().to_msg()
             output.header.stamp = now
         self.relay_publishers[modality].publish(output)

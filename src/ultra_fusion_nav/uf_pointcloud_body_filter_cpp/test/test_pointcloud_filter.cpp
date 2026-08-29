@@ -2,6 +2,7 @@
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
+#include <livox_ros_driver2/msg/custom_msg.hpp>
 
 #include <algorithm>
 #include <array>
@@ -24,7 +25,10 @@ namespace
 #if UF_BODY_FILTER_IMPLEMENTED
 using uf_pointcloud_body_filter_cpp::FilterConfig;
 using uf_pointcloud_body_filter_cpp::FilterResult;
+using uf_pointcloud_body_filter_cpp::BodyPrimitive;
+using uf_pointcloud_body_filter_cpp::GeometryMode;
 using uf_pointcloud_body_filter_cpp::filter_cloud;
+using uf_pointcloud_body_filter_cpp::filter_livox_cloud;
 
 sensor_msgs::msg::PointCloud2 make_cloud(
   const std::vector<std::array<float, 4>> & points,
@@ -140,6 +144,113 @@ TEST(PointcloudFilter, AppliesLidarToBodyRotationAndTranslation)
 
   EXPECT_EQ(result.removed_body, 1U);
   EXPECT_EQ(result.cloud.width, 0U);
+}
+
+TEST(PointcloudFilter, PositiveFifteenDegreePitchUsesBodyFromMid360Direction)
+{
+  // R_body_mid360(+15 deg) maps this sensor-frame point to approximately
+  // [0.44, 0.0, -0.34] in body FLU: just inside the established envelope.
+  const auto input = make_cloud({{0.512999F, 0.0F, -0.214507F, 10.0F}});
+  auto config = default_config();
+  config.lidar_to_body_rotation = {
+    0.9659258263, 0.0, 0.2588190451,
+    0.0, 1.0, 0.0,
+    -0.2588190451, 0.0, 0.9659258263};
+
+  const FilterResult result = filter_cloud(input, config);
+
+  EXPECT_EQ(result.removed_body, 1U);
+  EXPECT_EQ(result.cloud.width, 0U);
+}
+
+TEST(PointcloudFilter, IncompleteRealGeometryFailsOpenWithoutChangingBytes)
+{
+  auto input = make_cloud({{0.2F, 0.1F, 0.0F, 10.0F}, {1.0F, 0.0F, 0.0F, 20.0F}});
+  auto config = default_config();
+  config.geometry_complete = false;
+
+  const FilterResult result = filter_cloud(input, config);
+
+  EXPECT_TRUE(result.degraded_fail_open);
+  EXPECT_EQ(result.removed_body, 0U);
+  EXPECT_EQ(result.removed_range, 0U);
+  EXPECT_EQ(result.total, 2U);
+  EXPECT_EQ(result.cloud, input);
+}
+
+TEST(PointcloudFilter, CompositeBoxesAndCylindersProtectNearbyExternalGeometry)
+{
+  const auto input = make_cloud({
+    {0.10F, 0.0F, 0.0F, 1.0F},
+    {0.0F, 0.40F, 0.0F, 2.0F},
+    {0.55F, 0.0F, 0.0F, 3.0F},
+  });
+  auto config = default_config();
+  config.geometry_mode = GeometryMode::kComposite;
+  config.body_primitives = {
+    BodyPrimitive::box("center", {0.0, 0.0, 0.0}, {0.30, 0.20, 0.20}),
+    BodyPrimitive::cylinder("leg", {0.0, 0.40, 0.0}, 0.08, 0.30),
+  };
+
+  const FilterResult result = filter_cloud(input, config);
+
+  EXPECT_EQ(result.removed_body, 2U);
+  ASSERT_EQ(result.cloud.width, 1U);
+  EXPECT_EQ(result.cloud.data[17], 202U);
+}
+
+TEST(PointcloudFilter, LivoxCustomMessagePreservesRetainedPointSemantics)
+{
+  livox_ros_driver2::msg::CustomMsg input;
+  input.header.stamp.sec = 123;
+  input.header.frame_id = "livox_frame";
+  input.timebase = 987654321U;
+  input.lidar_id = 7U;
+  input.rsvd = {1U, 2U, 3U};
+  input.points.resize(2U);
+  input.points[0].x = 0.2F;
+  input.points[0].y = 0.1F;
+  input.points[0].reflectivity = 11U;
+  input.points[0].offset_time = 101U;
+  input.points[0].line = 2U;
+  input.points[0].tag = 0x10U;
+  input.points[1].x = 1.0F;
+  input.points[1].z = -0.25F;
+  input.points[1].reflectivity = 22U;
+  input.points[1].offset_time = 202U;
+  input.points[1].line = 3U;
+  input.points[1].tag = 0x20U;
+  input.point_num = static_cast<std::uint32_t>(input.points.size());
+
+  const auto result = filter_livox_cloud(input, default_config());
+
+  EXPECT_FALSE(result.degraded_fail_open);
+  EXPECT_EQ(result.removed_body, 1U);
+  ASSERT_EQ(result.cloud.point_num, 1U);
+  ASSERT_EQ(result.cloud.points.size(), 1U);
+  EXPECT_EQ(result.cloud.header, input.header);
+  EXPECT_EQ(result.cloud.timebase, input.timebase);
+  EXPECT_EQ(result.cloud.lidar_id, input.lidar_id);
+  EXPECT_EQ(result.cloud.rsvd, input.rsvd);
+  EXPECT_FLOAT_EQ(result.cloud.points[0].x, input.points[1].x);
+  EXPECT_FLOAT_EQ(result.cloud.points[0].y, input.points[1].y);
+  EXPECT_FLOAT_EQ(result.cloud.points[0].z, input.points[1].z);
+  EXPECT_EQ(result.cloud.points[0].reflectivity, input.points[1].reflectivity);
+  EXPECT_EQ(result.cloud.points[0].offset_time, input.points[1].offset_time);
+  EXPECT_EQ(result.cloud.points[0].line, input.points[1].line);
+  EXPECT_EQ(result.cloud.points[0].tag, input.points[1].tag);
+}
+
+TEST(PointcloudFilter, RejectsNonOrthonormalMountRotation)
+{
+  const auto input = make_cloud({{1.0F, 0.0F, 0.0F, 10.0F}});
+  auto config = default_config();
+  config.lidar_to_body_rotation = {
+    2.0, 0.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 1.0};
+
+  EXPECT_THROW(filter_cloud(input, config), std::invalid_argument);
 }
 
 TEST(PointcloudFilter, ReadsBigEndianFieldsAtArbitraryOffsets)

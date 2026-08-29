@@ -281,13 +281,13 @@ bash nano_flight/scripts/07_status_topics.sh
 
 ```bash
 ros2 topic hz /livox/lidar
-ros2 topic hz /livox/lidar_imu
 ros2 topic hz /livox/imu
+ros2 topic hz /sensors/imu
 ros2 topic hz /cloud_registered_reliable
 ros2 topic hz /fastlio_occupancy_grid
 ros2 topic echo /Odometry --once
-ros2 run tf2_ros tf2_echo body base_link
-ros2 run tf2_ros tf2_echo camera_init base_link
+ros2 run uf_sensor_pipeline geometry_contract_check \
+  package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml --json
 ```
 
 ## 12. 安全录包
@@ -302,8 +302,8 @@ DURATION=60 bash nano_flight/scripts/06_record_safety_bag.sh
 默认录制：
 
 - `/livox/lidar`
-- `/livox/lidar_imu`（MID360S 内部 IMU，仅诊断）
-- `/livox/imu`（飞控 HIGHRES_IMU，FAST-LIO 主 IMU）
+- `/livox/imu`（MID360S 内部 IMU 原始流，约 200 Hz，FAST-LIO 输入）
+- `/sensors/imu`（g 转 m/s² 且旋转到 body-FLU 的后端副本）
 - `/Odometry`
 - `/path`
 - `/cloud_registered`
@@ -347,11 +347,12 @@ ldconfig -p | grep livox
 真正飞行前至少确认：
 
 1. `ping 192.168.1.123` 正常。
-2. `/livox/lidar`、`/livox/lidar_imu` 和飞控 `/livox/imu` 频率稳定。
+2. `/livox/lidar`、MID360S 内部 `/livox/imu` 和 `/sensors/imu` 频率稳定。
 3. `/Odometry` 静止时不明显漂移。
 4. `/cloud_registered_reliable` 有输出。
 5. `/fastlio_occupancy_grid` 有输出。
-6. `tf2_echo body base_link` 能看到配置的安装角。
+6. 在 `t_body_lidar` 实测前，硬件 body-LiDAR TF 和实机 self-body mask
+   必须保持关闭；不得用零平移伪造完整外参。
 7. 地面移动测试时，地图不会整体飞走。
 8. Nano CPU、内存、温度和供电稳定。
 

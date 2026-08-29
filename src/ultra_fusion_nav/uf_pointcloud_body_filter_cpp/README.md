@@ -1,4 +1,4 @@
-# C++ PointCloud2 body filter
+# C++ PointCloud2/Livox body filter
 
 `uf_pointcloud_body_filter_cpp` is the allocation-efficient implementation of
 the PR21 LiDAR self-body/range filter. The production `uf_sensor_pipeline`
@@ -11,12 +11,25 @@ A/B comparisons.
 - Default input: `/sim/mid360/points_raw`
 - Default output: `/sensors/lidar/points_body_filtered`
 - Removed-body ratio: `/sensors/lidar/body_removed_ratio`
+- Health state: `/sensors/lidar/body_filter_status`
 - Input, output, and ratio use ROS 2 Sensor Data QoS.
 - `/livox/lidar` is neither remapped nor modified by this package.
 
 The existing parameter names and defaults are preserved, including
 `body_min_*_m`, `body_max_*_m`, `min_range_m`, `max_range_m`,
 `lidar_to_body_rotation`, and `lidar_to_body_translation`.
+
+Real hardware can set `input_message_type=livox_custom` and
+`geometry_contract_file=package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml`.
+Retained `CustomPoint` coordinates, `offset_time`, `reflectivity`, `tag`, and
+`line` are copied without semantic conversion. The raw `/livox/lidar` publisher
+is never replaced.
+
+`geometry_mode=composite` supports a union of oriented boxes and cylinders.
+The real contract deliberately contains no primitives and no body-LiDAR
+translation yet, so `filter_enabled=false` and `geometry_complete=false` make
+the separate output an explicit degraded/fail-open copy. Simulation retains
+the legacy AABB configuration.
 
 The filter discovers `x`, `y`, and `z` from the `PointCloud2` field layout,
 supports all scalar ROS `PointField` datatypes and either endianness, and copies
