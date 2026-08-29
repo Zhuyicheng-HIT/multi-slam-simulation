@@ -101,6 +101,24 @@ def _required_mapping(data: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     return value
 
 
+def _derive_body_camera(
+    body_lidar: Transform,
+    camera_lidar: Transform,
+) -> Optional[Transform]:
+    """Derive T_body_camera so T_body_camera * T_camera_lidar = T_body_lidar."""
+    if body_lidar.translation is None or camera_lidar.translation is None:
+        return None
+    rotation = body_lidar.rotation @ camera_lidar.rotation.T
+    translation = body_lidar.translation - rotation @ camera_lidar.translation
+    return Transform(
+        rotation=rotation,
+        translation=translation,
+        status="derived",
+        rotation_status="derived_from_body_lidar_and_camera_lidar",
+        translation_status="derived_from_body_lidar_and_camera_lidar",
+    )
+
+
 def parse_geometry_contract(data: Mapping[str, Any]) -> GeometryContract:
     if not isinstance(data, Mapping):
         raise GeometryContractError("geometry contract must be a mapping")
@@ -164,26 +182,37 @@ def parse_geometry_contract(data: Mapping[str, Any]) -> GeometryContract:
 
     body_camera = None
     body_camera_data = transforms.get("body_camera")
-    if body_camera_data is not None:
+    if body_camera_data is None:
+        body_camera = _derive_body_camera(body_lidar, camera_lidar)
+    elif isinstance(body_camera_data, Mapping) and body_camera_data.get("derivation") == (
+        "T_body_lidar * inverse(T_camera_lidar)"
+    ):
+        body_camera = _derive_body_camera(body_lidar, camera_lidar)
+        if body_camera is None:
+            raise GeometryContractError(
+                "derived transforms.body_camera requires complete T_body_lidar"
+            )
+    else:
         if not isinstance(body_camera_data, Mapping):
             raise GeometryContractError("transforms.body_camera must be a mapping or null")
         body_camera_translation = _optional_translation(
             body_camera_data.get("translation_m"),
             "transforms.body_camera.translation_m",
         )
-        if body_camera_translation is not None:
-            body_camera = Transform(
-                rotation=_proper_rotation(
-                    body_camera_data.get("rotation_matrix", []),
-                    "transforms.body_camera.rotation_matrix",
-                ),
-                translation=body_camera_translation,
-                status=str(body_camera_data.get("status", "measured")),
-                rotation_status=str(body_camera_data.get("rotation_status", "measured")),
-                translation_status=str(
-                    body_camera_data.get("translation_status", "measured")
-                ),
-            )
+        if body_camera_translation is None:
+            raise GeometryContractError("transforms.body_camera.translation_m is required")
+        body_camera = Transform(
+            rotation=_proper_rotation(
+                body_camera_data.get("rotation_matrix", []),
+                "transforms.body_camera.rotation_matrix",
+            ),
+            translation=body_camera_translation,
+            status=str(body_camera_data.get("status", "measured")),
+            rotation_status=str(body_camera_data.get("rotation_status", "measured")),
+            translation_status=str(
+                body_camera_data.get("translation_status", "measured")
+            ),
+        )
 
     fast_lio = _required_mapping(data, "fast_lio_internal_lidar_imu")
     body_envelope = _required_mapping(data, "body_envelope")
@@ -274,7 +303,7 @@ def closure_report(contract: GeometryContract) -> ClosureReport:
     rotation_delta = expected_rotation.T @ contract.body_lidar.rotation
     cosine = max(-1.0, min(1.0, (float(np.trace(rotation_delta)) - 1.0) * 0.5))
     return ClosureReport(
-        status="MEASURED",
+        status="DERIVED" if contract.body_camera.status == "derived" else "MEASURED",
         missing=(),
         translation_residual_m=float(
             np.linalg.norm(expected_translation - contract.body_lidar.translation)

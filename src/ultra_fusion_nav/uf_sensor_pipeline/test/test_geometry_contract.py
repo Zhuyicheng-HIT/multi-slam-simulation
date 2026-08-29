@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from uf_sensor_pipeline.geometry_contract import (
     GeometryContractError,
@@ -15,15 +16,18 @@ from uf_sensor_pipeline.geometry_contract import (
 )
 
 
-def test_geometry_contract_cli_reports_incomplete_without_inventing_transform(capsys):
+def test_geometry_contract_cli_reports_coordinate_defined_closed_chain(capsys):
     from uf_sensor_pipeline.geometry_contract_check import main
 
     assert main([str(CONFIG), "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["closure"]["status"] == "INCOMPLETE"
-    assert set(report["closure"]["missing"]) == {"T_body_camera", "t_body_lidar"}
-    assert report["hardware_tf_publishable"] is False
-    assert main([str(CONFIG), "--require-complete"]) == 2
+    assert report["closure"]["status"] == "DERIVED"
+    assert report["closure"]["missing"] == []
+    assert report["body_lidar_translation_available"] is True
+    assert report["body_lidar_translation_measured"] is False
+    assert report["body_lidar_translation_status"] == "coordinate_definition"
+    assert report["hardware_tf_publishable"] is True
+    assert main([str(CONFIG), "--require-complete"]) == 0
 
 
 CONFIG = Path(__file__).resolve().parents[1] / "config" / "real_mid360s_d435i_geometry.yaml"
@@ -42,7 +46,9 @@ def test_real_contract_uses_exact_positive_fifteen_degree_body_from_lidar_rotati
     assert contract.frames.lidar == "livox_frame"
     assert contract.body_lidar.rotation_status == "nominal"
     assert np.allclose(contract.body_lidar.rotation, expected, atol=1.0e-12)
-    assert contract.body_lidar.translation is None
+    assert contract.body_lidar.status == "coordinate_defined"
+    assert contract.body_lidar.translation_status == "coordinate_definition"
+    assert np.array_equal(contract.body_lidar.translation, np.zeros(3))
     assert contract.fast_lio_internal_extrinsic_owned_externally is True
 
 
@@ -80,18 +86,62 @@ def test_camera_lidar_calibration_is_proper_and_inverse_round_trip_is_exact():
     assert np.allclose(point_lidar_round_trip, point_lidar, atol=1.0e-12)
 
 
-def test_missing_body_translation_and_camera_mount_report_incomplete_without_zero_fill():
+def test_camera_lidar_calibration_provenance_and_reported_accuracy_are_preserved():
+    data = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+
+    assert data["provenance"]["calibration_document"] == (
+        "MID360S_D435i_外参标定结果.docx"
+    )
+    assert data["provenance"]["calibration_document_sha256"] == (
+        "5e6e1401f26eb369b8d7c3132b3a5c6c777f44d1f44d6bce93b938b1dd28160c"
+    )
+    calibration = data["transforms"]["camera_lidar"]
+    assert calibration["calibration_rmse_m"] == 0.0303
+    assert calibration["calibration_max_residual_m"] == 0.0593
+
+
+def test_camera_mount_is_derived_from_calibration_and_closes_body_lidar_chain():
     contract = load_geometry_contract(CONFIG)
 
     report = closure_report(contract)
     body_parameters = body_filter_parameters(contract)
 
-    assert report.status == "INCOMPLETE"
-    assert report.missing == ("T_body_camera", "t_body_lidar")
-    assert "lidar_to_body_translation" not in body_parameters
-    assert body_parameters["filter_enabled"] is False
-    assert body_parameters["geometry_complete"] is False
+    assert contract.body_camera is not None
+    assert contract.body_camera.status == "derived"
+    assert report.status == "DERIVED"
+    assert report.missing == ()
+    assert report.translation_residual_m < 1.0e-12
+    assert report.rotation_residual_rad < 1.0e-12
+    assert np.allclose(
+        contract.body_camera.rotation @ contract.camera_lidar.rotation,
+        contract.body_lidar.rotation,
+        atol=1.0e-12,
+    )
+    assert np.allclose(
+        contract.body_camera.rotation @ contract.camera_lidar.translation
+        + contract.body_camera.translation,
+        contract.body_lidar.translation,
+        atol=1.0e-12,
+    )
+    assert body_parameters["lidar_to_body_translation"] == [0.0, 0.0, 0.0]
+    assert body_parameters["filter_enabled"] is True
+    assert body_parameters["geometry_complete"] is True
+    assert body_parameters["primitive_count"] == 1
     assert body_parameters["input_message_type"] == "livox_custom"
+
+
+def test_provisional_envelope_has_exact_approved_body_flu_bounds():
+    contract = load_geometry_contract(CONFIG)
+    primitives = contract.body_envelope["primitives"]
+
+    assert contract.body_envelope["status"] == "provisional_conservative_envelope"
+    assert contract.body_envelope["fail_open"] is True
+    assert len(primitives) == 1
+    box = primitives[0]
+    assert box["type"] == "box"
+    assert box["center_body_m"] == [0.0, 0.0, -0.12]
+    assert box["dimensions_m"] == [0.56, 0.56, 0.36]
+    assert box["padding_m"] == 0.0
 
 
 def test_contract_generates_one_production_imu_topic_and_no_lidar_imu_alias():

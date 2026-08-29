@@ -1,24 +1,7 @@
-# MID360S 模组相对机体的安装外参占位文件。
-#
-# 这里描述的是：base_link -> MID360 模块/body frame 的静态变换。
-# FAST-LIO2 默认发布 camera_init -> body，其中 body 是 MID360/IMU 估计出来的传感器运动 frame。
-# 为了不让 body 出现两个父节点，本工程默认会把下面这组 base_link -> body 自动取逆，实际发布为：body -> base_link。
-# 这样 TF 链会变成：camera_init -> body -> base_link。
-#
-# 旋转为已确认的机械名义值；平移尚未测量。因此本 TF 必须保持关闭，
-# 不能用 [0,0,0] 伪装已测量平移。FAST-LIO 内部 LiDAR-IMU 外参不由本文件修改。
+# MID360S mount TF wrapper. Numeric frames and transforms are intentionally
+# owned by the canonical hardware geometry contract below, rather than being
+# duplicated here. FAST-LIO's internal LiDAR-to-IMU extrinsic is independent.
 
-enabled: false
-base_frame: base_link
-sensor_frame: livox_frame
+enabled: true
+geometry_contract_file: package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml
 publish_inverse_for_fastlio: false
-
-translation_status: unmeasured
-translation_m: null
-
-# roll 绕 X 轴，pitch 绕 Y 轴，yaw 绕 Z 轴，单位是度。
-# 含义是 base_link -> MID360 模块/body frame 的安装角。
-rotation_deg:
-  roll: 0.0
-  pitch: 15.0
-  yaw: 0.0

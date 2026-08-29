@@ -163,6 +163,35 @@ TEST(PointcloudFilter, PositiveFifteenDegreePitchUsesBodyFromMid360Direction)
   EXPECT_EQ(result.cloud.width, 0U);
 }
 
+TEST(PointcloudFilter, ProvisionalConservativeEnvelopeUsesApprovedBodyFluBounds)
+{
+  const auto input = make_cloud({
+    {0.28F, 0.0F, 0.0F, 1.0F},
+    {0.30F, 0.0F, 0.0F, 2.0F},
+    {0.0F, 0.0F, -0.30F, 3.0F},
+    {0.0F, 0.0F, -0.32F, 4.0F},
+    {0.0F, 0.27F, 0.0F, 5.0F},
+    {0.0F, 0.29F, 0.0F, 6.0F},
+  });
+  auto config = default_config();
+  config.min_range_m = 0.0;
+  config.geometry_mode = GeometryMode::kComposite;
+  config.lidar_to_body_rotation = {
+    0.9659258263, 0.0, 0.2588190451,
+    0.0, 1.0, 0.0,
+    -0.2588190451, 0.0, 0.9659258263};
+  config.body_primitives = {
+    BodyPrimitive::box(
+      "provisional_airframe_envelope", {0.0, 0.0, -0.12}, {0.56, 0.56, 0.36}),
+  };
+
+  const FilterResult result = filter_cloud(input, config);
+
+  EXPECT_EQ(result.removed_body, 3U);
+  EXPECT_EQ(result.removed_range, 0U);
+  EXPECT_EQ(result.cloud.width, 3U);
+}
+
 TEST(PointcloudFilter, IncompleteRealGeometryFailsOpenWithoutChangingBytes)
 {
   auto input = make_cloud({{0.2F, 0.1F, 0.0F, 10.0F}, {1.0F, 0.0F, 0.0F, 20.0F}});
@@ -239,6 +268,29 @@ TEST(PointcloudFilter, LivoxCustomMessagePreservesRetainedPointSemantics)
   EXPECT_EQ(result.cloud.points[0].offset_time, input.points[1].offset_time);
   EXPECT_EQ(result.cloud.points[0].line, input.points[1].line);
   EXPECT_EQ(result.cloud.points[0].tag, input.points[1].tag);
+}
+
+TEST(PointcloudFilter, DisabledLivoxFilterIsAnExactOneSwitchBypass)
+{
+  livox_ros_driver2::msg::CustomMsg input;
+  input.header.stamp.sec = 123;
+  input.header.frame_id = "livox_frame";
+  input.timebase = 987654321U;
+  input.points.resize(1U);
+  input.points[0].x = 0.2F;
+  input.points[0].offset_time = 101U;
+  input.points[0].line = 2U;
+  input.points[0].tag = 0x10U;
+  input.point_num = 1U;
+  auto config = default_config();
+  config.filter_enabled = false;
+
+  const auto result = filter_livox_cloud(input, config);
+
+  EXPECT_FALSE(result.degraded_fail_open);
+  EXPECT_EQ(result.removed_body, 0U);
+  EXPECT_EQ(result.removed_range, 0U);
+  EXPECT_EQ(result.cloud, input);
 }
 
 TEST(PointcloudFilter, RejectsNonOrthonormalMountRotation)

@@ -129,7 +129,7 @@ def test_cpp_node_preserves_ros_contract_and_sensor_data_qos():
             os.environ["RMW_IMPLEMENTATION"] = previous_rmw
 
 
-def test_real_livox_custom_path_fails_open_without_changing_point_semantics():
+def test_real_livox_custom_path_applies_provisional_box_and_preserves_retained_semantics():
     previous_domain = os.environ.get("ROS_DOMAIN_ID")
     previous_rmw = os.environ.get("RMW_IMPLEMENTATION")
     domain_id = 170 + os.getpid() % 20
@@ -196,18 +196,19 @@ def test_real_livox_custom_path_fails_open_without_changing_point_semantics():
         output = outputs[-1]
         assert output.header == source.header
         assert output.timebase == source.timebase
-        assert output.point_num == source.point_num
+        assert output.point_num == 1
         assert output.lidar_id == source.lidar_id
         assert list(output.rsvd) == list(source.rsvd)
-        assert len(output.points) == len(source.points)
-        for actual, expected in zip(output.points, source.points):
-            assert actual.offset_time == expected.offset_time
-            assert actual.x == pytest.approx(expected.x)
-            assert actual.y == pytest.approx(expected.y)
-            assert actual.z == pytest.approx(expected.z)
-            assert actual.reflectivity == expected.reflectivity
-            assert actual.tag == expected.tag
-            assert actual.line == expected.line
+        assert len(output.points) == 1
+        actual = output.points[0]
+        expected = source.points[1]
+        assert actual.offset_time == expected.offset_time
+        assert actual.x == pytest.approx(expected.x)
+        assert actual.y == pytest.approx(expected.y)
+        assert actual.z == pytest.approx(expected.z)
+        assert actual.reflectivity == expected.reflectivity
+        assert actual.tag == expected.tag
+        assert actual.line == expected.line
     finally:
         del output_sub, publisher
         node.destroy_node()

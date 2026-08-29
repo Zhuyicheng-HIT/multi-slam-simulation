@@ -60,11 +60,24 @@ def _get_nested(data, section, key, default):
     return default
 
 
+def _resolve_config_path(path, default_package):
+    prefix = "package://"
+    if str(path).startswith(prefix):
+        package_and_path = str(path)[len(prefix):]
+        package, separator, relative = package_and_path.partition("/")
+        if not separator or not package or not relative:
+            raise RuntimeError(f"invalid package URI: {path}")
+        return os.path.join(get_package_share_directory(package), relative)
+    if os.path.isabs(path):
+        return path
+    return os.path.join(get_package_share_directory(default_package), path)
+
+
 def _make_static_tf(context):
-    config_path = context.perform_substitution(LaunchConfiguration("mount_config"))
-    if not os.path.isabs(config_path):
-        share = get_package_share_directory("mid360_reliable_mapper")
-        config_path = os.path.join(share, config_path)
+    config_path = _resolve_config_path(
+        context.perform_substitution(LaunchConfiguration("mount_config")),
+        "mid360_reliable_mapper",
+    )
 
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
@@ -73,26 +86,51 @@ def _make_static_tf(context):
     if not enabled:
         print(f"MID360 mount TF disabled by config: {config_path}")
         return []
-    if str(data.get("translation_status", "unknown")) != "measured":
-        raise RuntimeError(
-            "MID360 mount TF cannot be enabled until translation_status=measured"
-        )
-    if not isinstance(data.get("translation_m"), dict):
-        raise RuntimeError("MID360 mount TF requires measured translation_m x/y/z")
 
-    base_frame = str(data.get("base_frame", "base_link"))
-    sensor_frame = str(data.get("sensor_frame", "body"))
+    geometry_contract_file = data.get("geometry_contract_file")
+    if geometry_contract_file:
+        geometry_path = _resolve_config_path(geometry_contract_file, "uf_sensor_pipeline")
+        with open(geometry_path, "r", encoding="utf-8") as f:
+            geometry = yaml.safe_load(f) or {}
+        frames = geometry.get("frames", {})
+        body_lidar = geometry.get("transforms", {}).get("body_lidar", {})
+        base_frame = str(frames.get("body", "base_link"))
+        sensor_frame = str(frames.get("lidar", "livox_frame"))
+        translation_status = str(body_lidar.get("translation_status", "unknown"))
+        translation = body_lidar.get("translation_m")
+        quaternion = body_lidar.get("quaternion_xyzw")
+    else:
+        geometry_path = None
+        body_lidar = data
+        base_frame = str(data.get("base_frame", "base_link"))
+        sensor_frame = str(data.get("sensor_frame", "body"))
+        translation_status = str(data.get("translation_status", "unknown"))
+        translation = data.get("translation_m")
+        quaternion = None
+
+    if translation_status not in ("measured", "coordinate_definition"):
+        raise RuntimeError(
+            "MID360 mount TF requires measured or coordinate-defined translation"
+        )
     publish_inverse = _as_bool(data.get("publish_inverse_for_fastlio", True))
 
-    t = [
-        float(_get_nested(data, "translation_m", "x", 0.0)),
-        float(_get_nested(data, "translation_m", "y", 0.0)),
-        float(_get_nested(data, "translation_m", "z", 0.0)),
-    ]
-    roll_deg = float(_get_nested(data, "rotation_deg", "roll", 0.0))
-    pitch_deg = float(_get_nested(data, "rotation_deg", "pitch", 0.0))
-    yaw_deg = float(_get_nested(data, "rotation_deg", "yaw", 0.0))
-    q = _rpy_to_quat(math.radians(roll_deg), math.radians(pitch_deg), math.radians(yaw_deg))
+    if isinstance(translation, list) and len(translation) == 3:
+        t = [float(value) for value in translation]
+    elif isinstance(translation, dict):
+        t = [float(translation.get(axis, 0.0)) for axis in ("x", "y", "z")]
+    else:
+        raise RuntimeError("MID360 mount TF requires translation_m with three values")
+
+    if isinstance(quaternion, list) and len(quaternion) == 4:
+        q = [float(value) for value in quaternion]
+        roll_deg = pitch_deg = yaw_deg = None
+    else:
+        roll_deg = float(_get_nested(body_lidar, "rotation_deg", "roll", 0.0))
+        pitch_deg = float(_get_nested(body_lidar, "rotation_deg", "pitch", 0.0))
+        yaw_deg = float(_get_nested(body_lidar, "rotation_deg", "yaw", 0.0))
+        q = _rpy_to_quat(
+            math.radians(roll_deg), math.radians(pitch_deg), math.radians(yaw_deg)
+        )
 
     if publish_inverse:
         parent_frame = sensor_frame
@@ -107,8 +145,11 @@ def _make_static_tf(context):
 
     print("MID360 module mount static TF:")
     print(f"  config: {config_path}")
+    if geometry_path:
+        print(f"  geometry_contract: {geometry_path}")
+    print(f"  translation_status: {translation_status}")
     print(f"  configured base_to_sensor_xyz_m: {t}")
-    print(f"  configured base_to_sensor_rpy_deg: [{roll_deg}, {pitch_deg}, {yaw_deg}]")
+    print(f"  configured base_to_sensor_quat_xyzw: {q}")
     print(f"  publishing: {direction}")
     print(f"  published_xyz_m: {t_pub}")
     print(f"  published_quat_xyzw: {q_pub}")

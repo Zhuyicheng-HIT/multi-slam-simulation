@@ -1,6 +1,7 @@
 # Real MID360S installation profile. The canonical transform, frame and topic
 # contract lives in real_mid360s_d435i_geometry.yaml. Do not duplicate its
-# numeric rotation here and do not infer the unmeasured body translation.
+# numeric transform here. Its zero translation is a coordinate definition,
+# not a measured LiDAR mounting offset.
 fcu_observation_bridge:
   ros__parameters:
     # This remains the MID360S internal IMU, normalized to SI/body-FLU by the
@@ -17,12 +18,14 @@ fault_injector_imu:
 
 pointcloud_body_filter:
   ros__parameters:
-    # Real self-body removal is fail-open until the body origin translation
-    # and CAD component geometry are measured. Raw /livox/lidar is never
-    # modified; this separate output currently preserves every CustomPoint.
+    # The real profile uses the provisional conservative body-FLU envelope.
+    # Raw /livox/lidar is never modified; only this separate Livox copy is
+    # filtered. Set filter_enabled=false for one-switch bypass. Any contract
+    # or runtime failure remains fail-open.
     geometry_contract_file: package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml
-    filter_enabled: false
-    geometry_complete: false
+    filter_enabled: true
+    geometry_complete: true
+    fail_open: true
     input_message_type: livox_custom
     input_topic: /livox/lidar
     output_topic: /sensors/lidar/livox_body_filtered

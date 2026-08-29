@@ -26,10 +26,11 @@ Retained `CustomPoint` coordinates, `offset_time`, `reflectivity`, `tag`, and
 is never replaced.
 
 `geometry_mode=composite` supports a union of oriented boxes and cylinders.
-The real contract deliberately contains no primitives and no body-LiDAR
-translation yet, so `filter_enabled=false` and `geometry_complete=false` make
-the separate output an explicit degraded/fail-open copy. Simulation retains
-the legacy AABB configuration.
+The real contract currently supplies one provisional conservative box with
+body-FLU bounds x/y `[-0.28, 0.28] m` and z `[-0.30, 0.06] m`. It filters only
+the separate localization/mapping copy; `filter_enabled=false` provides a
+one-switch byte-preserving bypass, and invalid geometry/runtime failures remain
+fail-open. Simulation retains the legacy AABB configuration.
 
 The filter discovers `x`, `y`, and `z` from the `PointCloud2` field layout,
 supports all scalar ROS `PointField` datatypes and either endianness, and copies

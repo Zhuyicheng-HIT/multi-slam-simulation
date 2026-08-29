@@ -10,14 +10,19 @@
 
 **Spec:** `docs/MID360S_D435I_GEOMETRY_CONTRACT.md`
 
+**Engineering closure:** The later approved coordinate convention places
+`base_link` at the MID360S center, so zero body/LiDAR translation is defined
+rather than measured. It also replaces the CAD blocker with one provisional,
+fail-open conservative box. The final contract document is authoritative.
+
 ## Global Constraints
 
 - `/livox/lidar` and `/livox/imu` remain immutable raw topics.
 - Do not create `/livox/lidar_imu`.
 - Do not modify FAST-LIO `lidar_to_imu` translation or rotation.
 - Use `R_body_lidar = R_y(+15 deg)`; the former 20-degree draft is invalid.
-- Do not substitute zero for the missing `t_body_lidar`.
-- Hardware body removal remains fail-open and disabled until translation and CAD primitives are complete.
+- Treat `t_body_lidar=[0,0,0]` as the approved coordinate definition, not a measurement.
+- Hardware body removal uses the approved provisional box and remains independently disableable/fail-open.
 - Simulation legacy AABB behavior remains unchanged.
 - No push or merge; produce one local commit after fresh verification.
 
@@ -33,7 +38,7 @@
 
 **Interfaces:**
 - Produces: `load_geometry_contract(path)`, `imu_parameters(contract)`, `body_filter_parameters(contract)`, and `closure_report(contract)`.
-- Missing body translation is represented by YAML `null` and a structured `INCOMPLETE` closure result.
+- Body/camera closure is derived from the coordinate-defined `T_body_lidar` and calibrated `T_camera_lidar`.
 
 - [x] Write tests for exact 15-degree rotation, calibration quaternion/matrix validation, inverse round-trip, missing-translation status, and rejection of malformed rotations.
 - [x] Run the focused pytest and verify failures arise because the module/config do not exist.
@@ -95,7 +100,7 @@
 
 **Interfaces:**
 - Consumes: Task 1 completeness and closure results.
-- Produces: canonical `livox_frame` naming, no raw IMU remap, no hardware body/camera TF when required translations are absent, and explicit simulation-only labels on existing visual transforms.
+- Produces: canonical `livox_frame` naming, no raw IMU remap, coordinate-defined body/LiDAR TF, derived camera closure, and explicit simulation-only labels on existing visual transforms.
 
 - [x] Write tests that reproduce the stale `/livox/lidar_imu`, ambiguous sensor-frame naming, duplicated hardware transform and incomplete-TF hazards.
 - [x] Run them and verify the intended failures.
@@ -113,5 +118,5 @@
 - [x] Build the affected packages with `colcon build` using isolated build/install/log directories.
 - [x] Run affected package tests, full xUnit checks, Python/YAML/XML/Shell checks, and `git diff --check`.
 - [x] Run a launch/static-gravity smoke test and a Livox CustomMsg body-filter smoke test.
-- [x] Audit the final diff for raw topic mutation, guessed translations, 20-degree remnants, giant real-hardware AABB, generated artifacts and unrelated changes.
+- [x] Audit the final diff for raw topic mutation, falsely measured translations, 20-degree remnants, generated artifacts and unrelated changes.
 - [x] Commit only the audited files locally and verify `git status --short --branch` is clean.

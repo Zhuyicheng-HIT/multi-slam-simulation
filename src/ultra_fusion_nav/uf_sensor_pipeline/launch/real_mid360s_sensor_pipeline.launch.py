@@ -1,9 +1,10 @@
-"""Real MID360S sensor normalization with incomplete-geometry guards.
+"""Real MID360S sensor normalization with one canonical geometry contract.
 
 The Livox driver and FAST-LIO keep ownership of immutable /livox/lidar and
-/livox/imu. This launch creates the body-FLU/SI IMU copy and an opt-in,
-type-preserving Livox body-filter copy. Hardware body/camera TF publication is
-disabled until the missing body translation is measured.
+/livox/imu. This launch creates the body-FLU/SI IMU copy and the independently
+disableable, fail-open Livox body-filter copy. The generic simulation D435i TF
+remains disabled because hardware body/camera closure is derived and validated
+from the calibrated camera/LiDAR transform in the geometry contract.
 """
 
 import os

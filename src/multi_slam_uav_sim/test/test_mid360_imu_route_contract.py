@@ -91,9 +91,15 @@ def test_real_mid360_profile_uses_one_body_from_sensor_mount_contract():
     assert config["imu"]["acceleration_scale"] == 9.80665
     assert config["frames"]["body"] == "base_link"
     assert np.allclose(transform["rotation_matrix"], expected, atol=1.0e-10)
-    assert transform["translation_m"] is None
-    assert config["body_envelope"]["enabled"] is False
-    assert config["body_envelope"]["primitives"] == []
+    assert transform["status"] == "coordinate_defined"
+    assert transform["translation_status"] == "coordinate_definition"
+    assert transform["translation_m"] == [0.0, 0.0, 0.0]
+    assert config["body_envelope"]["enabled"] is True
+    assert config["body_envelope"]["fail_open"] is True
+    assert len(config["body_envelope"]["primitives"]) == 1
+    envelope = config["body_envelope"]["primitives"][0]
+    assert envelope["center_body_m"] == [0.0, 0.0, -0.12]
+    assert envelope["dimensions_m"] == [0.56, 0.56, 0.36]
     assert config["topics"]["lidar_raw"] == "/livox/lidar"
     assert config["topics"]["imu_raw"] == "/livox/imu"
 
@@ -158,7 +164,7 @@ def test_fast_lio_internal_lidar_imu_extrinsic_stays_independent():
     assert config["extrinsic_R"] == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 
 
-def test_real_sensor_pipeline_uses_contract_and_suppresses_unmeasured_camera_tf():
+def test_real_sensor_pipeline_uses_contract_and_suppresses_duplicate_camera_tf():
     source = (
         REPO / "ultra_fusion_nav/uf_sensor_pipeline/launch/real_mid360s_sensor_pipeline.launch.py"
     ).read_text(encoding="utf-8")
@@ -169,14 +175,21 @@ def test_real_sensor_pipeline_uses_contract_and_suppresses_unmeasured_camera_tf(
     assert "/livox/lidar_imu" not in source
 
 
-def test_default_real_mount_tf_is_disabled_until_translation_is_measured():
+def test_default_real_mount_tf_uses_coordinate_defined_mid360_origin():
     config = yaml.safe_load(
         (REPO / "mid360_reliable_mapper/config/mid360_mount_extrinsic.yaml").read_text(
             encoding="utf-8"
         )
     )
 
-    assert config["enabled"] is False
-    assert config["translation_status"] == "unmeasured"
-    assert config["translation_m"] is None
-    assert config["rotation_deg"]["pitch"] == 15.0
+    assert config["enabled"] is True
+    assert config["geometry_contract_file"] == (
+        "package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml"
+    )
+    assert config["publish_inverse_for_fastlio"] is False
+
+    source = (
+        REPO / "mid360_reliable_mapper/launch/mid360_mount_tf.launch.py"
+    ).read_text(encoding="utf-8")
+    assert '"coordinate_definition"' in source
+    assert "geometry_contract_file" in source

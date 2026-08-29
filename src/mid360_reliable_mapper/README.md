@@ -176,48 +176,23 @@ sudo timeout 10 tcpdump -i enP8p1s0 -n udp and host 192.168.1.123
 sudo ethtool enP8p1s0
 ```
 
-## 8. 安装角配置
+## 8. 安装外参配置
 
-你说的安装角是 **整颗 MID360 模块相对无人机机体的安装角**，直接改这个文件：
-
-```bash
-nano ~/mid360_flight_ws/src/mid360_reliable_mapper/config/mid360_mount_extrinsic.yaml
-```
-
-示例，MID360 整体向下俯仰 12 度：
-
-```yaml
-rotation_deg:
-  roll: 0.0
-  pitch: -12.0
-  yaw: 0.0
-```
-
-这个配置表示：
+真实 MID360S、D435i、机体坐标系和自机包络的唯一数值来源是：
 
 ```text
-base_link -> MID360 模块/body frame
+uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml
 ```
 
-FAST-LIO2 发布：
+`mid360_mount_extrinsic.yaml` 只引用该合同，不再复制安装角。当前工程定义
+把 `base_link` 原点放在 MID360S 雷达中心，轴为飞机 body-FLU，因此
+`t_body_lidar=[0,0,0]` 是坐标定义而不是实测平移；整颗 MID360S 相对
+body-FLU 使用 `R_y(+15°)`。不要用 `LIDAR_TO_IMU_*` 调整这组安装外参，
+它们仍只属于 FAST-LIO 内部 LiDAR↔IMU 标定。
 
-```text
-camera_init -> body
-```
-
-为了避免 TF 冲突，系统自动取逆发布：
-
-```text
-body -> base_link
-```
-
-最终链路：
-
-```text
-camera_init -> body -> base_link
-```
-
-注意：不要用 `LIDAR_TO_IMU_PITCH_DEG` 调整整颗雷达相对无人机机体的安装角。`LIDAR_TO_IMU_*` 是 MID360 内部 LiDAR-IMU 外参调试入口。
+D435i body 外参由正式 `T_camera_lidar` 自动推导并做 SE(3) 闭环校验。
+实机定位/建图副本采用可关闭、fail-open 的临时保守盒自机过滤；原始
+`/livox/lidar` 永远不变。
 
 ## 9. 真实飞行无头运行
 

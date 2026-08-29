@@ -217,7 +217,8 @@ def generate_launch_description():
             default_value="true",
             description=(
                 "Publish the simulation D435i mount TF. Real hardware launch "
-                "must disable this until T_body_camera or T_body_lidar is measured."
+                "must disable this because its calibrated closure is owned by the "
+                "hardware geometry contract."
             ),
         ),
         DeclareLaunchArgument("enable_nmea_gnss", default_value="false"),

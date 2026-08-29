@@ -14,9 +14,13 @@ p_parent = R_parent_child * p_child + t_parent_child
 ```
 
 The aircraft body frame is `base_link` in FLU convention: X forward, Y left,
-Z up. The authoritative LiDAR frame is `livox_frame`. The camera optical frame
-must match the runtime `CameraInfo.header.frame_id`; the calibrated numeric
-transform remains valid when that runtime name is substituted explicitly.
+Z up. For this engineering release, the `base_link` origin is **defined** at
+the MID360S LiDAR measurement center while retaining the aircraft body-FLU
+axes. Consequently `t_body_lidar = [0, 0, 0] m` is a coordinate-system
+definition, not a measured mechanical translation. The authoritative LiDAR
+frame is `livox_frame`. The camera optical frame must match the runtime
+`CameraInfo.header.frame_id`; the calibrated numeric transform remains valid
+when that runtime name is substituted explicitly.
 
 ## Topic ownership
 
@@ -42,10 +46,10 @@ R_body_lidar = R_y(+15 deg)
 q_body_lidar_xyzw = [0, 0.130526192220, 0, 0.991444861374]
 ```
 
-The translation `t_body_lidar` is unmeasured. It must remain absent rather
-than being represented by a zero vector. Rotation-only consumers such as IMU
-vector normalization may operate; translation-dependent consumers such as
-the hardware body mask and body-to-LiDAR TF must remain disabled/fail-open.
+The translation is exactly zero by the `base_link` origin definition above;
+its provenance is `coordinate_definition`, never `measured`. The 15-degree
+rotation applies to the complete MID360S module relative to the body-FLU axes.
+It is not, and must not overwrite, FAST-LIO's internal LiDAR-to-IMU extrinsic.
 
 The Livox acceleration is in g and the gyro is in rad/s. A stationary,
 level airframe should observe approximately `[-sin(15 deg), 0, cos(15 deg)] g`
@@ -54,6 +58,9 @@ rotation into `base_link`.
 
 ## Camera-to-LiDAR calibration
 
+The source is the four-page formal report
+`MID360S_D435i_外参标定结果.docx` (SHA256
+`5e6e1401f26eb369b8d7c3132b3a5c6c777f44d1f44d6bce93b938b1dd28160c`).
 The authoritative calibration maps `livox_frame` into the D435i color optical
 frame:
 
@@ -67,43 +74,46 @@ The calibration report records 3.03 cm overall RMSE and 5.93 cm maximum
 single-point residual. It is suitable for engineering initialization, not a
 sub-centimetre ground truth.
 
-When all body transforms are measured, closure is checked as:
+The body-to-camera transform is derived automatically, without a separately
+measured `t_body_camera`:
 
 ```text
+T_body_camera = T_body_lidar * inverse(T_camera_lidar)
 T_body_camera * T_camera_lidar == T_body_lidar
 ```
 
-Missing body translation produces an `INCOMPLETE` result, never an invented
-transform. The calibrated camera-to-LiDAR transform is a closure constraint;
-it must not be published as a redundant TF edge when both sensors already
-have body-frame parents.
+The contract checker reports the resulting chain as `DERIVED` and verifies
+near-zero SE(3) closure residual. The calibrated camera-to-LiDAR transform is
+still a closure constraint; the generic simulation D435i mount publisher stays
+off on hardware to avoid a redundant TF parent for RealSense optical frames.
 
 ## Self-body envelope
 
 Simulation retains its established legacy AABB behavior. Real hardware uses
-an opt-in union of parameterized boxes and cylinders. Every primitive has a
-name, body-frame center, orientation, dimensions and non-negative padding.
-The real composite filter stays disabled until `t_body_lidar` and CAD-derived
-primitives are complete.
+one configurable, provisional conservative box in body-FLU:
+
+```text
+x: [-0.28, 0.28] m
+y: [-0.28, 0.28] m
+z: [-0.30, 0.06] m
+```
+
+This is an engineering approximation based on the roughly 50 x 50 x 30 cm
+airframe envelope plus modest padding. It intentionally does not model arms,
+motors, propeller hubs, landing gear or sensor mounts as separate primitives.
+It is enabled for the filtered localization/mapping copy, can be disabled with
+one parameter (`filter_enabled=false`), and remains fail-open.
 
 On missing/invalid geometry or a runtime filtering exception, the filtered
 copy fails open by forwarding the original scan and publishing degraded
 diagnostics. Retained Livox points preserve coordinates, `offset_time`,
 `reflectivity`, `tag`, and `line` exactly.
 
-## Required measurements
+## Future refinement policy
 
-The minimum hardware input is:
-
-1. CAD definition of the `base_link` origin and FLU axes.
-2. LiDAR measurement-origin translation `t_body_lidar` in metres.
-3. Central body oriented box: center, orientation, length, width, height.
-4. Each arm: endpoints or center/direction/length, plus radius.
-5. Coaxial motor/hub stacks: center, axis, radius, height.
-6. Landing-gear struts and skids: endpoints/centers, axes and dimensions.
-7. MID360S, D435i and other persistent visible mounts/housings: oriented-box
-   or cylinder dimensions.
-8. Per-component manufacturing/flex padding.
-
-The 50 x 50 x 30 cm overall airframe envelope is a sanity bound only and must
-not be used as a single removal box.
+Complete CAD is not a feature-enablement blocker. Refine the provisional box
+into component geometry only if real logs demonstrate either (a) removal of
+nearby environment points, especially walls or ground, or (b) persistent
+self-body returns outside the box. Any refinement must preserve immutable raw
+`/livox/lidar`, the separate filtered-copy ownership, the one-switch bypass and
+fail-open behavior.
