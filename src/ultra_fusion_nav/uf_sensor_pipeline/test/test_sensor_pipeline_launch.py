@@ -36,6 +36,22 @@ class SensorPipelineLaunchTest(unittest.TestCase):
         self.assertIn("sensor_relay_manager", names)
         self.assertGreaterEqual(names.count("fault_injector_lidar"), 1)
 
+    def test_production_body_filter_uses_cpp_node(self):
+        description = MODULE.generate_launch_description()
+        body_filter = next(
+            action for action in description.entities
+            if isinstance(action, Node)
+            and action.__dict__.get("_Node__node_name") == "pointcloud_body_filter"
+        )
+        self.assertEqual(
+            body_filter.__dict__.get("_Node__package"),
+            "uf_pointcloud_body_filter_cpp",
+        )
+        self.assertEqual(
+            body_filter.__dict__.get("_Node__node_executable"),
+            "pointcloud_body_filter_cpp",
+        )
+
     def test_manager_is_the_only_production_relay_entrypoint(self):
         source = PATH.read_text()
         self.assertIn('executable="sensor_relay_manager"', source)

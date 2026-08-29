@@ -98,8 +98,8 @@ def generate_launch_description():
             condition=IfCondition(enable_fcu_observation_bridge),
         ),
         Node(
-            package="uf_sensor_pipeline",
-            executable="pointcloud_body_filter",
+            package="uf_pointcloud_body_filter_cpp",
+            executable="pointcloud_body_filter_cpp",
             name="pointcloud_body_filter",
             parameters=[config, {"use_sim_time": use_sim_time}],
             output="screen",
