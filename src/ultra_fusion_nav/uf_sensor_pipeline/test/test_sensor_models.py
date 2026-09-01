@@ -59,6 +59,23 @@ class SensorModelsTest(unittest.TestCase):
         self.assertEqual((removed_body, removed_range, total), (1, 0, 1))
         self.assertEqual(output.width, 0)
 
+    def test_body_filter_vectorized_path_preserves_record_bytes(self):
+        msg = cloud([(1.0, 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)])
+        output, removed_body, removed_range, total = filter_cloud(
+            msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15), 0.1, 40.0
+        )
+        self.assertEqual((removed_body, removed_range, total), (0, 0, 2))
+        self.assertEqual(output.width, 2)
+        self.assertEqual(output.data, msg.data)
+
+    def test_body_filter_rejects_nonfinite_ranges_without_serialization_errors(self):
+        msg = cloud([(float("nan"), 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)])
+        output, removed_body, removed_range, total = filter_cloud(
+            msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15), 0.1, 40.0
+        )
+        self.assertEqual((removed_body, removed_range, total), (0, 1, 2))
+        self.assertEqual(output.width, 1)
+
     def test_stamp_offset_handles_second_boundary(self):
         stamp = Time(sec=10, nanosec=900_000_000)
 
