@@ -26,6 +26,7 @@ setup(
             "fcu_observation_bridge = uf_sensor_pipeline.fcu_observation_bridge:main",
             "fault_injector = uf_sensor_pipeline.fault_injector:main",
             "sensor_relay_manager = uf_sensor_pipeline.sensor_relay_manager:main",
+            "livox_custom_to_pointcloud = uf_sensor_pipeline.livox_custom_to_pointcloud:main",
             "robustness_fault_injector = uf_sensor_pipeline.robustness_fault_injector:main",
             "gps_flow_fusion = uf_sensor_pipeline.gps_flow_fusion_node:main",
             "gnss_metadata_relay = uf_sensor_pipeline.gnss_metadata_relay:main",
