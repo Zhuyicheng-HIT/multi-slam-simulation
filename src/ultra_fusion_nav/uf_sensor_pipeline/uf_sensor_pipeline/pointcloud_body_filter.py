@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Float32
 
@@ -25,6 +25,7 @@ class PointCloudBodyFilter(Node):
             "lidar_to_body_rotation", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         )
         self.declare_parameter("lidar_to_body_translation", [0.0, 0.0, 0.0])
+        self.declare_parameter("reliable_input", False)
 
         self.bounds = tuple(float(self.get_parameter(name).value) for name in (
             "body_min_x_m", "body_max_x_m", "body_min_y_m", "body_max_y_m",
@@ -43,11 +44,18 @@ class PointCloudBodyFilter(Node):
         self.ratio_pub = self.create_publisher(
             Float32, "/sensors/lidar/body_removed_ratio", qos_profile_sensor_data
         )
+        input_qos = qos_profile_sensor_data
+        if bool(self.get_parameter("reliable_input").value):
+            input_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST, depth=2,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE,
+            )
         self.create_subscription(
             PointCloud2,
             str(self.get_parameter("input_topic").value),
             self._callback,
-            qos_profile_sensor_data,
+            input_qos,
         )
         self.frames = 0
         self.removed_body = 0
