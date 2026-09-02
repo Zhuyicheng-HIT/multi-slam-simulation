@@ -29,7 +29,7 @@ def ekf_flags_have_absolute_position(flags):
 
 
 class GuidedRectangleWaypoints(Node):
-    """GPS/GUIDED rectangle flight using MAVROS local-position setpoints."""
+    """GPS/GUIDED rectangle flight publishing mission intents."""
 
     def __init__(self, node_name="guided_rectangle_waypoints"):
         super().__init__(node_name)
@@ -146,8 +146,9 @@ class GuidedRectangleWaypoints(Node):
             self._flow_cb,
             qos_profile_sensor_data,
         )
+        # The safety arbiter owns the only automatic MAVROS setpoint publisher.
         self.setpoint_pub = self.create_publisher(
-            PoseStamped, "/mavros/setpoint_position/local", 10
+            PoseStamped, "/autonomy/intent/mission/pose", 10
         )
         self.arming_cli = self.create_client(CommandBool, "/mavros/cmd/arming")
         self.mode_cli = self.create_client(SetMode, "/mavros/set_mode")

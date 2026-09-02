@@ -84,7 +84,8 @@ class RectangleFlowTest(Node):
         self.create_subscription(
             OpticalFlow, self.get_parameter("flow_topic").value, self._flow_cb, 10
         )
-        self.setpoint_pub = self.create_publisher(PoseStamped, "/mavros/setpoint_position/local", 10)
+        # Publish a mission intent; flight_command_arbiter owns MAVROS output.
+        self.setpoint_pub = self.create_publisher(PoseStamped, "/autonomy/intent/mission/pose", 10)
         self.arming_cli = self.create_client(CommandBool, "/mavros/cmd/arming")
         self.mode_cli = self.create_client(SetMode, "/mavros/set_mode")
         self.takeoff_cli = self.create_client(CommandTOL, "/mavros/cmd/takeoff")
