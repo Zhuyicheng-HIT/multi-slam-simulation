@@ -41,3 +41,20 @@ interpreter cannot import ROS `rclpy`.
 Command contract SHA256 remains unchanged for the four PR23 launch/stop files recorded
 before integration. No Gazebo/live replay or hardware acceptance was performed on this
 server; NUC validation remains required.
+
+## Server ownership closure
+
+The three original ownership failures were traced to direct setpoint publishers in
+`guided_flight.py`, `guided_rectangle_waypoints.py`, and `rectangle_flow_test.py`, plus
+an inherited test expectation that the unchanged PR23 shell entrypoints call a
+`safety_slice_start` helper which is not present in that command contract. The three
+Python nodes now publish `/autonomy/intent/mission/pose`; only
+`flight_command_arbiter` publishes automatic `/mavros/setpoint_position/local`.
+The shell entrypoints were deliberately not edited, so their recorded SHA256 values
+remain unchanged.
+
+After the fix: full build remains 22/22 packages. The full suite remains 263 tests,
+with 262 passing and only the one `safety_slice_start` assertion failing. This is a
+test/command-contract mismatch, not a second MAVROS publisher. Server-verified items
+are build, C++/Python unit tests, offline benchmarks, and static ownership checks;
+NUC, MID360, D435i, FCU, real ROS graph, and field execution remain onboard-pending.
