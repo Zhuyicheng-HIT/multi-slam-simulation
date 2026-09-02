@@ -22,6 +22,94 @@ def standardize_imu_acceleration(msg, scale):
     return output
 
 
+def _proper_rotation_matrix(values):
+    rotation = tuple(float(value) for value in values)
+    if len(rotation) != 9 or not all(math.isfinite(value) for value in rotation):
+        raise ValueError("mid360_to_body_rotation must be a proper orthonormal rotation")
+    rows = (rotation[0:3], rotation[3:6], rotation[6:9])
+    tolerance = 1.0e-6
+    for row_index, row in enumerate(rows):
+        for other_index, other in enumerate(rows):
+            dot = sum(row[column] * other[column] for column in range(3))
+            expected = 1.0 if row_index == other_index else 0.0
+            if abs(dot - expected) > tolerance:
+                raise ValueError(
+                    "mid360_to_body_rotation must be a proper orthonormal rotation"
+                )
+    determinant = (
+        rotation[0] * (rotation[4] * rotation[8] - rotation[5] * rotation[7])
+        - rotation[1] * (rotation[3] * rotation[8] - rotation[5] * rotation[6])
+        + rotation[2] * (rotation[3] * rotation[7] - rotation[4] * rotation[6])
+    )
+    if abs(determinant - 1.0) > tolerance:
+        raise ValueError("mid360_to_body_rotation must be a proper orthonormal rotation")
+    return rotation
+
+
+def _rotate_vector(vector, rotation):
+    source = (float(vector.x), float(vector.y), float(vector.z))
+    return tuple(
+        sum(rotation[row * 3 + column] * source[column] for column in range(3))
+        for row in range(3)
+    )
+
+
+def _rotate_covariance(covariance, rotation):
+    values = tuple(float(value) for value in covariance)
+    if len(values) != 9:
+        raise ValueError("IMU covariance must contain 9 values")
+    if values[0] == -1.0:
+        return values
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("IMU covariance must contain finite values or the -1 sentinel")
+    intermediate = [
+        sum(rotation[row * 3 + inner] * values[inner * 3 + column]
+            for inner in range(3))
+        for row in range(3)
+        for column in range(3)
+    ]
+    return [
+        sum(intermediate[row * 3 + inner] * rotation[column * 3 + inner]
+            for inner in range(3))
+        for row in range(3)
+        for column in range(3)
+    ]
+
+
+def standardize_imu_to_body(msg, scale, mid360_to_body_rotation, output_frame_id):
+    """Convert MID360 IMU units and express vector/covariance data in body FLU.
+
+    ``mid360_to_body_rotation`` is :math:`R_{body\leftarrow mid360}`.  It is
+    deliberately independent from FAST-LIO's internal LiDAR-to-IMU extrinsic.
+    """
+    rotation = _proper_rotation_matrix(mid360_to_body_rotation)
+    output = standardize_imu_acceleration(msg, scale)
+    acceleration = _rotate_vector(output.linear_acceleration, rotation)
+    angular_velocity = _rotate_vector(output.angular_velocity, rotation)
+    output.linear_acceleration.x, output.linear_acceleration.y, output.linear_acceleration.z = (
+        acceleration
+    )
+    output.angular_velocity.x, output.angular_velocity.y, output.angular_velocity.z = (
+        angular_velocity
+    )
+    output.linear_acceleration_covariance = _rotate_covariance(
+        output.linear_acceleration_covariance, rotation
+    )
+    output.angular_velocity_covariance = _rotate_covariance(
+        output.angular_velocity_covariance, rotation
+    )
+    # Livox MID360 publishes acceleration and angular velocity but no
+    # orientation estimate.  ROS Imu uses orientation_covariance[0] == -1 as
+    # the explicit unavailable sentinel.
+    output.orientation.x = 0.0
+    output.orientation.y = 0.0
+    output.orientation.z = 0.0
+    output.orientation.w = 1.0
+    output.orientation_covariance = [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    output.header.frame_id = str(output_frame_id)
+    return output
+
+
 _POINT_FIELD_FORMATS = {
     PointField.FLOAT32: "f",
     PointField.FLOAT64: "d",

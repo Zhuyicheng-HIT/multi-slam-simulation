@@ -1,4 +1,4 @@
-# MID360S real/simulation protocol alignment (2026-07-29)
+# MID360S real/simulation protocol alignment (2026-07-29, corrected 2026-08-29)
 
 ## Scope
 
@@ -27,12 +27,17 @@ are not yet synchronized to the FCU or host clock.
 
 | Role | Topic | Type | Frame |
 | --- | --- | --- | --- |
-| MID360S points | `/livox/lidar` | `livox_ros_driver2/msg/CustomMsg` | `mid360_link` |
-| MID360S internal IMU | `/livox/lidar_imu` | `sensor_msgs/msg/Imu` | driver frame |
-| FCU main IMU | `/livox/imu` | `sensor_msgs/msg/Imu` | `base_link` |
+| MID360S points | `/livox/lidar` | `livox_ros_driver2/msg/CustomMsg` | `livox_frame` |
+| MID360S internal IMU (raw) | `/livox/imu` | `sensor_msgs/msg/Imu` | `livox_frame` |
+| MID360S internal IMU (backend copy) | `/sensors/imu` | `sensor_msgs/msg/Imu` | `base_link` |
+| FCU IMU | MAVROS/ArduPilot chain | separate | FCU-defined |
 
-The LiDAR internal IMU is diagnostic only. FAST-LIO and the fusion backend keep
-the FCU HIGHRES_IMU path as the main inertial input.
+The previous `/livox/lidar_imu`/FCU ownership statement was incorrect. The
+MID360S internal `/livox/imu` is retained at approximately 200 Hz and remains
+the FAST-LIO inertial input. The Ultra-Fusion backend consumes its SI/body-FLU
+copy on `/sensors/imu`; the FCU IMU is a separate chain and is not substituted
+for it. FAST-LIO's factory LiDAR-to-IMU extrinsic remains independent from the
+whole-module 15-degree body installation rotation.
 
 The project launch now generates its own MID360S runtime SDK2 JSON with the
 actual LiDAR and host addresses. It no longer includes the generic MID360

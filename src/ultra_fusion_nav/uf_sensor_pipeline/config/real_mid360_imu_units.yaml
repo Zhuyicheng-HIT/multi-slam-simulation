@@ -1,8 +1,31 @@
-# Overlay for the real MID360S sensor pipeline. The Livox SDK publishes
-# linear acceleration in g; the backend-facing ROS IMU contract is SI.
+# Real MID360S installation profile. The canonical transform, frame and topic
+# contract lives in real_mid360s_d435i_geometry.yaml. Do not duplicate its
+# numeric transform here. Its zero translation is a coordinate definition,
+# not a measured LiDAR mounting offset.
+fcu_observation_bridge:
+  ros__parameters:
+    # This remains the MID360S internal IMU, normalized to SI/body-FLU by the
+    # relay. The separate MAVROS/ArduPilot IMU is not a backend substitute.
+    imu_input_topic: /sensors/imu
+
+sensor_relay_manager:
+  ros__parameters:
+    geometry_contract_file: package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml
+
 fault_injector_imu:
   ros__parameters:
-    input_topic: /livox/imu
-    output_topic: /sensors/imu
-    imu_acceleration_scale: 9.80665
+    geometry_contract_file: package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml
 
+pointcloud_body_filter:
+  ros__parameters:
+    # The real profile uses the provisional conservative body-FLU envelope.
+    # Raw /livox/lidar is never modified; only this separate Livox copy is
+    # filtered. Set filter_enabled=false for one-switch bypass. Any contract
+    # or runtime failure remains fail-open.
+    geometry_contract_file: package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml
+    filter_enabled: true
+    geometry_complete: true
+    fail_open: true
+    input_message_type: livox_custom
+    input_topic: /livox/lidar
+    output_topic: /sensors/lidar/livox_body_filtered

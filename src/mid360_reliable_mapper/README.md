@@ -176,48 +176,23 @@ sudo timeout 10 tcpdump -i enP8p1s0 -n udp and host 192.168.1.123
 sudo ethtool enP8p1s0
 ```
 
-## 8. 安装角配置
+## 8. 安装外参配置
 
-你说的安装角是 **整颗 MID360 模块相对无人机机体的安装角**，直接改这个文件：
-
-```bash
-nano ~/mid360_flight_ws/src/mid360_reliable_mapper/config/mid360_mount_extrinsic.yaml
-```
-
-示例，MID360 整体向下俯仰 12 度：
-
-```yaml
-rotation_deg:
-  roll: 0.0
-  pitch: -12.0
-  yaw: 0.0
-```
-
-这个配置表示：
+真实 MID360S、D435i、机体坐标系和自机包络的唯一数值来源是：
 
 ```text
-base_link -> MID360 模块/body frame
+uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml
 ```
 
-FAST-LIO2 发布：
+`mid360_mount_extrinsic.yaml` 只引用该合同，不再复制安装角。当前工程定义
+把 `base_link` 原点放在 MID360S 雷达中心，轴为飞机 body-FLU，因此
+`t_body_lidar=[0,0,0]` 是坐标定义而不是实测平移；整颗 MID360S 相对
+body-FLU 使用 `R_y(+15°)`。不要用 `LIDAR_TO_IMU_*` 调整这组安装外参，
+它们仍只属于 FAST-LIO 内部 LiDAR↔IMU 标定。
 
-```text
-camera_init -> body
-```
-
-为了避免 TF 冲突，系统自动取逆发布：
-
-```text
-body -> base_link
-```
-
-最终链路：
-
-```text
-camera_init -> body -> base_link
-```
-
-注意：不要用 `LIDAR_TO_IMU_PITCH_DEG` 调整整颗雷达相对无人机机体的安装角。`LIDAR_TO_IMU_*` 是 MID360 内部 LiDAR-IMU 外参调试入口。
+D435i body 外参由正式 `T_camera_lidar` 自动推导并做 SE(3) 闭环校验。
+实机定位/建图副本采用可关闭、fail-open 的临时保守盒自机过滤；原始
+`/livox/lidar` 永远不变。
 
 ## 9. 真实飞行无头运行
 
@@ -281,13 +256,13 @@ bash nano_flight/scripts/07_status_topics.sh
 
 ```bash
 ros2 topic hz /livox/lidar
-ros2 topic hz /livox/lidar_imu
 ros2 topic hz /livox/imu
+ros2 topic hz /sensors/imu
 ros2 topic hz /cloud_registered_reliable
 ros2 topic hz /fastlio_occupancy_grid
 ros2 topic echo /Odometry --once
-ros2 run tf2_ros tf2_echo body base_link
-ros2 run tf2_ros tf2_echo camera_init base_link
+ros2 run uf_sensor_pipeline geometry_contract_check \
+  package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml --json
 ```
 
 ## 12. 安全录包
@@ -302,8 +277,8 @@ DURATION=60 bash nano_flight/scripts/06_record_safety_bag.sh
 默认录制：
 
 - `/livox/lidar`
-- `/livox/lidar_imu`（MID360S 内部 IMU，仅诊断）
-- `/livox/imu`（飞控 HIGHRES_IMU，FAST-LIO 主 IMU）
+- `/livox/imu`（MID360S 内部 IMU 原始流，约 200 Hz，FAST-LIO 输入）
+- `/sensors/imu`（g 转 m/s² 且旋转到 body-FLU 的后端副本）
 - `/Odometry`
 - `/path`
 - `/cloud_registered`
@@ -347,11 +322,12 @@ ldconfig -p | grep livox
 真正飞行前至少确认：
 
 1. `ping 192.168.1.123` 正常。
-2. `/livox/lidar`、`/livox/lidar_imu` 和飞控 `/livox/imu` 频率稳定。
+2. `/livox/lidar`、MID360S 内部 `/livox/imu` 和 `/sensors/imu` 频率稳定。
 3. `/Odometry` 静止时不明显漂移。
 4. `/cloud_registered_reliable` 有输出。
 5. `/fastlio_occupancy_grid` 有输出。
-6. `tf2_echo body base_link` 能看到配置的安装角。
+6. 在 `t_body_lidar` 实测前，硬件 body-LiDAR TF 和实机 self-body mask
+   必须保持关闭；不得用零平移伪造完整外参。
 7. 地面移动测试时，地图不会整体飞走。
 8. Nano CPU、内存、温度和供电稳定。
 

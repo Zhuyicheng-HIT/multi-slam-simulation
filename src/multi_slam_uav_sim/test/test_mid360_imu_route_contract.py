@@ -1,6 +1,8 @@
 from pathlib import Path
+import math
 import xml.etree.ElementTree as ET
 
+import numpy as np
 import yaml
 
 
@@ -65,4 +67,129 @@ def test_real_mid360_imu_unit_overlay_uses_g_to_si_scale():
             encoding="utf-8"
         )
     )
-    assert config["fault_injector_imu"]["ros__parameters"]["imu_acceleration_scale"] == 9.80665
+    expected_uri = "package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml"
+    assert config["fcu_observation_bridge"]["ros__parameters"]["imu_input_topic"] == "/sensors/imu"
+    assert config["sensor_relay_manager"]["ros__parameters"]["geometry_contract_file"] == expected_uri
+    assert config["fault_injector_imu"]["ros__parameters"]["geometry_contract_file"] == expected_uri
+
+
+def test_real_mid360_profile_uses_one_body_from_sensor_mount_contract():
+    config = yaml.safe_load(
+        (REPO / "ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    transform = config["transforms"]["body_lidar"]
+    expected = np.asarray(
+        [
+            math.cos(math.radians(15.0)), 0.0, math.sin(math.radians(15.0)),
+            0.0, 1.0, 0.0,
+            -math.sin(math.radians(15.0)), 0.0, math.cos(math.radians(15.0)),
+        ]
+    )
+
+    assert config["imu"]["acceleration_scale"] == 9.80665
+    assert config["frames"]["body"] == "base_link"
+    assert np.allclose(transform["rotation_matrix"], expected, atol=1.0e-10)
+    assert transform["status"] == "coordinate_defined"
+    assert transform["translation_status"] == "coordinate_definition"
+    assert transform["translation_m"] == [0.0, 0.0, 0.0]
+    assert config["body_envelope"]["enabled"] is True
+    assert config["body_envelope"]["fail_open"] is True
+    assert len(config["body_envelope"]["primitives"]) == 1
+    envelope = config["body_envelope"]["primitives"][0]
+    assert envelope["center_body_m"] == [0.0, 0.0, -0.12]
+    assert envelope["dimensions_m"] == [0.56, 0.56, 0.36]
+    assert config["topics"]["lidar_raw"] == "/livox/lidar"
+    assert config["topics"]["imu_raw"] == "/livox/imu"
+
+
+def test_real_mount_rotation_maps_level_static_gravity_to_body_up():
+    config = yaml.safe_load(
+        (REPO / "ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    rotation = np.asarray(
+        config["transforms"]["body_lidar"]["rotation_matrix"]
+    ).reshape(3, 3)
+    angle = math.radians(15.0)
+    gravity_mid360_g = np.asarray([-math.sin(angle), 0.0, math.cos(angle)])
+
+    gravity_body_mps2 = rotation @ gravity_mid360_g * 9.80665
+
+    assert np.allclose(gravity_body_mps2, [0.0, 0.0, 9.80665], atol=1.0e-6)
+    assert np.allclose(rotation.T @ rotation, np.eye(3), atol=1.0e-10)
+    assert np.isclose(np.linalg.det(rotation), 1.0, atol=1.0e-10)
+
+
+def test_real_launch_keeps_mid360_imu_on_canonical_raw_topic():
+    source = (
+        REPO / "mid360_reliable_mapper/launch/real_mid360_fastlio.launch.py"
+    ).read_text(encoding="utf-8")
+
+    assert "/livox/lidar_imu" not in source
+    assert '("/livox/imu",' not in source
+
+
+def test_simulation_mount_and_imu_contract_remain_unchanged():
+    config = yaml.safe_load(
+        (REPO / "ultra_fusion_nav/uf_sensor_pipeline/config/sim_sensor_config.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    relay = config.get("sensor_relay_manager", {}).get("ros__parameters", {})
+    body_filter = config["pointcloud_body_filter"]["ros__parameters"]
+
+    assert relay.get("mid360_to_body_rotation", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                                                    0.0, 0.0, 1.0]) == [
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+    assert relay.get("imu_output_frame_id", "") == ""
+    assert body_filter["lidar_to_body_rotation"] == [
+        0.9659258263, 0.0, 0.2588190451,
+        0.0, 1.0, 0.0,
+        -0.2588190451, 0.0, 0.9659258263,
+    ]
+
+
+def test_fast_lio_internal_lidar_imu_extrinsic_stays_independent():
+    config = yaml.safe_load(
+        (REPO / "mid360_reliable_mapper/config/fast_lio_real_mid360.yaml").read_text(
+            encoding="utf-8"
+        )
+    )["/**"]["ros__parameters"]["mapping"]
+
+    assert config["extrinsic_T"] == [-0.011, -0.02329, 0.04412]
+    assert config["extrinsic_R"] == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def test_real_sensor_pipeline_uses_contract_and_suppresses_duplicate_camera_tf():
+    source = (
+        REPO / "ultra_fusion_nav/uf_sensor_pipeline/launch/real_mid360s_sensor_pipeline.launch.py"
+    ).read_text(encoding="utf-8")
+
+    assert "real_mid360_imu_units.yaml" in source
+    assert '"publish_d435i_mount_tf": "false"' in source
+    assert 'default_value="[imu]"' in source
+    assert "/livox/lidar_imu" not in source
+
+
+def test_default_real_mount_tf_uses_coordinate_defined_mid360_origin():
+    config = yaml.safe_load(
+        (REPO / "mid360_reliable_mapper/config/mid360_mount_extrinsic.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert config["enabled"] is True
+    assert config["geometry_contract_file"] == (
+        "package://uf_sensor_pipeline/config/real_mid360s_d435i_geometry.yaml"
+    )
+    assert config["publish_inverse_for_fastlio"] is False
+
+    source = (
+        REPO / "mid360_reliable_mapper/launch/mid360_mount_tf.launch.py"
+    ).read_text(encoding="utf-8")
+    assert '"coordinate_definition"' in source
+    assert "geometry_contract_file" in source

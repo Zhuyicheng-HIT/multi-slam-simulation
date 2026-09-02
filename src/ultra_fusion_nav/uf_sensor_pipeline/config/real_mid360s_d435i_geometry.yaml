@@ -1,0 +1,74 @@
+schema_version: 1
+
+provenance:
+  calibration_document: MID360S_D435i_外参标定结果.docx
+  calibration_document_sha256: 5e6e1401f26eb369b8d7c3132b3a5c6c777f44d1f44d6bce93b938b1dd28160c
+  calibration_date: "2026-08-21"
+  installation_confirmation_date: "2026-08-29"
+
+frames:
+  body: base_link
+  lidar: livox_frame
+  camera_optical: d435i_color_optical_frame
+
+topics:
+  lidar_raw: /livox/lidar
+  lidar_filtered: /sensors/lidar/livox_body_filtered
+  imu_raw: /livox/imu
+  imu_body: /sensors/imu
+
+imu:
+  acceleration_scale: 9.80665
+  raw_acceleration_unit: g
+  raw_gyro_unit: rad/s
+  orientation_available: false
+
+transforms:
+  body_lidar:
+    status: coordinate_defined
+    rotation_status: nominal
+    rotation_source: mechanical_installation_15_deg_nose_down
+    rotation_matrix:
+      [0.9659258262890683, 0.0, 0.2588190451025207,
+       0.0, 1.0, 0.0,
+       -0.2588190451025207, 0.0, 0.9659258262890683]
+    quaternion_xyzw: [0.0, 0.1305261922200516, 0.0, 0.9914448613738104]
+    origin_definition: base_link_origin_is_mid360_measurement_center
+    translation_status: coordinate_definition
+    translation_m: [0.0, 0.0, 0.0]
+
+  camera_lidar:
+    status: calibrated
+    rotation_status: calibrated
+    translation_status: calibrated
+    direction: lidar_to_camera
+    translation_m: [0.063705566722, -0.170242628857, -0.008687984507]
+    quaternion_xyzw: [0.429882540535, -0.439190855086, 0.554046154514, 0.561556099442]
+    calibration_rmse_m: 0.0303
+    calibration_max_residual_m: 0.0593
+
+  body_camera:
+    status: derived
+    derivation: T_body_lidar * inverse(T_camera_lidar)
+
+fast_lio_internal_lidar_imu:
+  owned_externally: true
+  mutable_from_geometry_contract: false
+  config_path: mid360_reliable_mapper/config/fast_lio_real_mid360.yaml
+
+body_envelope:
+  enabled: true
+  mode: composite
+  status: provisional_conservative_envelope
+  source: approximately_50x50x30cm_airframe_plus_engineering_padding
+  fail_open: true
+  primitives:
+    - name: provisional_airframe_envelope
+      type: box
+      center_body_m: [0.0, 0.0, -0.12]
+      rotation_matrix:
+        [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+      dimensions_m: [0.56, 0.56, 0.36]
+      padding_m: 0.0
