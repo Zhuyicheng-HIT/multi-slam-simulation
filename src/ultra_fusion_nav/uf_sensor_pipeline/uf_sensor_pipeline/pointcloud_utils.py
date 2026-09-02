@@ -98,12 +98,17 @@ def filter_cloud(
         dtype = _NUMPY_DTYPES.get(field.datatype)
         if dtype is None or int(field.count) != 1:
             raise ValueError(f"Unsupported PointField datatype for {field.name}: {field.datatype}")
-        np_dtype = np.dtype(dtype)
-        if np_dtype.kind not in ("i", "u", "f"):
-            return records[:, int(field.offset)].astype(np.float64)
-        return records[:, int(field.offset):int(field.offset) + np.dtype(dtype).itemsize].view(
-            np.dtype(endian + dtype)
-        ).reshape(-1).astype(np.float64, copy=False)
+        np_dtype = np.dtype(endian + dtype)
+        offset = int(field.offset)
+        if offset < 0 or offset + np_dtype.itemsize > point_step:
+            raise ValueError(f"PointField {field.name} exceeds point_step")
+        # Explicit byte offset and strides are supported by NumPy 1.21.x and
+        # avoid .view() on the non-contiguous [::point_step] field slices.
+        values = np.ndarray(
+            shape=(available_rows, width), dtype=np_dtype, buffer=msg.data,
+            offset=offset, strides=(row_step, point_step),
+        )
+        return values.reshape(-1).astype(np.float64, copy=False)
 
     x = field_values(fields["x"])
     y = field_values(fields["y"])
