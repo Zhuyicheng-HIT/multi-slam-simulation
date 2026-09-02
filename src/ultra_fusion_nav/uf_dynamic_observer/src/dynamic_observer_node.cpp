@@ -1,5 +1,6 @@
 #include "uf_dynamic_observer/conservative_free_space.hpp"
 #include "uf_dynamic_observer/causal_imu_deskew.hpp"
+#include "uf_dynamic_observer/epoch_reseed_guard.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
@@ -11,6 +12,8 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <uf_dynamic_interfaces/msg/previous_fast_lio_state.hpp>
+#include <uf_interfaces/msg/fusion_epoch.hpp>
 
 #include <Eigen/Geometry>
 
@@ -72,11 +75,17 @@ public:
     const auto pose_topic = declare_parameter<std::string>("pose_topic", "/Odometry");
     const auto imu_topic = declare_parameter<std::string>("imu_topic", "/livox/imu");
     const auto livox_topic = declare_parameter<std::string>("livox_topic", "/livox/lidar");
+    const auto state_epoch_topic = declare_parameter<std::string>(
+      "state_epoch_topic", "/clean_fast_lio/previous_state");
+    const auto fusion_epoch_topic = declare_parameter<std::string>(
+      "fusion_epoch_topic", "/fusion/unified/epoch");
     const auto pointcloud_topic =
       declare_parameter<std::string>("pointcloud_topic", "/sim/mid360/points_raw");
     max_pending_scans_ = static_cast<std::size_t>(
       std::max<std::int64_t>(1, declare_parameter<int>("max_pending_scans", 8)));
     max_pose_wait_ms_ = declare_parameter<double>("max_pose_wait_ms", 250.0);
+    epoch_guard_ = std::make_unique<EpochReseedGuard>(static_cast<std::size_t>(
+      std::max<std::int64_t>(1, declare_parameter<int>("reinit.reseed_healthy_scans", 6))));
 
     VisibilityFilterConfig config;
     config.voxel_size_m = declare_parameter<double>("filter.voxel_size_m", 0.25);
@@ -93,13 +102,15 @@ public:
         0, declare_parameter<int>("filter.endpoint_guard_voxels", 1)));
     config.dynamic_growth_voxels =
       static_cast<int>(std::max<std::int64_t>(
-        0, declare_parameter<int>("filter.dynamic_growth_voxels", 2)));
+        0, declare_parameter<int>("filter.dynamic_growth_voxels", 1)));
     config.ray_stride = static_cast<int>(std::max<std::int64_t>(
       1, declare_parameter<int>("filter.ray_stride", 4)));
     config.max_voxels = static_cast<std::size_t>(
       std::max<std::int64_t>(1000, declare_parameter<int>("filter.max_voxels", 1500000)));
     config.dynamic_confirmations = static_cast<std::uint16_t>(
       std::max<std::int64_t>(1, declare_parameter<int>("filter.dynamic_confirmations", 1)));
+    config.dynamic_free_view_bins = static_cast<std::uint8_t>(std::clamp<std::int64_t>(
+      declare_parameter<int>("filter.dynamic_free_view_bins", 3), 1, 64));
     config.dynamic_hold_scans = static_cast<std::uint16_t>(
       std::max<std::int64_t>(1, declare_parameter<int>("filter.dynamic_hold_scans", 12)));
     config.vacated_hold_scans = static_cast<std::uint16_t>(
@@ -114,9 +125,9 @@ public:
       0, declare_parameter<int>("filter.static_support_radius_voxels", 1)));
     config.min_static_neighbor_voxels = static_cast<std::size_t>(std::max<std::int64_t>(
       0, declare_parameter<int>("filter.min_static_neighbor_voxels", 0)));
-    config.far_range_m = declare_parameter<double>("filter.far_range_m", 20.0);
+    config.far_range_m = declare_parameter<double>("filter.far_range_m", 15.0);
     config.far_static_confirmations = static_cast<std::uint16_t>(
-      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 4)));
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 12)));
     if (filter_implementation_ == "visibility_v2") {
       visibility_observer_ = std::make_unique<VisibilityAwareDynamicObserver>(config);
     } else if (filter_implementation_ == "conservative_v1") {
@@ -190,6 +201,16 @@ public:
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       pose_topic, sensor_qos,
       [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {on_odometry(*message);});
+    state_epoch_sub_ = create_subscription<uf_dynamic_interfaces::msg::PreviousFastLioState>(
+      state_epoch_topic, rclcpp::QoS(20).reliable(),
+      [this](uf_dynamic_interfaces::msg::PreviousFastLioState::ConstSharedPtr message) {
+        on_state_epoch(*message);
+      });
+    fusion_epoch_sub_ = create_subscription<uf_interfaces::msg::FusionEpoch>(
+      fusion_epoch_topic, rclcpp::QoS(20).reliable().transient_local(),
+      [this](uf_interfaces::msg::FusionEpoch::ConstSharedPtr message) {
+        on_fusion_epoch(*message);
+      });
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
       imu_topic, sensor_qos,
       [this](sensor_msgs::msg::Imu::ConstSharedPtr message) {on_imu(*message);});
@@ -235,6 +256,36 @@ private:
     std::vector<RawPoint> points;
     std::chrono::steady_clock::time_point arrival;
   };
+
+  void on_state_epoch(const uf_dynamic_interfaces::msg::PreviousFastLioState & message)
+  {
+    if (!message.valid) {
+      return;
+    }
+    const auto decision = epoch_guard_->observe_lio_state(message.reset_counter);
+    if (!decision.accepted || !decision.reset_local_history) {
+      return;
+    }
+    pending_.clear();
+    poses_.clear();
+    imu_.clear();
+    if (visibility_observer_) {
+      visibility_observer_->reset();
+    }
+    if (observer_v1_) {
+      observer_v1_->reset();
+    }
+    ++lio_epoch_reset_count_;
+  }
+
+  void on_fusion_epoch(const uf_interfaces::msg::FusionEpoch & message)
+  {
+    const auto decision = epoch_guard_->observe_backend_epoch(
+      message.applied, message.session_id, message.transaction_id, message.reset_counter);
+    if (decision.accepted) {
+      ++retained_backend_epoch_count_;
+    }
+  }
 
   void on_odometry(const nav_msgs::msg::Odometry & message)
   {
@@ -450,7 +501,18 @@ private:
     world_from_body.translation() = trajectory.poses.front().position;
     const Eigen::Vector3d origin_vector = (world_from_body * body_from_lidar_).translation();
     const Point origin{origin_vector.x(), origin_vector.y(), origin_vector.z(), 0.0F};
-    const auto result = run_filter(world_points, origin);
+    const bool reseeding_at_start = epoch_guard_->fail_open_required();
+    auto result = run_filter(world_points, origin);
+    if (reseeding_at_start) {
+      epoch_guard_->observe_reseed_scan(true);
+      for (auto & point : result.points) {
+        point.label = PointLabel::kUnknown;
+        point.dynamic_score = 0.5F;
+      }
+      result.stats.static_points = 0U;
+      result.stats.dynamic_points = 0U;
+      result.stats.unknown_points = result.points.size();
+    }
     const double processing_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - wall_start).count();
     publish_result(scan, result, processing_ms, queue_residence_ms);
@@ -552,6 +614,10 @@ private:
       ",\"filter_implementation\":\"" << filter_implementation_ << "\"" <<
       ",\"anchor_age_ms\":" << number(last_anchor_age_ms_) <<
       ",\"max_imu_gap_ms\":" << number(last_imu_gap_ms_) <<
+      ",\"dynamic_epoch_state\":\"" << to_string(epoch_guard_->state()) << "\"" <<
+      ",\"reseed_scans\":" << epoch_guard_->reseed_scans() <<
+      ",\"lio_epoch_resets\":" << lio_epoch_reset_count_ <<
+      ",\"backend_epochs_retained\":" << retained_backend_epoch_count_ <<
       ",\"fastlio_input_modified\":false}";
     statistics.data = json.str();
     statistics_pub_->publish(statistics);
@@ -593,6 +659,8 @@ private:
   std::uint64_t queue_overflow_count_{0U};
   std::uint64_t pose_timeout_count_{0U};
   std::uint64_t deskew_reject_count_{0U};
+  std::uint64_t lio_epoch_reset_count_{0U};
+  std::uint64_t retained_backend_epoch_count_{0U};
   std::string last_deskew_reason_{"not_run"};
   double last_anchor_age_ms_{0.0};
   double last_imu_gap_ms_{0.0};
@@ -600,11 +668,15 @@ private:
   std::unique_ptr<ConservativeFreeSpaceObserver> observer_v1_;
   std::unique_ptr<VisibilityAwareDynamicObserver> visibility_observer_;
   std::unique_ptr<CausalImuDeskew> causal_deskew_;
+  std::unique_ptr<EpochReseedGuard> epoch_guard_;
   std::deque<PoseSample> poses_;
   std::deque<CausalImuSample> imu_;
   std::deque<PendingScan> pending_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<uf_dynamic_interfaces::msg::PreviousFastLioState>::SharedPtr
+    state_epoch_sub_;
+  rclcpp::Subscription<uf_interfaces::msg::FusionEpoch>::SharedPtr fusion_epoch_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;

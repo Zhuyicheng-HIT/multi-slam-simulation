@@ -1,0 +1,33 @@
+archive:
+  raw_topics:
+    - /livox/lidar
+    - /livox/imu
+    - /Odometry
+    - /fusion/unified/odom
+    - /fusion/epoch
+    - /tf
+    - /tf_static
+  storage_id: sqlite3
+frames:
+  scan_frame: livox_frame
+  pose_parent_frame: camera_init
+  pose_child_frame: body
+calibration:
+  # FAST-LIO extrinsic_T/R, expressed as pose_child_from_scan.
+  direction: pose_child_from_scan
+  translation: [-0.011, -0.02329, 0.04412]
+  quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+  source: mid360_reliable_mapper/config/fast_lio_real_mid360.yaml
+map:
+  voxel_size_m: 0.12
+  minimum_scan_support: 2
+  stable_support_scans: 4
+  minimum_component_voxels: 3
+  isolation_neighbor_threshold: 1
+  maximum_provenance_scan_ids: 8
+  # Reject pose interpolation across longer gaps; no extrapolation is allowed.
+  maximum_pose_bracket_ns: 250000000
+  # Occupied-volume expansion proxy used to quantify motion ghosting.
+  ghosting_voxel_size_m: 0.06
+  # Deterministic upper bound for wall/ground neighborhood classification.
+  structural_sample_limit: 20000

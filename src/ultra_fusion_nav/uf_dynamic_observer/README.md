@@ -24,7 +24,8 @@ configured IMU gap. Future pose/IMU samples, timestamp regressions, and larger
 gaps are rejected. No unified pose is consumed, so the contract does not form a
 future unified-backend feedback cycle.
 
-Outputs are in the configured world frame:
+Outputs are in the configured world frame. On the latest relocalization line
+this is the FAST-LIO-local `camera_init` frame, not unified `map`:
 
 - `/dynamic_observer/static_candidates`
 - `/dynamic_observer/dynamic_candidates`
@@ -34,6 +35,17 @@ Outputs are in the configured world frame:
 - `/dynamic_observer/latency_diagnostics`
 
 No TF is published. Truth labels are never subscribed by the node.
+
+## Relocalization and epoch ownership
+
+An accepted unified-backend `FusionEpoch` changes `map_from_lio` but does not
+reset FAST-LIO's `camera_init` frame. The observer, gateway, and long-term map
+therefore record that event diagnostically and retain their valid LIO-local
+history. A real increment of `PreviousFastLioState.reset_counter` is different:
+it denotes a new FAST-LIO local epoch. Pending scans then pass through exactly
+raw, short-term evidence is cleared, the long-term output is quarantined, and
+six healthy causal scans rebuild evidence before clean filtering resumes on
+the following scan. Failed, duplicate, or stale epochs do not mutate state.
 
 ## Clean Scan Gateway candidate
 
@@ -114,6 +126,54 @@ Before hardware use, set the audited MID360 `T_body_lidar` in `observer.yaml`.
 ```bash
 ros2 run uf_dynamic_observer dynamic_observer_benchmark /tmp/dynamic_observer.json
 ```
+
+## Opt-in long-term static map refinement
+
+`long_term_static_map_node` is a project-owned, downstream map product. It is
+disabled by default, never remaps `/livox/lidar`, never publishes TF, and is
+not an estimator input. Missing previous-state evidence holds the last valid
+map and publishes a degraded status; it cannot drop a LiDAR scan.
+
+```text
+observer v2 scored cloud + strictly previous FAST-LIO posterior
+                    |
+                    v
+ UNKNOWN <-> STATIC_CANDIDATE <-> STATIC_CONFIRMED
+    ^              |                    |
+    |              v                    v
+    +---- DYNAMIC_CANDIDATE <-> DYNAMIC_CONFIRMED
+```
+
+Only `STATIC_CONFIRMED` is published on:
+
+- `/mapping/long_term_static/points`
+- `/mapping/long_term_static/relocalization_points`
+- `/mapping/long_term_static/loop_closure_points`
+
+Promotion requires repeated occupied support, time persistence and multiple
+measured viewpoints. Demotion requires actual free-ray traversal; absence of a
+MID360 return never means free space. Far sparse returns use a deliberately
+longer admission history and otherwise remain `UNKNOWN`.
+
+```bash
+ros2 launch uf_dynamic_observer long_term_static_map.launch.py
+ros2 launch uf_dynamic_observer long_term_static_map.launch.py enabled:=true
+```
+
+To test the purified keyframe data path, start relocalization with both its
+normal configuration and `config/relocalization_static_admission.yaml`. This is
+an explicit opt-in overlay; the existing `/lio/local_map` default is preserved.
+The analogous `config/shared_mapping_static_admission.yaml` overlay makes the
+long-lived shared-map product consume only this confirmed snapshot; it does not
+alter the online source-aware map unless explicitly selected.
+
+The optional `/semantic/dynamic_evidence` PointCloud2 input expects fields
+`x/y/z/dynamic_confidence`. It is disabled by default and defaults to shadow
+mode when enabled. Geometry remains class-agnostic and fully functional when
+no camera semantic evidence is present.
+
+See `docs/DYN_MAP_006_LONG_TERM_STATIC_REFINEMENT.md` for the lifecycle,
+three-map validation matrix, runtime cost, and production blockers.
 
 The benchmark runs 18 low-altitude scenarios with three deterministic seeds and
 two repeats per seed. It compares TemporalVoxelFilter, frozen observer v1, and

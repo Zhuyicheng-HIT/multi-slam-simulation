@@ -133,6 +133,34 @@ TEST(VisibilityAwareObserver, ConfirmedFreeContradictionAndStoppedTargetRemainDy
   EXPECT_EQ(filter.process(target, origin).points.front().label, PointLabel::kDynamic);
 }
 
+TEST(VisibilityAwareObserver, ViewpointChangedFreeVoxelRemainsUnknown)
+{
+  auto config = visibility_test_config();
+  config.dynamic_free_view_bins = 3U;
+  VisibilityAwareDynamicObserver filter(config);
+  const Point first_origin{0.0, 0.0, 0.0, 0.0F};
+  filter.process({{8.0, 0.0, 0.0, 1.0F}}, first_origin);
+  filter.process({{8.0, 0.0, 0.0, 1.0F}}, first_origin);
+  const Point changed_origin{4.0, -4.0, 0.0, 0.0F};
+  const auto result = filter.process({{4.0, 0.0, 0.0, 1.0F}}, changed_origin);
+  ASSERT_EQ(result.points.size(), 1U);
+  EXPECT_EQ(result.points.front().label, PointLabel::kUnknown);
+}
+
+TEST(VisibilityAwareObserver, MultiViewFreeEvidenceSupportsNovelViewDynamicDecision)
+{
+  auto config = visibility_test_config();
+  config.dynamic_free_view_bins = 3U;
+  VisibilityAwareDynamicObserver filter(config);
+  filter.process({{8.0, 0.0, 0.0, 1.0F}}, {0.0, 0.0, 0.0, 0.0F});
+  filter.process({{4.0, 4.0, 0.0, 1.0F}}, {4.0, -4.0, 0.0, 0.0F});
+  filter.process({{4.0, -4.0, 0.0, 1.0F}}, {4.0, 4.0, 0.0, 0.0F});
+  const auto result = filter.process(
+    {{4.0, 0.0, 0.0, 1.0F}}, {0.0, 4.0, 0.0, 0.0F});
+  ASSERT_EQ(result.points.size(), 1U);
+  EXPECT_EQ(result.points.front().label, PointLabel::kDynamic);
+}
+
 TEST(VisibilityAwareObserver, MeasuredVacatedSurfaceSupportsArticulatedMotion)
 {
   VisibilityAwareDynamicObserver filter(visibility_test_config());

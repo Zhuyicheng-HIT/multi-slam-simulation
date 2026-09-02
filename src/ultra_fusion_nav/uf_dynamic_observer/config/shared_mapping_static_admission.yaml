@@ -1,0 +1,5 @@
+uf_shared_mapping:
+  ros__parameters:
+    # Explicit opt-in overlay for the long-lived shared-map product. The
+    # online estimator map and production /cloud_registered path are unchanged.
+    lidar_topic: /mapping/long_term_static/points

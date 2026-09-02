@@ -1,0 +1,64 @@
+raw_obstacle_safety_monitor:
+  ros__parameters:
+    raw_lidar_topic: /livox/lidar
+    odometry_topic: /fusion/unified/odom
+    body_motion_topic: /mavros/local_position/odom
+    candidate_setpoint_topic: /autonomy/intent/mission/pose
+    candidate_path_topic: /autonomy/candidate_path
+    raw.timeout_s: 0.20
+    raw.future_tolerance_s: 0.02
+    raw.minimum_points: 20
+    raw.minimum_range_m: 0.12
+    raw.maximum_range_m: 40.0
+    candidate.timeout_s: 0.50
+    candidate.path_timeout_s: 0.25
+    motion.timeout_s: 0.25
+    body.front_m: 0.32
+    body.half_width_m: 0.32
+    body.half_height_m: 0.18
+    safety.lateral_margin_m: 0.28
+    safety.vertical_margin_m: 0.22
+    safety.margin_m: 0.35
+    safety.caution_margin_m: 0.75
+    braking.reaction_time_s: 0.25
+    braking.maximum_deceleration_mps2: 2.0
+    braking.brake_ttc_s: 1.25
+    braking.caution_ttc_s: 2.50
+    extrinsic.body_from_lidar_xyz: [0.0, 0.0, 0.0]
+    extrinsic.body_from_lidar_rpy: [0.0, 0.0, 0.0]
+
+flight_command_arbiter:
+  ros__parameters:
+    automatic_mode_name: GUIDED
+    intent_timeout_s: 0.50
+    current_pose_timeout_s: 0.25
+    obstacle_timeout_s: 0.25
+    maximum_setpoint_jump_m: 2.50
+    caution_step_m: 0.30
+
+local_avoidance_planner:
+  ros__parameters:
+    raw_lidar_topic: /livox/lidar
+    odometry_topic: /mavros/local_position/odom
+    mission_intent_topic: /autonomy/intent/mission/pose
+    raw.timeout_s: 0.20
+    raw.future_tolerance_s: 0.02
+    raw.minimum_points: 20
+    raw.minimum_range_m: 0.12
+    raw.maximum_range_m: 40.0
+    motion.timeout_s: 0.25
+    mission.timeout_s: 0.50
+    grid.resolution_m: 0.25
+    grid.obstacle_inflation_m: 0.80
+    grid.verification_clearance_m: 0.65
+    grid.vertical_limit_m: 0.40
+    grid.raw_downsample_m: 0.20
+    planner.horizon_m: 7.0
+    planner.side_padding_m: 3.5
+    planner.goal_tolerance_m: 0.35
+    planner.waypoint_spacing_m: 0.75
+    planner.waypoint_reached_m: 0.35
+    planner.maximum_expansions: 30000
+    planner.timeout_ms: 80.0
+    extrinsic.body_from_lidar_xyz: [0.0, 0.0, 0.0]
+    extrinsic.body_from_lidar_rpy: [0.0, 0.0, 0.0]

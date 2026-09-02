@@ -14,7 +14,6 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("config", default_value=str(default_config)),
             DeclareLaunchArgument("enabled", default_value="false"),
-            DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument(
                 "raw_topic", default_value="/livox/lidar"
             ),
@@ -25,7 +24,6 @@ def generate_launch_description():
                 "previous_state_topic",
                 default_value="/clean_fast_lio/previous_state",
             ),
-            DeclareLaunchArgument("imu_topic", default_value="/livox/imu"),
             Node(
                 package="uf_dynamic_observer",
                 executable="clean_scan_gateway_node",
@@ -34,9 +32,7 @@ def generate_launch_description():
                 parameters=[
                     LaunchConfiguration("config"),
                     {
-                        "use_sim_time": LaunchConfiguration("use_sim_time"),
                         "enabled": LaunchConfiguration("enabled"),
-                        "imu_topic": LaunchConfiguration("imu_topic"),
                         "raw_topic": LaunchConfiguration("raw_topic"),
                         "clean_topic": LaunchConfiguration("clean_topic"),
                         "previous_state_topic": LaunchConfiguration(

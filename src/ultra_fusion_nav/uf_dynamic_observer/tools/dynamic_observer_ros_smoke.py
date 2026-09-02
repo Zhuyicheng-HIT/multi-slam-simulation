@@ -82,7 +82,7 @@ class SmokePublisher(Node):
         now_ns = self.get_clock().now().nanoseconds
         odom = Odometry()
         odom.header.stamp = time_message(now_ns)
-        odom.header.frame_id = "map"
+        odom.header.frame_id = "camera_init"
         odom.child_frame_id = "base_link"
         odom.pose.pose.orientation.w = 1.0
         self.odom_pub.publish(odom)

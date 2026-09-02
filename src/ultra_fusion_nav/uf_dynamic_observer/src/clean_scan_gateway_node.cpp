@@ -1,6 +1,7 @@
 #include "uf_dynamic_observer/causal_imu_deskew.hpp"
 #include "uf_dynamic_observer/clean_scan_admission.hpp"
 #include "uf_dynamic_observer/conservative_free_space.hpp"
+#include "uf_dynamic_observer/epoch_reseed_guard.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
@@ -10,6 +11,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <uf_dynamic_interfaces/msg/previous_fast_lio_state.hpp>
+#include <uf_interfaces/msg/fusion_epoch.hpp>
 
 #include <Eigen/Geometry>
 
@@ -66,14 +68,6 @@ std::string json_escape(const std::string & value)
   return stream.str();
 }
 
-double percentile(std::deque<double> values, double fraction)
-{
-  if (values.empty()) return 0.0;
-  std::sort(values.begin(), values.end());
-  const auto index = static_cast<std::size_t>(fraction * static_cast<double>(values.size() - 1U));
-  return values[index];
-}
-
 diagnostic_msgs::msg::KeyValue key_value(const std::string & key, const std::string & value)
 {
   diagnostic_msgs::msg::KeyValue output;
@@ -97,19 +91,17 @@ public:
     const auto imu_topic = declare_parameter<std::string>("imu_topic", "/livox/imu");
     const auto state_topic = declare_parameter<std::string>(
       "previous_state_topic", "/clean_fast_lio/previous_state");
+    const auto fusion_epoch_topic = declare_parameter<std::string>(
+      "fusion_epoch_topic", "/fusion/unified/epoch");
     expected_map_frame_ = declare_parameter<std::string>("expected_map_frame", "camera_init");
     expected_body_frame_ = declare_parameter<std::string>("expected_body_frame", "body");
     max_pending_scans_ = static_cast<std::size_t>(std::max<std::int64_t>(
       1, declare_parameter<int>("max_pending_scans", 8)));
     max_state_wait_ms_ = declare_parameter<double>("max_state_wait_ms", 250.0);
     max_processing_ms_ = declare_parameter<double>("max_processing_ms", 20.0);
-    self_mask_enabled_ = declare_parameter<bool>("self_body_mask.enabled", false);
-    self_mask_x_min_ = declare_parameter<double>("self_body_mask.x_min_m", -0.35);
-    self_mask_x_max_ = declare_parameter<double>("self_body_mask.x_max_m", 0.35);
-    self_mask_y_min_ = declare_parameter<double>("self_body_mask.y_min_m", -0.30);
-    self_mask_y_max_ = declare_parameter<double>("self_body_mask.y_max_m", 0.30);
-    self_mask_z_min_ = declare_parameter<double>("self_body_mask.z_min_m", -0.25);
-    self_mask_z_max_ = declare_parameter<double>("self_body_mask.z_max_m", 0.25);
+    const auto reseed_healthy_scans = static_cast<std::size_t>(std::max<std::int64_t>(
+      1, declare_parameter<int>("reinit.reseed_healthy_scans", 6)));
+    epoch_guard_ = std::make_unique<EpochReseedGuard>(reseed_healthy_scans);
 
     VisibilityFilterConfig filter_config;
     filter_config.voxel_size_m = declare_parameter<double>("filter.voxel_size_m", 0.25);
@@ -124,13 +116,15 @@ public:
     filter_config.endpoint_guard_voxels = std::max<std::int64_t>(
       0, declare_parameter<int>("filter.endpoint_guard_voxels", 1));
     filter_config.dynamic_growth_voxels = std::max<std::int64_t>(
-      0, declare_parameter<int>("filter.dynamic_growth_voxels", 2));
+      0, declare_parameter<int>("filter.dynamic_growth_voxels", 1));
     filter_config.ray_stride = std::max<std::int64_t>(
       1, declare_parameter<int>("filter.ray_stride", 1));
     filter_config.max_voxels = static_cast<std::size_t>(std::max<std::int64_t>(
       1000, declare_parameter<int>("filter.max_voxels", 1500000)));
     filter_config.dynamic_confirmations = static_cast<std::uint16_t>(
       std::max<std::int64_t>(1, declare_parameter<int>("filter.dynamic_confirmations", 1)));
+    filter_config.dynamic_free_view_bins = static_cast<std::uint8_t>(std::clamp<std::int64_t>(
+      declare_parameter<int>("filter.dynamic_free_view_bins", 3), 1, 64));
     filter_config.dynamic_hold_scans = static_cast<std::uint16_t>(
       std::max<std::int64_t>(1, declare_parameter<int>("filter.dynamic_hold_scans", 12)));
     filter_config.vacated_hold_scans = static_cast<std::uint16_t>(
@@ -145,9 +139,9 @@ public:
       0, declare_parameter<int>("filter.static_support_radius_voxels", 1));
     filter_config.min_static_neighbor_voxels = static_cast<std::size_t>(
       std::max<std::int64_t>(0, declare_parameter<int>("filter.min_static_neighbor_voxels", 0)));
-    filter_config.far_range_m = declare_parameter<double>("filter.far_range_m", 20.0);
+    filter_config.far_range_m = declare_parameter<double>("filter.far_range_m", 15.0);
     filter_config.far_static_confirmations = static_cast<std::uint16_t>(
-      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 4)));
+      std::max<std::int64_t>(1, declare_parameter<int>("filter.far_static_confirmations", 12)));
     min_range_m_ = filter_config.min_range_m;
     max_range_m_ = filter_config.max_range_m;
     observer_ = std::make_unique<VisibilityAwareDynamicObserver>(filter_config);
@@ -202,6 +196,11 @@ public:
       state_topic, rclcpp::QoS(rclcpp::KeepLast(20)).reliable(),
       [this](uf_dynamic_interfaces::msg::PreviousFastLioState::ConstSharedPtr message) {
         on_state(*message);
+      });
+    fusion_epoch_sub_ = create_subscription<uf_interfaces::msg::FusionEpoch>(
+      fusion_epoch_topic, rclcpp::QoS(20).reliable().transient_local(),
+      [this](uf_interfaces::msg::FusionEpoch::ConstSharedPtr message) {
+        on_fusion_epoch(*message);
       });
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
       imu_topic, sensor_qos,
@@ -265,24 +264,41 @@ private:
       return;
     }
     state.pose.orientation.normalize();
-    if (!states_.empty() && state.pose.stamp_ns <= states_.back().pose.stamp_ns) {
-      ++state_regression_count_;
+    const auto epoch_decision = epoch_guard_->observe_lio_state(state.reset_counter);
+    if (!epoch_decision.accepted) {
+      ++invalid_state_count_;
       return;
     }
-    if (epoch_initialized_ && state.reset_counter != current_reset_counter_) {
+    if (epoch_decision.reset_local_history) {
       while (!pending_.empty()) {
-        fail_open(std::move(pending_.front()), "state_epoch_change", 0.0);
+        fail_open(std::move(pending_.front()), "lio_local_epoch_changed", 0.0);
         pending_.pop_front();
       }
       states_.clear();
       imu_.clear();
       observer_->reset();
+      ++lio_epoch_reset_count_;
     }
-    epoch_initialized_ = true;
-    current_reset_counter_ = state.reset_counter;
+    if (!states_.empty() && state.pose.stamp_ns <= states_.back().pose.stamp_ns) {
+      ++state_regression_count_;
+      return;
+    }
     states_.push_back(std::move(state));
     while (states_.size() > 256U) {
       states_.pop_front();
+    }
+  }
+
+  void on_fusion_epoch(const uf_interfaces::msg::FusionEpoch & message)
+  {
+    const auto decision = epoch_guard_->observe_backend_epoch(
+      message.applied, message.session_id, message.transaction_id, message.reset_counter);
+    if (decision.accepted) {
+      ++retained_backend_epoch_count_;
+      RCLCPP_INFO(
+        get_logger(),
+        "Unified backend epoch %u retained FAST-LIO-local Dynamic history; transaction=%llu",
+        message.reset_counter, static_cast<unsigned long long>(message.transaction_id));
     }
   }
 
@@ -311,7 +327,6 @@ private:
 
   void on_raw(const livox_ros_driver2::msg::CustomMsg & message)
   {
-    ++received_scan_count_;
     PendingScan scan;
     scan.raw = message;
     scan.start_ns = stamp_ns(message.header.stamp);
@@ -334,7 +349,8 @@ private:
       return;
     }
     if (pending_.size() >= max_pending_scans_) {
-      ++queue_dropped_count_;
+      ++queue_overflow_count_;
+      fail_open(std::move(pending_.front()), "queue_overflow", 0.0);
       pending_.pop_front();
     }
     pending_.push_back(std::move(scan));
@@ -386,8 +402,6 @@ private:
       }
       PendingScan scan = std::move(pending_.front());
       pending_.pop_front();
-      ++processed_scan_count_;
-      if (residence_ms > max_state_wait_ms_ * 0.5) ++stale_dropped_count_;
       try {
         process_scan(scan, *anchor, residence_ms);
       } catch (const std::exception & error) {
@@ -402,6 +416,7 @@ private:
 
   void process_scan(PendingScan scan, const PreviousState & anchor, double residence_ms)
   {
+    const bool reseeding_at_start = epoch_guard_->fail_open_required();
     std::vector<std::pair<std::int64_t, std::size_t>> queries;
     queries.reserve(scan.raw.points.size());
     for (std::size_t index = 0U; index < scan.raw.points.size(); ++index) {
@@ -446,9 +461,6 @@ private:
       if (!std::isfinite(source.x) || !std::isfinite(source.y) || !std::isfinite(source.z)) {
         continue;
       }
-      if (self_mask_enabled_ && source.x >= self_mask_x_min_ && source.x <= self_mask_x_max_ &&
-        source.y >= self_mask_y_min_ && source.y <= self_mask_y_max_ &&
-        source.z >= self_mask_z_min_ && source.z <= self_mask_z_max_) continue;
       Eigen::Isometry3d world_from_body = Eigen::Isometry3d::Identity();
       world_from_body.linear() = trajectory.poses[ordered_index].orientation.toRotationMatrix();
       world_from_body.translation() = trajectory.poses[ordered_index].position;
@@ -468,8 +480,6 @@ private:
       scan.raw.points.size(), classified_source_indices, filter_result.points);
     const double processing_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - processing_start).count();
-    processing_latencies_ms_.push_back(processing_ms);
-    while (processing_latencies_ms_.size() > 4096U) processing_latencies_ms_.pop_front();
     if (!admission.healthy) {
       fail_open(std::move(scan), "admission:" + admission.reason, residence_ms, processing_ms);
       return;
@@ -477,6 +487,13 @@ private:
     if (processing_ms > max_processing_ms_) {
       ++latency_fail_open_count_;
       fail_open(std::move(scan), "observer_latency_exceeded", residence_ms, processing_ms);
+      return;
+    }
+    if (reseeding_at_start) {
+      const bool completed = epoch_guard_->observe_reseed_scan(true);
+      fail_open(
+        std::move(scan), completed ? "lio_epoch_reseed_complete" : "lio_epoch_reseeding",
+        residence_ms, processing_ms);
       return;
     }
 
@@ -532,12 +549,6 @@ private:
       ",\"queue_residence_ms\":" << number(residence_ms) <<
       ",\"queue_depth\":" << pending_.size() <<
       ",\"queue_overflow\":" << queue_overflow_count_ <<
-      ",\"received\":" << received_scan_count_ <<
-      ",\"processed\":" << processed_scan_count_ <<
-      ",\"stale_dropped\":" << stale_dropped_count_ <<
-      ",\"queue_dropped\":" << queue_dropped_count_ <<
-      ",\"processing_p50_ms\":" << number(percentile(processing_latencies_ms_, 0.50)) <<
-      ",\"processing_p95_ms\":" << number(percentile(processing_latencies_ms_, 0.95)) <<
       ",\"pose_timeout\":" << pose_timeout_count_ <<
       ",\"deskew_reject\":" << deskew_reject_count_ <<
       ",\"input_regression\":" << input_regression_count_ <<
@@ -548,6 +559,11 @@ private:
       ",\"fail_open_scans\":" << fail_open_scan_count_ <<
       ",\"anchor_scan_sequence\":" << anchor.scan_sequence <<
       ",\"anchor_reset_counter\":" << anchor.reset_counter <<
+      ",\"dynamic_epoch_state\":\"" << to_string(epoch_guard_->state()) << "\"" <<
+      ",\"reseed_scans\":" << epoch_guard_->reseed_scans() <<
+      ",\"required_reseed_scans\":" << epoch_guard_->required_healthy_scans() <<
+      ",\"lio_epoch_resets\":" << lio_epoch_reset_count_ <<
+      ",\"backend_epochs_retained\":" << retained_backend_epoch_count_ <<
       ",\"raw_topic_unchanged\":true} ";
     status.data = json.str();
     status_pub_->publish(status);
@@ -582,24 +598,13 @@ private:
   double max_processing_ms_{20.0};
   double max_imu_gap_s_{0.025};
   double max_prediction_horizon_s_{0.20};
-  bool self_mask_enabled_{false};
-  double self_mask_x_min_{-0.35}, self_mask_x_max_{0.35};
-  double self_mask_y_min_{-0.30}, self_mask_y_max_{0.30};
-  double self_mask_z_min_{-0.25}, self_mask_z_max_{0.25};
   double min_range_m_{0.5};
   double max_range_m_{35.0};
   std::int64_t last_raw_stamp_ns_{0};
-  bool epoch_initialized_{false};
-  std::uint32_t current_reset_counter_{0U};
   std::uint64_t clean_scan_count_{0U};
   std::uint64_t fail_open_scan_count_{0U};
   std::uint64_t removed_point_count_{0U};
   std::uint64_t queue_overflow_count_{0U};
-  std::uint64_t received_scan_count_{0U};
-  std::uint64_t processed_scan_count_{0U};
-  std::uint64_t stale_dropped_count_{0U};
-  std::uint64_t queue_dropped_count_{0U};
-  std::deque<double> processing_latencies_ms_;
   std::uint64_t pose_timeout_count_{0U};
   std::uint64_t deskew_reject_count_{0U};
   std::uint64_t input_regression_count_{0U};
@@ -608,8 +613,11 @@ private:
   std::uint64_t invalid_state_count_{0U};
   std::uint64_t internal_exception_count_{0U};
   std::uint64_t latency_fail_open_count_{0U};
+  std::uint64_t lio_epoch_reset_count_{0U};
+  std::uint64_t retained_backend_epoch_count_{0U};
   Eigen::Isometry3d body_from_lidar_{Eigen::Isometry3d::Identity()};
   CleanScanAdmission admission_;
+  std::unique_ptr<EpochReseedGuard> epoch_guard_;
   std::unique_ptr<VisibilityAwareDynamicObserver> observer_;
   std::unique_ptr<CausalImuDeskew> deskew_;
   std::deque<PreviousState> states_;
@@ -617,6 +625,7 @@ private:
   std::deque<PendingScan> pending_;
 
   rclcpp::Subscription<uf_dynamic_interfaces::msg::PreviousFastLioState>::SharedPtr state_sub_;
+  rclcpp::Subscription<uf_interfaces::msg::FusionEpoch>::SharedPtr fusion_epoch_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr raw_sub_;
   rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr clean_pub_;
