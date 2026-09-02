@@ -58,3 +58,20 @@ with 262 passing and only the one `safety_slice_start` assertion failing. This i
 test/command-contract mismatch, not a second MAVROS publisher. Server-verified items
 are build, C++/Python unit tests, offline benchmarks, and static ownership checks;
 NUC, MID360, D435i, FCU, real ROS graph, and field execution remain onboard-pending.
+
+## SERVER-SAFETY-BOOTSTRAP-CLOSURE-002 audit
+
+The historical `safety_slice_start` contract (from `06894236`) performs duplicate-
+owner detection, launches `uf_safety_supervisor/safety_slice.launch.py` in its own
+session, waits for `flight_command_arbiter` and `raw_obstacle_safety_monitor`, and
+returns its process-group PID for the caller's TERM/INT/KILL cleanup. The current
+PR23 `run_apm_sensor_stack.sh`, `run_rectangle_state_machine.sh`,
+`run_s_curve_state_machine.sh`, and `run_pr6_d435i_visual_headless.sh` do not call
+this helper; the automatic mission path therefore does not prove an arbiter is
+running. The ownership test correctly exposes that gap.
+
+The guided nodes now publish mission intents, but restoring the historical call site
+would change the frozen PR23 command-file SHA256 values. No unsafe detached-process
+workaround was added. Consequently this server closure remains blocked until the
+command-contract owner permits a coordinated SHA update or supplies an equivalent
+entrypoint outside the frozen files.
