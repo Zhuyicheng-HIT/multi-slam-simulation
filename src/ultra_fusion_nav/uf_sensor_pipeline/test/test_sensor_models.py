@@ -10,6 +10,7 @@ from uf_sensor_pipeline.fault_models import (
     add_gnss_jump,
     add_moving_lidar_cluster,
     ensure_monotonic_stamp,
+    standardize_imu_acceleration,
     shift_stamp,
 )
 from uf_sensor_pipeline.pointcloud_utils import filter_cloud
@@ -32,6 +33,25 @@ def cloud(points):
 
 
 class SensorModelsTest(unittest.TestCase):
+    def test_body_filter_handles_organized_row_padding_and_custom_bytes(self):
+        msg = cloud([(1.0, 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)])
+        msg.height = 2
+        msg.width = 1
+        msg.row_step = 20
+        original = bytes(msg.data)
+        msg.data = original[:16] + b"PAD!" + original[16:32] + b"PAD!"
+        output, _, _, total = filter_cloud(msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15))
+        self.assertEqual(total, 2)
+        self.assertEqual(output.width, 2)
+        self.assertEqual(bytes(output.data), bytes(cloud([(1.0, 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)]).data))
+
+    def test_body_filter_handles_big_endian_and_custom_field(self):
+        msg = cloud([(1.0, 0.0, 0.0, 10.0)])
+        msg.is_bigendian = True
+        msg.data = struct.pack(">ffff", 1.0, 0.0, 0.0, 10.0)
+        output, _, _, total = filter_cloud(msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15))
+        self.assertEqual((total, output.width), (1, 1))
+        self.assertEqual(bytes(output.data), bytes(msg.data))
     def test_body_filter_preserves_full_point_records(self):
         msg = cloud([(0.2, 0.1, 0.0, 10.0), (1.0, 0.0, 0.0, 20.0)])
 
@@ -58,6 +78,23 @@ class SensorModelsTest(unittest.TestCase):
         self.assertEqual((removed_body, removed_range, total), (1, 0, 1))
         self.assertEqual(output.width, 0)
 
+    def test_body_filter_vectorized_path_preserves_record_bytes(self):
+        msg = cloud([(1.0, 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)])
+        output, removed_body, removed_range, total = filter_cloud(
+            msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15), 0.1, 40.0
+        )
+        self.assertEqual((removed_body, removed_range, total), (0, 0, 2))
+        self.assertEqual(output.width, 2)
+        self.assertEqual(output.data, msg.data)
+
+    def test_body_filter_rejects_nonfinite_ranges_without_serialization_errors(self):
+        msg = cloud([(float("nan"), 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)])
+        output, removed_body, removed_range, total = filter_cloud(
+            msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15), 0.1, 40.0
+        )
+        self.assertEqual((removed_body, removed_range, total), (0, 1, 2))
+        self.assertEqual(output.width, 1)
+
     def test_stamp_offset_handles_second_boundary(self):
         stamp = Time(sec=10, nanosec=900_000_000)
 
@@ -74,6 +111,14 @@ class SensorModelsTest(unittest.TestCase):
         self.assertEqual(last, 10_000_000_101)
         self.assertEqual((stamp.sec, stamp.nanosec), (10, 101))
 
+    def test_nonmonotonic_stamp_can_fail_without_repair(self):
+        stamp = Time(sec=10, nanosec=99)
+
+        with self.assertRaisesRegex(ValueError, "non-monotonic timestamp"):
+            ensure_monotonic_stamp(stamp, 10_000_000_100, repair=False)
+
+        self.assertEqual((stamp.sec, stamp.nanosec), (10, 99))
+
     def test_gnss_jump_is_meter_scale(self):
         msg = NavSatFix()
         msg.latitude = 45.0
@@ -83,6 +128,33 @@ class SensorModelsTest(unittest.TestCase):
 
         self.assertGreater(output.latitude, msg.latitude)
         self.assertAlmostEqual(output.longitude, msg.longitude, places=9)
+
+    def test_imu_g_units_convert_to_si_and_scale_covariance(self):
+        from sensor_msgs.msg import Imu
+
+        msg = Imu()
+        msg.linear_acceleration.x = 0.0
+        msg.linear_acceleration.y = 0.0
+        msg.linear_acceleration.z = 1.0
+        msg.linear_acceleration_covariance = [0.1] * 9
+        msg.angular_velocity.z = 0.25
+        output = standardize_imu_acceleration(msg, 9.80665)
+
+        self.assertAlmostEqual(output.linear_acceleration.z, 9.80665, places=6)
+        self.assertAlmostEqual(output.linear_acceleration_covariance[0], 0.1 * 9.80665 ** 2, places=6)
+        self.assertEqual(output.angular_velocity.z, msg.angular_velocity.z)
+        self.assertEqual(msg.linear_acceleration.z, 1.0)
+
+    def test_imu_unknown_covariance_sentinel_is_preserved(self):
+        from sensor_msgs.msg import Imu
+
+        msg = Imu()
+        msg.linear_acceleration.z = 1.0
+        msg.linear_acceleration_covariance[0] = -1.0
+        output = standardize_imu_acceleration(msg, 9.80665)
+
+        self.assertAlmostEqual(output.linear_acceleration.z, 9.80665, places=6)
+        self.assertEqual(list(output.linear_acceleration_covariance), list(msg.linear_acceleration_covariance))
 
     def test_depth_holes_are_repeatable(self):
         msg = Image()

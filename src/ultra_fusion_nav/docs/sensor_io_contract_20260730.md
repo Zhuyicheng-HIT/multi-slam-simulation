@@ -10,7 +10,7 @@ control data and never feed the estimator.
 | Modality | Simulation source | Hardware source | Normalized estimator input |
 | --- | --- | --- | --- |
 | LiDAR | Gazebo MID360 bridge | Livox SDK2 CustomMsg | `/sensors/lidar/*` and FAST-LIO native factors |
-| IMU | ArduPilot SITL HIGHRES_IMU | V7+ HIGHRES_IMU over MAVLink2 | `/sensors/imu` (`sensor_msgs/Imu`) |
+| IMU | Gazebo MID360 IMU via `/livox/imu` | MID360 IMU via Livox driver | `/sensors/imu` (`sensor_msgs/Imu`) |
 | GNSS | MAVROS raw receiver observation | C2 TESTRN NMEA0183 over RS232 | `/sensors/gnss/fix`, `/sensors/gnss/raw` |
 | Optical flow | MTF01P protocol-equivalent simulator | MTF-01 direct serial adapter | `/sensors/optical_flow/rad` |
 | RGB-D | Gazebo D435i bridge | RealSense ROS 2 driver | reserved `/sensors/rgbd/*`, disabled by default |

@@ -41,7 +41,7 @@ unified_backend_fusion:
     cpp_math_core_required: true
     # Native LiDAR/scan handshakes and FCU IMU ingress use separate mutually
     # exclusive callback groups. Numeric kernels remain single-threaded.
-    executor_threads: 3
+    executor_threads: 4
     # At 100 Hz this retains 0.32 s, enough for several LiDAR windows while
     # dropping stale DDS backlog before it can become navigation latency.
     flow_qos_depth: 32
@@ -337,6 +337,9 @@ unified_backend_fusion:
     # states. These propagated samples never update the map or optimizer anchor.
     live_propagation_enabled: true
     live_propagation_rate_hz: 10.0
+    # Single-writer output: optimizer commits anchors; the IMU timer publishes.
+    # Set legacy_hybrid to restore direct optimized + fallback propagation.
+    unified_odom_output_mode: fixed_rate_propagated
     live_propagation_lidar_silence_timeout_s: 0.25
     # Repeated stale FAST-LIO scan requests do not count as fresh localization.
     # Publish IMU propagation whenever the last unified state is this old.
@@ -460,3 +463,9 @@ unified_backend_fusion:
     # repeated request after this grace marks the missing factor as dropped
     # and advances the real-time front-end instead of deadlocking forever.
     scan_prediction_missing_factor_grace_s: 0.5
+    # Three consecutive cache failures indicate that FAST-LIO is not consuming
+    # backend trajectories. Once established, request silence is also fatal.
+    # The backend reports ERROR and suppresses unified odometry until a valid
+    # cache hit proves that the handshake has recovered.
+    scan_prediction_contract_failure_threshold: 3
+    scan_prediction_contract_request_timeout_s: 1.0
