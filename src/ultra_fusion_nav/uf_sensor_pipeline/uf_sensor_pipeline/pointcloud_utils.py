@@ -55,7 +55,12 @@ def filter_cloud(
     fields = {field.name: field for field in msg.fields}
     if not {"x", "y", "z"}.issubset(fields) or msg.point_step <= 0:
         raise ValueError("PointCloud2 must contain x/y/z fields and a positive point_step")
-    count = min(int(msg.width) * int(msg.height), len(msg.data) // int(msg.point_step))
+    width = max(0, int(msg.width))
+    height = max(1, int(msg.height))
+    point_step = int(msg.point_step)
+    row_step = max(point_step * width, int(msg.row_step) or point_step * width)
+    available_rows = min(height, len(msg.data) // row_step) if row_step else 0
+    count = min(width * available_rows, len(msg.data) // point_step)
     removed_body = 0
     removed_range = 0
     min_x, max_x, min_y, max_y, min_z, max_z = bounds
@@ -74,8 +79,19 @@ def filter_cloud(
     # Interpret each field as a strided view over the original message.  This
     # preserves arbitrary point fields while avoiding one Python unpack/copy
     # per point, which was the dominant cost in the 10 Hz normalization path.
-    byte_view = np.frombuffer(msg.data, dtype=np.uint8, count=count * int(msg.point_step))
-    records = byte_view.reshape(count, int(msg.point_step))
+    if width and available_rows and row_step == width * point_step:
+        byte_view = np.frombuffer(msg.data, dtype=np.uint8, count=count * point_step)
+        records = byte_view.reshape(count, point_step)
+    else:
+        rows = [
+            np.frombuffer(
+                msg.data[row * row_step:row * row_step + width * point_step],
+                dtype=np.uint8,
+                count=width * point_step,
+            ).reshape(width, point_step)
+            for row in range(available_rows)
+        ]
+        records = np.concatenate(rows, axis=0) if rows else np.empty((0, point_step), dtype=np.uint8)
     endian = ">" if msg.is_bigendian else "<"
 
     def field_values(field):

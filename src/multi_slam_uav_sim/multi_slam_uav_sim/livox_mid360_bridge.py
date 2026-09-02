@@ -1,6 +1,7 @@
 import math
 import struct
 import time
+from collections import deque
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -113,6 +114,10 @@ class LivoxMid360Bridge(Node):
         self.last_status_time = time.monotonic()
         self.last_status_cloud_count = 0
         self.last_status_imu_count = 0
+        self.cloud_input_count = 0
+        self.cloud_published_count = 0
+        self.cloud_discarded_count = 0
+        self.cloud_processing_ms = deque(maxlen=512)
         self.status_timer = self.create_timer(2.0, self._status)
         self.get_logger().info(
             "MID360 Livox bridge active: raw PointCloud2 -> /livox/lidar CustomMsg, "
@@ -123,8 +128,11 @@ class LivoxMid360Bridge(Node):
         return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
     def _cloud_cb(self, msg):
+        started = time.perf_counter()
+        self.cloud_input_count += 1
         fields = _field_map(msg)
         if not {"x", "y", "z"}.issubset(fields):
+            self.cloud_discarded_count += 1
             self.get_logger().warning("Input PointCloud2 has no x/y/z fields; skipping.")
             return
 
@@ -136,6 +144,7 @@ class LivoxMid360Bridge(Node):
         available = len(msg.data) // int(msg.point_step) if msg.point_step else 0
         count = min(declared, available)
         if count <= 0:
+            self.cloud_discarded_count += 1
             return
 
         out = CustomMsg()
@@ -181,8 +190,13 @@ class LivoxMid360Bridge(Node):
 
         out.points = points
         out.point_num = len(points)
+        if not points:
+            self.cloud_discarded_count += 1
+            return
         self.point_count_last = len(points)
         self.cloud_count += 1
+        self.cloud_published_count += 1
+        self.cloud_processing_ms.append((time.perf_counter() - started) * 1000.0)
         self.last_cloud_stamp_ns = self._stamp_to_ns(msg.header.stamp)
         self.lidar_pub.publish(out)
 
@@ -219,10 +233,16 @@ class LivoxMid360Bridge(Node):
         stamp_delta_ms = 0.0
         if self.last_cloud_stamp_ns and self.last_imu_stamp_ns:
             stamp_delta_ms = (self.last_cloud_stamp_ns - self.last_imu_stamp_ns) / 1.0e6
+        latencies = sorted(self.cloud_processing_ms)
+        p50 = latencies[len(latencies) // 2] if latencies else 0.0
+        p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else 0.0
         self.get_logger().info(
             f"livox bridge clouds={self.cloud_count} last_points={self.point_count_last} "
             f"scan_lines={self.scan_lines} cloud_hz={cloud_hz:.1f} imu_hz={imu_hz:.1f} "
-            f"cloud_minus_imu_ms={stamp_delta_ms:.1f} adjusted_imu={self.dropped_imu_count}"
+            f"cloud_minus_imu_ms={stamp_delta_ms:.1f} adjusted_imu={self.dropped_imu_count} "
+            f"input={self.cloud_input_count} published={self.cloud_published_count} "
+            f"discarded={self.cloud_discarded_count} processing_ms_p50={p50:.3f} "
+            f"processing_ms_p95={p95:.3f}"
         )
         self.last_status_time = now
         self.last_status_cloud_count = self.cloud_count

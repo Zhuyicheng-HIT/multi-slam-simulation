@@ -33,6 +33,25 @@ def cloud(points):
 
 
 class SensorModelsTest(unittest.TestCase):
+    def test_body_filter_handles_organized_row_padding_and_custom_bytes(self):
+        msg = cloud([(1.0, 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)])
+        msg.height = 2
+        msg.width = 1
+        msg.row_step = 20
+        original = bytes(msg.data)
+        msg.data = original[:16] + b"PAD!" + original[16:32] + b"PAD!"
+        output, _, _, total = filter_cloud(msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15))
+        self.assertEqual(total, 2)
+        self.assertEqual(output.width, 2)
+        self.assertEqual(bytes(output.data), bytes(cloud([(1.0, 0.0, 0.0, 10.0), (2.0, 0.0, 0.0, 20.0)]).data))
+
+    def test_body_filter_handles_big_endian_and_custom_field(self):
+        msg = cloud([(1.0, 0.0, 0.0, 10.0)])
+        msg.is_bigendian = True
+        msg.data = struct.pack(">ffff", 1.0, 0.0, 0.0, 10.0)
+        output, _, _, total = filter_cloud(msg, (-0.45, 0.45, -0.45, 0.45, -0.35, 0.15))
+        self.assertEqual((total, output.width), (1, 1))
+        self.assertEqual(bytes(output.data), bytes(msg.data))
     def test_body_filter_preserves_full_point_records(self):
         msg = cloud([(0.2, 0.1, 0.0, 10.0), (1.0, 0.0, 0.0, 20.0)])
 
