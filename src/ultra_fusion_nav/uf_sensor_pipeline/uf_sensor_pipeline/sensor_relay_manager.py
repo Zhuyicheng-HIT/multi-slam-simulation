@@ -11,6 +11,7 @@ import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2
 from mavros_msgs.msg import OpticalFlowRad
 
@@ -45,6 +46,7 @@ class SensorRelayManager(Node):
         self.declare_parameter("color_output_topic", "/sensors/rgbd/color")
         self.declare_parameter("imu_acceleration_scale", 1.0)
         self.declare_parameter("restamp_gnss", True)
+        self.declare_parameter("reliable_image_input", False)
         self.relay_count = 0
         self.relay_publishers = {}
         active = {str(name) for name in self.get_parameter("active_modalities").value}
@@ -56,11 +58,21 @@ class SensorRelayManager(Node):
             self.relay_publishers[modality] = self.create_publisher(
                 message_type, output_topic, qos_profile_sensor_data
             )
+            input_qos = qos_profile_sensor_data
+            if modality in {"depth", "color"} and bool(
+                self.get_parameter("reliable_image_input").value
+            ):
+                input_qos = QoSProfile(
+                    history=HistoryPolicy.KEEP_LAST,
+                    depth=1,
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    durability=DurabilityPolicy.VOLATILE,
+                )
             self.create_subscription(
                 message_type,
                 input_topic,
                 lambda msg, name=modality: self._relay(name, msg),
-                qos_profile_sensor_data,
+                input_qos,
             )
             self.get_logger().info(f"relay {modality}: {input_topic} -> {output_topic}")
 

@@ -151,6 +151,8 @@ def _make_fastlio_include(context, *, package_share, start_fast_lio, use_rviz):
                 "config_path": runtime_dir,
                 "config_file": os.path.basename(runtime_config),
                 "rviz": use_rviz,
+                "native_factor_export_enable": "true",
+                "native_factor_export_topic": "/fast_lio/native_lidar_factor",
             }.items(),
             condition=IfCondition(start_fast_lio),
         )

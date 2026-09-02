@@ -32,6 +32,8 @@ def generate_launch_description():
     enable_fault_injection = LaunchConfiguration("enable_fault_injection")
     enable_gnss = LaunchConfiguration("enable_gnss")
     enable_lidar = LaunchConfiguration("enable_lidar")
+    enable_livox_custom_adapter = LaunchConfiguration("enable_livox_custom_adapter")
+    reliable_image_input = LaunchConfiguration("reliable_image_input")
     scheduled_fault_modality = os.environ.get("UF_FAULT_MODALITY", "").strip()
     scheduled_fault = {}
     if scheduled_fault_modality:
@@ -45,6 +47,18 @@ def generate_launch_description():
             ),
         }
     nodes = [
+        Node(
+            package="uf_sensor_pipeline",
+            executable="livox_custom_to_pointcloud",
+            name="livox_custom_to_pointcloud",
+            parameters=[config, {
+                "use_sim_time": use_sim_time,
+                "input_topic": "/livox/lidar",
+                "output_topic": "/sensors/lidar/points_raw",
+            }],
+            output="screen",
+            condition=IfCondition(enable_livox_custom_adapter),
+        ),
         Node(
             package="uf_sensor_pipeline",
             executable="nmea_gnss",
@@ -101,7 +115,13 @@ def generate_launch_description():
             package="uf_sensor_pipeline",
             executable="pointcloud_body_filter",
             name="pointcloud_body_filter",
-            parameters=[config, {"use_sim_time": use_sim_time}],
+            parameters=[config, {
+                "use_sim_time": use_sim_time,
+                "input_topic": "/sensors/lidar/points_raw",
+                # Large PointCloud2 samples require a reliable reader with the
+                # MID360 CustomMsg adapter under CycloneDDS.
+                "reliable_input": True,
+            }],
             output="screen",
             condition=IfCondition(enable_lidar),
         ),
@@ -208,6 +228,8 @@ def generate_launch_description():
             description="Start per-modality fault injectors (test/robustness only)",
         ),
         DeclareLaunchArgument("enable_lidar", default_value="true"),
+        DeclareLaunchArgument("enable_livox_custom_adapter", default_value="false"),
+        DeclareLaunchArgument("reliable_image_input", default_value="false"),
         DeclareLaunchArgument("enable_gnss", default_value="true"),
         DeclareLaunchArgument("imu_acceleration_scale", default_value="1.0"),
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
@@ -279,6 +301,7 @@ def generate_launch_description():
                 "depth_output_topic": "/sensors/rgbd/depth",
                 "color_input_topic": d435_color_input_topic,
                 "color_output_topic": "/sensors/rgbd/color",
+                "reliable_image_input": reliable_image_input,
             }],
             output="screen",
             condition=UnlessCondition(enable_fault_injection),

@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--minimum-hz", type=float, required=True)
     parser.add_argument("--timeout", type=float, required=True)
     parser.add_argument("--window", type=int, default=20)
+    parser.add_argument("--arrival-only", action="store_true")
     args = parser.parse_args()
     if args.minimum_hz <= 0.0 or args.timeout <= 0.0 or args.window < 2:
         parser.error("rate, timeout, and window must be positive")
@@ -64,7 +65,7 @@ def main():
                     def sample(message):
                         arrivals.append(time.monotonic())
                         stamp_s = source_stamp_s(message)
-                        if stamp_s is not None:
+                        if stamp_s is not None and not args.arrival_only:
                             source_stamps.append(stamp_s)
 
                     subscription = node.create_subscription(
@@ -77,10 +78,11 @@ def main():
                     time.sleep(0.1)
                     continue
             rclpy.spin_once(node, timeout_sec=0.1)
-            rate_hz = arrival_rate(source_stamps)
+            rate_hz = arrival_rate(arrivals) if args.arrival_only else arrival_rate(source_stamps)
+            samples = arrivals if args.arrival_only else source_stamps
             observation_span_s = (
-                source_stamps[-1] - source_stamps[0]
-                if len(source_stamps) >= 2 else 0.0
+                samples[-1] - samples[0]
+                if len(samples) >= 2 else 0.0
             )
             required_samples = max(3, min(args.window, int(math.ceil(args.minimum_hz * 2.0)) + 1))
             # A bounded window of N samples spans N-1 periods. Requiring a
@@ -89,18 +91,20 @@ def main():
             # actual sample count instead of the nominal two-second target.
             required_span_s = (required_samples - 1) / max(rate_hz, args.minimum_hz, 1.0e-9)
             if (
-                len(source_stamps) >= required_samples
+                len(samples) >= required_samples
                 and observation_span_s >= min(2.0, required_span_s)
                 and rate_hz >= args.minimum_hz
             ):
                 print(
-                    f"ready: {args.topic} {rate_hz:.3f} Hz source_stamp "
+                    f"ready: {args.topic} {rate_hz:.3f} Hz "
+                    f"{'wall_arrival' if args.arrival_only else 'source_stamp'} "
                     f"({arrival_rate(arrivals):.3f} Hz wall arrival)"
                 )
                 return 0
         print(
-            f"timeout: {args.topic} measured {arrival_rate(source_stamps):.3f} Hz "
-            f"from {len(source_stamps)} source stamps "
+            f"timeout: {args.topic} measured {arrival_rate(arrivals) if args.arrival_only else arrival_rate(source_stamps):.3f} Hz "
+            f"from {len(arrivals) if args.arrival_only else len(source_stamps)} "
+            f"{'wall arrivals' if args.arrival_only else 'source stamps'} "
             f"({arrival_rate(arrivals):.3f} Hz wall arrival)",
         )
         return 1
