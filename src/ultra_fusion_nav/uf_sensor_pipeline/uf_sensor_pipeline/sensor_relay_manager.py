@@ -15,7 +15,8 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2
 from mavros_msgs.msg import OpticalFlowRad
 
-from .fault_models import standardize_imu_acceleration
+from .fault_models import standardize_imu_to_body
+from .geometry_contract import load_geometry_contract, imu_parameters
 
 
 MESSAGE_TYPES = {
@@ -45,6 +46,24 @@ class SensorRelayManager(Node):
         self.declare_parameter("color_input_topic", "/front/d435i/color/image_raw")
         self.declare_parameter("color_output_topic", "/sensors/rgbd/color")
         self.declare_parameter("imu_acceleration_scale", 1.0)
+        self.declare_parameter("geometry_contract_file", "")
+        self.declare_parameter("imu_output_frame_id", "")
+        self.declare_parameter("mid360_to_body_rotation", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+        contract_file = str(self.get_parameter("geometry_contract_file").value)
+        if contract_file:
+            params = imu_parameters(load_geometry_contract(contract_file))
+            # Only fill geometry defaults from the contract. Explicit launch
+            # topic overrides must retain ownership of the runtime endpoints.
+            if float(self.get_parameter("imu_acceleration_scale").value) == 1.0:
+                self.set_parameters([rclpy.parameter.Parameter(
+                    "imu_acceleration_scale", value=params["imu_acceleration_scale"])])
+            if not str(self.get_parameter("imu_output_frame_id").value):
+                self.set_parameters([rclpy.parameter.Parameter(
+                    "imu_output_frame_id", value=params["imu_output_frame_id"])])
+            rotation = list(self.get_parameter("mid360_to_body_rotation").value)
+            if rotation == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]:
+                self.set_parameters([rclpy.parameter.Parameter(
+                    "mid360_to_body_rotation", value=params["mid360_to_body_rotation"])])
         self.declare_parameter("restamp_gnss", True)
         self.declare_parameter("reliable_image_input", False)
         self.relay_count = 0
@@ -79,8 +98,12 @@ class SensorRelayManager(Node):
     def _relay(self, modality, message):
         output = copy.deepcopy(message)
         if modality == "imu":
-            output = standardize_imu_acceleration(
-                output, float(self.get_parameter("imu_acceleration_scale").value)
+            output_frame = str(self.get_parameter("imu_output_frame_id").value) or output.header.frame_id
+            output = standardize_imu_to_body(
+                output,
+                float(self.get_parameter("imu_acceleration_scale").value),
+                list(self.get_parameter("mid360_to_body_rotation").value),
+                output_frame,
             )
         elif modality == "gnss" and bool(self.get_parameter("restamp_gnss").value):
             now = self.get_clock().now().to_msg()

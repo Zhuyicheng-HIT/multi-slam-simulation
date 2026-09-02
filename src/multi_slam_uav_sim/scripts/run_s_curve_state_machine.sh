@@ -65,6 +65,9 @@ fi
 
 LOG_DIR=${LOG_DIR:-$WS_ROOT/logs/s_curve_state_machine_$(date +%Y%m%d_%H%M%S)}
 mkdir -p "$LOG_DIR"
+source "$PKG_SHARE/scripts/safety_slice_process.sh"
+safety_slice_start /livox/lidar "${USE_SIM_TIME:-true}" "$LOG_DIR/safety_slice.log"
+trap safety_slice_stop_owned EXIT INT TERM
 
 TAKEOFF_ALT=${TAKEOFF_ALT:-2.2}
 S_CURVE_SPAN=${S_CURVE_SPAN:-9.0}

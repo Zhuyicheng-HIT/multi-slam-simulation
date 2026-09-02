@@ -112,12 +112,14 @@ def generate_launch_description():
             condition=IfCondition(enable_fcu_observation_bridge),
         ),
         Node(
-            package="uf_sensor_pipeline",
-            executable="pointcloud_body_filter",
+            package="uf_pointcloud_body_filter_cpp",
+            executable="pointcloud_body_filter_cpp",
             name="pointcloud_body_filter",
             parameters=[config, {
                 "use_sim_time": use_sim_time,
+                "input_message_type": "pointcloud2",
                 "input_topic": "/sensors/lidar/points_raw",
+                "output_topic": "/sensors/lidar/points_body_filtered",
                 # Large PointCloud2 samples require a reliable reader with the
                 # MID360 CustomMsg adapter under CycloneDDS.
                 "reliable_input": True,

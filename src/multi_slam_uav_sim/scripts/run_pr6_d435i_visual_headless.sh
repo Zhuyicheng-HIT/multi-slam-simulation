@@ -226,6 +226,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+source "$PKG_SHARE/scripts/safety_slice_process.sh"
+safety_slice_start /livox/lidar true "$RUN_DIR/safety_slice.log"
+SAFETY_SLICE_PID=${SAFETY_SLICE_PID:-}
+if [[ -n "$SAFETY_SLICE_PID" ]]; then
+  record_pid safety_slice "$SAFETY_SLICE_PID"
+fi
+
 wait_for_topic() {
   local topic=$1 timeout_s=${2:-90}
   if python3 "$PKG_SHARE/scripts/wait_for_ros_message.py" \

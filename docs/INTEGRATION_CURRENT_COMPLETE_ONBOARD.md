@@ -75,3 +75,21 @@ would change the frozen PR23 command-file SHA256 values. No unsafe detached-proc
 workaround was added. Consequently this server closure remains blocked until the
 command-contract owner permits a coordinated SHA update or supplies an equivalent
 entrypoint outside the frozen files.
+
+## SERVER-SAFETY-BOOTSTRAP-FINAL-003
+
+The four user-facing commands retain their paths, arguments, and ordering. They now
+source the historical `safety_slice_process.sh` contract and call `safety_slice_start`
+before automatic guided work. The helper detects duplicate owners, waits for the
+arbiter and raw obstacle monitor, and returns a process-group handle for cleanup.
+Guided nodes publish only mission intent. A no-graph launch failed closed; a ROS
+domain smoke reached safety-slice ready and was explicitly cleaned up.
+
+The previous PR23 `run_apm_sensor_stack.sh` SHA256 was
+`1638662c59a1ada8d1c70ec8f2fddcc4f516e2d0def1c7cd780c539f39bf334d`; integrated
+command SHAs are captured in the validation log after this one-time safety change.
+
+Final server validation: 22/22 packages build and 263/263 tests pass. Server-verified
+coverage is build, unit/integration tests, offline benchmarks, ownership checks, and
+safety-slice lifecycle smoke. NUC, MID360, D435i, FCU, real ROS graph, and flight
+execution remain onboard-pending.

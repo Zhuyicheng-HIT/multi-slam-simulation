@@ -20,6 +20,7 @@ from uf_interfaces.msg import (
     ReliabilityScore,
     RelocalizationResult,
     SchedulerState,
+    RelocalizationRequestIntent,
 )
 
 from uf_reliability.reliability_scheduler import (
@@ -52,9 +53,9 @@ class SchedulerHarness(Node):
             20,
         )
         self.create_subscription(
-            Bool,
-            "/relocalization/request",
-            lambda msg: self.request_history.append(bool(msg.data)),
+            RelocalizationRequestIntent,
+            "/relocalization/request_intent",
+            lambda msg: self.request_history.append(bool(msg.active)),
             10,
         )
 
