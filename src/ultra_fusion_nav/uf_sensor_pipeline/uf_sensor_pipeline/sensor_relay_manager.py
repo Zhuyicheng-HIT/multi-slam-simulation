@@ -14,6 +14,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, Imu, NavSatFix, PointCloud2
 from mavros_msgs.msg import OpticalFlowRad
 
@@ -49,6 +50,7 @@ class SensorRelayManager(Node):
         self.declare_parameter("imu_acceleration_scale", 1.0)
         self.declare_parameter("restamp_gnss", True)
         self.declare_parameter("executor_threads", 2)
+        self.declare_parameter("reliable_image_input", False)
         self.relay_count = 0
         self.executor_threads = max(1, int(self.get_parameter("executor_threads").value))
         self.relay_counts = Counter()
@@ -70,11 +72,23 @@ class SensorRelayManager(Node):
             # Keep ordering within one stream while allowing independent sensor
             # callbacks to run concurrently in the MultiThreadedExecutor.
             self.relay_groups[modality] = MutuallyExclusiveCallbackGroup()
+            input_qos = qos_profile_sensor_data
+            if modality in {"depth", "color"} and bool(
+                self.get_parameter("reliable_image_input").value
+            ):
+                input_qos = QoSProfile(
+                    history=HistoryPolicy.KEEP_LAST,
+                    depth=1,
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    durability=DurabilityPolicy.VOLATILE,
+                )
             self.create_subscription(
                 message_type,
                 input_topic,
                 lambda msg, name=modality: self._relay(name, msg),
                 qos_profile_sensor_data,
+                callback_group=self.relay_groups[modality],
+                input_qos,
                 callback_group=self.relay_groups[modality],
             )
             self.get_logger().info(f"relay {modality}: {input_topic} -> {output_topic}")
