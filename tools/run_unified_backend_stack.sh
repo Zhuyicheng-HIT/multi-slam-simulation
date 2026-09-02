@@ -75,6 +75,20 @@ if [[ -z "${SENSOR_ACTIVE_MODALITIES+x}" ]]; then
   esac
 fi
 if [[ "$SENSOR_ACTIVE_MODALITIES" == *gnss* ]]; then ENABLE_GNSS_ARG=true; else ENABLE_GNSS_ARG=false; fi
+ENABLE_GNSS_VALUE=${ENABLE_GNSS:-true}
+case "${ENABLE_GNSS_VALUE,,}" in
+  false|0|no|off) ENABLE_GNSS_ARG=false; SENSOR_ACTIVE_MODALITIES=$(printf '%s' "$SENSOR_ACTIVE_MODALITIES" | sed -E 's/(^|,)gnss(,|$)/\1\2/g; s/,,/,/g; s/\[,/[/; s/,\]/]/') ;;
+esac
+if [[ "$ENABLE_GNSS_ARG" == false ]]; then
+  ACTIVE_MODALITIES=$(printf '%s' "$ACTIVE_MODALITIES" | sed -E 's/(^|,)gnss(,|$)/\1\2/g; s/,,/,/g; s/\[,/[/; s/,\]/]/')
+fi
+ACTIVE_MODALITIES_WITH_VISION=${ACTIVE_MODALITIES_WITH_VISION:-$ACTIVE_MODALITIES}
+if [[ "$ACTIVE_MODALITIES_WITH_VISION" != *vision* ]]; then
+  ACTIVE_MODALITIES_WITH_VISION="${ACTIVE_MODALITIES_WITH_VISION%]},vision]"
+fi
+if [[ "$ENABLE_GNSS_ARG" == false ]]; then
+  ACTIVE_MODALITIES_WITH_VISION=$(printf '%s' "$ACTIVE_MODALITIES_WITH_VISION" | sed -E 's/(^|,)gnss(,|$)/\1\2/g; s/,,/,/g; s/\[,/[/; s/,\]/]/')
+fi
 case "$RUNTIME_PROFILE" in
   five_source|robustness|test)
     ENABLE_VISION=true
@@ -202,6 +216,7 @@ setsid env \
   use_sim_time:="$USE_SIM_TIME" \
   enable_vision:="$ENABLE_VISION_ARG" \
   active_modalities:="$ACTIVE_MODALITIES" \
+  active_modalities_with_vision:="${ACTIVE_MODALITIES_WITH_VISION:-[lidar,imu,optical_flow,vision]}" \
   visual_factor_mode:="$VISUAL_FACTOR_MODE" \
   rgbd_minimum_depth_m:="$RGBD_MINIMUM_DEPTH_M" \
   rgbd_maximum_depth_m:="$RGBD_MAXIMUM_DEPTH_M" \
