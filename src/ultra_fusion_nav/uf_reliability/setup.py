@@ -21,6 +21,7 @@ setup(
     license="MIT",
     entry_points={"console_scripts": [
         "reliability_monitor = uf_reliability.reliability_monitor:main",
+        "relocalization_request_arbiter = uf_reliability.relocalization_request_arbiter_node:main",
         "reliability_scheduler = uf_reliability.reliability_scheduler:main",
     ]},
 )

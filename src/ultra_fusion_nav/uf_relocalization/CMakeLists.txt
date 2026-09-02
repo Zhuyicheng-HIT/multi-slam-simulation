@@ -16,11 +16,20 @@ find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(uf_dynamic_observer REQUIRED)
 find_package(uf_interfaces REQUIRED)
 
 add_library(active_relocalization_policy src/active_relocalization_policy.cpp)
 target_compile_features(active_relocalization_policy PUBLIC cxx_std_17)
 target_include_directories(active_relocalization_policy PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(active_relocalization_flight_core
+  src/active_relocalization_flight_core.cpp)
+target_compile_features(active_relocalization_flight_core PUBLIC cxx_std_17)
+target_include_directories(active_relocalization_flight_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
@@ -94,6 +103,16 @@ ament_target_dependencies(relocalization_node
 )
 target_compile_definitions(relocalization_node PRIVATE ${PCL_DEFINITIONS})
 
+add_executable(active_relocalization_controller
+  src/active_relocalization_controller.cpp)
+target_compile_features(active_relocalization_controller PUBLIC cxx_std_17)
+target_include_directories(active_relocalization_controller PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(active_relocalization_controller
+  active_relocalization_policy active_relocalization_flight_core Eigen3::Eigen)
+ament_target_dependencies(active_relocalization_controller
+  geometry_msgs nav_msgs rclcpp std_msgs uf_interfaces)
+
 add_executable(lidar_calibration_motion_node src/lidar_calibration_motion_node.cpp)
 target_compile_features(lidar_calibration_motion_node PUBLIC cxx_std_17)
 target_include_directories(lidar_calibration_motion_node PRIVATE
@@ -108,7 +127,20 @@ ament_target_dependencies(lidar_calibration_motion_node
 )
 target_compile_definitions(lidar_calibration_motion_node PRIVATE ${PCL_DEFINITIONS})
 
-install(TARGETS active_relocalization_policy automatic_loop_closure_policy
+add_executable(dynamic_localization_benchmark src/dynamic_localization_benchmark.cpp)
+target_compile_features(dynamic_localization_benchmark PUBLIC cxx_std_17)
+target_include_directories(dynamic_localization_benchmark PRIVATE
+  ${PCL_INCLUDE_DIRS}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(dynamic_localization_benchmark
+  registration_core keyframe_database descriptor_core
+  uf_dynamic_observer::dynamic_observer_core Eigen3::Eigen ${PCL_LIBRARIES}
+)
+target_compile_definitions(dynamic_localization_benchmark PRIVATE ${PCL_DEFINITIONS})
+
+install(TARGETS active_relocalization_policy active_relocalization_flight_core
+  automatic_loop_closure_policy
   registration_core keyframe_database descriptor_core
   multi_frame_consistency_gate keyframe_synchronization
   EXPORT export_registration_core
@@ -116,11 +148,15 @@ install(TARGETS active_relocalization_policy automatic_loop_closure_policy
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
-install(TARGETS relocalization_node lidar_calibration_motion_node
+install(TARGETS relocalization_node active_relocalization_controller
+  lidar_calibration_motion_node
+  dynamic_localization_benchmark
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
+install(PROGRAMS tools/active_relocalization_ros_smoke.py
+  DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -128,6 +164,11 @@ if(BUILD_TESTING)
     test_active_relocalization_policy test/test_active_relocalization_policy.cpp)
   target_link_libraries(
     test_active_relocalization_policy active_relocalization_policy)
+  ament_add_gtest(
+    test_active_relocalization_flight_core
+    test/test_active_relocalization_flight_core.cpp)
+  target_link_libraries(
+    test_active_relocalization_flight_core active_relocalization_flight_core)
   ament_add_gtest(
     test_automatic_loop_closure_policy test/test_automatic_loop_closure_policy.cpp)
   target_link_libraries(

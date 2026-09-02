@@ -15,6 +15,7 @@ from uf_interfaces.msg import (
     ReliabilityScore,
     RelocalizationResult,
     SchedulerState,
+    RelocalizationRequestIntent,
 )
 
 from .scheduler_core import (
@@ -197,7 +198,8 @@ class ReliabilityScheduler(Node):
         self.diagnostic_pub = self.create_publisher(
             DiagnosticArray, "/reliability/scheduler_diagnostics", 10)
         self.relocalization_request_pub = self.create_publisher(
-            Bool, "/relocalization/request", 10)
+            RelocalizationRequestIntent, "/relocalization/request_intent", 10)
+        self.relocalization_intent_sequence = 0
         for modality in MODALITIES:
             self.create_subscription(
                 ReliabilityScore,
@@ -335,8 +337,16 @@ class ReliabilityScheduler(Node):
             self._release_relocalization_request()
 
     def _release_relocalization_request(self):
-        release = Bool()
-        release.data = False
+        release = RelocalizationRequestIntent()
+        release.header.stamp = self.get_clock().now().to_msg()
+        release.source_id = "reliability_scheduler"
+        release.source_instance_id = self.get_name()
+        self.relocalization_intent_sequence += 1
+        release.sequence = self.relocalization_intent_sequence
+        release.episode_id = int(self.current_fusion_epoch)
+        release.active = False
+        release.lease_duration_s = 0.5
+        release.reason = "scheduler_release"
         self.relocalization_request_pub.publish(release)
 
     def _fusion_epoch(self, msg):
@@ -453,8 +463,16 @@ class ReliabilityScheduler(Node):
         self.relocalization_candidate_since_s = candidate_since
         if not trigger:
             return
-        request = Bool()
-        request.data = True
+        request = RelocalizationRequestIntent()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.source_id = "reliability_scheduler"
+        request.source_instance_id = self.get_name()
+        self.relocalization_intent_sequence += 1
+        request.sequence = self.relocalization_intent_sequence
+        request.episode_id = int(self.current_fusion_epoch)
+        request.active = True
+        request.lease_duration_s = max(0.5, self.automatic_relocalization_cooldown_s)
+        request.reason = "persistent_lidar_loss"
         self.relocalization_request_pub.publish(request)
         self.relocalization_requested = True
         self.relocalization_failed = False
