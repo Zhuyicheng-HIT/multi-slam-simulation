@@ -48,7 +48,9 @@ class SensorRelayManager(Node):
         self.declare_parameter("color_output_topic", "/sensors/rgbd/color")
         self.declare_parameter("imu_acceleration_scale", 1.0)
         self.declare_parameter("restamp_gnss", True)
+        self.declare_parameter("executor_threads", 2)
         self.relay_count = 0
+        self.executor_threads = max(1, int(self.get_parameter("executor_threads").value))
         self.relay_counts = Counter()
         self.relay_publishers = {}
         self.relay_groups = {}
@@ -102,7 +104,7 @@ class SensorRelayManager(Node):
                 KeyValue(key=f"{name}_relayed", value=str(self.relay_counts[name]))
                 for name in sorted(self.relay_publishers)
             ],
-            KeyValue(key="executor_threads", value="2"),
+            KeyValue(key="executor_threads", value=str(self.executor_threads)),
             KeyValue(key="queue_policy", value="DDS sensor_data keep_last"),
         ]
         array = DiagnosticArray()
@@ -114,7 +116,7 @@ class SensorRelayManager(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = SensorRelayManager()
-    executor = MultiThreadedExecutor(num_threads=2)
+    executor = MultiThreadedExecutor(num_threads=node.executor_threads)
     executor.add_node(node)
     try:
         executor.spin()

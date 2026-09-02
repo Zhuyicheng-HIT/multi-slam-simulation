@@ -42,6 +42,10 @@ class SensorPipelineLaunchTest(unittest.TestCase):
         self.assertIn('condition=UnlessCondition(enable_fault_injection)', source)
         self.assertIn('condition=IfCondition(enable_fault_injection)', source)
 
+    def test_body_filter_keeps_reliable_input_compatibility_parameter(self):
+        source = (PATH.parent.parent / "uf_sensor_pipeline" / "pointcloud_body_filter.py").read_text()
+        self.assertIn('declare_parameter("reliable_input", False)', source)
+
     def test_minimal_profile_declares_all_manager_topics_before_start(self):
         description = MODULE.generate_launch_description()
         entities = list(description.entities)
