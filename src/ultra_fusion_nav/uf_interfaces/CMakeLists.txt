@@ -8,11 +8,13 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/ActiveRelocalizationStatus.msg"
   "msg/FaultState.msg"
   "msg/FusionEpoch.msg"
   "msg/GnssIntegrity.msg"
   "msg/LioDiagnostics.msg"
   "msg/LidarCalibrationMotion.msg"
+  "msg/LocalAvoidanceStatus.msg"
   "msg/ObstacleSafetyState.msg"
   "msg/FlightCommandDecision.msg"
   "msg/ReliabilityScore.msg"
