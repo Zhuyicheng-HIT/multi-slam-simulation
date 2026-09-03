@@ -21,7 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SchedulerState.msg"
   "msg/RelocalizationResult.msg"
   "msg/RelocalizationRequestIntent.msg"
-  "msg/RelocalizationRequestIntent.msg"
+  "srv/ManualRelocalization.srv"
   "msg/RgbdGeometryTrack.msg"
   "msg/RgbdGeometryTracks.msg"
   "msg/RgbdDirectTrack.msg"

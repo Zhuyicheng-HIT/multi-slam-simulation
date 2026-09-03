@@ -1,6 +1,6 @@
 relocalization_request_arbiter:
   ros__parameters:
-    allowed_sources: [reliability_scheduler, localization_safety]
+    allowed_sources: [reliability_scheduler, localization_safety, manual_control]
     intent_topic: /relocalization/request_intent
     request_topic: /relocalization/request
     diagnostics_topic: /relocalization/request_arbiter_diagnostics

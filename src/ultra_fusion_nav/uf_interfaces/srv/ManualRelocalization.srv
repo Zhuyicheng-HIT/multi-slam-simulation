@@ -1,0 +1,11 @@
+uint8 START=1
+uint8 CANCEL=2
+uint8 command
+string source
+uint64 episode_id
+builtin_interfaces/Time timestamp
+float32 lease_duration_s
+---
+bool accepted
+string reason
+uint64 request_sequence

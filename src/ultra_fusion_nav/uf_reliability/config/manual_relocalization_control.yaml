@@ -1,0 +1,8 @@
+manual_relocalization_control:
+  ros__parameters:
+    source_id: manual_control
+    intent_topic: /relocalization/request_intent
+    default_lease_s: 1.0
+    minimum_lease_s: 0.20
+    maximum_lease_s: 5.0
+    keepalive_period_s: 0.25

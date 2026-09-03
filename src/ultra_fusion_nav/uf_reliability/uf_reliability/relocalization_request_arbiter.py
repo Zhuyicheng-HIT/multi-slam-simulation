@@ -34,6 +34,7 @@ class RelocalizationRequestArbiterCore:
     allowed_sources: tuple = (
         "reliability_scheduler",
         "localization_safety",
+        "manual_control",
     )
     minimum_lease_s: float = 0.20
     maximum_lease_s: float = 5.0

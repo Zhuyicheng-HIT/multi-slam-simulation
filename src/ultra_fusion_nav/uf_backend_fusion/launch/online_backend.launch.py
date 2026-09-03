@@ -246,6 +246,26 @@ def generate_launch_description():
         ),
         Node(
             package="uf_reliability",
+            executable="relocalization_request_arbiter",
+            name="relocalization_request_arbiter",
+            parameters=[
+                reliability_share + "/config/relocalization_request_arbiter.yaml",
+                {"use_sim_time": use_sim_time},
+            ],
+            output="screen",
+        ),
+        Node(
+            package="uf_reliability",
+            executable="manual_relocalization_control",
+            name="manual_relocalization_control",
+            parameters=[
+                reliability_share + "/config/manual_relocalization_control.yaml",
+                {"use_sim_time": use_sim_time},
+            ],
+            output="screen",
+        ),
+        Node(
+            package="uf_reliability",
             executable="reliability_scheduler",
             name="reliability_scheduler",
             parameters=[
@@ -449,6 +469,13 @@ def generate_launch_description():
                 },
             ],
             prefix=relocalization_prefix,
+            output="screen",
+        ),
+        Node(
+            package="uf_relocalization",
+            executable="active_relocalization_controller",
+            name="active_relocalization_controller",
+            parameters=[{"use_sim_time": use_sim_time}],
             output="screen",
         ),
     ])

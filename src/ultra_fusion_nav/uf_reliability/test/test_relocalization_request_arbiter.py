@@ -35,6 +35,16 @@ def test_one_source_release_cannot_clear_other_source():
     assert decision.active_sources == ("reliability_scheduler",)
 
 
+def test_manual_control_is_a_distinct_owned_source():
+    core = RelocalizationRequestArbiterCore()
+    decision = update(core, "manual_control", 1, True, 1.0)
+    assert decision.accepted
+    assert decision.active_sources == ("manual_control",)
+    release = update(core, "manual_control", 2, False, 1.1)
+    assert release.accepted
+    assert not release.output_active
+
+
 def test_both_sources_and_interleaved_release_are_or_owned():
     core = RelocalizationRequestArbiterCore()
     transitions = []

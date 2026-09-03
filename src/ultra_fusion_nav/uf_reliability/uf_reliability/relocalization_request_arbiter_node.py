@@ -29,7 +29,9 @@ class RelocalizationRequestArbiter(Node):
             parameter_overrides=parameter_overrides or [],
         )
         self.declare_parameter(
-            "allowed_sources", ["reliability_scheduler", "localization_safety"]
+            "allowed_sources", [
+                "reliability_scheduler", "localization_safety", "manual_control"
+            ]
         )
         self.declare_parameter(
             "intent_topic", "/relocalization/request_intent"
