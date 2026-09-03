@@ -418,7 +418,7 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
   if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
     SITL_SERIAL_ARGS="--serial1 tcp:2"
   fi
-  setsid bash -lc "cd '$ARDUPILOT_DIR' && echo \$\$ > '$SITL_PID_FILE' && exec build/sitl/bin/arducopter -S $WIPE_ARG $SITL_SERIAL_ARGS --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
+  setsid bash -lc "cd '$ARDUPILOT_DIR' && echo \$\$ > '$SITL_PID_FILE' && exec build/sitl/bin/arducopter $WIPE_ARG $SITL_SERIAL_ARGS --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
   pids+=("$!")
   sleep 10
 fi
