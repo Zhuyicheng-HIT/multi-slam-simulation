@@ -752,6 +752,7 @@ class GuidedRectangleWaypoints(Node):
                 if not bool(getattr(response, "success", False)):
                     raise RuntimeError("LAND command was rejected by the FCU")
                 deadline = time.monotonic() + self.land_disarm_timeout_s
+                disarm_sent = False
                 while rclpy.ok() and time.monotonic() < deadline:
                     rclpy.spin_once(self, timeout_sec=0.1)
                     self._log_status("landing descent")
@@ -761,6 +762,16 @@ class GuidedRectangleWaypoints(Node):
                         )
                         self._publish_mission_phase("landed")
                         break
+                    # Some SITL parameter sets do not run the automatic LAND
+                    # disarm detector even after the vehicle reaches the
+                    # ground.  Once FCU local altitude confirms touchdown,
+                    # use the existing arming service exactly once.
+                    local_z = self._local_z()
+                    if not disarm_sent and local_z is not None and local_z <= self.takeoff_min_alt_m:
+                        disarm_sent = True
+                        disarm_req = CommandBool.Request()
+                        disarm_req.value = False
+                        self.call(self.arming_cli, disarm_req, "disarm after LAND")
                 else:
                     raise RuntimeError(
                         "LAND was accepted but FCU did not disarm within "

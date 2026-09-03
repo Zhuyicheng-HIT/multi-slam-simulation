@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <sdf version="1.10">
   <world name="low_indoor_apm_rgbd_mid360">
-    <physics name="apm_1ms_physics" type="ignored">
+    <physics name="apm_1ms_physics" type="ode">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
