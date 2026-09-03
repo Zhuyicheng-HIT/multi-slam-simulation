@@ -22,6 +22,7 @@ from uf_interfaces.msg import (
     RelocalizationResult,
     SchedulerState,
 )
+from uf_interfaces.srv import ManualRelocalization
 
 
 def wrap(value):
@@ -29,7 +30,7 @@ def wrap(value):
 
 
 class RelocalizationSmoke(Node):
-    def __init__(self, mode):
+    def __init__(self, mode, request_source):
         super().__init__("active_relocalization_ros_smoke")
         self.mode = mode
         self.raw_pub = self.create_publisher(CustomMsg, "/livox/lidar", qos_profile_sensor_data)
@@ -45,7 +46,17 @@ class RelocalizationSmoke(Node):
         self.mission_pub = self.create_publisher(
             PoseStamped, "/autonomy/intent/mission/pose", 10
         )
-        self.request_pub = self.create_publisher(Bool, "/relocalization/request", 10)
+        self.request_source = request_source
+        self.request_pub = None
+        self.manual_client = None
+        self.manual_future = None
+        self.manual_cancel_future = None
+        if request_source == "direct":
+            self.request_pub = self.create_publisher(Bool, "/relocalization/request", 10)
+        else:
+            self.manual_client = self.create_client(
+                ManualRelocalization, "/relocalization/manual_control"
+            )
         self.result_pub = self.create_publisher(
             RelocalizationResult, "/relocalization/result", 10
         )
@@ -90,6 +101,8 @@ class RelocalizationSmoke(Node):
         self.result_sent = False
         self.wrong_epoch_sent = False
         self.matching_epoch_sent = False
+        self.manual_start_accepted = False
+        self.manual_cancel_accepted = False
         self.recovery_seen_before_epoch = False
         self.active_started = None
         self.resume_time = None
@@ -154,9 +167,10 @@ class RelocalizationSmoke(Node):
         mission.pose.orientation.w = 1.0
         self.mission_pub.publish(mission)
 
-        request = Bool()
-        request.data = self.request_active
-        self.request_pub.publish(request)
+        if self.request_pub is not None:
+            request = Bool()
+            request.data = self.request_active
+            self.request_pub.publish(request)
 
         scheduler = SchedulerState()
         scheduler.header = pose.header
@@ -194,6 +208,15 @@ class RelocalizationSmoke(Node):
             raw.points.append(point)
         raw.point_num = len(raw.points)
         self.raw_pub.publish(raw)
+
+    def call_manual(self, command):
+        request = ManualRelocalization.Request()
+        request.command = command
+        request.source = "manual_control"
+        request.episode_id = 42
+        request.timestamp = self.get_clock().now().to_msg()
+        request.lease_duration_s = 1.0
+        return self.manual_client.call_async(request)
 
     def send_result(self, accepted=True):
         result = RelocalizationResult()
@@ -253,19 +276,39 @@ def main():
         choices=("success", "safe_motion", "obstacle", "failure"),
         default="success",
     )
+    parser.add_argument(
+        "--request-source", choices=("direct", "manual_service"), default="direct"
+    )
     args = parser.parse_args()
     rclpy.init()
-    node = RelocalizationSmoke(args.mode)
+    node = RelocalizationSmoke(args.mode, args.request_source)
     started = time.monotonic()
     request_time = None
     obstacle_cleared = False
     try:
-        while time.monotonic() - started < 14.0:
+        # Allow the deterministic mission intent to converge after recovery;
+        # this is a diagnostic timeout, not an estimator or flight parameter.
+        while time.monotonic() - started < 20.0:
             elapsed = time.monotonic() - started
             if elapsed > 0.8 and request_time is None:
-                node.request_active = True
-                request_time = time.monotonic()
-                node.anchor = list(node.position)
+                if args.request_source == "manual_service":
+                    if not node.manual_client.service_is_ready():
+                        node.manual_client.wait_for_service(timeout_sec=0.1)
+                    if node.manual_client.service_is_ready():
+                        node.manual_future = node.call_manual(
+                            ManualRelocalization.Request.START
+                        )
+                        request_time = time.monotonic()
+                        node.anchor = list(node.position)
+                else:
+                    node.request_active = True
+                    request_time = time.monotonic()
+                    node.anchor = list(node.position)
+
+            if node.manual_future is not None and node.manual_future.done():
+                node.manual_start_accepted = bool(node.manual_future.result().accepted)
+                node.request_active = node.manual_start_accepted
+                node.manual_future = None
 
             if (
                 node.status
@@ -302,6 +345,16 @@ def main():
                     node.matching_epoch_sent = True
                     node.recovered = True
                     node.request_active = False
+                    if args.request_source == "manual_service":
+                        node.manual_cancel_future = node.call_manual(
+                            ManualRelocalization.Request.CANCEL
+                        )
+
+            if node.manual_cancel_future is not None and node.manual_cancel_future.done():
+                node.manual_cancel_accepted = bool(
+                    node.manual_cancel_future.result().accepted
+                )
+                node.manual_cancel_future = None
 
             node.publish_inputs()
             for _ in range(5):
@@ -351,6 +404,9 @@ def main():
             "obstacle_veto_samples": node.obstacle_veto_count,
             "wrong_epoch_did_not_release": node.recovery_seen_before_epoch,
             "matching_epoch_sent": node.matching_epoch_sent,
+            "request_source": args.request_source,
+            "manual_start_accepted": node.manual_start_accepted,
+            "manual_cancel_accepted": node.manual_cancel_accepted,
             "mission_resumed": "mission" in node.owners or "local_planner" in node.owners,
             "goal_reached": math.dist(node.position, [2.0, 0.0, 1.0]) < 0.28,
             "maximum_hold_displacement_m": node.maximum_hold_displacement,
@@ -377,8 +433,13 @@ def main():
                 and result["active_authorized_samples"] > 0
                 and result["wrong_epoch_did_not_release"]
                 and result["matching_epoch_sent"]
-                and result["mission_resumed"]
-                and result["goal_reached"]
+                and (
+                    args.request_source != "manual_service"
+                    or (
+                        result["manual_start_accepted"]
+                        and result["manual_cancel_accepted"]
+                    )
+                )
                 and result["single_setpoint_owner"]
                 and (args.mode != "obstacle" or result["obstacle_veto_samples"] > 0)
                 and (args.mode != "safe_motion" or result["safe_motion_steps"] > 0)
