@@ -45,6 +45,30 @@ def test_manual_control_is_a_distinct_owned_source():
     assert not release.output_active
 
 
+def test_manual_release_cannot_cancel_concurrent_automatic_request():
+    core = RelocalizationRequestArbiterCore()
+    assert update(core, "manual_control", 1, True, 1.0).output_active
+    decision = update(core, "reliability_scheduler", 1, True, 1.1)
+    assert decision.output_active
+    release = update(core, "manual_control", 2, False, 1.2)
+    assert release.output_active
+    assert release.active_sources == ("reliability_scheduler",)
+    final = update(core, "reliability_scheduler", 2, False, 1.3)
+    assert final.output_changed and not final.output_active
+
+
+def test_manual_release_cannot_cancel_concurrent_safety_request():
+    core = RelocalizationRequestArbiterCore()
+    assert update(core, "manual_control", 1, True, 1.0).output_active
+    decision = update(core, "localization_safety", 1, True, 1.1)
+    assert decision.output_active
+    release = update(core, "manual_control", 2, False, 1.2)
+    assert release.output_active
+    assert release.active_sources == ("localization_safety",)
+    final = update(core, "localization_safety", 2, False, 1.3)
+    assert final.output_changed and not final.output_active
+
+
 def test_both_sources_and_interleaved_release_are_or_owned():
     core = RelocalizationRequestArbiterCore()
     transitions = []

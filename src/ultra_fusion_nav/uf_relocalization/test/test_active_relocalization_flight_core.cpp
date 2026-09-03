@@ -140,3 +140,69 @@ TEST(ActiveRelocalizationFlightCore, MissingPoseAtRequestFailsClosed)
   EXPECT_EQ(decision.state, ActiveFlightState::FAILSAFE);
   EXPECT_TRUE(decision.localization_hold);
 }
+
+TEST(ActiveRelocalizationFlightCore, CancelledRequestDuringActiveSearchLatchesFailsafeHold)
+{
+  auto core = active_core();
+  core.update(healthy(1.0));
+  core.update(healthy(2.1));
+  auto cancelled = healthy(2.2);
+  // The ROS controller translates a final request falling edge in HOLD/ACTIVE
+  // into relocalization_failure. A cancellation must never resume navigation.
+  cancelled.request_active = false;
+  cancelled.relocalization_failure = true;
+  const auto decision = core.update(cancelled);
+  EXPECT_EQ(decision.state, ActiveFlightState::FAILSAFE);
+  EXPECT_TRUE(decision.localization_hold);
+  EXPECT_FALSE(decision.motion_authorized);
+}
+
+TEST(ActiveRelocalizationFlightCore, PreviousEpochCannotReleaseReinitializedRequest)
+{
+  auto core = active_core();
+  core.update(healthy(1.0));
+  core.update(healthy(2.1));
+  auto accepted = healthy(2.2);
+  accepted.relocalization_success = true;
+  accepted.result_transaction_id = 31U;
+  accepted.result_candidate_id = 4U;
+  core.update(accepted);
+
+  auto stale_epoch = healthy(2.3);
+  stale_epoch.epoch_applied = true;
+  stale_epoch.epoch_transaction_id = 30U;
+  stale_epoch.epoch_candidate_id = 4U;
+  stale_epoch.recovery_healthy = true;
+  EXPECT_EQ(core.update(stale_epoch).state, ActiveFlightState::RECOVERY_VALIDATION);
+  EXPECT_FALSE(core.decision().epoch_committed);
+
+  auto matching_epoch = stale_epoch;
+  matching_epoch.now_s = 2.4;
+  matching_epoch.epoch_transaction_id = 31U;
+  EXPECT_TRUE(core.update(matching_epoch).epoch_committed);
+}
+
+TEST(ActiveRelocalizationFlightCore, UnhealthyRecoveryValidationTimesOutToFailsafe)
+{
+  auto core = active_core();
+  core.update(healthy(1.0));
+  core.update(healthy(2.1));
+  auto accepted = healthy(2.2);
+  accepted.relocalization_success = true;
+  accepted.result_transaction_id = 41U;
+  accepted.result_candidate_id = 9U;
+  core.update(accepted);
+
+  auto committed = healthy(2.3);
+  committed.request_active = false;
+  committed.epoch_applied = true;
+  committed.epoch_transaction_id = 41U;
+  committed.epoch_candidate_id = 9U;
+  committed.recovery_healthy = false;
+  EXPECT_EQ(core.update(committed).state, ActiveFlightState::RECOVERY_VALIDATION);
+  committed.now_s = 11.1;
+  const auto decision = core.update(committed);
+  EXPECT_EQ(decision.state, ActiveFlightState::FAILSAFE);
+  EXPECT_EQ(decision.reason, "recovery_validation_timeout");
+  EXPECT_TRUE(decision.localization_hold);
+}
