@@ -54,7 +54,7 @@ class GuidedRectangleWaypoints(Node):
         self.declare_parameter("land_disarm_timeout_s", 60.0)
         self.declare_parameter("final_hold_time_s", 0.0)
         # SERIAL1/5762 is reserved for the MTF01P. Use the independent
-        # SERIAL2 MAVLink endpoint for direct COMMAND_INT acknowledgements.
+        # SERIAL2 MAVLink endpoint for direct takeoff acknowledgements.
         self.declare_parameter("mavlink_takeoff_url", "tcp:127.0.0.1:5763")
         self.declare_parameter("mavlink_target_component", 1)
         self.declare_parameter("takeoff_param3", 1.0)
@@ -420,6 +420,15 @@ class GuidedRectangleWaypoints(Node):
             deadline = start_ros_s + self.takeoff_free_climb_s
             stable_since = None
             while rclpy.ok() and self._now_s() < deadline:
+                # ArduPilot requires a live GUIDED position target after the
+                # takeoff command; an ACK alone does not drive the climb.
+                local_z = self._local_z()
+                # Keep each mission-intent step within the arbiter's bounded
+                # jump contract while the FCU climbs from the ground.
+                base_z = self.home_z if local_z is None else local_z
+                climb_z = min(self.takeoff_alt, base_z + 0.5)
+                self.publish_setpoint(self.home_x, self.home_y, climb_z, self.home_yaw)
+                self.mission_safety_checkpoint(f"takeoff climb attempt {attempt}")
                 rclpy.spin_once(self, timeout_sec=0.1)
                 self._log_status(f"apm free climb attempt {attempt}")
                 local_z = self._local_z()
@@ -441,7 +450,7 @@ class GuidedRectangleWaypoints(Node):
                 f"Takeoff ACK produced no climb in {self.takeoff_free_climb_s:.1f}s; "
                 f"re-sending once (attempt {attempt + 1}/{self.takeoff_command_attempts})."
             )
-            if not self.send_takeoff_command_int():
+            if not self.send_takeoff_command_tol():
                 break
         if self.state.armed:
             try:
@@ -482,26 +491,24 @@ class GuidedRectangleWaypoints(Node):
 
     def send_takeoff_command_int(self):
         self.get_logger().info(
-            f"Sending MAV_CMD_NAV_TAKEOFF COMMAND_INT via {self.mavlink_takeoff_url}, "
+            f"Sending MAV_CMD_NAV_TAKEOFF COMMAND_LONG via {self.mavlink_takeoff_url}, "
             f"alt={self.takeoff_alt:.1f}m param3={self.takeoff_param3:.1f}"
         )
         mav = mavutil.mavlink_connection(self.mavlink_takeoff_url, source_system=252)
         mav.wait_heartbeat(timeout=10)
         target_system = mav.target_system or 1
         target_component = self.mavlink_target_component or mav.target_component or 1
-        mav.mav.command_int_send(
+        mav.mav.command_long_send(
             target_system,
             target_component,
-            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
             mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-            0,
             0,
             0.0,
             0.0,
             self.takeoff_param3,
             0.0,
-            0,
-            0,
+            0.0,
+            0.0,
             self.takeoff_alt,
         )
         end = time.monotonic() + 8.0
@@ -511,11 +518,11 @@ class GuidedRectangleWaypoints(Node):
                 continue
             if ack.command == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
                 accepted = ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED
-                self.get_logger().info(f"takeoff COMMAND_INT ack: result={ack.result}, accepted={accepted}")
+                self.get_logger().info(f"takeoff COMMAND_LONG ack: result={ack.result}, accepted={accepted}")
                 mav.close()
                 return accepted
         mav.close()
-        self.get_logger().warning("Timed out waiting for takeoff COMMAND_INT ACK")
+        self.get_logger().warning("Timed out waiting for takeoff COMMAND_LONG ACK")
         return False
 
     def send_takeoff_command_tol(self):
@@ -606,9 +613,12 @@ class GuidedRectangleWaypoints(Node):
                 self.get_logger().warning(f"Mode changed to {self.state.mode}; retrying GUIDED before takeoff.")
                 continue
 
-            takeoff_ok = self.send_takeoff_command_int()
+            # Use the MAVROS CommandTOL path that owns the active FCU link.
+            # The auxiliary SERIAL2 acknowledgement path can report ACCEPTED
+            # without causing the flight controller to execute the climb.
+            takeoff_ok = self.send_takeoff_command_tol()
             if takeoff_ok:
-                self.get_logger().info("Takeoff COMMAND_INT accepted after GUIDED + armed state.")
+                self.get_logger().info("Takeoff CommandTOL accepted after GUIDED + armed state.")
                 return
             self.get_logger().warning("Takeoff rejected; waiting and retrying.")
             self.hold_setpoint(self.home_x, self.home_y, self.takeoff_alt, 3.0, label="takeoff retry")
@@ -695,10 +705,16 @@ class GuidedRectangleWaypoints(Node):
         self.get_logger().info(
             f"Preflight accepted using {navigation_source}; entering GUIDED/arm/takeoff."
         )
+        # ArduPilot requires a live local-position target before GUIDED/arm;
+        # this is the same priming contract used by guided_flight.
+        self.hold_setpoint(
+            self.home_x, self.home_y, self.home_z, 2.0,
+            label="pre-GUIDED setpoint priming", require_guided=False,
+        )
         self.set_guided_arm_takeoff()
 
         self.get_logger().info(
-            f"Takeoff accepted; letting ArduPilot climb without local setpoints for {self.takeoff_free_climb_s:.1f}s."
+            f"Takeoff accepted; maintaining the local target while ArduPilot climbs for {self.takeoff_free_climb_s:.1f}s."
         )
         self.wait_for_takeoff_climb()
 
