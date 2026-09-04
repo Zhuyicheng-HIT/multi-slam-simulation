@@ -160,6 +160,7 @@ private:
 
   void on_raw(const livox_ros_driver2::msg::CustomMsg & message)
   {
+    ++raw_received_count_;
     const double now = get_clock()->now().seconds();
     const double scan_stamp = stamp_s(message.header.stamp);
     bool timestamps_valid = std::isfinite(scan_stamp) && scan_stamp > 0.0 &&
@@ -173,6 +174,7 @@ private:
     input.timestamps_valid = timestamps_valid;
     input.raw_sensor_healthy = timestamps_valid && input.sensor_age_s <= raw_timeout_s_ &&
       message.points.size() >= minimum_points_;
+    if (input.raw_sensor_healthy) {++raw_healthy_count_;}
     input.body_points.reserve(message.points.size());
     for (const auto & source : message.points) {
       const Eigen::Vector3d lidar(source.x, source.y, source.z);
@@ -188,6 +190,13 @@ private:
     input.motion_finite = input.body_velocity.allFinite() && motion_received_ &&
       motion_stamp > 0.0 && now >= motion_stamp && now - motion_stamp <= odom_timeout_s_;
     publish(core_->evaluate(input), scan_stamp, input.raw_sensor_healthy, input.sensor_age_s);
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "raw safety diagnostics: received=%llu healthy=%llu published=%llu watchdog=%llu points=%zu age=%.3fs",
+      static_cast<unsigned long long>(raw_received_count_),
+      static_cast<unsigned long long>(raw_healthy_count_),
+      static_cast<unsigned long long>(state_published_count_),
+      static_cast<unsigned long long>(watchdog_count_), message.points.size(), input.sensor_age_s);
   }
 
   void watchdog()
@@ -198,6 +207,7 @@ private:
       input.raw_sensor_healthy = false;
       input.sensor_age_s = last_raw_arrival_s_ <= 0.0 ?
         std::numeric_limits<double>::infinity() : now - last_raw_arrival_s_;
+      ++watchdog_count_;
       publish(core_->evaluate(input), now, false, input.sensor_age_s);
     }
   }
@@ -219,6 +229,7 @@ private:
     message.raw_sensor_age_s = static_cast<float>(sensor_age_s);
     message.reason = result.reason;
     state_pub_->publish(message);
+    ++state_published_count_;
 
     diagnostic_msgs::msg::DiagnosticArray array;
     array.header = message.header;
@@ -239,6 +250,10 @@ private:
   double candidate_timeout_s_{0.50};
   double path_timeout_s_{0.25};
   std::size_t minimum_points_{20U};
+  std::uint64_t raw_received_count_{0U};
+  std::uint64_t raw_healthy_count_{0U};
+  std::uint64_t state_published_count_{0U};
+  std::uint64_t watchdog_count_{0U};
   double last_raw_stamp_s_{0.0};
   double last_raw_arrival_s_{0.0};
   bool odom_received_{false};
