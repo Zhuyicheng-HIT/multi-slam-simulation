@@ -92,6 +92,7 @@ public:
     obstacle_sub_ = create_subscription<uf_interfaces::msg::ObstacleSafetyState>(
       "/safety/raw_obstacle_state", 10,
       [this](uf_interfaces::msg::ObstacleSafetyState::ConstSharedPtr msg) {
+        ++obstacle_callbacks_;
         input_.obstacle_stamp_s = stamp_s(msg->header.stamp);
         input_.obstacle_healthy = msg->raw_sensor_healthy;
         input_.obstacle_state = static_cast<ObstacleState>(msg->state);
@@ -133,6 +134,7 @@ private:
 
   void tick()
   {
+    ++tick_count_;
     const auto now = get_clock()->now();
     input_.now_s = now.seconds();
     input_.manual_override = explicit_manual_override_ ||
@@ -149,6 +151,7 @@ private:
       output_pub_->publish(message);
       selected_candidate_pub_->publish(message);
       published = true;
+      ++setpoint_publish_count_;
     }
     if (decision.action == CommandAction::kLand || decision.action == CommandAction::kReturn) {
       std_msgs::msg::String mode;
@@ -166,6 +169,17 @@ private:
       static_cast<float>(std::max(0.0, input_.now_s - decision.selected.stamp_s)) :
       std::numeric_limits<float>::infinity();
     decision_pub_->publish(status);
+    ++decision_count_;
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "arbiter diagnostics: ticks=%llu decisions=%llu obstacle_cb=%llu mission_received=%d mission_age=%.3f owner=%s reason=%s setpoints=%llu",
+      static_cast<unsigned long long>(tick_count_),
+      static_cast<unsigned long long>(decision_count_),
+      static_cast<unsigned long long>(obstacle_callbacks_),
+      input_.mission.received ? 1 : 0,
+      input_.mission.received ? std::max(0.0, input_.now_s - input_.mission.stamp_s) : -1.0,
+      decision.owner.c_str(), decision.reason.c_str(),
+      static_cast<unsigned long long>(setpoint_publish_count_));
   }
 
   std::unique_ptr<CommandArbiterCore> core_;
@@ -176,6 +190,10 @@ private:
   bool fcu_received_{false};
   bool fcu_connected_{false};
   std::string fcu_mode_;
+  std::uint64_t tick_count_{0U};
+  std::uint64_t decision_count_{0U};
+  std::uint64_t obstacle_callbacks_{0U};
+  std::uint64_t setpoint_publish_count_{0U};
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr output_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr selected_candidate_pub_;
   rclcpp::Publisher<uf_interfaces::msg::FlightCommandDecision>::SharedPtr decision_pub_;
