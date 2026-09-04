@@ -8,7 +8,7 @@ safety_slice_start() {
   local raw_topic=${1:-/livox/lidar}
   local use_sim_time=${2:-true}
   local log_path=${3:-/tmp/uf_safety_slice.log}
-  local nodes publisher_count
+  local nodes publisher_count decision_publishers safety_publishers setpoint_publishers
 
   SAFETY_SLICE_PID=""
   SAFETY_SLICE_OWNED=0
@@ -36,9 +36,22 @@ safety_slice_start() {
 
   for _safety_attempt in $(seq 1 30); do
     nodes=$(timeout 5s ros2 node list --no-daemon --spin-time 1.0 2>/dev/null || true)
+    decision_publishers=$(timeout 5s ros2 topic info --no-daemon --spin-time 1.0 \
+      /autonomy/command_decision 2>/dev/null |
+      sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' || true)
+    setpoint_publishers=$(timeout 5s ros2 topic info --no-daemon --spin-time 1.0 \
+      /mavros/setpoint_position/local 2>/dev/null |
+      sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' || true)
+    safety_publishers=$(timeout 5s ros2 topic info --no-daemon --spin-time 1.0 \
+      /safety/raw_obstacle_state 2>/dev/null |
+      sed -n 's/^Publisher count: \([0-9][0-9]*\)$/\1/p' || true)
     if grep -qx '/flight_command_arbiter' <<<"$nodes" &&
-       grep -qx '/raw_obstacle_safety_monitor' <<<"$nodes"; then
-      printf 'Safety slice ready: raw=%s pid=%s\n' "$raw_topic" "$SAFETY_SLICE_PID"
+       grep -qx '/raw_obstacle_safety_monitor' <<<"$nodes" &&
+       [[ "$decision_publishers" == "1" ]] &&
+       [[ "$setpoint_publishers" == "1" ]] &&
+       [[ "$safety_publishers" == "1" ]]; then
+      printf 'Safety slice ready: raw=%s pid=%s decision_publishers=%s setpoint_publishers=%s safety_publishers=%s\n' \
+        "$raw_topic" "$SAFETY_SLICE_PID" "$decision_publishers" "$setpoint_publishers" "$safety_publishers"
       return 0
     fi
     if ! kill -0 "$SAFETY_SLICE_PID" 2>/dev/null; then
