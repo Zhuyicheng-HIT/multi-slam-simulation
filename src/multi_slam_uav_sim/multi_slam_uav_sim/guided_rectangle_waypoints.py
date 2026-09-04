@@ -218,13 +218,12 @@ class GuidedRectangleWaypoints(Node):
         return self.fix is not None and self.fix.status.status >= 0
 
     def _gps_navigation_ready(self):
-        # A valid receiver fix does not prove that EKF3 has accepted GPS as a
-        # navigation source. Arming before that transition can leave a GUIDED
-        # takeoff acknowledged while the motors remain at idle.
-        # The absolute-position EKF flag can be set from an initialized origin
-        # before GPS is actually selected.  Do not treat that transient as a
-        # usable navigation source for takeoff.
-        return self._gps_ready() and self.ekf_using_gps
+        # ArduPilot may select GPS as the active EKF source immediately after
+        # GUIDED/arm is requested.  Keep the initialized absolute-position
+        # fallback so preflight does not deadlock before that transition.
+        return self._gps_ready() and (
+            self.ekf_using_gps or self.ekf_absolute_position_ready
+        )
 
     def _flow_ready(self):
         if self.last_flow_time is None:

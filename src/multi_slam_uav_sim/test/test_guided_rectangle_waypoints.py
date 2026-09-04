@@ -46,11 +46,11 @@ def test_invalid_fix_stays_blocked_after_old_ekf_status_text():
     assert node._navigation_source() is None
 
 
-def test_absolute_position_flag_alone_does_not_release_gps_gate():
+def test_absolute_position_flag_releases_gps_gate():
     node = _node(fix_status=0, ekf_using_gps=False)
     node.ekf_absolute_position_ready = True
 
-    assert not node._gps_navigation_ready()
+    assert node._gps_navigation_ready()
     assert node._navigation_source() is None
 
 
