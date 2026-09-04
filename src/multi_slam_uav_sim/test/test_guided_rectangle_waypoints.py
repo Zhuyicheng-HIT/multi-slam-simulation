@@ -46,12 +46,12 @@ def test_invalid_fix_stays_blocked_after_old_ekf_status_text():
     assert node._navigation_source() is None
 
 
-def test_current_ekf_absolute_position_releases_gate_after_status_text_was_missed():
+def test_absolute_position_flag_alone_does_not_release_gps_gate():
     node = _node(fix_status=0, ekf_using_gps=False)
     node.ekf_absolute_position_ready = True
 
-    assert node._gps_navigation_ready()
-    assert node._navigation_source() == "gps"
+    assert not node._gps_navigation_ready()
+    assert node._navigation_source() is None
 
 
 def test_navigation_wait_survives_initial_ros_clock_jump(monkeypatch):
