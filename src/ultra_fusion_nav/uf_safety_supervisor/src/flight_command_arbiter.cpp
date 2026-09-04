@@ -172,13 +172,15 @@ private:
     ++decision_count_;
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 5000,
-      "arbiter diagnostics: ticks=%llu decisions=%llu obstacle_cb=%llu mission_received=%d mission_age=%.3f owner=%s reason=%s setpoints=%llu",
+      "arbiter diagnostics: ticks=%llu decisions=%llu obstacle_cb=%llu mission_received=%d mission_age=%.3f owner=%s reason=%s selected_xyz=(%.3f,%.3f,%.3f) current_xyz=(%.3f,%.3f,%.3f) setpoints=%llu",
       static_cast<unsigned long long>(tick_count_),
       static_cast<unsigned long long>(decision_count_),
       static_cast<unsigned long long>(obstacle_callbacks_),
       input_.mission.received ? 1 : 0,
       input_.mission.received ? std::max(0.0, input_.now_s - input_.mission.stamp_s) : -1.0,
       decision.owner.c_str(), decision.reason.c_str(),
+      decision.selected.position.x(), decision.selected.position.y(), decision.selected.position.z(),
+      input_.current_pose.position.x(), input_.current_pose.position.y(), input_.current_pose.position.z(),
       static_cast<unsigned long long>(setpoint_publish_count_));
   }
 
