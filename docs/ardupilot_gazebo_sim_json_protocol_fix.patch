@@ -1,0 +1,12 @@
+diff --git a/include/ArduPilotPlugin.hh b/include/ArduPilotPlugin.hh
+--- a/include/ArduPilotPlugin.hh
++++ b/include/ArduPilotPlugin.hh
+@@
+-    uint16_t frame_count;
++    uint32_t frame_count;
+diff --git a/src/ArduPilotPlugin.cc b/src/ArduPilotPlugin.cc
+--- a/src/ArduPilotPlugin.cc
++++ b/src/ArduPilotPlugin.cc
+@@
+-    uint16_t pkt_frame_count{0};
++    uint32_t pkt_frame_count{0};
