@@ -11,6 +11,14 @@ WS_INSTALL=$(cd "$PKG_SHARE/../../.." && pwd)
 WS_ROOT=$(cd "$WS_INSTALL/.." && pwd)
 
 source /opt/ros/humble/setup.bash
+# The first-window stack loads Livox message typesupport from the external
+# MID360 workspace.  The second-window route entry must establish the same
+# environment before starting Safety Slice, otherwise raw_obstacle_safety_monitor
+# fails during subscription construction and the arbiter has no valid safety input.
+LIDAR_WS=${LIDAR_WS:-$HOME/multi-slam-deps/mid360_ws}
+if [[ -f "$LIDAR_WS/install/local_setup.bash" ]]; then
+  source "$LIDAR_WS/install/local_setup.bash"
+fi
 source "$WS_INSTALL/setup.bash"
 
 mavros_ready=false
