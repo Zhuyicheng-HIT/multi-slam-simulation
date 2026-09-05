@@ -179,6 +179,9 @@ public:
     declare_parameter("keyframe_consistency_diagnostics_enabled", true);
     declare_parameter("expected_keyframe_frame_id", "camera_init");
     declare_parameter("expected_query_frame_id", "body");
+    declare_parameter("database_path", "");
+    declare_parameter("database_load_on_start", true);
+    declare_parameter("database_save_on_insert", true);
 
     keyframe_attempt_period_s_ = get_parameter("keyframe_attempt_period_s").as_double();
     query_attempt_period_s_ = get_parameter("query_attempt_period_s").as_double();
@@ -239,6 +242,18 @@ public:
       get_parameter("query_pose_tolerance_s").as_double();
     keyframe_sync_timeout_s_ =
       get_parameter("keyframe_sync_timeout_s").as_double();
+    database_path_ = get_parameter("database_path").as_string();
+    database_save_on_insert_ = get_parameter("database_save_on_insert").as_bool();
+    if (!database_path_.empty() && get_parameter("database_load_on_start").as_bool()) {
+      if (database_.load_archive(database_path_, get_parameter("expected_keyframe_frame_id").as_string())) {
+        publish_database_readiness(true);
+        RCLCPP_INFO(get_logger(), "loaded relocalization keyframe archive: path=%s keyframes=%zu",
+          database_path_.c_str(), database_.keyframes().size());
+      } else {
+        RCLCPP_WARN(get_logger(), "relocalization keyframe archive unavailable or invalid: path=%s",
+          database_path_.c_str());
+      }
+    }
     maximum_quality_age_s_ =
       get_parameter("maximum_quality_age_s").as_double();
     pose_history_size_ = std::max(
@@ -892,6 +907,11 @@ private:
           fused_pose.translation().z(), yaw_deg, body_cloud->size(),
           unified_map_cloud->size());
         publish_database_readiness();
+        if (database_save_on_insert_ && !database_path_.empty() &&
+          !database_.save_archive(database_path_, expected_keyframe_frame_id_)) {
+          RCLCPP_ERROR(get_logger(), "failed to persist relocalization keyframe archive: path=%s",
+            database_path_.c_str());
+        }
       }
     } catch (const std::exception & error) {
       RCLCPP_WARN(get_logger(), "keyframe descriptor rejected: %s", error.what());
@@ -1732,6 +1752,8 @@ private:
   bool keyframe_consistency_diagnostics_enabled_{true};
   std::string expected_keyframe_frame_id_{"camera_init"};
   std::string expected_query_frame_id_{"body"};
+  std::string database_path_;
+  bool database_save_on_insert_{true};
   AutomaticLoopClosureConfig automatic_loop_config_;
   std::vector<std::string> automatic_loop_allowed_scheduler_states_;
   std::size_t keyframe_quality_rejections_{0U};

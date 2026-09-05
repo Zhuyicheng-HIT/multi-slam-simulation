@@ -4,6 +4,11 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <pcl/io/pcd_io.h>
 #include <stdexcept>
 #include <utility>
 
@@ -215,6 +220,75 @@ const std::deque<StaticKeyframe> & StaticKeyframeDatabase::keyframes() const
 std::size_t StaticKeyframeDatabase::descriptor_dimension() const
 {
   return descriptor_dimension_;
+}
+
+bool StaticKeyframeDatabase::save_archive(
+  const std::string & directory, const std::string & frame_id) const
+{
+  if (directory.empty() || frame_id.empty() || keyframes_.empty()) return false;
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::create_directories(directory, ec);
+  if (ec) return false;
+  const auto temporary = fs::path(directory) / "manifest.tmp";
+  std::ofstream manifest(temporary);
+  if (!manifest) return false;
+  manifest << "UF_KEYFRAME_ARCHIVE 1\nframe " << frame_id << "\ncount "
+           << keyframes_.size() << "\ndimension " << descriptor_dimension_ << "\n";
+  manifest << std::setprecision(17);
+  for (const auto & keyframe : keyframes_) {
+    const auto filename = "keyframe_" + std::to_string(keyframe.id) + ".pcd";
+    if (!keyframe.cloud || pcl::io::savePCDFileBinary(
+        (fs::path(directory) / filename).string(), *keyframe.cloud) != 0) return false;
+    manifest << keyframe.id << ' ' << filename << ' ' << keyframe.stamp_s;
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c)
+      manifest << ' ' << keyframe.world_from_sensor.matrix()(r, c);
+    manifest << ' ' << keyframe.quality.map_quality << ' '
+             << keyframe.quality.feature_repeatability << ' '
+             << keyframe.quality.dynamic_ratio << ' '
+             << keyframe.quality.lidar_degradation << ' '
+             << (keyframe.quality.scheduler_lidar_enabled ? 1 : 0) << ' '
+             << keyframe.normalized_descriptor.size();
+    for (const auto value : keyframe.normalized_descriptor) manifest << ' ' << value;
+    manifest << '\n';
+  }
+  manifest.close();
+  fs::rename(temporary, fs::path(directory) / "manifest", ec);
+  return !ec;
+}
+
+bool StaticKeyframeDatabase::load_archive(
+  const std::string & directory, const std::string & frame_id)
+{
+  namespace fs = std::filesystem;
+  std::ifstream manifest(fs::path(directory) / "manifest");
+  std::string magic, key; int version = 0; std::string stored_frame;
+  std::size_t count = 0, dimension = 0;
+  if (!(manifest >> magic >> version) || magic != "UF_KEYFRAME_ARCHIVE" || version != 1 ||
+    !(manifest >> key >> stored_frame) || key != "frame" || stored_frame != frame_id ||
+    !(manifest >> key >> count) || key != "count" || !(manifest >> key >> dimension) ||
+    key != "dimension" || count == 0 || dimension == 0) return false;
+  std::string line; std::getline(manifest, line);
+  std::deque<StaticKeyframe> loaded;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (!std::getline(manifest, line)) return false;
+    std::istringstream stream(line); StaticKeyframe k; std::string filename; std::size_t d = 0;
+    if (!(stream >> k.id >> filename >> k.stamp_s)) return false;
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) if (!(stream >> k.world_from_sensor.matrix()(r,c))) return false;
+    int enabled = 0;
+    if (!(stream >> k.quality.map_quality >> k.quality.feature_repeatability >>
+      k.quality.dynamic_ratio >> k.quality.lidar_degradation >> enabled >> d) || d != dimension) return false;
+    k.quality.scheduler_lidar_enabled = enabled != 0;
+    k.normalized_descriptor.resize(dimension);
+    for (auto & value : k.normalized_descriptor) if (!(stream >> value) || !std::isfinite(value)) return false;
+    auto cloud = std::make_shared<Cloud>();
+    if (pcl::io::loadPCDFile((fs::path(directory) / filename).string(), *cloud) != 0 || cloud->empty()) return false;
+    k.cloud = cloud;
+    loaded.push_back(std::move(k));
+  }
+  keyframes_ = std::move(loaded); descriptor_dimension_ = dimension;
+  next_keyframe_id_ = keyframes_.empty() ? 0 : keyframes_.back().id + 1;
+  return true;
 }
 
 }  // namespace uf_relocalization

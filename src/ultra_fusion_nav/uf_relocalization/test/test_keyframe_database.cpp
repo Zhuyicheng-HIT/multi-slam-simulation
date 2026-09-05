@@ -6,7 +6,9 @@
 
 #include <cmath>
 #include <memory>
+#include <filesystem>
 #include <vector>
+#include <unistd.h>
 
 namespace
 {
@@ -119,4 +121,23 @@ TEST(KeyframeDatabase, RanksDescriptorsAndExcludesRecentFrames)
   EXPECT_FALSE(mismatch.accepted);
   EXPECT_EQ(mismatch.reason, "descriptor_dimension_mismatch");
   EXPECT_THROW(database.query({0.0F, 0.0F, 0.0F}, 1), std::invalid_argument);
+}
+
+TEST(KeyframeDatabase, ArchivesAndReloadsVersionedFrameBoundedData)
+{
+  namespace fs = std::filesystem;
+  const auto directory = fs::temp_directory_path() /
+    ("uf_keyframe_archive_" + std::to_string(::getpid()));
+  fs::remove_all(directory);
+  uf_relocalization::KeyframeDatabaseConfig config;
+  config.minimum_translation_spacing_m = 0.5;
+  uf_relocalization::StaticKeyframeDatabase source(config);
+  ASSERT_TRUE(source.try_insert(1.0, pose(0.0), cloud(), {1.0F, 0.0F}, healthy_quality()).accepted);
+  ASSERT_TRUE(source.try_insert(2.0, pose(1.0), cloud(), {0.8F, 0.2F}, healthy_quality()).accepted);
+  ASSERT_TRUE(source.save_archive(directory.string(), "camera_init"));
+  uf_relocalization::StaticKeyframeDatabase restored(config);
+  EXPECT_TRUE(restored.load_archive(directory.string(), "camera_init"));
+  EXPECT_EQ(restored.keyframes().size(), 2U);
+  EXPECT_FALSE(restored.load_archive(directory.string(), "body"));
+  fs::remove_all(directory);
 }

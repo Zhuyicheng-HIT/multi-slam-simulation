@@ -78,6 +78,11 @@ public:
   const std::deque<StaticKeyframe> & keyframes() const;
   std::size_t descriptor_dimension() const;
 
+  // Versioned, offline-safe archive used to carry a validated static map
+  // between relocalization processes. Loading never mutates the source files.
+  bool save_archive(const std::string & directory, const std::string & frame_id) const;
+  bool load_archive(const std::string & directory, const std::string & frame_id);
+
 private:
   KeyframeDatabaseConfig config_;
   std::deque<StaticKeyframe> keyframes_;

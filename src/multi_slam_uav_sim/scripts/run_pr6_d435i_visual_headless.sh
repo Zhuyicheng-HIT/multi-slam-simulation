@@ -397,6 +397,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
   shared_mapping_output_directory:="$RUN_DIR/shared_map" \
   database_path:="$RUN_DIR/rtabmap.db" \
+  relocalization_database_path:="${RELOCALIZATION_DATABASE_PATH:-}" \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"
 wait_for_publisher /fusion/unified/diagnostics 60

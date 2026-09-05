@@ -25,6 +25,8 @@ def include(package, launch_file, arguments=None, condition=None):
 
 def generate_launch_description():
     sim_share = Path(get_package_share_directory("multi_slam_uav_sim"))
+    reliability_share = Path(get_package_share_directory("uf_reliability"))
+    relocalization_share = Path(get_package_share_directory("uf_relocalization"))
     use_sim_time = LaunchConfiguration("use_sim_time")
     start_rtabmap = LaunchConfiguration("start_rtabmap")
     start_rgbd_bridge = LaunchConfiguration("start_rgbd_bridge")
@@ -35,6 +37,7 @@ def generate_launch_description():
         DeclareLaunchArgument("start_visual_frontend", default_value="true"),
         DeclareLaunchArgument("start_rtabmap", default_value="true"),
         DeclareLaunchArgument("database_path", default_value="paper_visual.db"),
+        DeclareLaunchArgument("relocalization_database_path", default_value=""),
         DeclareLaunchArgument("camera_time_offset_s", default_value="0.0"),
         DeclareLaunchArgument(
             "camera_time_calibration_enabled", default_value="true"
@@ -123,6 +126,27 @@ def generate_launch_description():
         include("uf_lio_adapter", "lio_adapter.launch.py", {
             "use_sim_time": use_sim_time,
         }),
+        Node(
+            package="uf_reliability", executable="relocalization_request_arbiter",
+            name="relocalization_request_arbiter",
+            parameters=[str(reliability_share / "config" / "relocalization_request_arbiter.yaml"),
+                        {"use_sim_time": use_sim_time}], output="screen"),
+        Node(
+            package="uf_reliability", executable="manual_relocalization_control",
+            name="manual_relocalization_control",
+            parameters=[str(reliability_share / "config" / "manual_relocalization_control.yaml"),
+                        {"use_sim_time": use_sim_time}], output="screen"),
+        Node(
+            package="uf_relocalization", executable="relocalization_node",
+            name="relocalization_node",
+            parameters=[str(relocalization_share / "config" / "relocalization.yaml"), {
+                "use_sim_time": use_sim_time,
+                "database_path": LaunchConfiguration("relocalization_database_path"),
+            }], output="screen"),
+        Node(
+            package="uf_relocalization", executable="active_relocalization_controller",
+            name="active_relocalization_controller",
+            parameters=[{"use_sim_time": use_sim_time}], output="screen"),
         include("uf_visual_frontend", "visual_tight_coupling.launch.py", {
             "use_sim_time": use_sim_time,
             "enabled": start_visual_frontend,
