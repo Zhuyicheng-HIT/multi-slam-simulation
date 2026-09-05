@@ -97,3 +97,10 @@ correctly retained HOLD and the route remained at its pre-relocalization positio
 This is an exact gate condition visible in `active_relocalization_controller.cpp`,
 not a candidate or epoch failure. A full five-source Session B profile must be run
 to establish scheduler recovery before claiming the requested 3/3 flight result.
+
+The full five-source B6 startup did reach a ready database (28 keyframes), accepted
+candidate 19, and applied its FusionEpoch, but the visual stack failed its upstream
+`/sensors/rgbd/color` readiness contract and the run exited before route execution.
+The reduced-profile B3/B4/B5 routes completed takeoff and LAND/disarm but remained
+at the HOLD position after recovery validation. No run is counted as a successful
+cross-session recovery.
