@@ -1,12 +1,14 @@
 #include "uf_relocalization/keyframe_database.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <openssl/sha.h>
 #include <sstream>
 #include <pcl/io/pcd_io.h>
 #include <stdexcept>
@@ -57,6 +59,27 @@ bool finite_quality(const KeyframeQuality & quality)
          std::isfinite(quality.feature_repeatability) &&
          std::isfinite(quality.dynamic_ratio) &&
          std::isfinite(quality.lidar_degradation);
+}
+
+std::string file_sha256(const std::filesystem::path & path)
+{
+  std::ifstream input(path, std::ios::binary);
+  if (!input) return {};
+  SHA256_CTX context;
+  SHA256_Init(&context);
+  std::array<char, 8192> buffer{};
+  while (input) {
+    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    const auto count = input.gcount();
+    if (count > 0) SHA256_Update(&context, buffer.data(), static_cast<std::size_t>(count));
+  }
+  if (!input.eof()) return {};
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  SHA256_Final(digest, &context);
+  std::ostringstream output;
+  output << std::hex << std::setfill('0');
+  for (const auto byte : digest) output << std::setw(2) << static_cast<unsigned int>(byte);
+  return output.str();
 }
 
 }  // namespace
@@ -240,7 +263,9 @@ bool StaticKeyframeDatabase::save_archive(
     const auto filename = "keyframe_" + std::to_string(keyframe.id) + ".pcd";
     if (!keyframe.cloud || pcl::io::savePCDFileBinary(
         (fs::path(directory) / filename).string(), *keyframe.cloud) != 0) return false;
-    manifest << keyframe.id << ' ' << filename << ' ' << keyframe.stamp_s;
+    const auto digest = file_sha256(fs::path(directory) / filename);
+    if (digest.empty()) return false;
+    manifest << keyframe.id << ' ' << filename << ' ' << digest << ' ' << keyframe.stamp_s;
     for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c)
       manifest << ' ' << keyframe.world_from_sensor.matrix()(r, c);
     manifest << ' ' << keyframe.quality.map_quality << ' '
@@ -273,7 +298,9 @@ bool StaticKeyframeDatabase::load_archive(
   for (std::size_t i = 0; i < count; ++i) {
     if (!std::getline(manifest, line)) return false;
     std::istringstream stream(line); StaticKeyframe k; std::string filename; std::size_t d = 0;
-    if (!(stream >> k.id >> filename >> k.stamp_s)) return false;
+    std::string digest;
+    if (!(stream >> k.id >> filename >> digest >> k.stamp_s)) return false;
+    if (digest != file_sha256(fs::path(directory) / filename)) return false;
     for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) if (!(stream >> k.world_from_sensor.matrix()(r,c))) return false;
     int enabled = 0;
     if (!(stream >> k.quality.map_quality >> k.quality.feature_repeatability >>

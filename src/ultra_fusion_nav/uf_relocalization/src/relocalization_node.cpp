@@ -244,9 +244,10 @@ public:
       get_parameter("keyframe_sync_timeout_s").as_double();
     database_path_ = get_parameter("database_path").as_string();
     database_save_on_insert_ = get_parameter("database_save_on_insert").as_bool();
+    bool archive_loaded = false;
     if (!database_path_.empty() && get_parameter("database_load_on_start").as_bool()) {
       if (database_.load_archive(database_path_, get_parameter("expected_keyframe_frame_id").as_string())) {
-        publish_database_readiness(true);
+        archive_loaded = true;
         RCLCPP_INFO(get_logger(), "loaded relocalization keyframe archive: path=%s keyframes=%zu",
           database_path_.c_str(), database_.keyframes().size());
       } else {
@@ -334,6 +335,9 @@ public:
     readiness_qos.reliable().transient_local();
     readiness_pub_ = create_publisher<std_msgs::msg::Bool>(
       get_parameter("ready_topic").as_string(), readiness_qos);
+    if (archive_loaded) {
+      publish_database_readiness(true);
+    }
     request_sub_ = create_subscription<std_msgs::msg::Bool>(
       get_parameter("request_topic").as_string(), rclcpp::QoS(10),
       [this](const std_msgs::msg::Bool::SharedPtr message) {

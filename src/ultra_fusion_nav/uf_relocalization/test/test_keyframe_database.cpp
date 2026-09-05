@@ -7,6 +7,7 @@
 #include <cmath>
 #include <memory>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 #include <unistd.h>
 
@@ -135,7 +136,13 @@ TEST(KeyframeDatabase, ArchivesAndReloadsVersionedFrameBoundedData)
   ASSERT_TRUE(source.try_insert(1.0, pose(0.0), cloud(), {1.0F, 0.0F}, healthy_quality()).accepted);
   ASSERT_TRUE(source.try_insert(2.0, pose(1.0), cloud(), {0.8F, 0.2F}, healthy_quality()).accepted);
   ASSERT_TRUE(source.save_archive(directory.string(), "camera_init"));
+  {
+    std::ofstream tamper(directory / "keyframe_0.pcd", std::ios::app | std::ios::binary);
+    tamper << 'x';
+  }
   uf_relocalization::StaticKeyframeDatabase restored(config);
+  EXPECT_FALSE(restored.load_archive(directory.string(), "camera_init"));
+  ASSERT_TRUE(source.save_archive(directory.string(), "camera_init"));
   EXPECT_TRUE(restored.load_archive(directory.string(), "camera_init"));
   EXPECT_EQ(restored.keyframes().size(), 2U);
   EXPECT_FALSE(restored.load_archive(directory.string(), "body"));

@@ -38,6 +38,11 @@ def generate_launch_description():
         DeclareLaunchArgument("start_rtabmap", default_value="true"),
         DeclareLaunchArgument("database_path", default_value="paper_visual.db"),
         DeclareLaunchArgument("relocalization_database_path", default_value=""),
+        DeclareLaunchArgument(
+            "relocalization_source_lio_pose_topic",
+            default_value="/fusion/unified/frontend_activation_odom",
+            description="Timestamp-aligned local pose for keyframe synchronization",
+        ),
         DeclareLaunchArgument("camera_time_offset_s", default_value="0.0"),
         DeclareLaunchArgument(
             "camera_time_calibration_enabled", default_value="true"
@@ -142,6 +147,9 @@ def generate_launch_description():
             parameters=[str(relocalization_share / "config" / "relocalization.yaml"), {
                 "use_sim_time": use_sim_time,
                 "database_path": LaunchConfiguration("relocalization_database_path"),
+                "source_lio_pose_topic": LaunchConfiguration(
+                    "relocalization_source_lio_pose_topic"
+                ),
             }], output="screen"),
         Node(
             package="uf_relocalization", executable="active_relocalization_controller",

@@ -12,6 +12,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common features filters registration)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -73,7 +74,7 @@ target_include_directories(keyframe_database PUBLIC
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
 )
-target_link_libraries(keyframe_database PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
+target_link_libraries(keyframe_database PUBLIC Eigen3::Eigen ${PCL_LIBRARIES} OpenSSL::Crypto)
 target_compile_definitions(keyframe_database PUBLIC ${PCL_DEFINITIONS})
 
 add_library(descriptor_core src/descriptor_core.cpp)

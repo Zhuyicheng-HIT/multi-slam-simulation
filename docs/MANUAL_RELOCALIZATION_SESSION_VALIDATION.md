@@ -61,3 +61,26 @@ Therefore cross-session map warm-up, candidate matching and in-flight recovery
 remain open gates. The no-flight matrix is authoritative for state transitions,
 duplicate/cancel/epoch/obstacle failure handling and publisher ownership.
 Status: `DO_NOT_PROMOTE`.
+
+## Continued candidate validation (2026-09-05)
+
+The integration launch exposes `relocalization_source_lio_pose_topic`, defaulting
+in simulation to `/fusion/unified/frontend_activation_odom`. The validated
+FAST-LIO compatibility mode does not publish `/Odometry`; this backend topic is
+timestamp-aligned and carries the `camera_init` to `body` pose contract.
+
+Session A4 produced `/tmp/manual-reloc-map-A4-db` with 19 keyframes and per-PCD
+SHA256 entries in its manifest. Archive loading initially SIGSEGVed because
+readiness was published before its publisher was constructed; that ordering bug
+was fixed and standalone archive-load smoke now remains alive with `ready=1`.
+
+Session B1 used the real PR6 Gazebo/SITL stack and the persistent archive. Manual
+START was accepted; candidate 0 passed descriptor, forward, reciprocal, and
+three-query consistency checks. The relocalizer then logged `candidate accepted
+... awaiting unified backend reset acknowledgement`, but no backend reset
+acknowledgement was observed. The active controller consequently retained HOLD
+ownership and the route did not resume. Evidence is preserved in
+`/tmp/manual-reloc-session-B1-fixed-run`. This is an integration acknowledgement
+blocker, not a candidate-quality failure; status remains `DO_NOT_PROMOTE` until
+the result/epoch acknowledgement contract is traced and three real recoveries
+complete.
