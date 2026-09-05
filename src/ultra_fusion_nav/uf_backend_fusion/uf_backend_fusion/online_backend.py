@@ -6393,10 +6393,18 @@ class UnifiedBackendNode(Node):
                 if result_is_future
                 else "relocalization_pending_window_reset"
             )
+            if hasattr(self, "_logger"):
+                self.get_logger().warning(
+                    f"relocalization result accepted by backend: transaction={transaction_id} "
+                    f"stamp={stamp:.3f} last_lio_stamp={float(self.last_lio_stamp):.3f} "
+                    f"future={result_is_future}")
         except (ValueError, IndexError, TypeError) as error:
             self.counts["relocalization_rejections"] += 1
             self.last_reason = f"relocalization_invalid_result:{type(error).__name__}"
             self.last_exception = f"{type(error).__name__}:{error}"
+            if hasattr(self, "_logger"):
+                self.get_logger().error(
+                    f"relocalization result rejected: {self.last_exception}")
 
     def _apply_pending_relocalization(self, stamp):
         with self.relocalization_lock:
@@ -6511,7 +6519,11 @@ class UnifiedBackendNode(Node):
             self._commit_optimization_anchor(
                 anchor_stamp, recovered, self.last_state_covariance
             )
-        self.last_reason = "relocalization_window_reset_applied"
+            self.last_reason = "relocalization_window_reset_applied"
+            if hasattr(self, "_logger"):
+                self.get_logger().warning(
+                    f"relocalization epoch applied: transaction={transaction_id} "
+                    f"candidate={candidate_id} stamp={float(stamp):.3f}")
         return True
 
     def _publish_fusion_epoch(

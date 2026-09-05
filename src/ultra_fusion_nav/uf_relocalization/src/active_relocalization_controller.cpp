@@ -362,6 +362,19 @@ private:
     if (before.state == ActiveFlightState::ACTIVE_RELOCALIZATION) {
       action = prepare_action(now);
     }
+    // A successful candidate plus the matching committed FusionEpoch closes
+    // the one-shot manual request locally. The request arbiter remains the
+    // sole producer of /relocalization/request; this prevents a retained
+    // level/keepalive from blocking the recovery dwell indefinitely.
+    if (request_active_ && result_received_ && result_.accepted &&
+      result_.state == uf_interfaces::msg::RelocalizationResult::SUCCESS &&
+      epoch_received_ && epoch_.applied &&
+      epoch_.transaction_id == result_.transaction_id &&
+      epoch_.candidate_id == result_.candidate_id &&
+      epoch_arrival_s_ >= result_arrival_s_)
+    {
+      request_active_ = false;
+    }
     ActiveFlightEvent event;
     event.now_s = now_s;
     event.request_active = request_active_;

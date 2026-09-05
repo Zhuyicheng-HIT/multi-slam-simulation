@@ -84,3 +84,16 @@ ownership and the route did not resume. Evidence is preserved in
 blocker, not a candidate-quality failure; status remains `DO_NOT_PROMOTE` until
 the result/epoch acknowledgement contract is traced and three real recoveries
 complete.
+
+## Final recovery boundary evidence
+
+After the acknowledgement diagnostics were corrected, B3/B4/B5 all showed the
+backend accepting the result and applying the matching FusionEpoch. The remaining
+hold is the existing recovery gate: `recovery_healthy` requires a fresh scheduler
+state in `NORMAL` or `RECOVERED`, propagation/horizontal/vertical/yaw capabilities,
+and estimator support at least 0.15. With the reduced PR6 sensor profile used for
+these trials, that health predicate did not become true, so the active controller
+correctly retained HOLD and the route remained at its pre-relocalization position.
+This is an exact gate condition visible in `active_relocalization_controller.cpp`,
+not a candidate or epoch failure. A full five-source Session B profile must be run
+to establish scheduler recovery before claiming the requested 3/3 flight result.
