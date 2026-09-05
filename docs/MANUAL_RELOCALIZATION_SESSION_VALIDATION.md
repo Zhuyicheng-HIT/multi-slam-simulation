@@ -36,3 +36,28 @@ manual-request ownership failure. Logs are under
 Full workspace build and `colcon test` completed with **266 tests, 0 errors,
 0 failures, 0 skipped**. The validation smoke does not publish the final
 `/relocalization/request` or MAVROS setpoint directly.
+
+## Flight-candidate validation
+
+On `feat/manual-relocalization-flight-v1`, the frozen takeoff stack was
+exercised with real Gazebo, ArduPilot SITL, MAVROS, the MID360 bridge,
+FAST-LIO and the flight arbiter. Session A completed a 3 m x 2 m rectangle,
+LAND and disarm; Session B completed the same route and LAND/disarm. Evidence
+was written under `/tmp/manual-reloc-flight-A` and `/tmp/manual-reloc-flight-B`
+by the runner.
+
+The Session-B manual recovery attempt did not produce a valid production
+relocalization transaction. The existing `d435i_paper_visual_integration`
+launch starts the backend but does not include the request arbiter,
+`relocalization_node`, or active controller. When those existing nodes were
+started explicitly, the relocalization node reported `database ready=0
+keyframes=0`; `/lio/local_map` synchronization also expired without a valid
+map-frame keyframe stream. The manual service accepted START/CANCEL, and the
+deterministic ROS smoke passed with one `flight_command_arbiter` setpoint owner,
+but this is not flight-recovery evidence. The current in-memory
+`StaticKeyframeDatabase` has no Session-A persistence/load contract.
+
+Therefore cross-session map warm-up, candidate matching and in-flight recovery
+remain open gates. The no-flight matrix is authoritative for state transitions,
+duplicate/cancel/epoch/obstacle failure handling and publisher ownership.
+Status: `DO_NOT_PROMOTE`.
