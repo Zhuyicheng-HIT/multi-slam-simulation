@@ -1,6 +1,7 @@
 """Bridge Gazebo Sim world time to the ROS 2 simulation clock."""
 
 import os
+import threading
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
@@ -30,11 +31,16 @@ class GazeboClockBridge(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
         self.publisher = self.create_publisher(RosClock, self.ros_topic, qos)
+        # Gazebo transport invokes callbacks on its own worker. Keep rclpy calls
+        # on the ROS executor thread and initialize all shared state first.
+        self._clock_lock = threading.Lock()
+        self._latest_sim_stamp = None
+        self.last_sim_ns = None
+        self.timer = self.create_timer(0.001, self._publish_latest)
         self.gz_node = GzNode()
         # gz.transport13.subscribe returns None on success, so subscription
         # setup is intentionally not used as a boolean status check here.
         self.gz_node.subscribe(GazeboClock, self.gz_topic, self._clock_cb)
-        self.last_sim_ns = None
         self.get_logger().info(
             f"Gazebo clock bridge active: {self.gz_topic} -> {self.ros_topic}"
         )
@@ -47,7 +53,18 @@ class GazeboClockBridge(Node):
             return
         if sec < 0 or nanosec < 0:
             return
+        with self._clock_lock:
+            self._latest_sim_stamp = (sec, nanosec)
+
+    def _publish_latest(self):
+        with self._clock_lock:
+            stamp = self._latest_sim_stamp
+        if stamp is None:
+            return
+        sec, nanosec = stamp
         stamp_ns = sec * 1_000_000_000 + nanosec
+        if stamp_ns == self.last_sim_ns:
+            return
         if self.last_sim_ns is not None and stamp_ns < self.last_sim_ns:
             self.get_logger().warning(
                 f"Gazebo clock rewind: {self.last_sim_ns} -> {stamp_ns}"
