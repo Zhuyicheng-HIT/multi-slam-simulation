@@ -416,28 +416,14 @@ class GuidedRectangleWaypoints(Node):
             self.takeoff_alt * self.takeoff_min_alt_fraction,
         )
         for attempt in range(1, self.takeoff_command_attempts + 1):
-            start_ros_s = self._now_s()
-            deadline = start_ros_s + self.takeoff_free_climb_s
+            # NAV_TAKEOFF enters ArduPilot's Guided TakeOff sub-mode.  A
+            # PoseStamped received during that phase invokes set_pos_NED_m()
+            # and switches the FCU to SubMode::Pos; while land_complete is
+            # still true, pos_control_run() intentionally keeps ground idle.
+            # Let the FCU-owned takeoff controller spool and climb first.
+            deadline = time.monotonic() + self.takeoff_free_climb_s
             stable_since = None
-            # Advance the bounded ramp from the last commanded target rather
-            # than the (potentially stale) FCU pose.  A ground-hugging pose
-            # feedback must not pin the target at home_z + 0.5 m.
-            commanded_climb_z = self.home_z
-            while rclpy.ok() and self._now_s() < deadline:
-                # ArduPilot requires a live GUIDED position target after the
-                # takeoff command; an ACK alone does not drive the climb.
-                local_z = self._local_z()
-                # Keep each mission-intent step within the arbiter's bounded
-                # jump contract while allowing progress despite stale pose.
-                next_climb_z = min(self.takeoff_alt, commanded_climb_z + 0.5)
-                # Keep the intent inside the arbiter jump bound even when the
-                # FCU pose feedback is temporarily frozen at the ground. Once
-                # the vehicle responds, subsequent iterations can advance.
-                observed_z = self._local_z()
-                if observed_z is not None and next_climb_z - observed_z <= 2.0:
-                    commanded_climb_z = next_climb_z
-                climb_z = commanded_climb_z
-                self.publish_setpoint(self.home_x, self.home_y, climb_z, self.home_yaw)
+            while rclpy.ok() and time.monotonic() < deadline:
                 self.mission_safety_checkpoint(f"takeoff climb attempt {attempt}")
                 rclpy.spin_once(self, timeout_sec=0.1)
                 self._log_status(f"apm free climb attempt {attempt}")
@@ -626,6 +612,7 @@ class GuidedRectangleWaypoints(Node):
             # Use the MAVROS CommandTOL path that owns the active FCU link.
             # The auxiliary SERIAL2 acknowledgement path can report ACCEPTED
             # without causing the flight controller to execute the climb.
+            self._publish_mission_phase("takeoff")
             takeoff_ok = self.send_takeoff_command_tol()
             if takeoff_ok:
                 self.get_logger().info("Takeoff CommandTOL accepted after GUIDED + armed state.")

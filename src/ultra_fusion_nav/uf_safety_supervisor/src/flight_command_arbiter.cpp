@@ -112,6 +112,11 @@ public:
         input_.land_requested = msg->data == "LAND";
         input_.return_requested = msg->data == "RETURN";
       });
+    mission_phase_sub_ = create_subscription<std_msgs::msg::String>(
+      "/mission/phase", 10,
+      [this](std_msgs::msg::String::ConstSharedPtr msg) {
+        takeoff_phase_ = msg->data == "takeoff";
+      });
     fcu_state_sub_ = create_subscription<mavros_msgs::msg::State>(
       "/mavros/state", 10,
       [this](mavros_msgs::msg::State::ConstSharedPtr msg) {
@@ -146,7 +151,12 @@ private:
       explicit_fcu_failsafe_ || !fcu_received_ || !fcu_connected_;
     const auto decision = core_->evaluate(input_);
     bool published = false;
-    if (decision.publish_setpoint) {
+    // During the FCU-owned NAV_TAKEOFF phase, forwarding either a cached
+    // mission intent or the normal safety hold would call ArduPilot's
+    // set_pos_NED_m() and leave Guided TakeOff for Pos while land_complete is
+    // still true.  Keep the single publisher alive but silent until the route
+    // confirms climb and advances the mission phase.
+    if (decision.publish_setpoint && !takeoff_phase_) {
       auto message = pose_message(decision.selected, now);
       output_pub_->publish(message);
       selected_candidate_pub_->publish(message);
@@ -209,7 +219,9 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr manual_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr failsafe_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_request_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mission_phase_sub_;
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr fcu_state_sub_;
+  bool takeoff_phase_{false};
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
