@@ -1,0 +1,98 @@
+diff --git a/src/ArduPilotPlugin.cc b/src/ArduPilotPlugin.cc
+index 8309c37..bbc8cde 100755
+--- a/src/ArduPilotPlugin.cc
++++ b/src/ArduPilotPlugin.cc
+@@ -363,7 +363,11 @@ class gz::sim::systems::ArduPilotPluginPrivate
+   public: uint16_t fcu_frame_rate;
+
+   /// \brief Last received frame count from the ArduPilot controller
+-  public: uint32_t fcu_frame_count = -1;
++  public: uint32_t fcu_frame_count{0};
++
++  /// \brief Whether a servo frame count has been observed in this session.
++  /// The first packet establishes the baseline; it is not a reset or skip.
++  public: bool fcu_frame_count_valid{false};
+
+   /// \brief Last sent JSON string, so we can resend if needed.
+   public: std::string json_str;
+@@ -1426,9 +1430,11 @@ ssize_t getServoPacket(
+   uint16_t &_fcu_port_out,
+   uint32_t _waitMs,
+   const std::string &_modelName,
+-  TServoPacket &_pkt
++  TServoPacket &_pkt,
++  int &_drained_count
+ )
+ {
++    _drained_count = 0;
+     ssize_t recvSize = _sock.recv(&_pkt, sizeof(TServoPacket), _waitMs);
+
+     _sock.get_client_address(_fcu_address, _fcu_port_out);
+@@ -1452,6 +1458,7 @@ ssize_t getServoPacket(
+         gzwarn << "[" << _modelName << "] "
+                << "Drained n packets: " << counter << "\n";
+     }
++    _drained_count = counter;
+     return recvSize;
+ }
+ }  // namespace
+@@ -1485,9 +1492,10 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     // 16 / 32 channel compatibility
+     uint16_t pkt_magic{0};
+     uint16_t pkt_frame_rate{0};
+-    uint16_t pkt_frame_count{0};
++    uint32_t pkt_frame_count{0};
+     std::array<uint16_t, 32> pkt_pwm;
+     ssize_t recvSize{-1};
++    int drained_count{0};
+     if (this->dataPtr->have32Channels)
+     {
+       servo_packet_32 pkt;
+@@ -1497,7 +1505,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+           this->dataPtr->fcu_port_out,
+           waitMs,
+           this->dataPtr->modelName,
+-          pkt);
++          pkt,
++          drained_count);
+       pkt_magic = pkt.magic;
+       pkt_frame_rate = pkt.frame_rate;
+       pkt_frame_count = pkt.frame_count;
+@@ -1512,7 +1521,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+           this->dataPtr->fcu_port_out,
+           waitMs,
+           this->dataPtr->modelName,
+-          pkt);
++          pkt,
++          drained_count);
+       pkt_magic = pkt.magic;
+       pkt_frame_rate = pkt.frame_rate;
+       pkt_frame_count = pkt.frame_count;
+@@ -1592,8 +1602,16 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     // update frame rate
+     this->dataPtr->fcu_frame_rate = pkt_frame_rate;
+
++    // Establish the first packet as the baseline.  Comparing it against an
++    // uninitialised UINT32_MAX sentinel falsely reports a controller reset at
++    // every normal startup.
++    if (!this->dataPtr->fcu_frame_count_valid)
++    {
++        this->dataPtr->fcu_frame_count = pkt_frame_count;
++        this->dataPtr->fcu_frame_count_valid = true;
++    }
+     // check for controller reset
+-    if (pkt_frame_count < this->dataPtr->fcu_frame_count)
++    else if (pkt_frame_count < this->dataPtr->fcu_frame_count)
+     {
+         /// \todo(anyone) implement re-initialisation
+         gzwarn << "ArduPilot controller has reset\n";
+@@ -1614,7 +1632,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     }
+
+     // check for skipped frames
+-    else if (pkt_frame_count != this->dataPtr->fcu_frame_count + 1
++    else if (drained_count == 0 &&
++        pkt_frame_count != this->dataPtr->fcu_frame_count + 1
+         && this->dataPtr->arduPilotOnline)
+     {
+         gzwarn << "Missed "
