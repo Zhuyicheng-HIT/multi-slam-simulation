@@ -52,6 +52,10 @@ optimization rejection and queue overflow:
 Two valid `lidar_light` trials also completed (ATE 1.3700 m and 1.3639 m);
 one additional attempt failed before `/clock` and is excluded.
 
+`lidar_heavy` completed two valid trials (ATE 1.3655 m and 1.3535 m); a third
+attempt failed before `/clock` and is excluded. The valid heavy runs likewise
+completed the route with zero rollback, rejection and queue overflow.
+
 ## Fault Profiles
 
 The repository's deterministic `robustness_v3_profiles.yaml` defines the
