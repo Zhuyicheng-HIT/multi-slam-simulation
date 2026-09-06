@@ -420,6 +420,12 @@ if [[ -n "$ROBUSTNESS_PROFILE_PATH" ]]; then
     "robustness_profile_path:=$ROBUSTNESS_PROFILE_PATH"
   )
 fi
+relocalization_database_launch_args=()
+if [[ -n "${RELOCALIZATION_DATABASE_PATH:-}" ]]; then
+  relocalization_database_launch_args+=(
+    "relocalization_database_path:=$RELOCALIZATION_DATABASE_PATH"
+  )
+fi
 # run_apm_sensor_stack owns the Gazebo D435 simulation bridge and publishes
 # the ROS image/depth pair. Do not start a second Gazebo transport bridge.
 setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
@@ -451,7 +457,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
   shared_mapping_output_directory:="$RUN_DIR/shared_map" \
   database_path:="$RUN_DIR/rtabmap.db" \
-  relocalization_database_path:="${RELOCALIZATION_DATABASE_PATH:-}" \
+  "${relocalization_database_launch_args[@]}" \
   relocalization_database_save_on_insert:="$([[ "$RELOCALIZATION_DATABASE_SAVE_ON_INSERT" == 1 ]] && echo true || echo false)" \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"

@@ -279,3 +279,38 @@ P95/max criterion, simultaneous IMU+LiDAR loss drives repeated ill-conditioned
 rollback, visual/manual-relocalization coverage is absent, and the requested
 full matrix repetitions are not all available. Intermittent `/clock` startup
 failures are retained as `ENV_START_FAILURE` and excluded from metric trials.
+
+## Continued Validation
+
+The installed PR6 runner was exercised again from the frozen launch entry.
+Two independent nominal repetitions completed the rectangle route and cleaned
+their process groups:
+
+| Run | ROS duration | Route | Native LiDAR | IMU | GNSS | Rollback | Queue overflow |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `bds-final-nominal-db-1788715353` | 71.94 s | complete (`small_rectangle_exit=0`) | 750 | 749 | 375 | 0 | 0 |
+| `bds-final-nominal-db-005-1788716175` | 73.86 s | complete (`small_rectangle_exit=0`) | 762 | 762 | 382 | 0 | 0 |
+
+These runs used an explicit temporary relocalization database path and are
+valid nominal runtime evidence. A third nominal attempt
+(`bds-final-nominal-db-004-1788715722`) and a no-database attempt
+(`bds-final-nominal-no-db-1788716567`) reached backend startup but failed the
+intermittent `/clock` readiness gate; both are retained as `ENV_START_FAILURE`
+and excluded from algorithm metrics.
+
+The no-database launch failure exposed a test-entry contract defect: the
+runner passed the empty token `relocalization_database_path:=`, which ROS 2
+launch rejects before constructing the backend. The runner now appends that
+argument only when `RELOCALIZATION_DATABASE_PATH` is non-empty. The default
+production behavior is otherwise unchanged; a regression test checks that an
+empty value is omitted. A subsequent explicit-database run completed, and the
+package build plus test suite passed.
+
+A third valid simultaneous MID360 total-outage replay
+(`bds-final-mid360-total-003-1788716736`) verified both IMU and Livox outage
+events in one source-time window. The route reached the fault boundary, then
+the backend recorded 661 `ill_conditioned_latest_information` rejections and
+661 rollbacks, with 168 committed states; the trajectory stopped at the
+outage. This confirms the previous failure boundary and does not constitute a
+pass. The three valid total-outage runs consistently show estimator loss of
+progress when both raw MID360 channels disappear.

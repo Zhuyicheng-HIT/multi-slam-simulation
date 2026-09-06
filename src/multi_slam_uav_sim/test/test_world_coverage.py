@@ -527,6 +527,14 @@ def test_visual_diagnostic_rectangle_keeps_the_collision_audited_size():
     assert "RECTANGLE_LENGTH_Y=${RECTANGLE_LENGTH_Y:-1.2}" in runner
 
 
+def test_visual_runner_omits_an_empty_relocalization_database_launch_argument():
+    runner = SIM_VISUAL_RUNNER.read_text(encoding="utf-8")
+    assert "relocalization_database_launch_args=()" in runner
+    assert 'if [[ -n "${RELOCALIZATION_DATABASE_PATH:-}" ]]; then' in runner
+    assert '"${relocalization_database_launch_args[@]}"' in runner
+    assert 'relocalization_database_path:="${RELOCALIZATION_DATABASE_PATH:-}"' not in runner
+
+
 def test_figure_eight_runner_keeps_single_pass_geometry_and_yaw_contract():
     runner = FIGURE8_RUNNER.read_text(encoding="utf-8")
     controller = S_CURVE_CONTROLLER.read_text(encoding="utf-8")
