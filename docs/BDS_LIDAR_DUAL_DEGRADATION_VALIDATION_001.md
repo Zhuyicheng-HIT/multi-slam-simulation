@@ -28,6 +28,17 @@ transform from samples before the event window, XY error was 0.0189 m RMSE,
 0.0623 m max. These are valid nominal evidence; no fault-period score is
 claimed from this run.
 
+The first post-fix dual-medium run (`/tmp/bds-postfix-dual-medium-001-1788692000`)
+also has non-zero truth and completed the route, but its fault windows were
+not concurrent: GNSS outage was active at 33.533--48.483 s and LiDAR
+correspondence dropout began at 50.700 s. It is therefore a sequential
+GNSS-then-LiDAR run, not evidence for the concurrent dual condition. With a
+single pre-event yaw/translation alignment, raw XY RMSE was 0.0215 m (P95
+0.0364 m, max 0.0495 m); aligned DURING XY RMSE was 0.0155 m and aligned
+DURING Z RMSE was 0.0225 m. No aligned XY sample exceeded 0.20 m after the
+first event. The phase scorer now records raw XY/Z and incremental drift
+without refitting the trajectory.
+
 ## Real Gazebo/SITL Nominal Runs
 
 Both runs used the repository `run_pr6_d435i_visual_headless.sh` entry,
@@ -121,3 +132,12 @@ intermittently while the SITL telemetry request did not produce a NavSatFix.
 That is an environment/startup boundary, not a valid localization trial. The
 early cleanup path is guarded by `f5eac4f`; the full suite remains `268/268`.
 No tag was created.
+
+The corrected concurrent-profile attempt
+(`/tmp/bds-postfix-dual-sync-medium-001-1788694000`) stopped at backend launch
+because an empty `relocalization_database_path:=` argument is invalid. A retry
+with an explicit temporary database
+(`/tmp/bds-postfix-dual-sync-medium-002-1788694300`) reached sensor-stack
+startup but failed the `/clock` readiness gate; its bridge log shows the
+correct world clock before teardown. Both are `ENV_START_FAILURE`s, not
+algorithm trials.
