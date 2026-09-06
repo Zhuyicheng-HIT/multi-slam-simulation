@@ -240,6 +240,7 @@ cleanup() {
   # The paper-mode overlay is a new launch entry point. Stop only process
   # groups recorded by this run, guarded by /proc start ticks so PID reuse or
   # unrelated simulation jobs cannot be targeted.
+  record_fastlio_native_for_cleanup
   stop_recorded_groups
   d435i_cleanup_run_manifests "$RUN_DIR" "$WS_ROOT" \
     "$RUN_DIR/process_cleanup.log"
@@ -477,6 +478,16 @@ record_lio_adapters() {
   done < <(existing_lio_adapter_pids)
 }
 record_fastlio_native() {
+  local pid ticks command
+  while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    [[ "$command" == *"$RUN_DIR/"* && "$command" == *"fastlio_mapping"* ]] || continue
+    ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
+    printf 'fastlio_native\t%s\t%s\t%s\n' "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
+  done < <(pgrep -f 'fastlio_mapping' || true)
+}
+record_fastlio_native_for_cleanup() {
   local pid ticks command
   while read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
