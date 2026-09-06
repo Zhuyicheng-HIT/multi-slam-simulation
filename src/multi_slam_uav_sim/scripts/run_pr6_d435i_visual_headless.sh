@@ -208,8 +208,11 @@ stop_recorded_groups() {
     [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
     d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
-    kill -TERM -- "-$pgid" 2>/dev/null || true
-    [[ "$pgid" == "$pid" ]] || kill -TERM "$pid" 2>/dev/null || true
+    if [[ "$pgid" == "$pid" ]]; then
+      kill -TERM -- "-$pgid" 2>/dev/null || true
+    else
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
   done <"$PID_MANIFEST"
   sleep 2
   while IFS=$'\t' read -r component pid pgid ticks; do
@@ -218,8 +221,11 @@ stop_recorded_groups() {
     [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
     d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
-    kill -KILL -- "-$pgid" 2>/dev/null || true
-    [[ "$pgid" == "$pid" ]] || kill -KILL "$pid" 2>/dev/null || true
+    if [[ "$pgid" == "$pid" ]]; then
+      kill -KILL -- "-$pgid" 2>/dev/null || true
+    else
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
   done <"$PID_MANIFEST"
 }
 
@@ -471,6 +477,9 @@ if ! wait_for_topic /fast_lio/native_lidar_factor "$NATIVE_LIDAR_WAIT_S"; then
   exit 3
 fi
 trace_stage native_lidar_factor_ready
+# The adapter is spawned asynchronously by the mapping supervisor. Register it
+# again after its readiness topic so cleanup owns the actual child PID.
+record_lio_adapters
 printf 'input_trigger=native_factor\nnative_factor=true\nlio_pose_fallback=false\n' \
   >"$RUN_DIR/backend_runtime_mode.env"
 if ! wait_for_topic /fusion/unified/odom 120; then

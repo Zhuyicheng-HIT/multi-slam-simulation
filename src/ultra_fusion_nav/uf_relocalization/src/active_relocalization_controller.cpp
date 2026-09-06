@@ -212,7 +212,7 @@ private:
   bool recovery_healthy(const double now) const
   {
     return scheduler_fresh(now) &&
-      (scheduler_.health_state == "NORMAL" || scheduler_.health_state == "RECOVERED") &&
+      recovery_health_state_allows(scheduler_.health_state) &&
       capability("propagation") && capability("horizontal_motion") &&
       capability("vertical_position") && capability("yaw_tracking") &&
       std::isfinite(scheduler_.estimator_support) && scheduler_.estimator_support >= 0.15F;

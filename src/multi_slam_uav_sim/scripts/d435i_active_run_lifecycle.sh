@@ -243,7 +243,15 @@ d435i_signal_owned_group() {
   [[ "$owned" == "1" ]] || return 1
   printf 'SIGNAL signal=%s component=%s pgid=%s members=%s\n' \
     "$signal" "$component" "$process_group" "${#records[@]}" >>"$evidence_log"
-  kill -"$signal" -- "-$process_group" 2>/dev/null || true
+  # A recorded component may share a launcher's process group.  Never signal
+  # that group unless its leader is the owned component; terminate the
+  # verified member PID instead.  This prevents stale manifests or PID reuse
+  # from taking down an unrelated launcher, shell, or Codex process.
+  if [[ "$process_group" == "$pid" ]]; then
+    kill -"$signal" -- "-$process_group" 2>/dev/null || true
+  else
+    kill -"$signal" "$pid" 2>/dev/null || true
+  fi
 }
 
 d435i_load_manifest_records() {

@@ -80,4 +80,13 @@ private:
 
 const char * to_string(ActiveFlightState state);
 
+// DEGRADED remains visible to operators when an optional enabled modality is
+// unavailable. Recovery may proceed only after the controller separately
+// verifies every capability required for safe post-epoch navigation.
+inline bool recovery_health_state_allows(const std::string & health_state)
+{
+  return health_state == "NORMAL" || health_state == "RECOVERED" ||
+         health_state == "DEGRADED";
+}
+
 }  // namespace uf_relocalization

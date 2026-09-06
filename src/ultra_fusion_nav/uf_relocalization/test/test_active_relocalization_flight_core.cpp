@@ -206,3 +206,13 @@ TEST(ActiveRelocalizationFlightCore, UnhealthyRecoveryValidationTimesOutToFailsa
   EXPECT_EQ(decision.reason, "recovery_validation_timeout");
   EXPECT_TRUE(decision.localization_hold);
 }
+
+TEST(ActiveRelocalizationFlightCore, RecoveryHealthStateKeepsDegradedDiagnostic)
+{
+  EXPECT_TRUE(recovery_health_state_allows("NORMAL"));
+  EXPECT_TRUE(recovery_health_state_allows("RECOVERED"));
+  EXPECT_TRUE(recovery_health_state_allows("DEGRADED"));
+  EXPECT_FALSE(recovery_health_state_allows("LOST"));
+  EXPECT_FALSE(recovery_health_state_allows("RELOCALIZING"));
+  EXPECT_FALSE(recovery_health_state_allows("UNKNOWN"));
+}
