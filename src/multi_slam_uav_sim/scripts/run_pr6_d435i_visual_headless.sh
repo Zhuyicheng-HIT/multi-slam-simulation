@@ -242,6 +242,14 @@ cleanup() {
   # unrelated simulation jobs cannot be targeted.
   record_fastlio_native_for_cleanup
   stop_recorded_groups
+  # A supervisor may respawn once while its parent is terminating.  Converge
+  # with two bounded, exact-run scans; each PID is still checked by command
+  # ownership and start ticks in stop_recorded_groups.
+  for _ in 1 2; do
+    sleep 1
+    record_fastlio_native_for_cleanup
+    stop_recorded_groups
+  done
   d435i_cleanup_run_manifests "$RUN_DIR" "$WS_ROOT" \
     "$RUN_DIR/process_cleanup.log"
   d435i_active_remove_owned "$ACTIVE_FILE" "$$" "$RUN_TOKEN" || true
