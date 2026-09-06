@@ -476,8 +476,19 @@ record_lio_adapters() {
     printf 'lio_adapter\t%s\t%s\t%s\n' "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
   done < <(existing_lio_adapter_pids)
 }
+record_fastlio_native() {
+  local pid ticks command
+  while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    [[ "$command" == *"$RUN_DIR/"* && "$command" == *"fastlio_mapping"* ]] || continue
+    ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
+    printf 'fastlio_native\t%s\t%s\t%s\n' "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
+  done < <(pgrep -f 'fastlio_mapping' || true)
+}
 sleep 1
 record_lio_adapters
+record_fastlio_native
 if ! wait_for_topic /fast_lio/native_lidar_factor "$NATIVE_LIDAR_WAIT_S"; then
   timeout 10s ros2 topic info /fast_lio/native_lidar_factor --verbose \
     >"$RUN_DIR/startup_failure_native_factor_topic.txt" 2>&1 || true
@@ -491,6 +502,7 @@ trace_stage native_lidar_factor_ready
 # The adapter is spawned asynchronously by the mapping supervisor. Register it
 # again after its readiness topic so cleanup owns the actual child PID.
 record_lio_adapters
+record_fastlio_native
 printf 'input_trigger=native_factor\nnative_factor=true\nlio_pose_fallback=false\n' \
   >"$RUN_DIR/backend_runtime_mode.env"
 if ! wait_for_topic /fusion/unified/odom 120; then

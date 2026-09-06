@@ -178,6 +178,9 @@ d435i_component_command_owned() {
       [[ "$command" == *"$project_root/"* &&
          "$command" == *"run_mid360_fastlio_mapping.sh"* ]]
       ;;
+    fastlio_native)
+      [[ "$command" == *"fastlio_mapping"* ]]
+      ;;
     lio_adapter)
       [[ "$command" == *"$project_root/install/uf_lio_adapter/"* ]]
       ;;
@@ -204,7 +207,7 @@ d435i_component_command_owned() {
 # the caller still verifies PID start ticks before signalling it.
 d435i_component_command_owned_for_run() {
   local component=$1 command=$2 project_root=$3 run_dir=$4
-  if [[ "$component" == "lio_adapter" && "$command" == *"$run_dir/"* ]]; then
+  if [[ ( "$component" == "lio_adapter" || "$component" == "fastlio_native" ) && "$command" == *"$run_dir/"* ]]; then
     return 0
   fi
   d435i_component_command_owned "$component" "$command" "$project_root"
