@@ -42,6 +42,7 @@ case "$MID360_SIM_BRIDGE_MODE" in
     ;;
 esac
 MID360_BODY_FILTER_ENABLED=${MID360_BODY_FILTER_ENABLED:-true}
+MID360_LIVOX_LIDAR_TOPIC=${MID360_LIVOX_LIDAR_TOPIC:-/livox/lidar}
 MID360_BODY_MIN_X_M=${MID360_BODY_MIN_X_M:--0.45}
 MID360_BODY_MAX_X_M=${MID360_BODY_MAX_X_M:-0.45}
 MID360_BODY_MIN_Y_M=${MID360_BODY_MIN_Y_M:--0.45}
@@ -266,7 +267,7 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p use_sim_time:="$USE_SIM_TIME" \
     -p gz_topic:=/mid360/lidar \
     -p gz_imu_topic:=/mid360/imu \
-    -p livox_lidar_topic:=/livox/lidar \
+    -p livox_lidar_topic:="$MID360_LIVOX_LIDAR_TOPIC" \
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \
     -p imu_frame_id:=base_link \

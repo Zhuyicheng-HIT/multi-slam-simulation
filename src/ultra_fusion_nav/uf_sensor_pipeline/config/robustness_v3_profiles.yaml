@@ -185,6 +185,16 @@ profiles:
     description: Simultaneous loss of both geometric exteroceptive sources.
     include: [visual_heavy, lidar_heavy]
 
+  lidar_cloud_outage:
+    description: Raw MID360 Livox CustomMsg outage while MID360 IMU continues.
+    faults:
+      - {channel: livox_lidar, type: outage, start_s: 45.0, duration_s: 25.0, score_floor: 0.98}
+  mid360_total_outage:
+    description: Concurrent raw MID360 Livox CustomMsg and MID360 IMU outage.
+    faults:
+      - {channel: livox_lidar, type: outage, start_s: 45.0, duration_s: 25.0, score_floor: 0.98}
+      - {channel: imu, type: outage, start_s: 45.0, duration_s: 25.0, score_floor: 0.98}
+
   long_visual_gnss_cycles:
     description: Three separated visual/GNSS events for recovery and endurance testing.
     faults:

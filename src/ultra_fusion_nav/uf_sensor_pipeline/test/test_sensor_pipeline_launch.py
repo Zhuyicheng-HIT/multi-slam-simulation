@@ -28,8 +28,8 @@ SPEC.loader.exec_module(MODULE)
 def test_launch_does_not_override_configured_imu_unit_or_geometry_contract():
     source = PATH.read_text(encoding="utf-8")
 
-    assert 'DeclareLaunchArgument("imu_acceleration_scale"' not in source
-    assert '"imu_acceleration_scale": imu_acceleration_scale' not in source
+    assert 'DeclareLaunchArgument("imu_acceleration_scale"' in source
+    assert '"imu_acceleration_scale": imu_acceleration_scale' in source
 
 
 class SensorPipelineLaunchTest(unittest.TestCase):

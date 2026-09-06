@@ -390,6 +390,7 @@ setsid env \
   LOCK_FILE="$RUN_DIR/apm_sensor_stack.lock" \
   ENABLE_D435_BRIDGE="$VISUAL_BRIDGE_ENABLED" ENABLE_D435_POINTCLOUD=false \
   MID360_SIM_BRIDGE_MODE=direct_livox \
+  MID360_LIVOX_LIDAR_TOPIC="$([[ "${ROBUSTNESS_EXTERNAL_SENSOR_RELAY:-false}" == true ]] && echo /robustness/raw/livox_lidar || echo /livox/lidar)" \
   ENABLE_GAZEBO_FLOW=1 ENABLE_FCU_FLOW=0 ENABLE_FCU_FLOW_ROUTER=0 \
   START_SITL=1 START_MAVROS=1 RECTANGLE_FLOW_TEST=0 AUTO_FLIGHT=0 \
   REQUIRE_GAZEBO_GPU=${REQUIRE_GAZEBO_GPU:-0} \
@@ -427,6 +428,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   enable_vision:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   robustness_enabled:="$ROBUSTNESS_ENABLED" \
   robustness_profile:="$ROBUSTNESS_PROFILE" \
+  robustness_external_sensor_relay:="${ROBUSTNESS_EXTERNAL_SENSOR_RELAY:-false}" \
   "${robustness_profile_launch_args[@]}" \
   robustness_channels:="$ROBUSTNESS_CHANNELS" \
   start_visual_frontend:="$VISUAL_FRONTEND_ENABLED_BOOL" \

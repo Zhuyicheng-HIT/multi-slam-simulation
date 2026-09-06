@@ -229,12 +229,53 @@ An external `lidar_imu_stop` profile was exercised once at
 `/tmp/bds-postfix-lidar-imu-stop-002-1788749000`. It is not valid evidence for
 simultaneous LiDAR/IMU loss: the launch supplied no publisher for the
 injector's default `/robustness/raw/imu`, and `runtime_evidence.json` contains
-LiDAR fault events but no IMU fault event. This identifies a test-chain
-contract gap; no physical MID360 IMU-stop conclusion is claimed. The project
-launch currently maps GNSS and NativeLidarFactor explicitly but does not map
-the IMU raw input into the injector.
+LiDAR fault events but no IMU fault event. This identified a test-chain
+contract gap; no physical MID360 IMU-stop conclusion was claimed. The gap is
+now closed by the test-only `robustness_external_sensor_relay` launch switch.
+With that switch enabled, the sensor relay writes IMU/GNSS/flow and raw Livox
+CustomMsg into `/robustness/raw/*`; the robustness injector republishes the
+canonical topics. The injector has an explicit `livox_lidar` CustomMsg channel
+with RELIABLE QoS, so raw Livox can be stopped without a reliability mismatch.
+The production default remains unchanged (`robustness_external_sensor_relay=false`),
+and raw `/livox/lidar` and `/livox/imu` contracts are not altered.
+
+The corresponding deterministic profiles are `lidar_cloud_outage` and
+`mid360_total_outage`. A valid raw cloud-only replay
+(`/tmp/bds-postfix-lidar-cloud-stop-002-1788712238`) completed the route with
+LiDAR disabled while IMU continued: GNSS factors 607, IMU factors 608, native
+LiDAR factors 495 before the outage, zero rollback and zero queue overflow. In
+the 25 s event window the aligned XY RMSE/P95/max were 0.0174/0.0243/0.0258 m
+and Z RMSE/P95/max were 0.0121/0.0164/0.0166 m. This is valid cloud-only
+evidence; the post-event Z maximum includes the landing segment.
+
+A valid raw total-outage replay
+(`/tmp/bds-postfix-mid360-total-stop-002-1788712766`) delivered both verified
+outage events (IMU and Livox at about 63.8 s), but the estimator then recorded
+745 `ill_conditioned_latest_information` rejections and 745 rollbacks, with
+only 32 committed states; the trajectory recorder stopped at the fault window
+and the launcher returned 7. It is confirmed failure-mode evidence, not a
+pass. A prior raw total-outage attempt was an environment startup failure, so
+no claim of three total-outage repetitions is made.
 
 The current scored runs use `VISUAL_BRIDGE_ENABLED=0` and
 `VISUAL_FRONTEND_ENABLED=0`; visual frame/factor counts are therefore zero by
 configuration. RGB/Depth/CameraInfo rates and visual factor adoption remain
 unmeasured in this campaign and must not be inferred from these runs.
+
+## Final Verification
+
+The post-fix server verification completed a full 22/22-package build and
+268/268 tests (0 errors, 0 failures, 0 skipped). Shell syntax and
+`git diff --check` passed. The changes in this addendum are limited to
+test-chain launch routing, raw CustomMsg fault injection, profiles and their
+tests; no estimator, fusion weight, HXY, Z-axis, Dynamic or relocalization
+algorithm was changed.
+
+## Status
+
+`DO_NOT_PROMOTE`: nominal, GNSS-medium, LiDAR-medium, dual-light and
+dual-heavy have valid repetitions, but dual-heavy exceeds the 0.20 m XY
+P95/max criterion, simultaneous IMU+LiDAR loss drives repeated ill-conditioned
+rollback, visual/manual-relocalization coverage is absent, and the requested
+full matrix repetitions are not all available. Intermittent `/clock` startup
+failures are retained as `ENV_START_FAILURE` and excluded from metric trials.

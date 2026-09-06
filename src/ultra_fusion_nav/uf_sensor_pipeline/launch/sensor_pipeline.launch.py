@@ -30,6 +30,9 @@ def generate_launch_description():
         LaunchConfiguration("active_modalities"), value_type=List[str]
     )
     enable_fault_injection = LaunchConfiguration("enable_fault_injection")
+    imu_output_topic = LaunchConfiguration("imu_output_topic")
+    gnss_output_topic = LaunchConfiguration("gnss_output_topic")
+    optical_flow_output_topic = LaunchConfiguration("optical_flow_output_topic")
     enable_gnss = LaunchConfiguration("enable_gnss")
     enable_lidar = LaunchConfiguration("enable_lidar")
     enable_livox_custom_adapter = LaunchConfiguration("enable_livox_custom_adapter")
@@ -234,6 +237,13 @@ def generate_launch_description():
         DeclareLaunchArgument("reliable_image_input", default_value="false"),
         DeclareLaunchArgument("enable_gnss", default_value="true"),
         DeclareLaunchArgument("imu_acceleration_scale", default_value="1.0"),
+        DeclareLaunchArgument("imu_output_topic", default_value="/sensors/imu"),
+        DeclareLaunchArgument(
+            "gnss_output_topic", default_value="/sensors/gnss/fix_unthrottled"
+        ),
+        DeclareLaunchArgument(
+            "optical_flow_output_topic", default_value="/sensors/optical_flow/rad"
+        ),
         DeclareLaunchArgument("enable_fcu_observation_bridge", default_value="false"),
         DeclareLaunchArgument("enable_vision", default_value="false"),
         DeclareLaunchArgument("enable_nmea_gnss", default_value="false"),
@@ -293,12 +303,12 @@ def generate_launch_description():
                 "lidar_input_topic": "/sensors/lidar/points_body_filtered",
                 "lidar_output_topic": "/sensors/lidar/points",
                 "imu_input_topic": "/livox/imu",
-                "imu_output_topic": "/sensors/imu",
+                "imu_output_topic": imu_output_topic,
                 "imu_acceleration_scale": imu_acceleration_scale,
                 "gnss_input_topic": gnss_input_topic,
-                "gnss_output_topic": "/sensors/gnss/fix_unthrottled",
+                "gnss_output_topic": gnss_output_topic,
                 "optical_flow_input_topic": optical_flow_input_topic,
-                "optical_flow_output_topic": "/sensors/optical_flow/rad",
+                "optical_flow_output_topic": optical_flow_output_topic,
                 "depth_input_topic": d435_depth_input_topic,
                 "depth_output_topic": "/sensors/rgbd/depth",
                 "color_input_topic": d435_color_input_topic,

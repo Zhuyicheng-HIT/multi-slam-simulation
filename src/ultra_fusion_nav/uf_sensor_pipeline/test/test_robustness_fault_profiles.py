@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import yaml
 
 from uf_sensor_pipeline.fault_profiles import (
@@ -34,6 +35,19 @@ def test_double_fault_profile_expands_both_modalities():
     profile = load_fault_profile(str(PROFILE_PATH), "dual_visual_gnss_medium")
     assert {spec.modality for spec in profile.faults} == {"vision", "gnss"}
     assert len(profile.faults) == 3
+
+
+def test_mid360_outage_profiles_target_raw_cloud_and_imu_boundaries():
+    cloud_only = load_fault_profile(str(PROFILE_PATH), "lidar_cloud_outage")
+    total = load_fault_profile(str(PROFILE_PATH), "mid360_total_outage")
+    assert [(spec.channel, spec.fault_type) for spec in cloud_only.faults] == [
+        ("livox_lidar", "outage")
+    ]
+    assert {(spec.channel, spec.fault_type) for spec in total.faults} == {
+        ("livox_lidar", "outage"),
+        ("imu", "outage"),
+    }
+    assert {spec.modality for spec in total.faults} == {"lidar", "imu"}
 
 
 def test_calibration_overrides_are_documented_backend_parameters():
@@ -146,5 +160,5 @@ def test_included_fault_channels_share_profile_time_origin():
     assert injector._elapsed("gnss", 10_000_000_000) == 0.0
     # A channel arriving later must use the same profile origin, otherwise
     # dual faults in an included profile become sequential in replay.
-    assert injector._elapsed("native_lidar", 40_000_000_000) == 30.0
+    assert injector._elapsed("native_lidar", 40_000_000_000) == pytest.approx(30.0)
     assert injector.started_ns["gnss"] == injector.started_ns["native_lidar"]

@@ -14,7 +14,7 @@ import yaml
 
 
 SUPPORTED_CHANNELS = {
-    "native_lidar", "imu", "gnss", "optical_flow", "vision"
+    "livox_lidar", "native_lidar", "imu", "gnss", "optical_flow", "vision"
 }
 SUPPORTED_FAULTS = {
     "outage", "time_offset", "correspondence_dropout",
@@ -38,7 +38,7 @@ class FaultSpec:
 
     @property
     def modality(self) -> str:
-        return "lidar" if self.channel == "native_lidar" else self.channel
+        return "lidar" if self.channel in {"livox_lidar", "native_lidar"} else self.channel
 
 
 @dataclass(frozen=True)

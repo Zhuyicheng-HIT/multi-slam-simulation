@@ -9,7 +9,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -37,6 +37,9 @@ def generate_launch_description():
     robustness_profile_path = LaunchConfiguration("robustness_profile_path")
     robustness_profile = LaunchConfiguration("robustness_profile")
     robustness_channels = LaunchConfiguration("robustness_channels")
+    robustness_external_sensor_relay = LaunchConfiguration(
+        "robustness_external_sensor_relay"
+    )
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("start_rgbd_bridge", default_value="true"),
@@ -49,6 +52,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("robustness_profile", default_value="nominal"),
         DeclareLaunchArgument("robustness_channels", default_value="[gnss]"),
+        DeclareLaunchArgument(
+            "robustness_external_sensor_relay", default_value="false",
+            description="Let the profile injector own canonical sensor outputs",
+        ),
         DeclareLaunchArgument(
             "active_modalities",
             default_value="[lidar, gnss, imu, optical_flow]",
@@ -136,6 +143,18 @@ def generate_launch_description():
             "d435_parent_frame": "base_link",
             "d435_child_frame": "d435i_link",
             "active_modalities": LaunchConfiguration("active_modalities"),
+            "imu_output_topic": PythonExpression([
+                "'/robustness/raw/imu' if '", robustness_external_sensor_relay,
+                "' == 'true' else '/sensors/imu'"
+            ]),
+            "gnss_output_topic": PythonExpression([
+                "'/robustness/raw/gnss' if '", robustness_external_sensor_relay,
+                "' == 'true' else '/sensors/gnss/fix_unthrottled'"
+            ]),
+            "optical_flow_output_topic": PythonExpression([
+                "'/robustness/raw/optical_flow' if '", robustness_external_sensor_relay,
+                "' == 'true' else '/sensors/optical_flow/rad'"
+            ]),
         }),
         Node(
             package="uf_sensor_pipeline", executable="robustness_fault_injector",
@@ -145,10 +164,22 @@ def generate_launch_description():
                 "profile_path": robustness_profile_path,
                 "profile": robustness_profile,
                 "channels": robustness_channels,
+                "livox_lidar_input_topic": "/robustness/raw/livox_lidar",
+                "livox_lidar_output_topic": "/livox/lidar",
                 "native_lidar_input_topic": "/robustness/raw/native_lidar_factor",
                 "native_lidar_output_topic": "/fast_lio/native_lidar_factor",
-                "gnss_input_topic": "/mavros/global_position/raw/fix",
+                "gnss_input_topic": PythonExpression([
+                    "'/robustness/raw/gnss' if '", robustness_external_sensor_relay,
+                    "' == 'true' else '/mavros/global_position/raw/fix'"
+                ]),
                 "gnss_output_topic": "/sensors/gnss/fix",
+                "imu_input_topic": PythonExpression([
+                    "'/robustness/raw/imu' if '", robustness_external_sensor_relay,
+                    "' == 'true' else '/livox/imu'"
+                ]),
+                "imu_output_topic": "/sensors/imu",
+                "optical_flow_input_topic": "/robustness/raw/optical_flow",
+                "optical_flow_output_topic": "/sensors/optical_flow/rad",
             }],
             condition=IfCondition(robustness_enabled), output="screen",
         ),

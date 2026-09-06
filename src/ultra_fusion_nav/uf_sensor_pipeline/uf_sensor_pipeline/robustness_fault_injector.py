@@ -12,6 +12,7 @@ from typing import Dict, Iterable, List
 import numpy as np
 import rclpy
 from fast_lio.msg import FrontendScanRequest, NativeLidarFactor
+from livox_ros_driver2.msg import CustomMsg
 from mavros_msgs.msg import OpticalFlowRad
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -34,6 +35,7 @@ from .fault_profiles import FaultProfile, FaultSpec, load_fault_profile
 
 
 CHANNEL_TYPES = {
+    "livox_lidar": CustomMsg,
     "native_lidar": NativeLidarFactor,
     "imu": Imu,
     "gnss": NavSatFix,
@@ -41,6 +43,7 @@ CHANNEL_TYPES = {
     "vision": VisualFeatureTracks,
 }
 DEFAULT_INPUTS = {
+    "livox_lidar": "/robustness/raw/livox_lidar",
     "native_lidar": "/robustness/raw/native_lidar_factor",
     "imu": "/robustness/raw/imu",
     "gnss": "/robustness/raw/gnss",
@@ -48,6 +51,7 @@ DEFAULT_INPUTS = {
     "vision": "/robustness/raw/visual_tracks",
 }
 DEFAULT_OUTPUTS = {
+    "livox_lidar": "/livox/lidar",
     "native_lidar": "/fast_lio/native_lidar_factor",
     "imu": "/sensors/imu",
     "gnss": "/sensors/gnss/fix",
@@ -143,7 +147,7 @@ class RobustnessFaultInjector(Node):
             if channel not in self.channels:
                 continue
             channel_qos = qos_profile_sensor_data
-            if channel == "native_lidar":
+            if channel in {"livox_lidar", "native_lidar"}:
                 channel_qos = QoSProfile(
                     history=QoSHistoryPolicy.KEEP_LAST,
                     depth=8,
