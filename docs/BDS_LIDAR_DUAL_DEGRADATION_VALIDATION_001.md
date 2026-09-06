@@ -8,6 +8,18 @@
 - External Livox workspace: `$HOME/multi-slam-deps/mid360_ws`
 - Runs: `/tmp/bds-nominal-006-1788674481`, `/tmp/bds-nominal-007-1788674849`
 
+## Metric Audit
+
+The initial ~1.34 m ATE values are not valid absolute localization evidence.
+The evaluator was matching against an all-zero truth stream: the C++ MID360
+bridge subscribed to its default `simple_apm_rgbd_mid360` pose topic while the
+campaign world was `low_indoor_apm_rgbd_mid360`. The estimate moved to the
+actual rectangle (about x=2.0 m, y=1.2 m, z=2.1 m), while the recorded truth
+remained zero. The bridge launch now passes the selected `WORLD_NAME` and
+`gazebo_model` explicitly (`755d345`). Existing ATE results must therefore be
+recomputed from a successful post-fix run; they are not used as a 20 cm pass
+claim.
+
 ## Real Gazebo/SITL Nominal Runs
 
 Both runs used the repository `run_pr6_d435i_visual_headless.sh` entry,
