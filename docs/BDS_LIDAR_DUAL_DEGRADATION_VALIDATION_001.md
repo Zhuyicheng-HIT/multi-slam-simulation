@@ -186,3 +186,5 @@ LiDAR-heavy attempt (`/tmp/bds-postfix-lidar-heavy-fixed-001-1788703500`)
 did not reach factor startup: the Livox ownership stability gate timed out
 despite one publisher per topic. It is recorded as `ENV_START_FAILURE` and is
 not counted as a heavy trial.
+
+A first valid post-fix LiDAR-heavy trial (`/tmp/bds-postfix-lidar-heavy-fixed-003-1788705000`) completed the full route. During the 25 s outage, fixed pre-event scoring gave XY RMSE 0.0822 m, P95 0.2166 m, max 0.3414 m; Z RMSE 0.0208 m, P95 0.0266 m. XY first exceeded 0.20 m 8.29 s after outage start and recovered below it afterward; Z remained below 0.06 m. A second heavy trial (`/tmp/bds-postfix-lidar-heavy-fixed-004-1788706500`) completed as well, with DURING XY RMSE 0.0469 m, P95 0.1204 m, max 0.1546 m and Z RMSE 0.0228 m; no 0.20 m XY crossing. Both had zero rollback and queue overflow. Heavy therefore shows run-to-run XY sensitivity under LiDAR-only loss and is not yet a 3-trial set.
