@@ -141,3 +141,15 @@ with an explicit temporary database
 startup but failed the `/clock` readiness gate; its bridge log shows the
 correct world clock before teardown. Both are `ENV_START_FAILURE`s, not
 algorithm trials.
+
+The injector contract was then corrected so every channel in an included
+profile shares one profile source-time origin (`22be899`). The successful
+rerun (`/tmp/bds-postfix-dual-sync-medium-003-1788695200`) completed takeoff,
+4/4 waypoints, LAND and disarm. Its trajectory had 521 matched poses and
+legacy whole-trajectory ATE RMSE 0.02035 m (max 0.05535 m; RPE translation
+RMSE 0.01951 m). GNSS was active at 46.987--58.937 s and LiDAR dropout at
+56.300--80.200 s, now with the intended shared origin (12.0 s windows; overlap
+is the configured interval after the common start). Runtime recorded 686
+native LiDAR and 685 IMU factors, 611 GNSS factors, 685 flow attempts/150
+enabled, zero optimization rejects/rollbacks and zero worker queue overflow.
+The raw evidence and phase-scored trajectory remain under the run directory.
