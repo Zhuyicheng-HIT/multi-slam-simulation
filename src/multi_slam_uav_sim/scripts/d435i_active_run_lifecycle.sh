@@ -257,15 +257,11 @@ d435i_signal_owned_group() {
   [[ "$owned" == "1" ]] || return 1
   printf 'SIGNAL signal=%s component=%s pgid=%s members=%s\n' \
     "$signal" "$component" "$process_group" "${#records[@]}" >>"$evidence_log"
-  # A recorded component may share a launcher's process group.  Never signal
-  # that group unless its leader is the owned component; terminate the
-  # verified member PID instead.  This prevents stale manifests or PID reuse
-  # from taking down an unrelated launcher, shell, or Codex process.
-  if [[ "$process_group" == "$pid" ]]; then
-    kill -"$signal" -- "-$process_group" 2>/dev/null || true
-  else
-    kill -"$signal" "$pid" 2>/dev/null || true
-  fi
+  # The leader and every member have just passed ownership checks.  Signal the
+  # whole recorded group: a launcher can have a different PID from its worker
+  # (for example ros2 launch -> fastlio_mapping), so killing only the worker
+  # would leak the launcher and any of its siblings.
+  kill -"$signal" -- "-$process_group" 2>/dev/null || true
 }
 
 d435i_load_manifest_records() {
@@ -284,6 +280,7 @@ d435i_load_manifest_records() {
 d435i_cleanup_run_manifests() {
   local run_dir=$1 project_root=$2 evidence_log=$3
   local records=() record component process_group start_ticks signal
+  local phase_wait_s=${D435I_CLEANUP_PHASE_WAIT_S:-5}
   mkdir -p "$(dirname "$evidence_log")"
   {
     printf 'cleanup_started_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -300,7 +297,9 @@ d435i_cleanup_run_manifests() {
         "$start_ticks" "$project_root" "$evidence_log" "$run_dir" || true
     done
     if [[ "$signal" != "KILL" ]]; then
-      for _ in {1..10}; do sleep 0.2; done
+      # Allow supervisor traps to drain their child manifests before the next
+      # escalation; an early KILL can orphan SITL.
+      sleep "$phase_wait_s"
     fi
   done
   printf 'cleanup_finished_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

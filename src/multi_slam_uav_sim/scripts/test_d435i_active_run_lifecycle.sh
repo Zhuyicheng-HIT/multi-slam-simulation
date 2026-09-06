@@ -9,8 +9,9 @@ TEST_ROOT=$(mktemp -d /tmp/d435i_lifecycle_test.XXXXXX)
 owned_pid=""
 wrong_pid=""
 manifest_pid=""
+group_leader_pid=""
 cleanup_test() {
-  for pid in "$owned_pid" "$wrong_pid" "$manifest_pid"; do
+  for pid in "$owned_pid" "$wrong_pid" "$manifest_pid" "$group_leader_pid"; do
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       kill -KILL "$pid" 2>/dev/null || true
     fi
@@ -90,6 +91,35 @@ if kill -0 "$manifest_pid" 2>/dev/null; then
   exit 1
 fi
 manifest_pid=""
+
+# The manifest may identify a worker while its setsid launcher owns the
+# process group. Cleanup must terminate that launcher group, not merely the
+# worker PID, once the group's command ownership is verified.
+group_dir="$project_root/logs/d435i_visual_slam/group_cleanup"
+mkdir -p "$group_dir"
+group_name="$project_root/install/fastlio_mapping"
+setsid env GROUP_NAME="$group_name" bash -c \
+  'exec -a "$GROUP_NAME" bash -c '\''exec -a "$GROUP_NAME" sleep 30 & wait'\''' &
+group_leader_pid=$!
+for _ in {1..20}; do
+  group_worker_pid=$(pgrep -P "$group_leader_pid" | head -n 1 || true)
+  [[ "$group_worker_pid" =~ ^[0-9]+$ ]] && break
+  sleep 0.1
+done
+[[ "$group_worker_pid" =~ ^[0-9]+$ ]]
+group_ticks=$(d435i_process_start_ticks "$group_leader_pid")
+printf 'component\tpid\tprocess_group\tstart_ticks\nfastlio_native\t%s\t%s\t%s\n' \
+  "$group_worker_pid" "$group_leader_pid" "$group_ticks" >"$group_dir/pids.tsv"
+d435i_cleanup_run_manifests "$group_dir" "$project_root" "$group_dir/cleanup.log"
+for _ in {1..20}; do
+  if ! kill -0 "$group_leader_pid" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if kill -0 "$group_leader_pid" 2>/dev/null; then
+  printf 'verified launcher group survived cleanup\n' >&2
+  exit 1
+fi
+group_leader_pid=""
 
 refusal_dir="$project_root/logs/d435i_visual_slam/refusal"
 mkdir -p "$refusal_dir"

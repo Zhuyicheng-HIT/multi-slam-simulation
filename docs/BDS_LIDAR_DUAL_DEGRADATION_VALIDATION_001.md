@@ -254,8 +254,8 @@ outage events (IMU and Livox at about 63.8 s), but the estimator then recorded
 745 `ill_conditioned_latest_information` rejections and 745 rollbacks, with
 only 32 committed states; the trajectory recorder stopped at the fault window
 and the launcher returned 7. It is confirmed failure-mode evidence, not a
-pass. A prior raw total-outage attempt was an environment startup failure, so
-no claim of three total-outage repetitions is made.
+pass. A prior attempt was an environment startup failure; only the valid
+repetitions listed in this report are used for the failure-mode conclusion.
 
 The current scored runs use `VISUAL_BRIDGE_ENABLED=0` and
 `VISUAL_FRONTEND_ENABLED=0`; visual frame/factor counts are therefore zero by
@@ -314,3 +314,28 @@ the backend recorded 661 `ill_conditioned_latest_information` rejections and
 outage. This confirms the previous failure boundary and does not constitute a
 pass. The three valid total-outage runs consistently show estimator loss of
 progress when both raw MID360 channels disappear.
+
+## Lifecycle and Manual-Recovery Evidence
+
+The trial lifecycle helper was audited and its cleanup path was tightened in
+the working tree. Every recorded component now carries its PID, process-group
+ID and process start ticks. Before signalling, cleanup verifies
+`/proc/<pid>/cmdline`, expected project/run ownership and the recorded start
+ticks; stale PID files are not used as kill targets. Cleanup signals only
+verified groups in bounded `INT -> TERM -> KILL` phases, removes the run
+manifest and run-local `wrapper.pid`, and refuses an unrelated or reused PID.
+The focused `test_d435i_active_run_lifecycle.sh` passes with this behavior.
+
+The real manual-relocalization smoke used
+`/tmp/bds-manual-recovery-real-002-1788717864`. The request service accepted a
+manual start and later a cancel; the database was ready with 18 keyframes and
+the candidate chain was accepted, followed by an epoch-apply event. However,
+the active controller entered `FAILSAFE` with `success_identity_invalid`,
+`epoch_committed=0`, and never reached a valid recovery dwell or mission
+resume. This is a reproduced recovery failure, not evidence of successful
+relocalization. The run was cleaned without leaving the project stack running.
+
+The campaign therefore has three valid simultaneous raw MID360 total-outage
+repetitions (raw-004, raw-006 and final-003), but no successful manual
+relocalization-and-resume repetition. No visual adoption claim is made while
+the visual bridge/frontend are disabled.

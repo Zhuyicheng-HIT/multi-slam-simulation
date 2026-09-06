@@ -98,7 +98,7 @@ owned_pid() {
   command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
   case "$command" in
     *"$pattern"*|*"$PKG_SHARE"*|*"gz sim"*|*"mavros_node"*|*"arducopter"*) ;;
-    *) return 0 ;;
+    *) return 1 ;;
   esac
 }
 declare -A pid_ticks=()

@@ -197,42 +197,14 @@ d435i_active_write "$ACTIVE_FILE" "$$" "$RUN_DIR" "$WS_ROOT" \
   "$RUN_BRANCH" "$RUN_ID" "$RUN_TOKEN" "$(realpath -m "${BASH_SOURCE[0]}")"
 
 record_pid() {
-  local component=$1 pid=$2 ticks=
-  ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
-  printf '%s\t%s\t%s\t%s\n' "$component" "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
+  local component=$1 pid=$2 pgid= ticks=
+  pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  pgid=${pgid:-$pid}
+  ticks=$(d435i_process_start_ticks "$pgid" 2>/dev/null || true)
+  printf '%s\t%s\t%s\t%s\n' "$component" "$pid" "$pgid" "$ticks" >>"$PID_MANIFEST"
 }
 
 cleanup_started=0
-stop_recorded_groups() {
-  local component pid pgid ticks current_ticks command
-  [[ -f "$PID_MANIFEST" ]] || return 0
-  while IFS=$'\t' read -r component pid pgid ticks; do
-    [[ "$component" == component || -z "$pid" ]] && continue
-    current_ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
-    [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
-    command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
-    d435i_component_command_owned_for_run "$component" "$command" "$WS_ROOT" "$RUN_DIR" || continue
-    if [[ "$pgid" == "$pid" ]]; then
-      kill -TERM -- "-$pgid" 2>/dev/null || true
-    else
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-  done <"$PID_MANIFEST"
-  sleep 2
-  while IFS=$'\t' read -r component pid pgid ticks; do
-    [[ "$component" == component || -z "$pid" ]] && continue
-    current_ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
-    [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
-    command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
-    d435i_component_command_owned_for_run "$component" "$command" "$WS_ROOT" "$RUN_DIR" || continue
-    if [[ "$pgid" == "$pid" ]]; then
-      kill -KILL -- "-$pgid" 2>/dev/null || true
-    else
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-  done <"$PID_MANIFEST"
-}
-
 cleanup() {
   local status=$?
   [[ "$cleanup_started" == 0 ]] || return
@@ -244,21 +216,15 @@ cleanup() {
   if declare -F record_fastlio_native_for_cleanup >/dev/null 2>&1; then
     record_fastlio_native_for_cleanup
   fi
-  stop_recorded_groups
-  # A supervisor may respawn once while its parent is terminating.  Converge
-  # with two bounded, exact-run scans; each PID is still checked by command
-  # ownership and start ticks in stop_recorded_groups.
-  for _ in 1 2; do
-    sleep 1
-    if declare -F record_fastlio_native_for_cleanup >/dev/null 2>&1; then
-      record_fastlio_native_for_cleanup
-    fi
-    stop_recorded_groups
-  done
+  # Use the manifest helper for every component. It validates each process
+  # group before signalling and gives supervisors time to drain children.
   d435i_cleanup_run_manifests "$RUN_DIR" "$WS_ROOT" \
     "$RUN_DIR/process_cleanup.log"
   d435i_active_remove_owned "$ACTIVE_FILE" "$$" "$RUN_TOKEN" || true
   rm -f -- "$PID_MANIFEST"
+  # Remove only this run's harness marker; never consume stale PID files from
+  # another trial.
+  rm -f -- "$RUN_DIR/wrapper.pid"
   printf 'Paper visual stack stopped (status=%s). Logs: %s\n' "$status" "$RUN_DIR"
   exit "$status"
 }
@@ -498,31 +464,37 @@ record_pid fastlio_supervisor "$!"
 # The mapping wrapper may launch lio_adapter in a different process group.
 # Register only the exact project executable and its start tick for cleanup.
 record_lio_adapters() {
-  local pid ticks
+  local pid pgid ticks
   while read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
-    printf 'lio_adapter\t%s\t%s\t%s\n' "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    pgid=${pgid:-$pid}
+    ticks=$(d435i_process_start_ticks "$pgid" 2>/dev/null || true)
+    printf 'lio_adapter\t%s\t%s\t%s\n' "$pid" "$pgid" "$ticks" >>"$PID_MANIFEST"
   done < <(existing_lio_adapter_pids)
 }
 record_fastlio_native() {
-  local pid ticks command
+  local pid pgid ticks command
   while read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
     [[ "$command" == *"$RUN_DIR/"* && "$command" == *"fastlio_mapping"* ]] || continue
-    ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
-    printf 'fastlio_native\t%s\t%s\t%s\n' "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    pgid=${pgid:-$pid}
+    ticks=$(d435i_process_start_ticks "$pgid" 2>/dev/null || true)
+    printf 'fastlio_native\t%s\t%s\t%s\n' "$pid" "$pgid" "$ticks" >>"$PID_MANIFEST"
   done < <(pgrep -f 'fastlio_mapping' || true)
 }
 record_fastlio_native_for_cleanup() {
-  local pid ticks command
+  local pid pgid ticks command
   while read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
     [[ "$command" == *"$RUN_DIR/"* && "$command" == *"fastlio_mapping"* ]] || continue
-    ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
-    printf 'fastlio_native\t%s\t%s\t%s\n' "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    pgid=${pgid:-$pid}
+    ticks=$(d435i_process_start_ticks "$pgid" 2>/dev/null || true)
+    printf 'fastlio_native\t%s\t%s\t%s\n' "$pid" "$pgid" "$ticks" >>"$PID_MANIFEST"
   done < <(pgrep -f 'fastlio_mapping' || true)
 }
 sleep 1
