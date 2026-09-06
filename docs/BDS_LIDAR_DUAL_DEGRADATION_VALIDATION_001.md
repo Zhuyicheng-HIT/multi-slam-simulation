@@ -4,7 +4,7 @@
 
 - Branch: `feat/bds-lidar-dual-degradation-v1`
 - Frozen algorithm baseline: `02935070bf7177efe6b07d01db9e2e6beac6f0dc`
-- Validation commits: `6a51791e`, `570b129`, `191b80b`
+- Validation commits: `6a51791e`, `570b129`, `191b80b`, `e37ad64`, `5ce18c7`
 - External Livox workspace: `$HOME/multi-slam-deps/mid360_ws`
 - Runs: `/tmp/bds-nominal-006-1788674481`, `/tmp/bds-nominal-007-1788674849`
 
@@ -90,4 +90,7 @@ were then repeated successfully with Fast DDS.
 
 `DO_NOT_PROMOTE`: medium concurrent trials are repeatable, but the complete
 light/medium/heavy matrix, sensor-stop boundaries and manual recovery remain
-unexecuted. No tag was created.
+unexecuted. Startup `/clock` failures were traced to stale concurrent trial
+processes; cleanup now scopes and converges exact run-owned processes. The
+full test suite passes when the external Livox workspace is sourced. No tag
+was created.
