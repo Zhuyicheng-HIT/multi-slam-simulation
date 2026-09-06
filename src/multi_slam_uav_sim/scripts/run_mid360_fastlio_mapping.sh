@@ -166,21 +166,34 @@ esac
 
 mkdir -p "$LOG_DIR"
 pids=()
+add_pid() { pids+=("$1"); remember_pid "$1"; }
+declare -A pid_ticks=()
+remember_pid() { local pid=$1; [[ -r "/proc/$pid/stat" ]] && pid_ticks[$pid]=$(awk '{print $22}' "/proc/$pid/stat"); }
+signal_owned() {
+  local signal=$1 pid=$2 expected=${pid_ticks[$2]:-} command actual
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/cmdline" ]] || return 0
+  actual=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
+  [[ -n "$expected" && "$actual" == "$expected" ]] || return 0
+  command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  case "$command" in
+    *"$PKG_SHARE"*|*"multi_slam"*|*"gz sim"*|*"mavros_node"*|*"arducopter"*) ;;
+    *) return 0 ;;
+  esac
+  kill -"$signal" "$pid" 2>/dev/null || true
+  if [[ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" == "$pid" ]]; then kill -"$signal" -- "-$pid" 2>/dev/null || true; fi
+}
 cleanup() {
   printf '\nStopping MID360 FAST-LIO mapping...\n'
   for pid in "${pids[@]:-}"; do
-    kill -INT -- "-$pid" 2>/dev/null || true
-    kill -INT "$pid" 2>/dev/null || true
+    signal_owned INT "$pid"
   done
   sleep 1
   for pid in "${pids[@]:-}"; do
-    kill -TERM -- "-$pid" 2>/dev/null || true
-    kill -TERM "$pid" 2>/dev/null || true
+    signal_owned TERM "$pid"
   done
   sleep 1
   for pid in "${pids[@]:-}"; do
-    kill -KILL -- "-$pid" 2>/dev/null || true
-    kill -KILL "$pid" 2>/dev/null || true
+    signal_owned KILL "$pid"
   done
 }
 trap cleanup EXIT INT TERM
@@ -252,7 +265,7 @@ if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "1" ]]; then
     -p max_points:=20000 \
     -p point_stride:=${MID360_POINT_STRIDE:-1} \
     >"$LOG_DIR/livox_mid360_bridge.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 else
   printf 'Using existing /livox/lidar and /livox/imu publishers; Python bridge is disabled.\n' \
     >"$LOG_DIR/livox_mid360_bridge.log"
@@ -271,7 +284,7 @@ if [[ "$START_DYNAMIC_CLEAN_GATEWAY_BOOL" == "true" ]]; then
     clean_topic:="$DYNAMIC_CLEAN_TOPIC" \
     previous_state_topic:="$DYNAMIC_CLEAN_PREVIOUS_STATE_TOPIC" \
     >"$LOG_DIR/dynamic_clean_gateway.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
   sleep 1
 fi
 
@@ -345,7 +358,7 @@ setsid ros2 launch fast_lio mapping.launch.py \
   frontend_scan_request_timeout_s:="$FASTLIO_FRONTEND_SCAN_REQUEST_TIMEOUT_S" \
   >"$LOG_DIR/fast_lio.log" 2>&1 &
 fastlio_pid="$!"
-pids+=("$fastlio_pid")
+add_pid "$fastlio_pid"
 
 setsid ros2 run multi_slam_uav_sim topic_ownership_guard \
   --topic /livox/lidar \
@@ -357,7 +370,7 @@ setsid ros2 run multi_slam_uav_sim topic_ownership_guard \
   --duplicate-limit 2 \
   --terminate-pgid "$fastlio_pid" \
   >>"$LOG_DIR/livox_mid360_bridge.log" 2>&1 &
-pids+=("$!")
+add_pid "$!"
 
 sleep 3
 
@@ -366,7 +379,7 @@ if [[ "$START_FASTLIO_CLOUD_MAPPER_BOOL" == "true" ]]; then
     -p use_sim_time:="$USE_SIM_TIME" \
     --params-file "$PKG_SHARE/config/sim_fastlio_reliable_mapping_params.yaml" \
     >"$LOG_DIR/fastlio_cloud_mapper.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 else
   printf 'FAST-LIO display-only cloud mapper disabled.\n' \
     >"$LOG_DIR/fastlio_cloud_mapper.log"
@@ -377,7 +390,7 @@ if [[ "$START_FASTLIO_OCCUPANCY_GRID_BOOL" == "true" ]]; then
     -p use_sim_time:="$USE_SIM_TIME" \
     --params-file "$PKG_SHARE/config/sim_fastlio_reliable_mapping_params.yaml" \
     >"$LOG_DIR/fastlio_occupancy_grid.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 else
   printf 'FAST-LIO display-only occupancy grid disabled.\n' \
     >"$LOG_DIR/fastlio_occupancy_grid.log"

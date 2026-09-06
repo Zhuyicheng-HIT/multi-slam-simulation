@@ -85,7 +85,31 @@ printf '%s\n' "$$" > "$LOCK_FILE"
 mkdir -p "$LOG_DIR"
 
 pids=()
+add_pid() { pids+=("$1"); remember_pid "$1"; }
 SITL_PID_FILE="$LOG_DIR/arducopter.pid"
+pid_start_ticks() { [[ -r "/proc/$1/stat" ]] || return 1; awk '{print $22}' "/proc/$1/stat"; }
+owned_pid() {
+  local pid=$1 expected=$2 pattern=$3 actual command
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  actual=$(pid_start_ticks "$pid" 2>/dev/null || true)
+  [[ -n "$expected" && "$actual" == "$expected" ]] || return 1
+  command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  case "$command" in
+    *"$pattern"*|*"$PKG_SHARE"*|*"gz sim"*|*"mavros_node"*|*"arducopter"*) ;;
+    *) return 0 ;;
+  esac
+}
+declare -A pid_ticks=()
+remember_pid() { local pid=$1; pid_ticks[$pid]=$(pid_start_ticks "$pid" 2>/dev/null || true); }
+signal_owned() {
+  local signal=$1 pid=$2 pattern=$3 ticks=${pid_ticks[$2]:-}
+  owned_pid "$pid" "$ticks" "$pattern" || return 0
+  kill -"$signal" "$pid" 2>/dev/null || true
+  if [[ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" == "$pid" ]]; then
+    kill -"$signal" -- "-$pid" 2>/dev/null || true
+  fi
+}
 cleanup_started=0
 cleanup() {
   if [[ "$cleanup_started" == "1" ]]; then
@@ -96,31 +120,28 @@ cleanup() {
   printf '\nStopping APM sensor stack...\n'
   rm -f "$LOCK_FILE"
   if [[ -f "$SITL_PID_FILE" ]]; then
-    sitl_pid=$(cat "$SITL_PID_FILE" 2>/dev/null || true)
-    if [[ "$sitl_pid" =~ ^[0-9]+$ ]]; then
-      kill -INT "$sitl_pid" 2>/dev/null || true
-    fi
+    IFS='|' read -r sitl_pid sitl_ticks <"$SITL_PID_FILE" || true
+    [[ -n "${sitl_ticks:-}" ]] && pid_ticks[$sitl_pid]=$sitl_ticks
+    signal_owned INT "$sitl_pid" arducopter
   fi
   for pid in "${pids[@]:-}"; do
-    kill -INT "$pid" 2>/dev/null || true
-    kill -INT -- "-$pid" 2>/dev/null || true
+    signal_owned INT "$pid" multi_slam
   done
   sleep 1
   if [[ -n "${sitl_pid:-}" ]] && [[ "$sitl_pid" =~ ^[0-9]+$ ]]; then
-    kill -TERM "$sitl_pid" 2>/dev/null || true
+    signal_owned TERM "$sitl_pid" arducopter
   fi
   for pid in "${pids[@]:-}"; do
-    kill -TERM "$pid" 2>/dev/null || true
-    kill -TERM -- "-$pid" 2>/dev/null || true
+    signal_owned TERM "$pid" multi_slam
   done
   sleep 1
   if [[ -n "${sitl_pid:-}" ]] && [[ "$sitl_pid" =~ ^[0-9]+$ ]]; then
-    kill -KILL "$sitl_pid" 2>/dev/null || true
+    signal_owned KILL "$sitl_pid" arducopter
   fi
   for pid in "${pids[@]:-}"; do
-    kill -KILL "$pid" 2>/dev/null || true
-    kill -KILL -- "-$pid" 2>/dev/null || true
+    signal_owned KILL "$pid" multi_slam
   done
+  rm -f -- "$SITL_PID_FILE"
 }
 trap cleanup EXIT INT TERM
 
@@ -152,7 +173,7 @@ if [[ "${HEADLESS:-0}" == "1" ]]; then
 else
   setsid gz sim -r -v 2 --render-engine-gui ogre2 "$WORLD" >"$LOG_DIR/gazebo.log" 2>&1 &
 fi
-pids+=("$!")
+add_pid "$!"
 # Headless rendering can take several seconds to initialise before the world
 # transport topic is discoverable. Start the bridge after that settling period;
 # the ROS-side advancing-clock check below remains the authoritative gate.
@@ -162,7 +183,7 @@ setsid ros2 run multi_slam_uav_sim gazebo_clock_bridge --ros-args \
   -p use_sim_time:=false \
   -p world_name:="$WORLD_NAME" \
   >"$LOG_DIR/ros_clock_bridge.log" 2>&1 &
-pids+=("$!")
+add_pid "$!"
 
 wait_for_single_clock_publisher() {
   local info publishers sample sec nanosec
@@ -261,7 +282,7 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "direct_livox" ]]; then
     -p restamp_lidar:=false \
     -p publish_ground_truth_odom:=true \
     >"$LOG_DIR/gz_livox_bridge.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 fi
 
 if [[ "${ENABLE_D435_BRIDGE:-1}" == "1" ]]; then
@@ -274,7 +295,7 @@ if [[ "${ENABLE_D435_BRIDGE:-1}" == "1" ]]; then
     -p pointcloud_hz:=10.0 \
     -p pointcloud_stride:=4 \
     >"$LOG_DIR/d435i_sim_bridge.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 fi
 
 if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
@@ -296,7 +317,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p publish_all_frames:=${FLOW_PUBLISH_ALL_FRAMES:-true} \
     -p restamp:=false \
     >"$LOG_DIR/gz_rgbd_latest_bridge.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 
   flow_args=(
     -p use_sim_time:="$USE_SIM_TIME"
@@ -332,7 +353,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
   setsid ros2 run multi_slam_uav_sim gazebo_optical_flow_to_mavros --ros-args \
     "${flow_args[@]}" \
     >"$LOG_DIR/gazebo_optical_flow_to_mavros.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 
   # Companion observations use the same Gazebo sensor clock as the MID360 IMU.
   setsid ros2 run multi_slam_uav_sim mtf01p_mavlink_bridge --ros-args \
@@ -347,7 +368,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
     -p restamp_output:=${MTF_RESTAMP_OUTPUT:-false} \
     -p report_path:="$LOG_DIR/mtf01_mavlink_bridge.json" \
     >"$LOG_DIR/mtf01_mavlink_bridge.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 
   if [[ "${SHOW_FLOW_WINDOW:-0}" == "1" ]]; then
     setsid ros2 run multi_slam_uav_sim optical_flow_viewer --ros-args \
@@ -355,7 +376,7 @@ if [[ "${ENABLE_GAZEBO_FLOW:-0}" == "1" \
       -p image_topic:=/camera/camera/color/image_raw \
       -p flow_topic:=/sim/optical_flow/raw \
       >"$LOG_DIR/optical_flow_viewer.log" 2>&1 &
-    pids+=("$!")
+    add_pid "$!"
   fi
 fi
 
@@ -419,8 +440,16 @@ if [[ "${START_SITL:-1}" == "1" ]]; then
     SITL_SERIAL_ARGS="--serial1 tcp:2"
   fi
   setsid bash -lc "cd '$ARDUPILOT_DIR' && echo \$\$ > '$SITL_PID_FILE' && exec build/sitl/bin/arducopter $WIPE_ARG $SITL_SERIAL_ARGS --model JSON --speedup 1 --slave 0 --defaults '$SITL_DEFAULTS' --sim-address=127.0.0.1 -I0" >"$LOG_DIR/sitl.log" 2>&1 &
-  pids+=("$!")
-  sleep 10
+  add_pid "$!"
+  sleep 1
+  if [[ -f "$SITL_PID_FILE" ]]; then
+    sitl_pid=$(cat "$SITL_PID_FILE" 2>/dev/null || true)
+    [[ "$sitl_pid" =~ ^[0-9]+$ ]] && remember_pid "$sitl_pid"
+    if [[ "$sitl_pid" =~ ^[0-9]+$ ]]; then
+      printf '%s|%s\n' "$sitl_pid" "${pid_ticks[$sitl_pid]:-}" >"$SITL_PID_FILE"
+    fi
+  fi
+  sleep 9
 fi
 
 if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
@@ -431,7 +460,7 @@ if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
     -p source_system:=200 \
     -p report_path:="$LOG_DIR/mtf01p_mavlink_sensor.json" \
     >"$LOG_DIR/mtf01p_mavlink_sensor.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 
   setsid ros2 run multi_slam_uav_sim fcu_mavlink_flow_receiver --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
@@ -439,7 +468,7 @@ if [[ "${ENABLE_FCU_FLOW_ROUTER:-0}" == "1" ]]; then
     -p sensor_system_id:=200 \
     -p report_path:="$LOG_DIR/fcu_mavlink_flow_route.json" \
     >"$LOG_DIR/fcu_mavlink_flow_receiver.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
   sleep 2
 fi
 
@@ -463,7 +492,7 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
     --params-file "$MAVROS_PLUGINLISTS_FILE" \
     --params-file "$PKG_SHARE/config/mavros_apm_rgbd.yaml" \
     >"$LOG_DIR/mavros.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
   sleep 4
 
   printf 'Waiting for MAVROS FCU connection...\n'
@@ -507,7 +536,7 @@ fi
 setsid ros2 run multi_slam_uav_sim flight_state_bridge --ros-args \
   -p use_sim_time:="$USE_SIM_TIME" \
   -p mavros_ns:=/mavros -p uav_ns:=/uav >"$LOG_DIR/flight_state_bridge.log" 2>&1 &
-pids+=("$!")
+add_pid "$!"
 
 if [[ "${ENABLE_SIM_BAROMETER:-1}" == "1" ]]; then
   BARO_REFERENCE_ALTITUDE_M=${BARO_REFERENCE_ALTITUDE_M:-584.0}
@@ -521,7 +550,7 @@ if [[ "${ENABLE_SIM_BAROMETER:-1}" == "1" ]]; then
     -p publish_ros_topic:=false \
     -p reference_altitude_m:="$BARO_REFERENCE_ALTITUDE_M" \
     >"$LOG_DIR/gz_barometer_sim.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
   printf 'Gazebo barometer simulation: enabled (/sim/barometer/pressure)\n'
 else
   printf 'Gazebo barometer simulation: disabled\n'
@@ -542,7 +571,7 @@ if [[ "$MID360_SIM_BRIDGE_MODE" == "pointcloud_python" ]]; then
     -p publish_registered:=${MID360_PUBLISH_REGISTERED:-true} \
     -p publish_tf:=${MID360_PUBLISH_TF:-true} \
     >"$LOG_DIR/gz_mid360_pointcloud_bridge.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 fi
 
 if [[ "$ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV" == "1" ]]; then
@@ -553,7 +582,7 @@ if [[ "$ENABLE_LEGACY_GPS_FLOW_EXTERNALNAV" == "1" ]]; then
     performance_output_path:="$LOG_DIR/simulation_performance.json" \
     accuracy_output_path:="$LOG_DIR/externalnav_accuracy.json" \
     >"$LOG_DIR/gps_flow_externalnav.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 fi
 
 if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" || "${AUTO_FLIGHT:-0}" == "1" ]]; then
@@ -564,16 +593,16 @@ if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" || "${AUTO_FLIGHT:-0}" == "1" ]]; then
   fi
   safety_slice_start "$safety_raw_topic" "$USE_SIM_TIME" "$LOG_DIR/safety_slice.log"
   if [[ -n "$SAFETY_SLICE_PID" ]]; then
-    pids+=("$SAFETY_SLICE_PID")
+    add_pid "$SAFETY_SLICE_PID"
   fi
 fi
 
 if [[ "${RECTANGLE_FLOW_TEST:-0}" == "1" ]]; then
   setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_rectangle_waypoints --ros-args -p use_sim_time:='$USE_SIM_TIME' -p takeoff_alt:=3.0 -p length_x:=6.0 -p length_y:=4.0 -p speed_mps:=0.8 -p land_at_end:=true" >"$LOG_DIR/guided_rectangle_waypoints.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 elif [[ "${AUTO_FLIGHT:-0}" == "1" ]]; then
   setsid bash -lc "sleep 18; source /opt/ros/humble/setup.bash; source '$WS_INSTALL/setup.bash'; ros2 run multi_slam_uav_sim guided_flight --ros-args -p use_sim_time:='$USE_SIM_TIME' -p takeoff_alt:=4.0 -p side_length:=5.0 -p hold_time:=5.0" >"$LOG_DIR/guided_flight.log" 2>&1 &
-  pids+=("$!")
+  add_pid "$!"
 fi
 
 cat <<EOF
