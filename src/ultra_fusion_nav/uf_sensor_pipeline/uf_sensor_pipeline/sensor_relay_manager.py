@@ -69,6 +69,11 @@ class SensorRelayManager(Node):
         self.relay_count = 0
         self.relay_publishers = {}
         active = {str(name) for name in self.get_parameter("active_modalities").value}
+        # The scheduler uses the logical ``vision`` modality while this relay
+        # owns two concrete image streams. Keep the profile contract explicit
+        # without making disabled vision create idle subscriptions.
+        if "vision" in active:
+            active.update(("color", "depth"))
         for modality, message_type in MESSAGE_TYPES.items():
             if modality not in active:
                 continue
