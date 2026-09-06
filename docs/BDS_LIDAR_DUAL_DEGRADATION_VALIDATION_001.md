@@ -142,9 +142,8 @@ startup but failed the `/clock` readiness gate; its bridge log shows the
 correct world clock before teardown. Both are `ENV_START_FAILURE`s, not
 algorithm trials.
 
-The injector contract was then corrected so every channel in an included
-profile shares one profile source-time origin (`22be899`). The successful
-rerun (`/tmp/bds-postfix-dual-sync-medium-003-1788695200`) completed takeoff,
+Before the injector contract correction, a third post-fix run
+(`/tmp/bds-postfix-dual-sync-medium-003-1788695200`) completed takeoff,
 4/4 waypoints, LAND and disarm. Its trajectory had 521 matched poses and
 legacy whole-trajectory ATE RMSE 0.02035 m (max 0.05535 m; RPE translation
 RMSE 0.01951 m). GNSS was active at 46.987--58.937 s and LiDAR dropout at
@@ -152,4 +151,8 @@ RMSE 0.01951 m). GNSS was active at 46.987--58.937 s and LiDAR dropout at
 is the configured interval after the common start). Runtime recorded 686
 native LiDAR and 685 IMU factors, 611 GNSS factors, 685 flow attempts/150
 enabled, zero optimization rejects/rollbacks and zero worker queue overflow.
-The raw evidence and phase-scored trajectory remain under the run directory.
+Its GNSS and LiDAR windows were still channel-relative (GNSS 46.987--58.937 s;
+LiDAR 56.300--80.200 s), so it is not concurrent dual evidence. The subsequent
+`22be899` fix synchronizes included channels; a fresh post-fix concurrent
+campaign remains pending after the next two startup failures. The raw evidence
+and phase-scored trajectory remain under the run directory.
