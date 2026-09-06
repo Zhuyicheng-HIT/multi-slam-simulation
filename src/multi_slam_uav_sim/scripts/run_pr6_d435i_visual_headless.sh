@@ -51,6 +51,7 @@ VISUAL_BRIDGE_ENABLED=${VISUAL_BRIDGE_ENABLED:-1}
 VISUAL_FRONTEND_ENABLED=${VISUAL_FRONTEND_ENABLED:-1}
 ROBUSTNESS_ENABLED=${ROBUSTNESS_ENABLED:-0}
 ROBUSTNESS_PROFILE=${ROBUSTNESS_PROFILE:-nominal}
+ROBUSTNESS_PROFILE_PATH=${ROBUSTNESS_PROFILE_PATH:-}
 ROBUSTNESS_CHANNELS=${ROBUSTNESS_CHANNELS:-[gnss]}
 if [[ -z "${ACTIVE_MODALITIES:-}" ]]; then
   if [[ "$VISUAL_BRIDGE_ENABLED" == "1" && "$VISUAL_FRONTEND_ENABLED" == "1" ]]; then
@@ -412,6 +413,12 @@ if [[ -n "$BACKEND_PROCESS_PREFIX" ]]; then
     "backend_process_prefix:=$BACKEND_PROCESS_PREFIX"
   )
 fi
+robustness_profile_launch_args=()
+if [[ -n "$ROBUSTNESS_PROFILE_PATH" ]]; then
+  robustness_profile_launch_args+=(
+    "robustness_profile_path:=$ROBUSTNESS_PROFILE_PATH"
+  )
+fi
 # run_apm_sensor_stack owns the Gazebo D435 simulation bridge and publishes
 # the ROS image/depth pair. Do not start a second Gazebo transport bridge.
 setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
@@ -420,6 +427,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   enable_vision:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   robustness_enabled:="$ROBUSTNESS_ENABLED" \
   robustness_profile:="$ROBUSTNESS_PROFILE" \
+  "${robustness_profile_launch_args[@]}" \
   robustness_channels:="$ROBUSTNESS_CHANNELS" \
   start_visual_frontend:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   start_rtabmap:="$PR6_START_RTABMAP_BOOL" \

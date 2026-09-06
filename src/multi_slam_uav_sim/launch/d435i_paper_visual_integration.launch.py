@@ -34,6 +34,7 @@ def generate_launch_description():
     start_visual_frontend = LaunchConfiguration("start_visual_frontend")
     enable_vision = LaunchConfiguration("enable_vision")
     robustness_enabled = LaunchConfiguration("robustness_enabled")
+    robustness_profile_path = LaunchConfiguration("robustness_profile_path")
     robustness_profile = LaunchConfiguration("robustness_profile")
     robustness_channels = LaunchConfiguration("robustness_channels")
     return LaunchDescription([
@@ -42,6 +43,10 @@ def generate_launch_description():
         DeclareLaunchArgument("start_visual_frontend", default_value="true"),
         DeclareLaunchArgument("enable_vision", default_value="true"),
         DeclareLaunchArgument("robustness_enabled", default_value="false"),
+        DeclareLaunchArgument(
+            "robustness_profile_path",
+            default_value=str(sensor_share / "config" / "robustness_v3_profiles.yaml"),
+        ),
         DeclareLaunchArgument("robustness_profile", default_value="nominal"),
         DeclareLaunchArgument("robustness_channels", default_value="[gnss]"),
         DeclareLaunchArgument(
@@ -137,7 +142,7 @@ def generate_launch_description():
             name="robustness_v3_fault_injector",
             parameters=[{
                 "use_sim_time": use_sim_time,
-                "profile_path": str(sensor_share / "config" / "robustness_v3_profiles.yaml"),
+                "profile_path": robustness_profile_path,
                 "profile": robustness_profile,
                 "channels": robustness_channels,
                 "native_lidar_input_topic": "/robustness/raw/native_lidar_factor",
