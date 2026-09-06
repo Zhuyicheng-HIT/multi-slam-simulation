@@ -31,10 +31,12 @@ def generate_launch_description():
     start_rtabmap = LaunchConfiguration("start_rtabmap")
     start_rgbd_bridge = LaunchConfiguration("start_rgbd_bridge")
     start_visual_frontend = LaunchConfiguration("start_visual_frontend")
+    enable_vision = LaunchConfiguration("enable_vision")
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("start_rgbd_bridge", default_value="true"),
         DeclareLaunchArgument("start_visual_frontend", default_value="true"),
+        DeclareLaunchArgument("enable_vision", default_value="true"),
         DeclareLaunchArgument(
             "active_modalities",
             default_value="[lidar, gnss, imu, optical_flow]",
@@ -112,7 +114,7 @@ def generate_launch_description():
             output="screen",
         ),
         include("uf_sensor_pipeline", "sensor_pipeline.launch.py", {
-            "enable_vision": start_rgbd_bridge,
+            "enable_vision": enable_vision,
             "use_sim_time": use_sim_time,
             "d435_color_input_topic": "/front/d435i/color/image_raw",
             "d435_depth_input_topic": "/front/d435i/aligned_depth_to_color/image_raw",

@@ -178,6 +178,9 @@ d435i_component_command_owned() {
       [[ "$command" == *"$project_root/"* &&
          "$command" == *"run_mid360_fastlio_mapping.sh"* ]]
       ;;
+    lio_adapter)
+      [[ "$command" == *"$project_root/install/uf_lio_adapter/"* ]]
+      ;;
     integration_overlay)
       [[ "$command" == *"ros2 launch multi_slam_uav_sim"* &&
          "$command" == *"pr6_d435i_visual_integration.launch.py"* ]]

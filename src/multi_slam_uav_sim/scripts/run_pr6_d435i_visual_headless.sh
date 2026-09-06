@@ -208,6 +208,7 @@ stop_recorded_groups() {
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
     d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
     kill -TERM -- "-$pgid" 2>/dev/null || true
+    [[ "$pgid" == "$pid" ]] || kill -TERM "$pid" 2>/dev/null || true
   done <"$PID_MANIFEST"
   sleep 2
   while IFS=$'\t' read -r component pid pgid ticks; do
@@ -217,6 +218,7 @@ stop_recorded_groups() {
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
     d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
     kill -KILL -- "-$pgid" 2>/dev/null || true
+    [[ "$pgid" == "$pid" ]] || kill -KILL "$pid" 2>/dev/null || true
   done <"$PID_MANIFEST"
 }
 
@@ -389,7 +391,10 @@ if [[ -n "$BACKEND_PROCESS_PREFIX" ]]; then
 fi
 setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   use_sim_time:=true \
-  start_rgbd_bridge:="$VISUAL_BRIDGE_ENABLED_BOOL" \
+  # run_apm_sensor_stack owns the Gazebo D435 simulation bridge and publishes
+  # the ROS image/depth pair. Do not start a second Gazebo transport bridge.
+  start_rgbd_bridge:=false \
+  enable_vision:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   start_visual_frontend:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
   active_modalities:="$ACTIVE_MODALITIES" \
@@ -442,6 +447,18 @@ setsid env \
   bash "$PKG_SHARE/scripts/run_mid360_fastlio_mapping.sh" \
   >"$RUN_DIR/fastlio_supervisor.log" 2>&1 &
 record_pid fastlio_supervisor "$!"
+# The mapping wrapper may launch lio_adapter in a different process group.
+# Register only the exact project executable and its start tick for cleanup.
+record_lio_adapters() {
+  local pid ticks
+  while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
+    printf 'lio_adapter\t%s\t%s\t%s\n' "$pid" "$pid" "$ticks" >>"$PID_MANIFEST"
+  done < <(existing_lio_adapter_pids)
+}
+sleep 1
+record_lio_adapters
 if ! wait_for_topic /fast_lio/native_lidar_factor "$NATIVE_LIDAR_WAIT_S"; then
   timeout 10s ros2 topic info /fast_lio/native_lidar_factor --verbose \
     >"$RUN_DIR/startup_failure_native_factor_topic.txt" 2>&1 || true
