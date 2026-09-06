@@ -20,6 +20,14 @@ remained zero. The bridge launch now passes the selected `WORLD_NAME` and
 recomputed from a successful post-fix run; they are not used as a 20 cm pass
 claim.
 
+The first post-fix nominal smoke (`/tmp/bds-postfix-nominal-001-1788691200`)
+recorded non-zero truth over the full rectangle. Using the offline
+`evaluate_lio_phases.py` scorer, which estimates one yaw-plus-translation
+transform from samples before the event window, XY error was 0.0189 m RMSE,
+0.0326 m P95 and 0.0474 m max; Z error was 0.0222 m RMSE, 0.0320 m P95 and
+0.0623 m max. These are valid nominal evidence; no fault-period score is
+claimed from this run.
+
 ## Real Gazebo/SITL Nominal Runs
 
 Both runs used the repository `run_pr6_d435i_visual_headless.sh` entry,
