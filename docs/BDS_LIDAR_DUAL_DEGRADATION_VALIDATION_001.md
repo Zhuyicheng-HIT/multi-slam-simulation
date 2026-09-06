@@ -21,6 +21,16 @@ CycloneDDS participant limit was exhausted by stale processes.
 | nominal-006 | 75 | takeoff, 4/4 waypoints, LAND, disarm | 1.3705 | 0.0368 | 619 | 618 | 310 | 0 |
 | nominal-007 | 76 | takeoff, 4/4 waypoints, LAND, disarm | 1.3645 | 0.0389 | 621 | 620 | 293 | 0 |
 
+GNSS-outage profile (15 s outage beginning at source time 20 s) was run three
+times. Two valid trials completed the route; one attempt was an
+`ENV_START_FAILURE` before `/clock` became available.
+
+| Run | Result | ATE RMSE (m) | RPE translation RMSE (m) | Native LiDAR | IMU factors | GNSS factors | Rollbacks |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| gnss-outage-001 | takeoff, 4/4 waypoints, LAND, disarm | 1.3800 | 0.0352 | 622 | 621 | 224 | 0 |
+| gnss-outage-002 | ENV_START_FAILURE (`/clock` timeout) | - | - | - | - | - | - |
+| gnss-outage-003 | takeoff, 4/4 waypoints, LAND, disarm | 1.3531 | 0.0385 | 618 | 617 | 233 | 0 |
+
 The runtime evidence reports LiDAR at about 10 Hz, IMU at about 10x the LiDAR
 factor cadence, output source-age P95 of 30 ms, zero backend queue overflow,
 zero optimization errors/rejections/rollbacks, and feature repeatability
@@ -37,7 +47,9 @@ currently includes `sensor_pipeline.launch.py` without enabling the robustness
 overlay or remapping its `/robustness/raw/*` inputs. Starting the injector on
 top of the production topics would create duplicate publishers and violate the
 one-observation/one-factor contract. Therefore no live BDS+LiDAR degraded run
-is claimed yet.
+is claimed yet. A native-factor overlay needs an explicit single-publisher
+route (LIO output to `/robustness/raw/native_lidar_factor`, injector output to
+the backend topic), which the production launch does not currently expose.
 
 ## Environment Findings
 
@@ -59,7 +71,7 @@ were then repeated successfully with Fast DDS.
 
 ## Status
 
-`DO_NOT_PROMOTE`: nominal simulation is repeatable, but the requested
-concurrent BDS/LiDAR degradation matrix and recovery runs remain unexecuted
-until the existing robustness injector is wired into a single production-safe
-replay/launch path. No tag was created.
+`DO_NOT_PROMOTE`: nominal and GNSS-only runs are repeatable, but the requested
+concurrent BDS/LiDAR matrix, LiDAR-stop/MID360-total-fault boundary, and manual
+recovery run remain unexecuted until the existing robustness injector is wired
+into a production-safe replay path. No tag was created.
