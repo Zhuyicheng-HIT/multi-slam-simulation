@@ -119,19 +119,19 @@ were then repeated successfully with Fast DDS.
 
 ## Status
 
-`DO_NOT_PROMOTE`: medium concurrent trials are repeatable, but the complete
-light/medium/heavy matrix, sensor-stop boundaries and manual recovery remain
-unexecuted. Startup `/clock` failures were traced to stale concurrent trial
-processes; cleanup now scopes and converges exact run-owned processes. The
-full test suite passes when the external Livox workspace is sourced (`268/268`).
-The post-truth-binding smoke reached sensor and backend readiness but exited
-before a complete route, so no post-fix non-zero truth trajectory is claimed.
-The later smoke reached `/clock`, LiDAR, IMU, NativeLidarFactor and unified
-odom, but stopped at `/mavros/global_position/raw/fix`: MAVROS connected
-intermittently while the SITL telemetry request did not produce a NavSatFix.
-That is an environment/startup boundary, not a valid localization trial. The
-early cleanup path is guarded by `f5eac4f`; the full suite remains `268/268`.
-No tag was created.
+`DO_NOT_PROMOTE`: the synchronized light, medium and heavy dual-degradation
+sets now each have three valid completed Gazebo/SITL trials. Light and medium
+remain below 0.20 m XY during the joint fault; heavy is not compliant because
+all three repetitions contain a horizontal threshold crossing after roughly
+0.9--10.4 s without both GNSS and NativeLidarFactor. One nominal post-truth
+run is valid; additional nominal repetitions are still needed for a complete
+baseline set. Sensor-stop trials are not valid because the current launch
+does not connect the injector's IMU input. Manual relocalization and mission
+recovery were not executed in this campaign. Visual rates/factors are
+unmeasured because the visual bridge/frontend were explicitly disabled.
+Startup `/clock` failures were retained as `ENV_START_FAILURE` evidence and
+were not counted as algorithm trials. The full test suite passes when the
+external Livox workspace is sourced (`268/268`). No tag was created.
 
 The corrected concurrent-profile attempt
 (`/tmp/bds-postfix-dual-sync-medium-001-1788694000`) stopped at backend launch
@@ -194,3 +194,47 @@ The third valid LiDAR-heavy trial (`/tmp/bds-postfix-lidar-heavy-fixed-006-17887
 Three delayed-profile GNSS-only medium trials completed the full route with enough pre-event trajectory for fixed alignment. Runs `gnss-medium-delayed-002`, `-003` and `-004` had DURING XY RMSE 0.0216 m, 0.0187 m and 0.0206 m, respectively; P95 stayed at 0.0317--0.0333 m and max at 0.0411--0.0481 m. Z DURING RMSE was 0.0098--0.0131 m. None crossed 0.20 m or rolled back. The earlier delayed-001 run completed but began recording about 9 s into the outage and is excluded from phase scoring.
 
 Three full-window LiDAR-medium trials (`bds-postfix-lidar-medium-scored-001` through `-003`) completed the route. DURING XY RMSE was 0.0245, 0.0254 and 0.0246 m (P95 0.0395--0.0422 m; max 0.0502--0.0602 m), and Z RMSE was 0.0200, 0.0190 and 0.0188 m. None crossed 0.20 m or rolled back. The earlier late-window medium run had one `excessive_accel_bias_correction` rollback at stamp 95.0 s and is retained as an anomalous non-matrix run.
+
+Three valid delayed `dual_lidar_gnss_light` trials completed the full rectangle:
+`/tmp/bds-postfix-dual-light-scored-002-1788733000`,
+`/tmp/bds-postfix-dual-light-scored-004-1788737000` and
+`/tmp/bds-postfix-dual-light-scored-006-1788741000`. The shared source-time
+fault intervals were verified in `runtime_evidence.json`; all three had zero
+optimization errors/rejections, rollback and worker overflow. Fixed pre-event
+scoring gave DURING XY RMSE of 0.0242, 0.0102 and 0.0167 m, with maxima
+0.0485, 0.0218 and 0.0322 m; DURING Z RMSE was 0.0154, 0.0038 and 0.0189 m.
+Attempts `-003` and `-005` failed at `/clock` readiness and are recorded as
+`ENV_START_FAILURE`.
+
+The first valid delayed `dual_lidar_gnss_heavy` trial
+(`/tmp/bds-postfix-dual-heavy-scored-002-1788745000`) completed takeoff, 4/4
+waypoints, LAND and disarm. Both GNSS and NativeLidarFactor outages were
+active concurrently for the planned 25 s. DURING fixed-alignment XY RMSE was
+0.0863 m, P95 0.2399 m and max 0.2961 m; Z RMSE was 0.0173 m, P95 0.0242 m
+and max 0.0321 m. XY first crossed 0.20 m 0.88 s after the joint outage;
+rollback, rejection and queue overflow stayed zero. Attempts `-001` and
+`-003` were `/clock` startup failures and are excluded.
+
+The third valid delayed `dual_lidar_gnss_heavy` trial
+(`/tmp/bds-postfix-dual-heavy-scored-006-1788759000`) completed the route.
+The joint outage was concurrent from approximately 59.8 s to 84.8 s. Fixed
+pre-event scoring gave DURING XY RMSE 0.0809 m, P95 0.2349 m and max 0.3410 m;
+Z RMSE was 0.0192 m, P95 0.0254 m and max 0.0387 m. The first aligned XY
+sample above 0.20 m occurred 10.39 s after the outage and there were no
+optimization errors, rejections, rollbacks or queue overflows. The heavy set
+is therefore complete at three valid trials; all three show horizontal
+threshold violations in at least one repetition, while Z remains below 0.06 m.
+
+An external `lidar_imu_stop` profile was exercised once at
+`/tmp/bds-postfix-lidar-imu-stop-002-1788749000`. It is not valid evidence for
+simultaneous LiDAR/IMU loss: the launch supplied no publisher for the
+injector's default `/robustness/raw/imu`, and `runtime_evidence.json` contains
+LiDAR fault events but no IMU fault event. This identifies a test-chain
+contract gap; no physical MID360 IMU-stop conclusion is claimed. The project
+launch currently maps GNSS and NativeLidarFactor explicitly but does not map
+the IMU raw input into the injector.
+
+The current scored runs use `VISUAL_BRIDGE_ENABLED=0` and
+`VISUAL_FRONTEND_ENABLED=0`; visual frame/factor counts are therefore zero by
+configuration. RGB/Depth/CameraInfo rates and visual factor adoption remain
+unmeasured in this campaign and must not be inferred from these runs.
