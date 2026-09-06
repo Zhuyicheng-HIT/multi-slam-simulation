@@ -212,6 +212,14 @@ d435i_signal_owned_group() {
       return 1
     fi
   fi
+  local leader_command
+  leader_command=$(tr '\0' ' ' <"/proc/$process_group/cmdline" 2>/dev/null || true)
+  if [[ -z "$leader_command" ]] || ! d435i_component_command_owned \
+      "$component" "$leader_command" "$project_root"; then
+    printf 'REFUSE signal=%s component=%s pgid=%s reason=leader_cmdline_not_owned command=%s\n' \
+      "$signal" "$component" "$process_group" "$leader_command" >>"$evidence_log"
+    return 1
+  fi
   for record in "${records[@]}"; do
     IFS=$'\t' read -r pid command <<<"$record"
     if ! d435i_component_command_owned "$component" "$command" "$project_root"; then

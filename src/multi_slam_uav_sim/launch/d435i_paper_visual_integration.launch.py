@@ -35,6 +35,11 @@ def generate_launch_description():
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("start_rgbd_bridge", default_value="true"),
         DeclareLaunchArgument("start_visual_frontend", default_value="true"),
+        DeclareLaunchArgument(
+            "active_modalities",
+            default_value="[lidar, gnss, imu, optical_flow]",
+            description="Health modalities enabled for this runtime profile",
+        ),
         DeclareLaunchArgument("start_rtabmap", default_value="true"),
         DeclareLaunchArgument("database_path", default_value="paper_visual.db"),
         DeclareLaunchArgument("relocalization_database_path", default_value=""),
@@ -113,6 +118,7 @@ def generate_launch_description():
             "d435_depth_input_topic": "/front/d435i/aligned_depth_to_color/image_raw",
             "d435_parent_frame": "base_link",
             "d435_child_frame": "d435i_link",
+            "active_modalities": LaunchConfiguration("active_modalities"),
         }),
         # The upstream RTAB launch declares a broad set of generic launch
         # configurations. Keep them scoped so they cannot reset arguments of
@@ -198,6 +204,7 @@ def generate_launch_description():
                 "rgbd_maximum_depth_m"
             ),
             "barometer_topic": LaunchConfiguration("barometer_topic"),
+            "active_modalities": LaunchConfiguration("active_modalities"),
         }),
         include("uf_shared_mapping", "shared_mapping.launch.py", {
             "enabled": LaunchConfiguration("shared_mapping_enabled"),

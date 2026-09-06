@@ -48,6 +48,13 @@ esac
 PR6_START_RTABMAP=${PR6_START_RTABMAP:-1}
 VISUAL_BRIDGE_ENABLED=${VISUAL_BRIDGE_ENABLED:-1}
 VISUAL_FRONTEND_ENABLED=${VISUAL_FRONTEND_ENABLED:-1}
+if [[ -z "${ACTIVE_MODALITIES:-}" ]]; then
+  if [[ "$VISUAL_BRIDGE_ENABLED" == "1" && "$VISUAL_FRONTEND_ENABLED" == "1" ]]; then
+    ACTIVE_MODALITIES='[lidar,gnss,imu,optical_flow,vision]'
+  else
+    ACTIVE_MODALITIES='[lidar,gnss,imu,optical_flow]'
+  fi
+fi
 EXTERNAL_NAV_ENABLED=${EXTERNAL_NAV_ENABLED:-1}
 NATIVE_LIDAR_WAIT_S=${NATIVE_LIDAR_WAIT_S:-240}
 EXTERNAL_NAV_WAIT_S=${EXTERNAL_NAV_WAIT_S:-120}
@@ -170,8 +177,8 @@ if [[ -f "$ACTIVE_FILE" ]] && d435i_active_read "$ACTIVE_FILE"; then
   # workspace; the helper additionally checks command ownership and start
   # ticks before signalling each process group.
   if d435i_run_dir_owned "$D435I_ACTIVE_RUN_DIR" "$WS_ROOT"; then
-    d435i_cleanup_run_manifests "$D435I_ACTIVE_RUN_DIR" "$WS_ROOT" \
-      "$D435I_ACTIVE_RUN_DIR/stale_recovery_cleanup.log"
+    # A stale marker is evidence only. Never kill processes using an old
+    # trial manifest; PID reuse is possible after a wrapper exits.
     d435i_active_archive "$ACTIVE_FILE" "$WS_ROOT/logs/d435i_visual_slam" \
       stale_wrapper_marker
   fi
@@ -192,12 +199,14 @@ record_pid() {
 
 cleanup_started=0
 stop_recorded_groups() {
-  local component pid pgid ticks current_ticks
+  local component pid pgid ticks current_ticks command
   [[ -f "$PID_MANIFEST" ]] || return 0
   while IFS=$'\t' read -r component pid pgid ticks; do
     [[ "$component" == component || -z "$pid" ]] && continue
     current_ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
     [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
+    command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
     kill -TERM -- "-$pgid" 2>/dev/null || true
   done <"$PID_MANIFEST"
   sleep 2
@@ -205,6 +214,8 @@ stop_recorded_groups() {
     [[ "$component" == component || -z "$pid" ]] && continue
     current_ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
     [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
+    command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
     kill -KILL -- "-$pgid" 2>/dev/null || true
   done <"$PID_MANIFEST"
 }
@@ -221,6 +232,7 @@ cleanup() {
   d435i_cleanup_run_manifests "$RUN_DIR" "$WS_ROOT" \
     "$RUN_DIR/process_cleanup.log"
   d435i_active_remove_owned "$ACTIVE_FILE" "$$" "$RUN_TOKEN" || true
+  rm -f -- "$PID_MANIFEST"
   printf 'Paper visual stack stopped (status=%s). Logs: %s\n' "$status" "$RUN_DIR"
   exit "$status"
 }
@@ -350,7 +362,7 @@ setsid env \
   HEADLESS="$PR6_HEADLESS" GAZEBO_GUI="$PR6_GAZEBO_GUI" SHOW_FLOW_WINDOW=0 \
   LOG_DIR="$RUN_DIR/sensor_stack" \
   LOCK_FILE="$RUN_DIR/apm_sensor_stack.lock" \
-  ENABLE_D435_BRIDGE=0 ENABLE_D435_POINTCLOUD=false \
+  ENABLE_D435_BRIDGE="$VISUAL_BRIDGE_ENABLED" ENABLE_D435_POINTCLOUD=false \
   MID360_SIM_BRIDGE_MODE=direct_livox \
   ENABLE_GAZEBO_FLOW=1 ENABLE_FCU_FLOW=0 ENABLE_FCU_FLOW_ROUTER=0 \
   START_SITL=1 START_MAVROS=1 RECTANGLE_FLOW_TEST=0 AUTO_FLIGHT=0 \
@@ -380,6 +392,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   start_rgbd_bridge:="$VISUAL_BRIDGE_ENABLED_BOOL" \
   start_visual_frontend:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
+  active_modalities:="$ACTIVE_MODALITIES" \
   visual_factor_mode:="$VISUAL_FACTOR_MODE" \
   visual_keyframe_profile:="$VISUAL_KEYFRAME_PROFILE" \
   visual_candidate_quality_enabled:="$VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL" \

@@ -1,4 +1,5 @@
 import os
+from typing import List
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -31,6 +32,11 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("enabled", default_value="false"),
+        DeclareLaunchArgument(
+            "active_modalities",
+            default_value="[lidar, gnss, imu, optical_flow]",
+            description="Health modalities enabled for this runtime profile",
+        ),
         DeclareLaunchArgument("start_fusion_stack", default_value="false"),
         DeclareLaunchArgument(
             "visual_factor_mode", default_value="paper_reprojection"
@@ -112,7 +118,9 @@ def generate_launch_description():
             package="uf_reliability", executable="reliability_scheduler",
             parameters=[scheduler_config, {
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "active_modalities": ["lidar", "gnss", "imu", "optical_flow", "vision"],
+                "active_modalities": ParameterValue(
+                    LaunchConfiguration("active_modalities"), value_type=List[str]
+                ),
                 "required_modalities": ["imu"],
                 # One valid propagation source is enough to keep publishing a
                 # bounded estimator state. Optional factors are scheduled
