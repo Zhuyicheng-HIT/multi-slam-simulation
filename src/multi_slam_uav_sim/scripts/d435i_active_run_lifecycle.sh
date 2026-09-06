@@ -199,6 +199,17 @@ d435i_component_command_owned() {
   esac
 }
 
+# A lio_adapter may be installed in the external MID360 workspace.  It is
+# owned by this trial only when its command line names this trial's run dir;
+# the caller still verifies PID start ticks before signalling it.
+d435i_component_command_owned_for_run() {
+  local component=$1 command=$2 project_root=$3 run_dir=$4
+  if [[ "$component" == "lio_adapter" && "$command" == *"$run_dir/"* ]]; then
+    return 0
+  fi
+  d435i_component_command_owned "$component" "$command" "$project_root"
+}
+
 d435i_group_records() {
   local expected_group=$1
   ps -eo pid=,pgid=,args= | awk -v expected="$expected_group" '
@@ -210,7 +221,7 @@ d435i_group_records() {
 
 d435i_signal_owned_group() {
   local signal=$1 component=$2 process_group=$3 expected_ticks=$4
-  local project_root=$5 evidence_log=$6 record pid command actual_ticks
+  local project_root=$5 evidence_log=$6 run_dir=$7 record pid command actual_ticks
   local records=() owned=1
   mapfile -t records < <(d435i_group_records "$process_group")
   ((${#records[@]} > 0)) || return 0
@@ -225,15 +236,15 @@ d435i_signal_owned_group() {
   fi
   local leader_command
   leader_command=$(tr '\0' ' ' <"/proc/$process_group/cmdline" 2>/dev/null || true)
-  if [[ -z "$leader_command" ]] || ! d435i_component_command_owned \
-      "$component" "$leader_command" "$project_root"; then
+  if [[ -z "$leader_command" ]] || ! d435i_component_command_owned_for_run \
+      "$component" "$leader_command" "$project_root" "$run_dir"; then
     printf 'REFUSE signal=%s component=%s pgid=%s reason=leader_cmdline_not_owned command=%s\n' \
       "$signal" "$component" "$process_group" "$leader_command" >>"$evidence_log"
     return 1
   fi
   for record in "${records[@]}"; do
     IFS=$'\t' read -r pid command <<<"$record"
-    if ! d435i_component_command_owned "$component" "$command" "$project_root"; then
+    if ! d435i_component_command_owned_for_run "$component" "$command" "$project_root" "$run_dir"; then
       printf 'REFUSE signal=%s component=%s pgid=%s pid=%s command=%s\n' \
         "$signal" "$component" "$process_group" "$pid" "$command" \
         >>"$evidence_log"
@@ -283,7 +294,7 @@ d435i_cleanup_run_manifests() {
     for record in "${records[@]}"; do
       IFS=$'\t' read -r component process_group start_ticks <<<"$record"
       d435i_signal_owned_group "$signal" "$component" "$process_group" \
-        "$start_ticks" "$project_root" "$evidence_log" || true
+        "$start_ticks" "$project_root" "$evidence_log" "$run_dir" || true
     done
     if [[ "$signal" != "KILL" ]]; then
       for _ in {1..10}; do sleep 0.2; done

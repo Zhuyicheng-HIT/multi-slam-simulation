@@ -210,7 +210,7 @@ stop_recorded_groups() {
     current_ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
     [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
-    d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
+    d435i_component_command_owned_for_run "$component" "$command" "$WS_ROOT" "$RUN_DIR" || continue
     if [[ "$pgid" == "$pid" ]]; then
       kill -TERM -- "-$pgid" 2>/dev/null || true
     else
@@ -223,7 +223,7 @@ stop_recorded_groups() {
     current_ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
     [[ -n "$ticks" && "$current_ticks" == "$ticks" ]] || continue
     command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
-    d435i_component_command_owned "$component" "$command" "$WS_ROOT" || continue
+    d435i_component_command_owned_for_run "$component" "$command" "$WS_ROOT" "$RUN_DIR" || continue
     if [[ "$pgid" == "$pid" ]]; then
       kill -KILL -- "-$pgid" 2>/dev/null || true
     else
