@@ -49,6 +49,9 @@ esac
 PR6_START_RTABMAP=${PR6_START_RTABMAP:-1}
 VISUAL_BRIDGE_ENABLED=${VISUAL_BRIDGE_ENABLED:-1}
 VISUAL_FRONTEND_ENABLED=${VISUAL_FRONTEND_ENABLED:-1}
+ROBUSTNESS_ENABLED=${ROBUSTNESS_ENABLED:-0}
+ROBUSTNESS_PROFILE=${ROBUSTNESS_PROFILE:-nominal}
+ROBUSTNESS_CHANNELS=${ROBUSTNESS_CHANNELS:-[gnss]}
 if [[ -z "${ACTIVE_MODALITIES:-}" ]]; then
   if [[ "$VISUAL_BRIDGE_ENABLED" == "1" && "$VISUAL_FRONTEND_ENABLED" == "1" ]]; then
     ACTIVE_MODALITIES='[lidar,gnss,imu,optical_flow,vision]'
@@ -402,6 +405,9 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   use_sim_time:=true \
   start_rgbd_bridge:=false \
   enable_vision:="$VISUAL_FRONTEND_ENABLED_BOOL" \
+  robustness_enabled:="$ROBUSTNESS_ENABLED" \
+  robustness_profile:="$ROBUSTNESS_PROFILE" \
+  robustness_channels:="$ROBUSTNESS_CHANNELS" \
   start_visual_frontend:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   start_rtabmap:="$PR6_START_RTABMAP_BOOL" \
   active_modalities:="$ACTIVE_MODALITIES" \
@@ -442,6 +448,10 @@ trace_stage lidar_imu_ready
 wait_for_livox_ownership 90
 trace_stage livox_ownership_stable
 
+FASTLIO_NATIVE_FACTOR_INPUT_TOPIC=/fast_lio/native_lidar_factor
+if [[ "$ROBUSTNESS_ENABLED" == "1" && "$ROBUSTNESS_CHANNELS" == *native_lidar* ]]; then
+  FASTLIO_NATIVE_FACTOR_INPUT_TOPIC=/robustness/raw/native_lidar_factor
+fi
 setsid env \
   LOG_DIR="$RUN_DIR/fastlio" RVIZ=0 LIDAR_WS="$LIDAR_WS" \
   FASTLIO_INPUT_MODE=livox START_LIVOX_POINTCLOUD_BRIDGE=0 \
@@ -449,6 +459,7 @@ setsid env \
   DYNAMIC_CLEAN_CONFIG="${DYNAMIC_CLEAN_CONFIG:-$WS_ROOT/src/ultra_fusion_nav/uf_dynamic_observer/config/clean_gateway.yaml}" \
   DYNAMIC_CLEAN_TOPIC="${DYNAMIC_CLEAN_TOPIC:-/dynamic_observer/clean/livox}" \
   FASTLIO_NATIVE_FACTOR_EXPORT=1 \
+  FASTLIO_NATIVE_FACTOR_TOPIC="$FASTLIO_NATIVE_FACTOR_INPUT_TOPIC" \
   FASTLIO_DOWNSTREAM_BACKEND=1 \
   FASTLIO_MAP_INSERTION_MODE=backend_confirmed \
   FASTLIO_BACKEND_TRAJECTORY_FRONTEND=1 \

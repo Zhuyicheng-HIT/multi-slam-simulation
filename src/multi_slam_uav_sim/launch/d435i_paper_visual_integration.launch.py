@@ -25,6 +25,7 @@ def include(package, launch_file, arguments=None, condition=None):
 
 def generate_launch_description():
     sim_share = Path(get_package_share_directory("multi_slam_uav_sim"))
+    sensor_share = Path(get_package_share_directory("uf_sensor_pipeline"))
     reliability_share = Path(get_package_share_directory("uf_reliability"))
     relocalization_share = Path(get_package_share_directory("uf_relocalization"))
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -32,11 +33,17 @@ def generate_launch_description():
     start_rgbd_bridge = LaunchConfiguration("start_rgbd_bridge")
     start_visual_frontend = LaunchConfiguration("start_visual_frontend")
     enable_vision = LaunchConfiguration("enable_vision")
+    robustness_enabled = LaunchConfiguration("robustness_enabled")
+    robustness_profile = LaunchConfiguration("robustness_profile")
+    robustness_channels = LaunchConfiguration("robustness_channels")
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("start_rgbd_bridge", default_value="true"),
         DeclareLaunchArgument("start_visual_frontend", default_value="true"),
         DeclareLaunchArgument("enable_vision", default_value="true"),
+        DeclareLaunchArgument("robustness_enabled", default_value="false"),
+        DeclareLaunchArgument("robustness_profile", default_value="nominal"),
+        DeclareLaunchArgument("robustness_channels", default_value="[gnss]"),
         DeclareLaunchArgument(
             "active_modalities",
             default_value="[lidar, gnss, imu, optical_flow]",
@@ -125,6 +132,21 @@ def generate_launch_description():
             "d435_child_frame": "d435i_link",
             "active_modalities": LaunchConfiguration("active_modalities"),
         }),
+        Node(
+            package="uf_sensor_pipeline", executable="robustness_fault_injector",
+            name="robustness_v3_fault_injector",
+            parameters=[{
+                "use_sim_time": use_sim_time,
+                "profile_path": str(sensor_share / "config" / "robustness_v3_profiles.yaml"),
+                "profile": robustness_profile,
+                "channels": robustness_channels,
+                "native_lidar_input_topic": "/robustness/raw/native_lidar_factor",
+                "native_lidar_output_topic": "/fast_lio/native_lidar_factor",
+                "gnss_input_topic": "/mavros/global_position/raw/fix",
+                "gnss_output_topic": "/sensors/gnss/fix",
+            }],
+            condition=IfCondition(robustness_enabled), output="screen",
+        ),
         # The upstream RTAB launch declares a broad set of generic launch
         # configurations. Keep them scoped so they cannot reset arguments of
         # the visual backend or shared-map includes that follow.

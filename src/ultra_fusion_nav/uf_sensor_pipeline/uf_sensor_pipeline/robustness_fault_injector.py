@@ -17,6 +17,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
+    HistoryPolicy as QoSHistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
     qos_profile_sensor_data,
@@ -89,6 +90,7 @@ class RobustnessFaultInjector(Node):
         super().__init__("robustness_v3_fault_injector")
         self.declare_parameter("profile_path", "")
         self.declare_parameter("profile", "nominal")
+        self.declare_parameter("channels", ["native_lidar", "imu", "gnss", "optical_flow", "vision"])
         self.declare_parameter(
             "frontend_scan_request_input_topic",
             "/robustness/raw/frontend_scan_request",
@@ -109,6 +111,11 @@ class RobustnessFaultInjector(Node):
         if not profile_path:
             raise ValueError("profile_path is required")
         self.profile: FaultProfile = load_fault_profile(profile_path, profile_name)
+        requested_channels = {str(value) for value in self.get_parameter("channels").value}
+        unknown_channels = requested_channels - set(CHANNEL_TYPES)
+        if unknown_channels:
+            raise ValueError("unsupported robustness channels: " + ", ".join(sorted(unknown_channels)))
+        self.channels = requested_channels
         self.specs: Dict[str, List[FaultSpec]] = {
             channel: [
                 spec for spec in self.profile.faults if spec.channel == channel
@@ -129,16 +136,26 @@ class RobustnessFaultInjector(Node):
         self.fault_pub = self.create_publisher(FaultState, "/fault/state", 50)
         self._output_publishers = {}
         for channel, message_type in CHANNEL_TYPES.items():
+            if channel not in self.channels:
+                continue
+            channel_qos = qos_profile_sensor_data
+            if channel == "native_lidar":
+                channel_qos = QoSProfile(
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=8,
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    durability=DurabilityPolicy.VOLATILE,
+                )
             self._output_publishers[channel] = self.create_publisher(
                 message_type,
                 str(self.get_parameter(f"{channel}_output_topic").value),
-                qos_profile_sensor_data,
+                channel_qos,
             )
             self.create_subscription(
                 message_type,
                 str(self.get_parameter(f"{channel}_input_topic").value),
                 lambda msg, name=channel: self._sensor(name, msg),
-                qos_profile_sensor_data,
+                channel_qos,
             )
         self._scan_request_publisher = self.create_publisher(
             FrontendScanRequest,
@@ -157,6 +174,9 @@ class RobustnessFaultInjector(Node):
         )
         self._score_publishers = {}
         for modality in ("lidar", "imu", "gnss", "optical_flow", "vision"):
+            channel = "native_lidar" if modality == "lidar" else modality
+            if channel not in self.channels:
+                continue
             output = f"/reliability/{modality}_score"
             self._score_publishers[modality] = self.create_publisher(
                 ReliabilityScore, output, qos_profile_sensor_data
@@ -413,6 +433,8 @@ class RobustnessFaultInjector(Node):
         return output
 
     def _sensor(self, channel, msg):
+        if channel not in self.channels:
+            return
         source_ns = stamp_ns(msg.header.stamp)
         if source_ns <= 0:
             return
