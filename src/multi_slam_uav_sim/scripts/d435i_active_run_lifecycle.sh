@@ -183,7 +183,11 @@ d435i_component_command_owned() {
       ;;
     integration_overlay)
       [[ "$command" == *"ros2 launch multi_slam_uav_sim"* &&
-         "$command" == *"pr6_d435i_visual_integration.launch.py"* ]]
+         ( "$command" == *"pr6_d435i_visual_integration.launch.py"* ||
+           "$command" == *"d435i_paper_visual_integration.launch.py"* ) ]]
+      ;;
+    simulation_performance)
+      [[ "$command" == *"simulation_performance_monitor"* ]]
       ;;
     rectangle_motion)
       [[ "$command" == *"ros2 run multi_slam_uav_sim"* &&
