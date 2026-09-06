@@ -160,6 +160,10 @@ d435i_component_command_owned() {
          ( "$command" == *"$project_root/"* ||
            "$command" == *"/opt/ros/humble/bin/ros2 run multi_slam_uav_sim"* ) ]]
       ;;
+    safety_slice)
+      [[ "$command" == *"safety_slice.launch.py"* &&
+         "$command" == *"uf_safety_supervisor"* ]]
+      ;;
     visual_degradation)
       [[ "$command" == *"d435i_visual_degradation"* &&
          ( "$command" == *"$project_root/"* ||
