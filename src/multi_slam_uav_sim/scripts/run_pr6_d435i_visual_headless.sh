@@ -240,14 +240,18 @@ cleanup() {
   # The paper-mode overlay is a new launch entry point. Stop only process
   # groups recorded by this run, guarded by /proc start ticks so PID reuse or
   # unrelated simulation jobs cannot be targeted.
-  record_fastlio_native_for_cleanup
+  if declare -F record_fastlio_native_for_cleanup >/dev/null 2>&1; then
+    record_fastlio_native_for_cleanup
+  fi
   stop_recorded_groups
   # A supervisor may respawn once while its parent is terminating.  Converge
   # with two bounded, exact-run scans; each PID is still checked by command
   # ownership and start ticks in stop_recorded_groups.
   for _ in 1 2; do
     sleep 1
-    record_fastlio_native_for_cleanup
+    if declare -F record_fastlio_native_for_cleanup >/dev/null 2>&1; then
+      record_fastlio_native_for_cleanup
+    fi
     stop_recorded_groups
   done
   d435i_cleanup_run_manifests "$RUN_DIR" "$WS_ROOT" \
