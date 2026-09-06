@@ -137,3 +137,14 @@ def test_scan_request_shift_preserves_interval_and_sequence():
     assert shifted.header.stamp.nanosec == 102_000_000
     assert shifted.scan_begin_stamp.nanosec == 2_000_000
     assert shifted.scan_end_stamp.nanosec == 102_000_000
+
+
+def test_included_fault_channels_share_profile_time_origin():
+    injector = object.__new__(RobustnessFaultInjector)
+    injector.profile_started_ns = None
+    injector.started_ns = {}
+    assert injector._elapsed("gnss", 10_000_000_000) == 0.0
+    # A channel arriving later must use the same profile origin, otherwise
+    # dual faults in an included profile become sequential in replay.
+    assert injector._elapsed("native_lidar", 40_000_000_000) == 30.0
+    assert injector.started_ns["gnss"] == injector.started_ns["native_lidar"]

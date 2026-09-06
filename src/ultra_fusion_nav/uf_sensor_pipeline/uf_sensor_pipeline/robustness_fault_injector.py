@@ -122,7 +122,11 @@ class RobustnessFaultInjector(Node):
             ]
             for channel in CHANNEL_TYPES
         }
+        # All channels in one profile share one source-time origin.  Per-
+        # channel origins make included dual faults drift apart when a relay
+        # starts receiving channels at different times.
         self.started_ns: Dict[str, int] = {}
+        self.profile_started_ns = None
         self.affected: Dict[int, int] = {
             id(spec): 0 for spec in self.profile.faults
         }
@@ -193,10 +197,11 @@ class RobustnessFaultInjector(Node):
         )
 
     def _elapsed(self, channel: str, source_ns: int) -> float:
-        first = self.started_ns.get(channel)
-        if first is None or source_ns < first:
-            self.started_ns[channel] = source_ns
+        first = self.profile_started_ns
+        if first is None:
+            self.profile_started_ns = source_ns
             first = source_ns
+        self.started_ns[channel] = first
         return max(0.0, (source_ns - first) * 1.0e-9)
 
     @staticmethod
