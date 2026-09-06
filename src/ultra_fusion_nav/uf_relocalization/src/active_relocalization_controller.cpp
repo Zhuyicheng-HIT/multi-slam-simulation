@@ -440,6 +440,15 @@ private:
     status.failure_count = decision.failure_count;
     status.elapsed_s = static_cast<float>(flight_core_->state_elapsed_s(now.seconds()));
     status.reason = decision.reason + ":" + policy_reason_;
+    const auto state_name = std::string(to_string(decision.state));
+    if (state_name != last_logged_state_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "active relocalization state=%s reason=%s request_active=%d epoch_committed=%d",
+        state_name.c_str(), decision.reason.c_str(), request_active_ ? 1 : 0,
+        decision.epoch_committed ? 1 : 0);
+      last_logged_state_ = state_name;
+    }
     status_pub_->publish(status);
   }
 
@@ -471,6 +480,7 @@ private:
   bool pose_received_{false};
   bool odom_received_{false};
   bool scheduler_received_{false};
+  std::string last_logged_state_;
   bool obstacle_received_{false};
   bool result_received_{false};
   bool epoch_received_{false};
