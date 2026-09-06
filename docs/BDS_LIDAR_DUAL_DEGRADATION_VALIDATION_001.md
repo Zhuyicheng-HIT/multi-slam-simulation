@@ -104,5 +104,7 @@ were then repeated successfully with Fast DDS.
 light/medium/heavy matrix, sensor-stop boundaries and manual recovery remain
 unexecuted. Startup `/clock` failures were traced to stale concurrent trial
 processes; cleanup now scopes and converges exact run-owned processes. The
-full test suite passes when the external Livox workspace is sourced. No tag
-was created.
+full test suite passes when the external Livox workspace is sourced (`268/268`).
+The post-truth-binding smoke reached sensor and backend readiness but exited
+before a complete route, so no post-fix non-zero truth trajectory is claimed.
+The early cleanup path is guarded by `f5eac4f`. No tag was created.
