@@ -167,6 +167,22 @@ directory.
 A second post-fix synchronized dual-medium trial (`/tmp/bds-postfix-dual-sync-medium-fixed-004-1788700000`) also completed the full rectangle. GNSS was active at 46.095--58.045 s and LiDAR at 46.100--70.100 s. Fixed pre-event scoring gave all-trajectory XY RMSE 0.0178 m (P95 0.0325 m, max 0.0497 m), Z RMSE 0.0265 m (P95 0.0364 m, max 0.0757 m); concurrent DURING XY RMSE was 0.0208 m and Z RMSE 0.0273 m. No XY sample exceeded 0.20 m. Runtime recorded 691 LiDAR factors, 683 IMU factors, 622 GNSS factors, zero rollback and zero queue overflow.
 
 A third post-fix attempt (`/tmp/bds-postfix-dual-sync-medium-fixed-005-1788701000`)
-failed before `/clock` readiness and is excluded as `ENV_START_FAILURE`. The
-post-fix concurrent medium set therefore currently has 2 valid completed trials
-and 3 startup failures, not the requested 3 valid repetitions.
+failed before `/clock` readiness and is excluded as `ENV_START_FAILURE`. At
+that point the concurrent medium set had 2 valid trials; the clean retry below
+supplied the third repetition.
+
+The next clean retry (`/tmp/bds-postfix-dual-sync-medium-fixed-006-1788701500`)
+completed the rectangle and supplied the third valid synchronized repetition:
+GNSS active 48.254--60.203 s and LiDAR active 48.300--72.600 s. During the
+concurrent interval the fixed pre-event scorer reported XY RMSE 0.0143 m,
+P95 0.0288 m, max 0.0381 m and Z RMSE 0.0100 m, P95 0.0171 m, max 0.0539 m.
+No XY sample exceeded 0.20 m; rollback and queue overflow were zero.
+
+The post-fix medium repetition set is now complete at 3 valid trials: fixed
+medium-002, -004 and -006. All three completed the route with overlapping
+GNSS/LiDAR fault windows, XY DURING RMSE of 0.0223 m, 0.0208 m and 0.0143 m,
+respectively, and no XY threshold violation or rollback. A first post-fix
+LiDAR-heavy attempt (`/tmp/bds-postfix-lidar-heavy-fixed-001-1788703500`)
+did not reach factor startup: the Livox ownership stability gate timed out
+despite one publisher per topic. It is recorded as `ENV_START_FAILURE` and is
+not counted as a heavy trial.
