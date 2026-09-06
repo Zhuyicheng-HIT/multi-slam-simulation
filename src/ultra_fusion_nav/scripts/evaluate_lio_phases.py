@@ -53,6 +53,9 @@ def evaluate(estimate, truth, align_end_s, event_start_s, event_end_s, max_delta
     rotation, translation = initial_yaw_translation(est, ref, pre)
     aligned = (rotation @ est[:, 1:4].T).T + translation
     raw_error = np.linalg.norm(est[:, 1:4] - ref[:, 1:4], axis=1)
+    raw_delta = est[:, 1:4] - ref[:, 1:4]
+    raw_xy = np.linalg.norm(raw_delta[:, :2], axis=1)
+    raw_z = np.abs(raw_delta[:, 2])
     aligned_delta = aligned - ref[:, 1:4]
     xy = np.linalg.norm(aligned_delta[:, :2], axis=1)
     z = np.abs(aligned_delta[:, 2])
@@ -65,6 +68,33 @@ def evaluate(estimate, truth, align_end_s, event_start_s, event_end_s, max_delta
         name: {"xy": summary(xy[mask]), "z": summary(z[mask])}
         for name, mask in phases.items()
     }
+    # Measure drift relative to the last nominal samples; this is a diagnostic
+    # increment, not a second trajectory fit.
+    pre_recent = pre & (est[:, 0] >= align_end_s - 1.0)
+    if np.count_nonzero(pre_recent) < 1:
+        pre_recent = pre
+    nominal_error = np.mean(aligned_delta[pre_recent], axis=0)
+    additional = aligned_delta - nominal_error
+    additional_xy = np.linalg.norm(additional[:, :2], axis=1)
+    additional_z = np.abs(additional[:, 2])
+    post_event = est[:, 0] >= event_start_s
+    over_20 = np.flatnonzero(post_event & (xy > 0.20))
+    first_over_20 = float(est[over_20[0], 0] - event_start_s) if len(over_20) else None
+    if np.any(post_event):
+        post_times = est[post_event, 0]
+        under = xy[post_event] <= 0.20
+        longest_under_20 = 0.0
+        start = None
+        for t, ok in zip(post_times, under):
+            if ok and start is None:
+                start = t
+            elif not ok and start is not None:
+                longest_under_20 = max(longest_under_20, t - start)
+                start = None
+        if start is not None:
+            longest_under_20 = max(longest_under_20, post_times[-1] - start)
+    else:
+        longest_under_20 = None
     return {
         "matched_poses": int(len(pairs)),
         "alignment_samples": int(np.count_nonzero(pre)),
@@ -72,10 +102,24 @@ def evaluate(estimate, truth, align_end_s, event_start_s, event_end_s, max_delta
         "event_start_s": event_start_s,
         "event_end_s": event_end_s,
         "raw_3d": summary(raw_error),
+        "raw_xy": summary(raw_xy),
+        "raw_z": summary(raw_z),
         "fixed_initial_alignment": {
             "xy": summary(xy),
             "z": summary(z),
             "phase": phase_metrics,
+        },
+        "additional_drift_from_nominal": {
+            "xy": summary(additional_xy),
+            "z": summary(additional_z),
+            "phase": {
+                name: {"xy": summary(additional_xy[mask]), "z": summary(additional_z[mask])}
+                for name, mask in phases.items()
+            },
+        },
+        "fault_threshold_diagnostics": {
+            "first_xy_over_0_20_after_event_s": first_over_20,
+            "longest_contiguous_xy_under_0_20_after_event_s": longest_under_20,
         },
         "initial_rotation": rotation.tolist(),
         "initial_translation": translation.tolist(),
