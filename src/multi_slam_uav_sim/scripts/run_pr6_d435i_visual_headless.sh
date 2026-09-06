@@ -24,6 +24,7 @@ RUN_ID=${RUN_ID:-paper_visual_$(date +%Y%m%d_%H%M%S)}
 RUN_DIR=${RUN_DIR:-$WS_ROOT/logs/paper_visual/$RUN_ID}
 ACTIVE_FILE=${ACTIVE_FILE:-$WS_ROOT/logs/d435i_visual_slam/.active_headless}
 RUN_SMALL_RECTANGLE=${RUN_SMALL_RECTANGLE:-0}
+RELOCALIZATION_DATABASE_SAVE_ON_INSERT=${RELOCALIZATION_DATABASE_SAVE_ON_INSERT:-1}
 EXIT_AFTER_RECTANGLE=${EXIT_AFTER_RECTANGLE:-0}
 EXPECT_EXTERNAL_VISUAL_MOTION=${EXPECT_EXTERNAL_VISUAL_MOTION:-0}
 RECTANGLE_LENGTH_X=${RECTANGLE_LENGTH_X:-2.0}
@@ -389,10 +390,10 @@ if [[ -n "$BACKEND_PROCESS_PREFIX" ]]; then
     "backend_process_prefix:=$BACKEND_PROCESS_PREFIX"
   )
 fi
+# run_apm_sensor_stack owns the Gazebo D435 simulation bridge and publishes
+# the ROS image/depth pair. Do not start a second Gazebo transport bridge.
 setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   use_sim_time:=true \
-  # run_apm_sensor_stack owns the Gazebo D435 simulation bridge and publishes
-  # the ROS image/depth pair. Do not start a second Gazebo transport bridge.
   start_rgbd_bridge:=false \
   enable_vision:="$VISUAL_FRONTEND_ENABLED_BOOL" \
   start_visual_frontend:="$VISUAL_FRONTEND_ENABLED_BOOL" \
@@ -416,6 +417,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   shared_mapping_output_directory:="$RUN_DIR/shared_map" \
   database_path:="$RUN_DIR/rtabmap.db" \
   relocalization_database_path:="${RELOCALIZATION_DATABASE_PATH:-}" \
+  relocalization_database_save_on_insert:="$([[ "$RELOCALIZATION_DATABASE_SAVE_ON_INSERT" == 1 ]] && echo true || echo false)" \
   >"$RUN_DIR/integration_overlay.log" 2>&1 &
 record_pid integration_overlay "$!"
 wait_for_publisher /fusion/unified/diagnostics 60

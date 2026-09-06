@@ -46,6 +46,9 @@ def generate_launch_description():
         DeclareLaunchArgument("database_path", default_value="paper_visual.db"),
         DeclareLaunchArgument("relocalization_database_path", default_value=""),
         DeclareLaunchArgument(
+            "relocalization_database_save_on_insert", default_value="true"
+        ),
+        DeclareLaunchArgument(
             "relocalization_source_lio_pose_topic",
             default_value="/fusion/unified/frontend_activation_odom",
             description="Timestamp-aligned local pose for keyframe synchronization",
@@ -157,6 +160,10 @@ def generate_launch_description():
                 "database_path": LaunchConfiguration("relocalization_database_path"),
                 "source_lio_pose_topic": LaunchConfiguration(
                     "relocalization_source_lio_pose_topic"
+                ),
+                "database_save_on_insert": ParameterValue(
+                    LaunchConfiguration("relocalization_database_save_on_insert"),
+                    value_type=bool,
                 ),
             }], output="screen"),
         Node(
