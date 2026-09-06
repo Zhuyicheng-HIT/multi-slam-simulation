@@ -107,4 +107,9 @@ processes; cleanup now scopes and converges exact run-owned processes. The
 full test suite passes when the external Livox workspace is sourced (`268/268`).
 The post-truth-binding smoke reached sensor and backend readiness but exited
 before a complete route, so no post-fix non-zero truth trajectory is claimed.
-The early cleanup path is guarded by `f5eac4f`. No tag was created.
+The later smoke reached `/clock`, LiDAR, IMU, NativeLidarFactor and unified
+odom, but stopped at `/mavros/global_position/raw/fix`: MAVROS connected
+intermittently while the SITL telemetry request did not produce a NavSatFix.
+That is an environment/startup boundary, not a valid localization trial. The
+early cleanup path is guarded by `f5eac4f`; the full suite remains `268/268`.
+No tag was created.
