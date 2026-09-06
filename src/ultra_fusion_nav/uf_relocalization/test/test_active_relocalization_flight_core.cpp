@@ -59,6 +59,26 @@ TEST(ActiveRelocalizationFlightCore, CompletesHoldActiveEpochRecoveryResume)
   EXPECT_EQ(core.update(committed).state, ActiveFlightState::NORMAL_NAVIGATION);
 }
 
+TEST(ActiveRelocalizationFlightCore, CandidateZeroIsAValidAcceptedKeyframe)
+{
+  auto core = active_core();
+  core.update(healthy(1.0));
+  core.update(healthy(2.1));
+
+  auto accepted = healthy(3.0);
+  accepted.relocalization_success = true;
+  accepted.result_transaction_id = 44U;
+  accepted.result_candidate_id = 0U;
+  EXPECT_EQ(core.update(accepted).state, ActiveFlightState::RECOVERY_VALIDATION);
+
+  auto committed = healthy(3.1);
+  committed.epoch_applied = true;
+  committed.epoch_transaction_id = 44U;
+  committed.epoch_candidate_id = 0U;
+  committed.recovery_healthy = true;
+  EXPECT_TRUE(core.update(committed).epoch_committed);
+}
+
 TEST(ActiveRelocalizationFlightCore, MatchingEpochCannotResumeWhileRequestRemainsLatched)
 {
   auto core = active_core();

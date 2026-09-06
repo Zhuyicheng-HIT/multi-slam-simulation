@@ -63,7 +63,9 @@ ActiveFlightDecision ActiveRelocalizationFlightCore::update(const ActiveFlightEv
       break;
     case ActiveFlightState::ACTIVE_RELOCALIZATION:
       if (event.relocalization_success) {
-        if (event.result_transaction_id == 0U || event.result_candidate_id == 0U) {
+        // Transaction zero is reserved as the unset value. Keyframe zero is a
+        // valid database entry and must not be rejected as an invalid result.
+        if (event.result_transaction_id == 0U) {
           ++failure_count_;
           transition(ActiveFlightState::FAILSAFE, event.now_s, "success_identity_invalid");
         } else {

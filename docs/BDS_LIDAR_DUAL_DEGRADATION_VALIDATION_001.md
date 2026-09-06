@@ -339,3 +339,48 @@ The campaign therefore has three valid simultaneous raw MID360 total-outage
 repetitions (raw-004, raw-006 and final-003), but no successful manual
 relocalization-and-resume repetition. No visual adoption claim is made while
 the visual bridge/frontend are disabled.
+
+## Manual-Recovery Closure
+
+The failed manual smoke was traced to an interface-contract error in
+`ActiveRelocalizationFlightCore`, not to scan registration, the backend epoch,
+or the recovery gate. Relocalization keyframes use zero-based identifiers, so
+candidate `0` is valid. The controller incorrectly treated either a zero
+transaction *or* a zero candidate as an unset identity and entered
+`FAILSAFE(success_identity_invalid)` before the matching epoch could be
+observed. Transaction zero remains invalid; the implementation now rejects
+only that reserved transaction value. The regression test
+`CandidateZeroIsAValidAcceptedKeyframe` covers accepted candidate `0` and its
+matching epoch.
+
+The same real Gazebo/SITL replay was rerun with the existing archived database
+(`/tmp/bds-final-nominal-db-005-1788716175/relocalization.db`, 19 keyframes)
+and no change to fusion math, factor weights, HXY, Z, Dynamic, or the
+relocalization algorithm. Run
+`/tmp/bds-manual-recovery-real-004-1788720267` recorded the following ROS-time
+sequence:
+
+| ROS time (s) | Event |
+| ---: | --- |
+| 120.714 | bounded `manual_control` request accepted (lease 5 s) and controller enters `HOLD` |
+| 121.081 | controller enters `ACTIVE_RELOCALIZATION` |
+| 121.700 | candidate `0` accepted after the three-query consistency gate |
+| 121.700 | controller enters `RECOVERY_VALIDATION` |
+| 122.200 | backend applies transaction `120714000000`, candidate `0` epoch |
+| 125.616 | recovery gate passes after the lease releases; controller enters `RESUME` |
+| 126.313 | controller returns to `NORMAL_NAVIGATION` |
+
+An independent rclpy graph probe during the replay found exactly one
+`/relocalization/request` publisher and exactly one automatic
+`/mavros/setpoint_position/local` publisher; `/relocalization/request_intent`
+had its expected two intent sources and one arbiter subscriber. This closes the
+specific candidate-zero manual-recovery failure. It does **not** convert the
+total MID360 outage into a pass: the three raw LiDAR+IMU-loss repetitions still
+lose estimator progress with repeated ill-conditioned rollbacks, and the
+heavy dual BDS+LiDAR profile still violates the 0.20 m horizontal criterion.
+
+The current complete test suite is 269 tests, 0 errors, 0 failures and 0
+skipped after a 22/22-package build; the focused relocalization package has 9
+CTest groups passing. Shell, Python AST, YAML, XML and `git diff --check`
+validation passed. `DO_NOT_PROMOTE` remains the campaign conclusion for the
+unresolved heavy dual-degradation and total MID360-outage behavior.
