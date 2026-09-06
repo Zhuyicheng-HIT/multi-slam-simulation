@@ -165,3 +165,8 @@ overflow. The raw evidence and phase-scored trajectory remain under the run
 directory.
 
 A second post-fix synchronized dual-medium trial (`/tmp/bds-postfix-dual-sync-medium-fixed-004-1788700000`) also completed the full rectangle. GNSS was active at 46.095--58.045 s and LiDAR at 46.100--70.100 s. Fixed pre-event scoring gave all-trajectory XY RMSE 0.0178 m (P95 0.0325 m, max 0.0497 m), Z RMSE 0.0265 m (P95 0.0364 m, max 0.0757 m); concurrent DURING XY RMSE was 0.0208 m and Z RMSE 0.0273 m. No XY sample exceeded 0.20 m. Runtime recorded 691 LiDAR factors, 683 IMU factors, 622 GNSS factors, zero rollback and zero queue overflow.
+
+A third post-fix attempt (`/tmp/bds-postfix-dual-sync-medium-fixed-005-1788701000`)
+failed before `/clock` readiness and is excluded as `ENV_START_FAILURE`. The
+post-fix concurrent medium set therefore currently has 2 valid completed trials
+and 3 startup failures, not the requested 3 valid repetitions.
