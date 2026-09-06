@@ -147,12 +147,19 @@ Before the injector contract correction, a third post-fix run
 4/4 waypoints, LAND and disarm. Its trajectory had 521 matched poses and
 legacy whole-trajectory ATE RMSE 0.02035 m (max 0.05535 m; RPE translation
 RMSE 0.01951 m). GNSS was active at 46.987--58.937 s and LiDAR dropout at
-56.300--80.200 s, now with the intended shared origin (12.0 s windows; overlap
-is the configured interval after the common start). Runtime recorded 686
+56.300--80.200 s, leaving only about 2.64 s of overlap. Runtime recorded 686
 native LiDAR and 685 IMU factors, 611 GNSS factors, 685 flow attempts/150
 enabled, zero optimization rejects/rollbacks and zero worker queue overflow.
-Its GNSS and LiDAR windows were still channel-relative (GNSS 46.987--58.937 s;
-LiDAR 56.300--80.200 s), so it is not concurrent dual evidence. The subsequent
-`22be899` fix synchronizes included channels; a fresh post-fix concurrent
-campaign remains pending after the next two startup failures. The raw evidence
-and phase-scored trajectory remain under the run directory.
+It is not concurrent dual evidence.
+
+After the `22be899` shared-origin fix, the first valid synchronized trial
+(`/tmp/bds-postfix-dual-sync-medium-fixed-002-1788697400`) completed takeoff,
+4/4 waypoints, LAND and disarm. GNSS was active at 45.668--57.554 s and LiDAR
+dropout at 45.700--69.700 s, providing the intended concurrent 12 s interval.
+The fixed pre-event scorer reported XY RMSE 0.0189 m (P95 0.0352 m, max
+0.0581 m) and Z RMSE 0.0242 m (P95 0.0343 m, max 0.0513 m). During the
+concurrent interval, XY RMSE was 0.0223 m and Z RMSE was 0.0223 m; no aligned
+XY sample exceeded 0.20 m. Runtime recorded 684 LiDAR, 683 IMU, 448 GNSS and
+683 flow attempts, with zero optimization rejection, rollback or worker queue
+overflow. The raw evidence and phase-scored trajectory remain under the run
+directory.
