@@ -4,7 +4,7 @@
 
 - Branch: `feat/bds-lidar-dual-degradation-v1`
 - Frozen algorithm baseline: `02935070bf7177efe6b07d01db9e2e6beac6f0dc`
-- Validation commit: `6a51791e4b24e5f061b60de04ce706b239668e0e`
+- Validation commits: `6a51791e`, `570b129`, `191b80b`
 - External Livox workspace: `$HOME/multi-slam-deps/mid360_ws`
 - Runs: `/tmp/bds-nominal-006-1788674481`, `/tmp/bds-nominal-007-1788674849`
 
@@ -37,19 +37,32 @@ zero optimization errors/rejections/rollbacks, and feature repeatability
 median about 99.8%. The route logs contain the actual climb confirmation,
 mission phases, LAND command, and confirmed motor disarm.
 
+## Concurrent BDS + LiDAR Replay Runs
+
+Three valid `lidar_medium` plus 15 s GNSS outage trials completed the Gazebo/SITL
+small rectangle (takeoff, 4/4 waypoints, LAND, disarm) with zero rollback,
+optimization rejection and queue overflow:
+
+| Run | ATE RMSE (m) | RPE RMSE (m) | LiDAR | IMU | GNSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| dual-medium-007 | 1.3676 | 0.0387 | 626 | 625 | 237 |
+| dual-medium-009 | 1.3494 | 0.0411 | 624 | 623 | 211 |
+| dual-medium-011 | 1.3549 | 0.0406 | 614 | 613 | 213 |
+
+Two valid `lidar_light` trials also completed (ATE 1.3700 m and 1.3639 m);
+one additional attempt failed before `/clock` and is excluded.
+
 ## Fault Profiles
 
 The repository's deterministic `robustness_v3_profiles.yaml` defines the
 required `lidar_light`, `lidar_medium`, `lidar_heavy`,
 `gnss_denial_light/medium/heavy`, and `dual_lidar_gnss_medium` profiles. The
 profile parser/injector tests pass (9/9). However, the formal PR6 Gazebo launch
-currently includes `sensor_pipeline.launch.py` without enabling the robustness
-overlay or remapping its `/robustness/raw/*` inputs. Starting the injector on
-top of the production topics would create duplicate publishers and violate the
-one-observation/one-factor contract. Therefore no live BDS+LiDAR degraded run
-is claimed yet. A native-factor overlay needs an explicit single-publisher
-route (LIO output to `/robustness/raw/native_lidar_factor`, injector output to
-the backend topic), which the production launch does not currently expose.
+The native-factor replay route is explicit and single-publisher: FAST-LIO emits
+`/robustness/raw/native_lidar_factor`, the selected-channel injector emits
+`/fast_lio/native_lidar_factor`, and the backend consumes only the latter.
+Remaining light/heavy, LiDAR-stop, total-MID360-fault and manual recovery trials
+remain pending.
 
 ## Environment Findings
 
@@ -71,7 +84,6 @@ were then repeated successfully with Fast DDS.
 
 ## Status
 
-`DO_NOT_PROMOTE`: nominal and GNSS-only runs are repeatable, but the requested
-concurrent BDS/LiDAR matrix, LiDAR-stop/MID360-total-fault boundary, and manual
-recovery run remain unexecuted until the existing robustness injector is wired
-into a production-safe replay path. No tag was created.
+`DO_NOT_PROMOTE`: medium concurrent trials are repeatable, but the complete
+light/medium/heavy matrix, sensor-stop boundaries and manual recovery remain
+unexecuted. No tag was created.
