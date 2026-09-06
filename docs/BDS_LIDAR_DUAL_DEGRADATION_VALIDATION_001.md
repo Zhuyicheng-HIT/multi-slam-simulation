@@ -47,10 +47,14 @@ MID360 direct Livox bridge, and the guided small rectangle. Each run used a
 unique `ROS_DOMAIN_ID`, and `rmw_fastrtps_cpp` because the restored host's
 CycloneDDS participant limit was exhausted by stale processes.
 
-| Run | ROS domain | Result | ATE RMSE (m) | RPE translation RMSE (m) | Native LiDAR | IMU factors | GNSS factors | Rollbacks |
+| Run | ROS domain | Result | Legacy ATE RMSE (invalid) | RPE translation RMSE (m) | Native LiDAR | IMU factors | GNSS factors | Rollbacks |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | nominal-006 | 75 | takeoff, 4/4 waypoints, LAND, disarm | 1.3705 | 0.0368 | 619 | 618 | 310 | 0 |
 | nominal-007 | 76 | takeoff, 4/4 waypoints, LAND, disarm | 1.3645 | 0.0389 | 621 | 620 | 293 | 0 |
+
+The two legacy ATE values above were produced before the truth-bridge world
+selection fix and are invalid absolute-error measurements; they must not be
+compared with the post-fix phase scores.
 
 GNSS-outage profile (15 s outage beginning at source time 20 s) was run three
 times. Two valid trials completed the route; one attempt was an
@@ -120,17 +124,16 @@ were then repeated successfully with Fast DDS.
 
 ## Status
 
-`DO_NOT_PROMOTE`: the synchronized light, medium and heavy dual-degradation
-sets now each have three valid completed Gazebo/SITL trials. Light and medium
-remain below 0.20 m XY during the joint fault; heavy is not compliant because
-all three repetitions contain a horizontal threshold crossing after roughly
-0.9--10.4 s without both GNSS and NativeLidarFactor. One nominal post-truth
-run is valid; additional nominal repetitions are still needed for a complete
-baseline set. Sensor-stop trials are not valid because the current launch
-does not connect the injector's IMU input. Manual relocalization and mission
-recovery are covered by three real dual-profile repetitions below. Visual
-rates/factors are unmeasured because the visual bridge/frontend were
-explicitly disabled.
+`DO_NOT_PROMOTE`: the valid matrix now contains three repetitions for nominal,
+GNSS-medium, LiDAR-medium/heavy, dual-light/medium/heavy, cloud-only stop and
+total MID360 stop. Nominal, GNSS-medium, LiDAR-medium, dual-light and
+dual-medium remain below 0.20 m XY during their fault windows. LiDAR-heavy
+has two of three runs with a horizontal threshold crossing; dual-heavy has a
+crossing in all three runs. Cloud-only stop passes, while total MID360 loss
+repeatedly causes ill-conditioned rollback and loss of estimator progress.
+Manual relocalization and mission recovery are covered by three successful
+dual-profile repetitions below. Visual rates/factors are unmeasured because
+the visual bridge/frontend were explicitly disabled.
 Startup `/clock` failures were retained as `ENV_START_FAILURE` evidence and
 were not counted as algorithm trials. The full test suite passes when the
 external Livox workspace is sourced (`269/269`). No remote upload was performed.
@@ -267,7 +270,7 @@ unmeasured in this campaign and must not be inferred from these runs.
 ## Final Verification
 
 The post-fix server verification completed a full 22/22-package build and
-268/268 tests (0 errors, 0 failures, 0 skipped). Shell syntax and
+269/269 tests (0 errors, 0 failures, 0 skipped). Shell syntax and
 `git diff --check` passed. The changes in this addendum are limited to
 test-chain launch routing, raw CustomMsg fault injection, profiles and their
 tests; no estimator, fusion weight, HXY, Z-axis, Dynamic or relocalization
@@ -275,12 +278,12 @@ algorithm was changed.
 
 ## Status
 
-`DO_NOT_PROMOTE`: nominal, GNSS-medium, LiDAR-medium, dual-light and
-dual-heavy have valid repetitions, but dual-heavy exceeds the 0.20 m XY
-P95/max criterion, simultaneous IMU+LiDAR loss drives repeated ill-conditioned
-rollback, visual/manual-relocalization coverage is absent, and the requested
-full matrix repetitions are not all available. Intermittent `/clock` startup
-failures are retained as `ENV_START_FAILURE` and excluded from metric trials.
+`DO_NOT_PROMOTE`: the complete valid replay matrix is closed, but dual-heavy
+exceeds the 0.20 m XY P95/max criterion and simultaneous IMU+LiDAR loss drives
+repeated ill-conditioned rollback. Intermittent `/clock` startup failures are
+retained as `ENV_START_FAILURE` and excluded from metric trials. Visual factors
+remain unavailable by explicit configuration; this report makes no visual
+performance claim.
 
 ## Continued Validation
 
@@ -409,3 +412,55 @@ skipped after a 22/22-package build; the focused relocalization package has 9
 CTest groups passing. Shell, Python AST, YAML, XML and `git diff --check`
 validation passed. `DO_NOT_PROMOTE` remains the campaign conclusion for the
 unresolved heavy dual-degradation and total MID360-outage behavior.
+
+## Final Matrix Closure and Coordinate/Time Audit
+
+The final matrix uses three valid repetitions for each requested operational
+condition. Nominal is represented by the post-truth-fix smoke plus the two
+explicit-database runs; GNSS-medium, LiDAR-medium, LiDAR-heavy,
+dual-light/medium/heavy, cloud-only stop and total MID360 stop each have three
+valid runs. Startup failures are retained separately as `ENV_START_FAILURE`
+and are never counted as algorithm trials.
+
+The cloud-only set is independently reproducible. The final run
+`/tmp/bds-final-cloud-only-008-1788722997` recorded a 60.001 s ROS interval,
+zero queue overflow, zero optimization error/reject/rollback, 489 GNSS
+factors, 489 IMU factors and 377 received/376 formed native LiDAR factors
+before the source outage. With one pre-event alignment, its phase scores were:
+
+| Phase | XY RMSE/P95/max (m) | Z RMSE/P95/max (m) |
+| --- | --- | --- |
+| Before | 0.0115 / 0.0163 / 0.0332 | 0.0040 / 0.0083 / 0.0110 |
+| During cloud stop | 0.0165 / 0.0196 / 0.0202 | 0.0057 / 0.0083 / 0.0088 |
+| After | 0.0190 / 0.0319 / 0.0489 | 0.0145 / 0.0207 / 0.0257 |
+
+The other two cloud-only runs have the same no-rollback outcome and remain
+below 0.20 m. In contrast, the three total MID360-stop runs all verify both
+LiDAR and IMU fault events and then accumulate `ill_conditioned_latest_information`
+rejections/rollbacks while committed-state progress collapses. This is a
+failure boundary, not a missing-data claim.
+
+All post-truth-fix phase scores use `evaluate_lio_phases.py` with exactly one
+yaw-plus-translation transform fitted from samples before the event. No truth
+is sent to the online estimator and no post-event refit is used. The phase
+runner records `event_time_basis=valid_source_header_stamp_only`; the final
+cloud-only run reports no invalid header timestamps. The approximately 0.198 m
+initial Z translation is a static origin alignment offset; the fixed-alignment
+Z error remains in the centimetre range and is not a drift claim.
+
+Representative runtime sensor state is consistent with the phase scores:
+nominal runs form roughly 750 native-LiDAR and IMU factors with about 375 GNSS
+factors; cloud-only `-008` retains IMU/GNSS and flow attempts while native
+LiDAR stops at the fault boundary; total-stop runs retain only the pre-fault
+factor history before the estimator becomes ill-conditioned. RGB, depth and
+camera-info streams were intentionally disabled (`VISUAL_BRIDGE_ENABLED=0`,
+`VISUAL_FRONTEND_ENABLED=0`, `PR6_START_RTABMAP=0`), so visual adoption is
+`DATA_UNAVAILABLE`, not zero-performance evidence.
+
+The resulting engineering conclusion is unchanged but now fully evidenced:
+the current system is nominally stable and handles medium/light degradation,
+cloud-only LiDAR loss, and manual recovery, but it does not satisfy the 20 cm
+criterion under repeated heavy joint GNSS+LiDAR degradation and cannot maintain
+estimator progress when both raw MID360 LiDAR and IMU disappear. No estimator,
+fusion weight, HXY, Z-axis, Dynamic or relocalization algorithm change was
+made for this validation closure.
