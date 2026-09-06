@@ -96,8 +96,9 @@ profile parser/injector tests pass (9/9). However, the formal PR6 Gazebo launch
 The native-factor replay route is explicit and single-publisher: FAST-LIO emits
 `/robustness/raw/native_lidar_factor`, the selected-channel injector emits
 `/fast_lio/native_lidar_factor`, and the backend consumes only the latter.
-Remaining light/heavy, LiDAR-stop, total-MID360-fault and manual recovery trials
-remain pending.
+The remaining light/heavy, LiDAR-stop and total-MID360-fault boundaries are
+covered below. Manual recovery is covered by three real dual-profile
+repetitions in the final section.
 
 ## Environment Findings
 
@@ -111,7 +112,7 @@ were then repeated successfully with Fast DDS.
 ## Verification
 
 - Full `colcon build --symlink-install`: 22/22 packages.
-- Full `colcon test --return-code-on-test-failure`: 268 tests, 0 errors,
+- Full `colcon test --return-code-on-test-failure`: 269 tests, 0 errors,
   0 failures, 0 skipped.
 - Robustness profile tests: 9/9 passed.
 - Shell syntax and `git diff --check`: passed.
@@ -127,11 +128,12 @@ all three repetitions contain a horizontal threshold crossing after roughly
 run is valid; additional nominal repetitions are still needed for a complete
 baseline set. Sensor-stop trials are not valid because the current launch
 does not connect the injector's IMU input. Manual relocalization and mission
-recovery were not executed in this campaign. Visual rates/factors are
-unmeasured because the visual bridge/frontend were explicitly disabled.
+recovery are covered by three real dual-profile repetitions below. Visual
+rates/factors are unmeasured because the visual bridge/frontend were
+explicitly disabled.
 Startup `/clock` failures were retained as `ENV_START_FAILURE` evidence and
 were not counted as algorithm trials. The full test suite passes when the
-external Livox workspace is sourced (`268/268`). No tag was created.
+external Livox workspace is sourced (`269/269`). No remote upload was performed.
 
 The corrected concurrent-profile attempt
 (`/tmp/bds-postfix-dual-sync-medium-001-1788694000`) stopped at backend launch
@@ -336,9 +338,10 @@ resume. This is a reproduced recovery failure, not evidence of successful
 relocalization. The run was cleaned without leaving the project stack running.
 
 The campaign therefore has three valid simultaneous raw MID360 total-outage
-repetitions (raw-004, raw-006 and final-003), but no successful manual
-relocalization-and-resume repetition. No visual adoption claim is made while
-the visual bridge/frontend are disabled.
+repetitions (raw-004, raw-006 and final-003), all showing estimator progress
+loss with repeated ill-conditioned latest-information rejection. It also has
+three successful manual recovery repetitions in the dual LiDAR+GNSS profile.
+No visual adoption claim is made while the visual bridge/frontend were disabled.
 
 ## Manual-Recovery Closure
 
@@ -378,6 +381,28 @@ specific candidate-zero manual-recovery failure. It does **not** convert the
 total MID360 outage into a pass: the three raw LiDAR+IMU-loss repetitions still
 lose estimator progress with repeated ill-conditioned rollbacks, and the
 heavy dual BDS+LiDAR profile still violates the 0.20 m horizontal criterion.
+
+### Real Dual-Profile Manual Recovery Repetitions
+
+The following runs used the installed canonical PR6 launcher, independent ROS
+domains, the archived 19-keyframe database, and the existing dual
+LiDAR+GNSS-medium fault profile. The request was sent through the manual
+control service; the Request Arbiter remained the producer of
+`/relocalization/request`, and the active controller required candidate
+consistency, epoch application and recovery-gate dwell before resuming.
+
+| Run | ROS domain | Recovery evidence | Mission result | Offline ATE |
+| --- | ---: | --- | --- | ---: |
+| `dual-003` | 191 | candidate 7, epoch transaction `43798000000`, recovery gate passed, `NORMAL_NAVIGATION` | rectangle waypoints 1--4, LAND and disarm | not generated |
+| `dual-004` | 192 | candidate 2, epoch transaction `48308000000`, recovery gate passed, `NORMAL_NAVIGATION` | rectangle waypoints 1--4, LAND and disarm | RMSE 0.0194 m, max 0.0380 m |
+| `dual-005` | 193 | candidate 4, epoch transaction `40690000000`, recovery gate passed, `NORMAL_NAVIGATION` | rectangle waypoints 1--4, LAND and disarm | RMSE 0.0182 m, max 0.0436 m |
+
+All three runs accepted the bounded manual request and completed the mission
+after recovery. Their runtime evidence contains no optimization error,
+integrity rejection, rollback or queue overflow; the visual bridge/frontend
+was disabled, so these are not visual-fusion results. Run `dual-004` also had
+an independent graph probe confirming exactly one request-arbiter publisher
+and one automatic MAVROS setpoint publisher.
 
 The current complete test suite is 269 tests, 0 errors, 0 failures and 0
 skipped after a 22/22-package build; the focused relocalization package has 9
