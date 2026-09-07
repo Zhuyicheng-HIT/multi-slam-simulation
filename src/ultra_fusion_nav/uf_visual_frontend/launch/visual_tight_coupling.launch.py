@@ -55,6 +55,10 @@ def generate_launch_description():
         DeclareLaunchArgument("backend_process_prefix", default_value=""),
         DeclareLaunchArgument("backend_numeric_threads", default_value="1"),
         DeclareLaunchArgument(
+            "native_lidar_factor_enabled", default_value="true",
+            description="Keep false only for source-isolation validation",
+        ),
+        DeclareLaunchArgument(
             "external_nav_output_topic",
             default_value="/fusion/runtime_external_nav",
         ),
@@ -172,9 +176,15 @@ def generate_launch_description():
                 # Paper mode requires the Stage3 native-factor contract. Keep
                 # this explicit so a stale FAST-LIO overlay cannot silently
                 # fall back to paired /Odometry poses.
-                "native_lidar_factor_enabled": True,
+                "native_lidar_factor_enabled": ParameterValue(
+                    LaunchConfiguration("native_lidar_factor_enabled"),
+                    value_type=bool,
+                ),
                 "input_trigger_mode": "native_factor",
-                "frontend_scan_prediction_enabled": True,
+                "frontend_scan_prediction_enabled": ParameterValue(
+                    LaunchConfiguration("native_lidar_factor_enabled"),
+                    value_type=bool,
+                ),
                 "allow_lio_pose_fallback": False,
                 "imu_factor_enabled": True,
             }],

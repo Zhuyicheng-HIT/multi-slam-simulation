@@ -104,6 +104,7 @@ VISUAL_REQUIRE_TIME_LOCK=${VISUAL_REQUIRE_TIME_LOCK:-0}
 PERFORMANCE_PROFILING_ENABLED=${PERFORMANCE_PROFILING_ENABLED:-0}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
+NATIVE_LIDAR_FACTOR_ENABLED=${NATIVE_LIDAR_FACTOR_ENABLED:-1}
 case "$VISUAL_CANDIDATE_QUALITY_ENABLED" in
   0) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=false ;;
   1) VISUAL_CANDIDATE_QUALITY_ENABLED_BOOL=true ;;
@@ -128,6 +129,40 @@ if [[ ! "$BACKEND_NUMERIC_THREADS" =~ ^[1-9][0-9]*$ ]]; then
   printf 'BACKEND_NUMERIC_THREADS must be a positive integer.\n' >&2
   exit 2
 fi
+case "$NATIVE_LIDAR_FACTOR_ENABLED" in
+  0) NATIVE_LIDAR_FACTOR_ENABLED_BOOL=false ;;
+  1) NATIVE_LIDAR_FACTOR_ENABLED_BOOL=true ;;
+  *) printf 'NATIVE_LIDAR_FACTOR_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+# In source-isolation runs the backend still needs timestamped FAST-LIO poses
+# to open transactions, although those poses must not become LiDAR factors.
+# Downstream FAST-LIO disables /Odometry by default, so expose its existing
+# diagnostic stream only when the native factor is disabled.  The backend's
+# allow_lio_pose_fallback=false contract keeps this stream anchor-only.
+FASTLIO_DIAGNOSTIC_ODOMETRY=${FASTLIO_DIAGNOSTIC_ODOMETRY:-$((1 - NATIVE_LIDAR_FACTOR_ENABLED))}
+case "$FASTLIO_DIAGNOSTIC_ODOMETRY" in
+  0|1) ;;
+  *) printf 'FASTLIO_DIAGNOSTIC_ODOMETRY must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+if [[ "$NATIVE_LIDAR_FACTOR_ENABLED" == 1 ]]; then
+  FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE=${FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE:-1}
+  FASTLIO_MAP_INSERTION_MODE=${FASTLIO_MAP_INSERTION_MODE:-backend_confirmed}
+else
+  # A backend-owned FAST-LIO trajectory requires scan predictions triggered
+  # by native factors.  Source-isolation runs intentionally have no such
+  # factor, so keep FAST-LIO self-contained and use /Odometry only as the
+  # backend transaction clock/initial-frame anchor.
+  FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE=${FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE:-0}
+  FASTLIO_MAP_INSERTION_MODE=${FASTLIO_MAP_INSERTION_MODE:-fast_lio_posterior}
+fi
+case "$FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE" in
+  0|1) ;;
+  *) printf 'FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$FASTLIO_MAP_INSERTION_MODE" in
+  fast_lio_posterior|backend_confirmed) ;;
+  *) printf 'FASTLIO_MAP_INSERTION_MODE must be fast_lio_posterior or backend_confirmed.\n' >&2; exit 2 ;;
+esac
 BACKEND_PROCESS_PREFIX=""
 if [[ -n "$BACKEND_CPUSET" ]]; then
   if ! taskset --cpu-list "$BACKEND_CPUSET" true 2>/dev/null; then
@@ -419,6 +454,7 @@ setsid ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py \
   barometer_topic:="${BAROMETER_TOPIC:-/sim/barometer/pressure}" \
   "${backend_prefix_launch_args[@]}" \
   backend_numeric_threads:="$BACKEND_NUMERIC_THREADS" \
+  native_lidar_factor_enabled:="$NATIVE_LIDAR_FACTOR_ENABLED_BOOL" \
   shared_mapping_enabled:="$SHARED_MAPPING_ENABLED" \
   shared_mapping_rgbd_enabled:="$SHARED_MAPPING_RGBD_ENABLED" \
   shared_mapping_output_directory:="$RUN_DIR/shared_map" \
@@ -456,8 +492,9 @@ setsid env \
   FASTLIO_NATIVE_FACTOR_EXPORT=1 \
   FASTLIO_NATIVE_FACTOR_TOPIC="$FASTLIO_NATIVE_FACTOR_INPUT_TOPIC" \
   FASTLIO_DOWNSTREAM_BACKEND=1 \
-  FASTLIO_MAP_INSERTION_MODE=backend_confirmed \
-  FASTLIO_BACKEND_TRAJECTORY_FRONTEND=1 \
+  FASTLIO_DIAGNOSTIC_ODOMETRY="$FASTLIO_DIAGNOSTIC_ODOMETRY" \
+  FASTLIO_MAP_INSERTION_MODE="$FASTLIO_MAP_INSERTION_MODE" \
+  FASTLIO_BACKEND_TRAJECTORY_FRONTEND="$FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE" \
   bash "$PKG_SHARE/scripts/run_mid360_fastlio_mapping.sh" \
   >"$RUN_DIR/fastlio_supervisor.log" 2>&1 &
 record_pid fastlio_supervisor "$!"
@@ -514,8 +551,13 @@ trace_stage native_lidar_factor_ready
 # again after its readiness topic so cleanup owns the actual child PID.
 record_lio_adapters
 record_fastlio_native
-printf 'input_trigger=native_factor\nnative_factor=true\nlio_pose_fallback=false\n' \
-  >"$RUN_DIR/backend_runtime_mode.env"
+if [[ "$NATIVE_LIDAR_FACTOR_ENABLED" == 1 ]]; then
+  printf 'input_trigger=native_factor\nnative_factor=true\nlio_pose_role=ignored\nlio_pose_fallback=false\n' \
+    >"$RUN_DIR/backend_runtime_mode.env"
+else
+  printf 'input_trigger=lio_pair\nnative_factor=false\nlio_pose_role=transaction_clock_and_initial_frame_anchor\nlio_pose_fallback=false\n' \
+    >"$RUN_DIR/backend_runtime_mode.env"
+fi
 if ! wait_for_topic /fusion/unified/odom 120; then
   timeout 10s ros2 topic echo /fusion/unified/diagnostics \
     --no-daemon --spin-time 7.0 --once --full-length \

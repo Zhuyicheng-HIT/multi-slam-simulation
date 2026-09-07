@@ -100,6 +100,9 @@ def generate_launch_description():
         DeclareLaunchArgument("backend_process_prefix", default_value=""),
         DeclareLaunchArgument("backend_numeric_threads", default_value="1"),
         DeclareLaunchArgument(
+            "native_lidar_factor_enabled", default_value="true"
+        ),
+        DeclareLaunchArgument(
             "barometer_topic", default_value="/sim/barometer/pressure"
         ),
         DeclareLaunchArgument("shared_mapping_enabled", default_value="false"),
@@ -253,6 +256,9 @@ def generate_launch_description():
             ),
             "backend_numeric_threads": LaunchConfiguration(
                 "backend_numeric_threads"
+            ),
+            "native_lidar_factor_enabled": LaunchConfiguration(
+                "native_lidar_factor_enabled"
             ),
             "camera_time_offset_s": LaunchConfiguration("camera_time_offset_s"),
             "camera_time_calibration_enabled": LaunchConfiguration(

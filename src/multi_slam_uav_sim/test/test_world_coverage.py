@@ -40,6 +40,10 @@ VISUAL_FRONTEND_CONFIG = (
     REPO_ROOT / "src" / "ultra_fusion_nav" / "uf_visual_frontend"
     / "config" / "visual_frontend.yaml"
 )
+VISUAL_TIGHT_COUPLING_LAUNCH = (
+    REPO_ROOT / "src" / "ultra_fusion_nav" / "uf_visual_frontend"
+    / "launch" / "visual_tight_coupling.launch.py"
+)
 SHARED_MAPPING_CONFIG = (
     REPO_ROOT / "src" / "ultra_fusion_nav" / "uf_shared_mapping"
     / "config" / "shared_mapping.yaml"
@@ -533,6 +537,27 @@ def test_visual_runner_omits_an_empty_relocalization_database_launch_argument():
     assert 'if [[ -n "${RELOCALIZATION_DATABASE_PATH:-}" ]]; then' in runner
     assert '"${relocalization_database_launch_args[@]}"' in runner
     assert 'relocalization_database_path:="${RELOCALIZATION_DATABASE_PATH:-}"' not in runner
+
+
+def test_three_source_isolation_switch_defaults_to_native_lidar_enabled():
+    runner = SIM_VISUAL_RUNNER.read_text(encoding="utf-8")
+    integration = SIM_VISUAL_LAUNCH.read_text(encoding="utf-8")
+    coupling = VISUAL_TIGHT_COUPLING_LAUNCH.read_text(encoding="utf-8")
+    assert "NATIVE_LIDAR_FACTOR_ENABLED=${NATIVE_LIDAR_FACTOR_ENABLED:-1}" in runner
+    assert 'native_lidar_factor_enabled:="$NATIVE_LIDAR_FACTOR_ENABLED_BOOL"' in runner
+    assert (
+        "FASTLIO_DIAGNOSTIC_ODOMETRY=${FASTLIO_DIAGNOSTIC_ODOMETRY:-$((1 - NATIVE_LIDAR_FACTOR_ENABLED))}"
+        in runner
+    )
+    assert 'FASTLIO_DIAGNOSTIC_ODOMETRY="$FASTLIO_DIAGNOSTIC_ODOMETRY"' in runner
+    assert "FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE=${FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE:-0}" in runner
+    assert "FASTLIO_MAP_INSERTION_MODE=${FASTLIO_MAP_INSERTION_MODE:-fast_lio_posterior}" in runner
+    assert 'FASTLIO_BACKEND_TRAJECTORY_FRONTEND="$FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE"' in runner
+    assert "lio_pose_role=transaction_clock_and_initial_frame_anchor" in runner
+    assert '"native_lidar_factor_enabled", default_value="true"' in integration
+    assert '"native_lidar_factor_enabled", default_value="true"' in coupling
+    assert 'LaunchConfiguration("native_lidar_factor_enabled")' in coupling
+    assert coupling.count('LaunchConfiguration("native_lidar_factor_enabled")') >= 2
 
 
 def test_figure_eight_runner_keeps_single_pass_geometry_and_yaw_contract():

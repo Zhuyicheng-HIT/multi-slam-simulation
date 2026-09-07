@@ -10,8 +10,10 @@ owned_pid=""
 wrong_pid=""
 manifest_pid=""
 group_leader_pid=""
+mixed_group_leader_pid=""
 cleanup_test() {
-  for pid in "$owned_pid" "$wrong_pid" "$manifest_pid" "$group_leader_pid"; do
+  for pid in "$owned_pid" "$wrong_pid" "$manifest_pid" "$group_leader_pid" \
+      "$mixed_group_leader_pid"; do
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       kill -KILL "$pid" 2>/dev/null || true
     fi
@@ -62,7 +64,7 @@ kill -TERM "$owned_pid"
 wait "$owned_pid" 2>/dev/null || true
 owned_pid=""
 
-setsid sleep 30 &
+setsid sleep 90 &
 wrong_pid=$!
 wrong_ticks=$(d435i_process_start_ticks "$wrong_pid")
 if d435i_active_pid_owned "$wrong_pid" "$project_root" "$wrong_ticks"; then
@@ -120,6 +122,36 @@ if kill -0 "$group_leader_pid" 2>/dev/null; then
   exit 1
 fi
 group_leader_pid=""
+
+# A ros2 launch process owns children whose executable names do not match the
+# integration_overlay component. The verified leader and PGID must be enough
+# to clean this normal mixed-command process group.
+mixed_dir="$project_root/logs/d435i_visual_slam/mixed_group_cleanup"
+mkdir -p "$mixed_dir"
+mixed_name="$project_root/install/ros2 launch multi_slam_uav_sim d435i_paper_visual_integration.launch.py"
+setsid env GROUP_NAME="$mixed_name" bash -c \
+  'exec -a "$GROUP_NAME" bash -c '\''exec -a unrelated_child sleep 30 & wait'\''' &
+mixed_group_leader_pid=$!
+for _ in {1..20}; do
+  mixed_worker_pid=$(pgrep -P "$mixed_group_leader_pid" | head -n 1 || true)
+  [[ "$mixed_worker_pid" =~ ^[0-9]+$ ]] && break
+  sleep 0.1
+done
+[[ "$mixed_worker_pid" =~ ^[0-9]+$ ]]
+mixed_ticks=$(d435i_process_start_ticks "$mixed_group_leader_pid")
+printf 'component\tpid\tprocess_group\tstart_ticks\nintegration_overlay\t%s\t%s\t%s\n' \
+  "$mixed_group_leader_pid" "$mixed_group_leader_pid" "$mixed_ticks" \
+  >"$mixed_dir/pids.tsv"
+d435i_cleanup_run_manifests "$mixed_dir" "$project_root" "$mixed_dir/cleanup.log"
+for _ in {1..20}; do
+  if ! kill -0 "$mixed_group_leader_pid" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if kill -0 "$mixed_group_leader_pid" 2>/dev/null; then
+  printf 'verified mixed-command launcher group survived cleanup\n' >&2
+  exit 1
+fi
+mixed_group_leader_pid=""
 
 refusal_dir="$project_root/logs/d435i_visual_slam/refusal"
 mkdir -p "$refusal_dir"

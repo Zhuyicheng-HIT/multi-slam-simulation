@@ -102,12 +102,23 @@ owned_pid() {
   esac
 }
 declare -A pid_ticks=()
+declare -A owned_process_groups=()
 remember_pid() { local pid=$1; pid_ticks[$pid]=$(pid_start_ticks "$pid" 2>/dev/null || true); }
 signal_owned() {
-  local signal=$1 pid=$2 pattern=$3 ticks=${pid_ticks[$2]:-}
-  owned_pid "$pid" "$ticks" "$pattern" || return 0
-  kill -"$signal" "$pid" 2>/dev/null || true
-  if [[ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" == "$pid" ]]; then
+  local signal=$1 pid=$2 pattern=$3 ticks=${pid_ticks[$2]:-} process_group=
+  if owned_pid "$pid" "$ticks" "$pattern"; then
+    process_group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    kill -"$signal" "$pid" 2>/dev/null || true
+    if [[ "$process_group" == "$pid" ]]; then
+      owned_process_groups[$pid]=1
+      kill -"$signal" -- "-$pid" 2>/dev/null || true
+    fi
+    return 0
+  fi
+  # ros2 run/launch wrappers can exit on INT before their native child. Once
+  # this run has verified the setsid leader, keep escalating against that
+  # exact PGID during the bounded cleanup sequence instead of leaking it.
+  if [[ "${owned_process_groups[$pid]:-0}" == "1" ]]; then
     kill -"$signal" -- "-$pid" 2>/dev/null || true
   fi
 }

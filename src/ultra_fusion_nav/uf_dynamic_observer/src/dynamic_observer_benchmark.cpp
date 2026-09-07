@@ -21,6 +21,8 @@
 #include <utility>
 #include <vector>
 
+#include <Eigen/Eigenvalues>
+
 namespace uf_dynamic_observer
 {
 namespace
@@ -63,6 +65,10 @@ struct Counts
   std::size_t peak_persistent_dynamic_voxels{0U};
   std::vector<double> latency_ms;
   std::vector<double> cpu_ms;
+  std::uint64_t repeatable_static_features{0U};
+  std::uint64_t common_visible_static_features{0U};
+  std::uint64_t retained_common_static_features{0U};
+  std::vector<double> frame_repeatability;
 };
 
 struct ScenarioResult
@@ -115,6 +121,195 @@ double thread_cpu_ms()
   return 1000.0 * static_cast<double>(value.tv_sec) +
          1.0e-6 * static_cast<double>(value.tv_nsec);
 }
+
+struct FeatureGeometry
+{
+  Eigen::Vector3d normal{Eigen::Vector3d::Zero()};
+  std::size_t neighbors{0U};
+  bool valid{false};
+};
+
+using SpatialIndex = std::unordered_map<VoxelKey, std::vector<std::size_t>, VoxelKeyHash>;
+
+VoxelKey spatial_key(const Point & point, double cell_size)
+{
+  return {
+    static_cast<std::int32_t>(std::floor(point.x / cell_size)),
+    static_cast<std::int32_t>(std::floor(point.y / cell_size)),
+    static_cast<std::int32_t>(std::floor(point.z / cell_size))};
+}
+
+SpatialIndex index_static_points(const Frame & frame, double cell_size)
+{
+  SpatialIndex index;
+  for (std::size_t point_index = 0U; point_index < frame.points.size(); ++point_index) {
+    if (!frame.points[point_index].dynamic) {
+      index[spatial_key(frame.points[point_index].point, cell_size)].push_back(point_index);
+    }
+  }
+  return index;
+}
+
+std::vector<FeatureGeometry> estimate_static_geometry(const Frame & frame)
+{
+  constexpr double radius_squared = 0.75 * 0.75;
+  constexpr double cell_size = 0.75;
+  std::vector<FeatureGeometry> output(frame.points.size());
+  const auto spatial_index = index_static_points(frame, cell_size);
+  for (std::size_t index = 0U; index < frame.points.size(); ++index) {
+    if (frame.points[index].dynamic) {
+      continue;
+    }
+    const auto & center = frame.points[index].point;
+    Eigen::Vector3d mean = Eigen::Vector3d::Zero();
+    std::vector<Eigen::Vector3d> neighbors;
+    const auto center_key = spatial_key(center, cell_size);
+    for (int dx = -1; dx <= 1; ++dx) {
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dz = -1; dz <= 1; ++dz) {
+          const auto found = spatial_index.find({
+              center_key.x + dx, center_key.y + dy, center_key.z + dz});
+          if (found == spatial_index.end()) {
+            continue;
+          }
+          for (const auto candidate_index : found->second) {
+            const auto & candidate = frame.points[candidate_index].point;
+            const Eigen::Vector3d delta(
+              candidate.x - center.x, candidate.y - center.y, candidate.z - center.z);
+            if (delta.squaredNorm() <= radius_squared) {
+              neighbors.push_back(delta);
+              mean += delta;
+            }
+          }
+        }
+      }
+    }
+    if (neighbors.size() < 5U) {
+      continue;
+    }
+    mean /= static_cast<double>(neighbors.size());
+    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    for (const auto & neighbor : neighbors) {
+      const auto centered = neighbor - mean;
+      covariance.noalias() += centered * centered.transpose();
+    }
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+    if (solver.info() != Eigen::Success) {
+      continue;
+    }
+    output[index].normal = solver.eigenvectors().col(0).normalized();
+    output[index].neighbors = neighbors.size();
+    output[index].valid = output[index].normal.allFinite();
+  }
+  return output;
+}
+
+bool retained_static(
+  const Frame & frame, const FilterResult & prediction, std::size_t index,
+  bool raw_passthrough)
+{
+  return index < frame.points.size() && !frame.points[index].dynamic &&
+         (raw_passthrough ||
+         (index < prediction.points.size() &&
+         prediction.points[index].label == PointLabel::kStatic));
+}
+
+void accumulate_repeatability(
+  Counts & counts, const Frame & previous, const FilterResult & previous_prediction,
+  const Frame & current, const FilterResult & current_prediction, bool raw_passthrough)
+{
+  constexpr double maximum_distance_squared = 0.45 * 0.45;
+  constexpr double match_cell_size = 0.45;
+  constexpr double minimum_normal_dot = 0.90;
+  const auto previous_geometry = estimate_static_geometry(previous);
+  const auto current_geometry = estimate_static_geometry(current);
+  const auto previous_index = index_static_points(previous, match_cell_size);
+  std::uint64_t eligible = 0U;
+  std::uint64_t retained = 0U;
+  std::uint64_t repeatable = 0U;
+  for (std::size_t current_index = 0U; current_index < current.points.size(); ++current_index) {
+    if (current.points[current_index].dynamic || !current_geometry[current_index].valid) {
+      continue;
+    }
+    const auto & point = current.points[current_index].point;
+    std::size_t best_index = previous.points.size();
+    double best_squared = maximum_distance_squared;
+    const auto point_key = spatial_key(point, match_cell_size);
+    for (int dx = -1; dx <= 1; ++dx) {
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dz = -1; dz <= 1; ++dz) {
+          const auto found = previous_index.find({
+              point_key.x + dx, point_key.y + dy, point_key.z + dz});
+          if (found == previous_index.end()) {
+            continue;
+          }
+          for (const auto candidate_index : found->second) {
+            if (!previous_geometry[candidate_index].valid) {
+              continue;
+            }
+            const auto & candidate = previous.points[candidate_index].point;
+            const double delta_x = point.x - candidate.x;
+            const double delta_y = point.y - candidate.y;
+            const double delta_z = point.z - candidate.z;
+            const double squared = delta_x * delta_x + delta_y * delta_y + delta_z * delta_z;
+            const double normal_dot = std::abs(
+              current_geometry[current_index].normal.dot(previous_geometry[candidate_index].normal));
+            const auto current_neighbors = current_geometry[current_index].neighbors;
+            const auto previous_neighbors = previous_geometry[candidate_index].neighbors;
+            const double support_ratio = static_cast<double>(
+              std::min(current_neighbors, previous_neighbors)) /
+              static_cast<double>(std::max(current_neighbors, previous_neighbors));
+            if (squared <= best_squared && normal_dot >= minimum_normal_dot &&
+              support_ratio >= 0.5)
+            {
+              best_squared = squared;
+              best_index = candidate_index;
+            }
+          }
+        }
+      }
+    }
+    if (best_index == previous.points.size()) {
+      continue;
+    }
+    ++eligible;
+    const bool current_retained = retained_static(
+      current, current_prediction, current_index, raw_passthrough);
+    if (current_retained) {
+      ++retained;
+    }
+    if (current_retained && retained_static(
+        previous, previous_prediction, best_index, raw_passthrough))
+    {
+      ++repeatable;
+    }
+  }
+  counts.common_visible_static_features += eligible;
+  counts.retained_common_static_features += retained;
+  counts.repeatable_static_features += repeatable;
+  if (retained > 0U) {
+    counts.frame_repeatability.push_back(
+      static_cast<double>(repeatable) / static_cast<double>(retained));
+  }
+}
+
+class RawPassThrough
+{
+public:
+  FilterResult process(const std::vector<Point> & points, const Point &)
+  {
+    FilterResult result;
+    result.points.reserve(points.size());
+    for (const auto & point : points) {
+      result.points.push_back({point, PointLabel::kStatic, 0.0F});
+    }
+    result.stats.input_points = points.size();
+    result.stats.valid_points = points.size();
+    result.stats.static_points = points.size();
+    return result;
+  }
+  void reset() {}
+};
 
 std::uint64_t mix_hash(std::uint64_t value)
 {
@@ -366,7 +561,7 @@ void accumulate(Counts & c, const Frame & frame, const FilterResult & prediction
 }
 
 template<typename Filter>
-ScenarioResult run_scenario(const std::string & name, Filter & filter)
+ScenarioResult run_scenario(const std::string & name, Filter & filter, bool raw_passthrough = false)
 {
   ScenarioResult output;
   output.name = name;
@@ -374,6 +569,9 @@ ScenarioResult run_scenario(const std::string & name, Filter & filter)
     const auto frames = make_scenario(name, seed);
     for (int repetition = 0; repetition < kRepeatsPerSeed; ++repetition) {
       filter.reset();
+      Frame previous_frame;
+      FilterResult previous_prediction;
+      bool have_previous = false;
       for (const auto & frame : frames) {
         std::vector<Point> points;
         points.reserve(frame.points.size());
@@ -386,6 +584,14 @@ ScenarioResult run_scenario(const std::string & name, Filter & filter)
         const double latency_ms = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - wall_start).count();
         accumulate(output.counts, frame, prediction, latency_ms, thread_cpu_ms() - cpu_start);
+        if (have_previous) {
+          accumulate_repeatability(
+            output.counts, previous_frame, previous_prediction, frame, prediction,
+            raw_passthrough);
+        }
+        previous_frame = frame;
+        previous_prediction = prediction;
+        have_previous = true;
       }
     }
   }
@@ -413,6 +619,12 @@ void merge_counts(Counts & total, const Counts & source)
     total.peak_persistent_dynamic_voxels, source.peak_persistent_dynamic_voxels);
   total.latency_ms.insert(total.latency_ms.end(), source.latency_ms.begin(), source.latency_ms.end());
   total.cpu_ms.insert(total.cpu_ms.end(), source.cpu_ms.begin(), source.cpu_ms.end());
+  total.repeatable_static_features += source.repeatable_static_features;
+  total.common_visible_static_features += source.common_visible_static_features;
+  total.retained_common_static_features += source.retained_common_static_features;
+  total.frame_repeatability.insert(
+    total.frame_repeatability.end(), source.frame_repeatability.begin(),
+    source.frame_repeatability.end());
 }
 
 Counts combine(const std::vector<ScenarioResult> & scenarios)
@@ -474,6 +686,19 @@ std::string metrics_json(const Counts & c)
          << ",\"latency_p99_ms\":" << percentile(c.latency_ms, 0.99)
          << ",\"cpu_p50_ms\":" << percentile(c.cpu_ms, 0.50)
          << ",\"cpu_p95_ms\":" << percentile(c.cpu_ms, 0.95)
+         << ",\"feature_repeatability\":" << divide(
+    static_cast<double>(c.repeatable_static_features),
+    static_cast<double>(c.retained_common_static_features))
+         << ",\"feature_repeatability_p5\":" << percentile(c.frame_repeatability, 0.05)
+         << ",\"feature_repeatability_minimum\":" << percentile(c.frame_repeatability, 0.0)
+         << ",\"feature_repeatability_below_95_frame_ratio\":" << divide(
+    static_cast<double>(std::count_if(
+      c.frame_repeatability.begin(), c.frame_repeatability.end(),
+      [](double value) {return value < 0.95;})),
+    static_cast<double>(c.frame_repeatability.size()))
+         << ",\"common_visible_static_features\":" << c.common_visible_static_features
+         << ",\"retained_common_static_features\":" << c.retained_common_static_features
+         << ",\"repeatable_static_features\":" << c.repeatable_static_features
          << ",\"peak_state_memory_mib\":"
          << static_cast<double>(c.peak_memory_bytes) / (1024.0 * 1024.0)
          << ",\"peak_allocated_voxels\":" << c.peak_voxels
@@ -515,10 +740,22 @@ std::string macro_dynamic_json(const std::vector<ScenarioResult> & scenarios)
 std::string report_json(const std::string & method, const std::vector<ScenarioResult> & scenarios)
 {
   const auto total = combine(scenarios);
+  double repeatability_sum = 0.0;
+  std::size_t repeatability_count = 0U;
+  for (const auto & scenario : scenarios) {
+    if (scenario.counts.common_visible_static_features > 0U) {
+      repeatability_sum += divide(
+        static_cast<double>(scenario.counts.repeatable_static_features),
+        static_cast<double>(scenario.counts.retained_common_static_features));
+      ++repeatability_count;
+    }
+  }
   std::ostringstream output;
   output << "{\"method\":\"" << method << "\",\"seeds\":[101,202,303],"
          << "\"repeats_per_seed\":" << kRepeatsPerSeed << ','
          << metrics_json(total) << ',' << macro_dynamic_json(scenarios)
+         << ",\"feature_repeatability_macro\":" << divide(
+    repeatability_sum, static_cast<double>(repeatability_count))
          << ",\"failure_mode\":\"" << failure_mode(total)
          << "\",\"scenarios\":[";
   for (std::size_t index = 0U; index < scenarios.size(); ++index) {
@@ -575,11 +812,14 @@ int main(int argc, char ** argv)
   v2_config.far_static_confirmations = 12U;
   VisibilityAwareDynamicObserver v2(v2_config);
   TemporalVoxelBaseline temporal(0.25, 5U, 2U, 1);
+  RawPassThrough raw;
 
+  std::vector<ScenarioResult> raw_results;
   std::vector<ScenarioResult> temporal_results;
   std::vector<ScenarioResult> v1_results;
   std::vector<ScenarioResult> v2_results;
   for (const auto & name : scenario_names) {
+    raw_results.push_back(run_scenario(name, raw, true));
     temporal_results.push_back(run_scenario(name, temporal));
     v1_results.push_back(run_scenario(name, v1));
     v2_results.push_back(run_scenario(name, v2));
@@ -593,12 +833,16 @@ int main(int argc, char ** argv)
          << "\"aggregation_contract\":{"
          << "\"micro\":\"pooled TP/FP/FN; static-only false positives retained\","
          << "\"macro\":\"unweighted dynamic-bearing scenario mean\","
-         << "\"pure_static_dynamic_metrics\":\"null and excluded from macro\"},"
+         << "\"pure_static_dynamic_metrics\":\"null and excluded from macro\","
+         << "\"feature_repeatability\":\"adjacent retained matches divided by current retained common-visible static features\","
+         << "\"feature_geometry\":\"pose-aligned distance, PCA normal and local-support consistency\","
+         << "\"feature_truth_exclusions\":\"dynamic, occluded and detector-UNKNOWN points are evaluator-only exclusions\"},"
          << "\"missing_ray_implies_free\":false,\"low_altitude_near_constant_height\":true,"
          << "\"fastlio_input_mutations\":0,\"scenario_count\":18,"
          << "\"ate_delta_m\":0.0,\"rpe_delta_m\":0.0,"
          << "\"native_lidar_factor_residual_delta\":0.0,"
          << "\"process_peak_rss_kib\":" << usage.ru_maxrss << ",\"results\":["
+         << report_json("raw_passthrough", raw_results) << ','
          << report_json("temporal_voxel_filter_baseline", temporal_results) << ','
          << report_json("conservative_free_space_observer_v1", v1_results) << ','
          << report_json("visibility_aware_observer_v2", v2_results) << "]}";

@@ -225,7 +225,7 @@ d435i_group_records() {
 d435i_signal_owned_group() {
   local signal=$1 component=$2 process_group=$3 expected_ticks=$4
   local project_root=$5 evidence_log=$6 run_dir=$7 record pid command actual_ticks
-  local records=() owned=1
+  local records=()
   mapfile -t records < <(d435i_group_records "$process_group")
   ((${#records[@]} > 0)) || return 0
   if [[ -n "$expected_ticks" && -r "/proc/$process_group/stat" ]]; then
@@ -237,30 +237,23 @@ d435i_signal_owned_group() {
       return 1
     fi
   fi
-  local leader_command
-  leader_command=$(tr '\0' ' ' <"/proc/$process_group/cmdline" 2>/dev/null || true)
+  local leader_command=""
+  if [[ -r "/proc/$process_group/cmdline" ]]; then
+    leader_command=$(tr '\0' ' ' <"/proc/$process_group/cmdline" 2>/dev/null || true)
+  fi
   if [[ -z "$leader_command" ]] || ! d435i_component_command_owned_for_run \
       "$component" "$leader_command" "$project_root" "$run_dir"; then
     printf 'REFUSE signal=%s component=%s pgid=%s reason=leader_cmdline_not_owned command=%s\n' \
       "$signal" "$component" "$process_group" "$leader_command" >>"$evidence_log"
     return 1
   fi
-  for record in "${records[@]}"; do
-    IFS=$'\t' read -r pid command <<<"$record"
-    if ! d435i_component_command_owned_for_run "$component" "$command" "$project_root" "$run_dir"; then
-      printf 'REFUSE signal=%s component=%s pgid=%s pid=%s command=%s\n' \
-        "$signal" "$component" "$process_group" "$pid" "$command" \
-        >>"$evidence_log"
-      owned=0
-    fi
-  done
-  [[ "$owned" == "1" ]] || return 1
   printf 'SIGNAL signal=%s component=%s pgid=%s members=%s\n' \
     "$signal" "$component" "$process_group" "${#records[@]}" >>"$evidence_log"
-  # The leader and every member have just passed ownership checks.  Signal the
-  # whole recorded group: a launcher can have a different PID from its worker
-  # (for example ros2 launch -> fastlio_mapping), so killing only the worker
-  # would leak the launcher and any of its siblings.
+  # The recorded leader, its start ticks and its command have passed ownership
+  # checks. Children intentionally have different executable names (for
+  # example ros2 launch starts sensor, backend and gate nodes), so requiring
+  # every member to match the leader's component name leaks the whole group.
+  # Process-group membership is the ownership boundary after the leader check.
   kill -"$signal" -- "-$process_group" 2>/dev/null || true
 }
 
