@@ -30,7 +30,26 @@ class LioEvaluationTest(unittest.TestCase):
         report = EVALUATOR.evaluate(estimate, truth)
 
         self.assertLess(report["ate_rmse_m"], 1.0e-9)
+        self.assertLess(report["xy_rmse_m"], 1.0e-9)
+        self.assertLess(report["z_rmse_m"], 1.0e-9)
+        self.assertEqual(report["longest_continuous_over_threshold_s"], 0.0)
         self.assertLess(report["rpe_translation_rmse_m"], 1.0e-9)
+
+    def test_axis_metrics_and_continuous_threshold_duration(self):
+        truth = np.asarray([
+            [0.0, 0, 0, 0, 0, 0, 0, 1],
+            [0.1, 1, 0, 0, 0, 0, 0, 1],
+            [0.2, 2, 0, 0, 0, 0, 0, 1],
+            [0.3, 3, 0, 0, 0, 0, 0, 1],
+        ], dtype=float)
+        estimate = truth.copy()
+        estimate[:, 2] = [-0.15, 0.15, 0.35, -0.35]
+
+        report = EVALUATOR.evaluate(estimate, truth, exceedance_threshold_m=0.20)
+
+        self.assertGreater(report["xy_rmse_m"], 0.20)
+        self.assertLess(report["z_rmse_m"], 1.0e-9)
+        self.assertAlmostEqual(report["longest_continuous_over_threshold_s"], 0.1)
 
     def test_timestamp_gate_rejects_unrelated_poses(self):
         estimate = np.asarray([[0.0, 0, 0, 0, 0, 0, 0, 1]], dtype=float)

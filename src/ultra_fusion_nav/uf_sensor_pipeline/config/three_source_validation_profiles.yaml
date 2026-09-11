@@ -1,0 +1,28 @@
+schema_version: 1
+
+# Offline/ simulation validation profiles only. They are not selected by any
+# production launch default. A single fixed seed makes correspondence subsets
+# reproducible between runs.
+defaults:
+  seed: 731
+  start_s: 0.0
+  duration_s: 0.0
+
+profiles:
+  lidar_imu_flow_light:
+    description: GNSS unavailable; retain 80 percent of native LiDAR correspondences.
+    faults:
+      - {channel: gnss, type: outage, score_floor: 1.0}
+      - {channel: native_lidar, type: correspondence_dropout, magnitude: 0.20, score_floor: 0.25}
+
+  lidar_imu_flow_medium:
+    description: GNSS unavailable; retain 40 percent of native LiDAR correspondences.
+    faults:
+      - {channel: gnss, type: outage, score_floor: 1.0}
+      - {channel: native_lidar, type: correspondence_dropout, magnitude: 0.60, score_floor: 0.68}
+
+  lidar_imu_flow_heavy:
+    description: GNSS unavailable; retain 15 percent of native LiDAR correspondences.
+    faults:
+      - {channel: gnss, type: outage, score_floor: 1.0}
+      - {channel: native_lidar, type: correspondence_dropout, magnitude: 0.85, score_floor: 0.98}

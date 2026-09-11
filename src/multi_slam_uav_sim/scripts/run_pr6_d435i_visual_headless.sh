@@ -239,6 +239,21 @@ record_pid() {
   printf '%s\t%s\t%s\t%s\n' "$component" "$pid" "$pgid" "$ticks" >>"$PID_MANIFEST"
 }
 
+record_sensor_stack_sitl() {
+  local record_file="$RUN_DIR/sensor_stack/arducopter.pid"
+  local pid ticks recorded_ticks pgid command
+  [[ -f "$record_file" ]] || return 1
+  IFS='|' read -r pid recorded_ticks <"$record_file" || return 1
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/cmdline" ]] || return 1
+  ticks=$(d435i_process_start_ticks "$pid" 2>/dev/null || true)
+  [[ -n "$ticks" && "$ticks" == "$recorded_ticks" ]] || return 1
+  command=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  [[ "$command" == *"arducopter"* && "$command" == *"$WS_ROOT/"* ]] || return 1
+  pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  [[ -n "$pgid" ]] || return 1
+  printf 'sitl\t%s\t%s\t%s\n' "$pid" "$pgid" "$ticks" >>"$PID_MANIFEST"
+}
+
 cleanup_started=0
 cleanup() {
   local status=$?
@@ -478,6 +493,10 @@ wait_for_topic /livox/imu 120
 trace_stage lidar_imu_ready
 wait_for_livox_ownership 90
 trace_stage livox_ownership_stable
+if ! record_sensor_stack_sitl; then
+  printf 'Unable to register the current trial SITL process for lifecycle cleanup.\n' >&2
+  exit 3
+fi
 
 FASTLIO_NATIVE_FACTOR_INPUT_TOPIC=/fast_lio/native_lidar_factor
 if [[ "$ROBUSTNESS_ENABLED" == "1" && "$ROBUSTNESS_CHANNELS" == *native_lidar* ]]; then

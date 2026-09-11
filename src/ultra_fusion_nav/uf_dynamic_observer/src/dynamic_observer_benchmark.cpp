@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -31,6 +32,10 @@ namespace
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kFrameCount = 40;
 constexpr int kRepeatsPerSeed = 2;
+// The largest configured detector history requirement is V2's
+// far_static_confirmations=12. Keep those startup frames in the all-frame
+// score, while also exposing them as a separate diagnostic window.
+constexpr std::size_t kWarmupFrameCount = 12U;
 constexpr std::array<std::uint32_t, 3> kSeeds{{101U, 202U, 303U}};
 
 struct TruthPoint
@@ -43,6 +48,21 @@ struct Frame
 {
   Point origin;
   std::vector<TruthPoint> points;
+};
+
+struct RepeatabilityFrame
+{
+  std::uint32_t seed{0U};
+  int repetition{0};
+  std::size_t previous_frame{0U};
+  std::size_t current_frame{0U};
+  bool startup_warmup{false};
+  std::uint64_t common_visible{0U};
+  std::uint64_t retained{0U};
+  std::uint64_t repeatable{0U};
+  std::uint64_t previous_dynamic{0U};
+  std::uint64_t previous_unknown{0U};
+  double value{0.0};
 };
 
 struct Counts
@@ -69,6 +89,15 @@ struct Counts
   std::uint64_t common_visible_static_features{0U};
   std::uint64_t retained_common_static_features{0U};
   std::vector<double> frame_repeatability;
+  std::uint64_t warmup_repeatable_static_features{0U};
+  std::uint64_t warmup_common_visible_static_features{0U};
+  std::uint64_t warmup_retained_common_static_features{0U};
+  std::vector<double> warmup_frame_repeatability;
+  std::uint64_t steady_repeatable_static_features{0U};
+  std::uint64_t steady_common_visible_static_features{0U};
+  std::uint64_t steady_retained_common_static_features{0U};
+  std::vector<double> steady_frame_repeatability;
+  std::vector<RepeatabilityFrame> repeatability_frames;
 };
 
 struct ScenarioResult
@@ -216,7 +245,9 @@ bool retained_static(
 
 void accumulate_repeatability(
   Counts & counts, const Frame & previous, const FilterResult & previous_prediction,
-  const Frame & current, const FilterResult & current_prediction, bool raw_passthrough)
+  const Frame & current, const FilterResult & current_prediction, bool raw_passthrough,
+  bool startup_warmup, std::uint32_t seed, int repetition,
+  std::size_t previous_frame_index, std::size_t current_frame_index)
 {
   constexpr double maximum_distance_squared = 0.45 * 0.45;
   constexpr double match_cell_size = 0.45;
@@ -227,6 +258,8 @@ void accumulate_repeatability(
   std::uint64_t eligible = 0U;
   std::uint64_t retained = 0U;
   std::uint64_t repeatable = 0U;
+  std::uint64_t previous_dynamic = 0U;
+  std::uint64_t previous_unknown = 0U;
   for (std::size_t current_index = 0U; current_index < current.points.size(); ++current_index) {
     if (current.points[current_index].dynamic || !current_geometry[current_index].valid) {
       continue;
@@ -278,18 +311,39 @@ void accumulate_repeatability(
     if (current_retained) {
       ++retained;
     }
-    if (current_retained && retained_static(
-        previous, previous_prediction, best_index, raw_passthrough))
-    {
-      ++repeatable;
+    if (current_retained) {
+      if (retained_static(previous, previous_prediction, best_index, raw_passthrough)) {
+        ++repeatable;
+      } else if (best_index < previous_prediction.points.size() &&
+        previous_prediction.points[best_index].label == PointLabel::kDynamic)
+      {
+        ++previous_dynamic;
+      } else {
+        ++previous_unknown;
+      }
     }
   }
   counts.common_visible_static_features += eligible;
   counts.retained_common_static_features += retained;
   counts.repeatable_static_features += repeatable;
+  auto & window_repeatable = startup_warmup ?
+    counts.warmup_repeatable_static_features : counts.steady_repeatable_static_features;
+  auto & window_common = startup_warmup ?
+    counts.warmup_common_visible_static_features : counts.steady_common_visible_static_features;
+  auto & window_retained = startup_warmup ?
+    counts.warmup_retained_common_static_features : counts.steady_retained_common_static_features;
+  auto & window_frames = startup_warmup ?
+    counts.warmup_frame_repeatability : counts.steady_frame_repeatability;
+  window_common += eligible;
+  window_retained += retained;
+  window_repeatable += repeatable;
   if (retained > 0U) {
-    counts.frame_repeatability.push_back(
-      static_cast<double>(repeatable) / static_cast<double>(retained));
+    const double value = static_cast<double>(repeatable) / static_cast<double>(retained);
+    counts.frame_repeatability.push_back(value);
+    window_frames.push_back(value);
+    counts.repeatability_frames.push_back({
+      seed, repetition, previous_frame_index, current_frame_index, startup_warmup,
+      eligible, retained, repeatable, previous_dynamic, previous_unknown, value});
   }
 }
 
@@ -572,6 +626,7 @@ ScenarioResult run_scenario(const std::string & name, Filter & filter, bool raw_
       Frame previous_frame;
       FilterResult previous_prediction;
       bool have_previous = false;
+      std::size_t frame_index = 0U;
       for (const auto & frame : frames) {
         std::vector<Point> points;
         points.reserve(frame.points.size());
@@ -587,11 +642,13 @@ ScenarioResult run_scenario(const std::string & name, Filter & filter, bool raw_
         if (have_previous) {
           accumulate_repeatability(
             output.counts, previous_frame, previous_prediction, frame, prediction,
-            raw_passthrough);
+            raw_passthrough, frame_index < kWarmupFrameCount, seed, repetition,
+            frame_index - 1U, frame_index);
         }
         previous_frame = frame;
         previous_prediction = prediction;
         have_previous = true;
+        ++frame_index;
       }
     }
   }
@@ -625,6 +682,21 @@ void merge_counts(Counts & total, const Counts & source)
   total.frame_repeatability.insert(
     total.frame_repeatability.end(), source.frame_repeatability.begin(),
     source.frame_repeatability.end());
+  total.warmup_repeatable_static_features += source.warmup_repeatable_static_features;
+  total.warmup_common_visible_static_features += source.warmup_common_visible_static_features;
+  total.warmup_retained_common_static_features += source.warmup_retained_common_static_features;
+  total.warmup_frame_repeatability.insert(
+    total.warmup_frame_repeatability.end(), source.warmup_frame_repeatability.begin(),
+    source.warmup_frame_repeatability.end());
+  total.steady_repeatable_static_features += source.steady_repeatable_static_features;
+  total.steady_common_visible_static_features += source.steady_common_visible_static_features;
+  total.steady_retained_common_static_features += source.steady_retained_common_static_features;
+  total.steady_frame_repeatability.insert(
+    total.steady_frame_repeatability.end(), source.steady_frame_repeatability.begin(),
+    source.steady_frame_repeatability.end());
+  total.repeatability_frames.insert(
+    total.repeatability_frames.end(), source.repeatability_frames.begin(),
+    source.repeatability_frames.end());
 }
 
 Counts combine(const std::vector<ScenarioResult> & scenarios)
@@ -710,6 +782,108 @@ std::string metrics_json(const Counts & c)
   return output.str();
 }
 
+std::string repeatability_window_json(
+  std::uint64_t repeatable, std::uint64_t common, std::uint64_t retained,
+  const std::vector<double> & frames)
+{
+  std::ostringstream output;
+  output << std::fixed << std::setprecision(6)
+         << "{\"feature_repeatability\":" << divide(
+    static_cast<double>(repeatable), static_cast<double>(retained))
+         << ",\"feature_repeatability_p5\":" << percentile(frames, 0.05)
+         << ",\"feature_repeatability_minimum\":" << percentile(frames, 0.0)
+         << ",\"feature_repeatability_below_95_frame_ratio\":" << divide(
+    static_cast<double>(std::count_if(
+      frames.begin(), frames.end(), [](double value) {return value < 0.95;})),
+    static_cast<double>(frames.size()))
+         << ",\"common_visible_static_features\":" << common
+         << ",\"retained_common_static_features\":" << retained
+         << ",\"repeatable_static_features\":" << repeatable
+         << ",\"evaluated_frame_pairs\":" << frames.size() << '}';
+  return output.str();
+}
+
+std::string low_repeatability_json(const Counts & counts)
+{
+  std::ostringstream output;
+  output << '[';
+  bool first = true;
+  for (const auto & frame : counts.repeatability_frames) {
+    if (frame.value >= 0.95) {
+      continue;
+    }
+    if (!first) {
+      output << ',';
+    }
+    first = false;
+    const char * reason = frame.previous_dynamic > 0U && frame.previous_unknown > 0U ?
+      "previous_frame_dynamic_and_unknown" :
+      (frame.previous_dynamic > 0U ? "previous_frame_dynamic" :
+      "previous_frame_unknown_or_unconfirmed");
+    output << std::fixed << std::setprecision(6)
+           << "{\"seed\":" << frame.seed
+           << ",\"repetition\":" << frame.repetition
+           << ",\"previous_frame\":" << frame.previous_frame
+           << ",\"current_frame\":" << frame.current_frame
+           << ",\"window\":\"" << (frame.startup_warmup ? "startup_warmup" : "steady_state")
+           << "\",\"repeatability\":" << frame.value
+           << ",\"common_visible_static_features\":" << frame.common_visible
+           << ",\"retained_common_static_features\":" << frame.retained
+           << ",\"repeatable_static_features\":" << frame.repeatable
+           << ",\"previous_dynamic_features\":" << frame.previous_dynamic
+           << ",\"previous_unknown_features\":" << frame.previous_unknown
+           << ",\"reason\":\"" << reason << "\"}";
+  }
+  output << ']';
+  return output.str();
+}
+
+void write_repeatability_visualizations(
+  const std::filesystem::path & report_path,
+  const std::vector<ScenarioResult> & scenarios)
+{
+  const auto directory = report_path.parent_path() / "dynamic_observer_benchmark_visualizations";
+  std::filesystem::create_directories(directory);
+  constexpr double left = 70.0;
+  constexpr double top = 30.0;
+  constexpr double plot_width = 1090.0;
+  constexpr double plot_height = 320.0;
+  for (const auto & scenario : scenarios) {
+    std::ofstream svg(directory / (scenario.name + ".svg"));
+    svg << std::fixed << std::setprecision(3)
+        << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"420\" "
+        << "viewBox=\"0 0 1200 420\">\n"
+        << "<rect width=\"1200\" height=\"420\" fill=\"white\"/>\n"
+        << "<text x=\"70\" y=\"20\" font-family=\"sans-serif\" font-size=\"15\">"
+        << scenario.name << " - V2 adjacent-frame repeatability (all samples retained)</text>\n"
+        << "<rect x=\"" << left << "\" y=\"" << top << "\" width=\"" << plot_width
+        << "\" height=\"" << plot_height << "\" fill=\"#f7f7f7\" stroke=\"#444\"/>\n"
+        << "<line x1=\"" << left << "\" y1=\"" << top + 0.05 * plot_height
+        << "\" x2=\"" << left + plot_width << "\" y2=\"" << top + 0.05 * plot_height
+        << "\" stroke=\"#c62828\" stroke-dasharray=\"6 4\"/>\n";
+    const auto & frames = scenario.counts.repeatability_frames;
+    for (std::size_t index = 0U; index < frames.size(); ++index) {
+      const auto & frame = frames[index];
+      const double x = left + plot_width * (static_cast<double>(index) + 0.5) /
+        static_cast<double>(std::max<std::size_t>(1U, frames.size()));
+      const double y = top + plot_height * (1.0 - frame.value);
+      const char * color = frame.value < 0.95 ?
+        (frame.startup_warmup ? "#ef6c00" : "#c62828") : "#2e7d32";
+      svg << "<circle cx=\"" << x << "\" cy=\"" << y
+          << "\" r=\"2.2\" fill=\"" << color << "\"><title>seed=" << frame.seed
+          << " rep=" << frame.repetition << " frame=" << frame.current_frame
+          << " value=" << frame.value << " retained=" << frame.retained
+          << " repeatable=" << frame.repeatable << "</title></circle>\n";
+    }
+    svg << "<text x=\"8\" y=\"35\" font-family=\"sans-serif\" font-size=\"12\">1.00</text>\n"
+        << "<text x=\"8\" y=\"" << top + plot_height + 4.0
+        << "\" font-family=\"sans-serif\" font-size=\"12\">0.00</text>\n"
+        << "<text x=\"70\" y=\"390\" font-family=\"sans-serif\" font-size=\"12\">"
+        << "green: &gt;=95%; orange: warm-up &lt;95%; red: steady-state &lt;95%</text>\n"
+        << "</svg>\n";
+  }
+}
+
 std::string macro_dynamic_json(const std::vector<ScenarioResult> & scenarios)
 {
   double precision_sum = 0.0;
@@ -756,14 +930,40 @@ std::string report_json(const std::string & method, const std::vector<ScenarioRe
          << metrics_json(total) << ',' << macro_dynamic_json(scenarios)
          << ",\"feature_repeatability_macro\":" << divide(
     repeatability_sum, static_cast<double>(repeatability_count))
+         << ",\"feature_repeatability_windows\":{\"all_frames\":" <<
+    repeatability_window_json(
+      total.repeatable_static_features, total.common_visible_static_features,
+      total.retained_common_static_features, total.frame_repeatability)
+         << ",\"startup_warmup\":" << repeatability_window_json(
+      total.warmup_repeatable_static_features,
+      total.warmup_common_visible_static_features,
+      total.warmup_retained_common_static_features,
+      total.warmup_frame_repeatability)
+         << ",\"steady_state\":" << repeatability_window_json(
+      total.steady_repeatable_static_features,
+      total.steady_common_visible_static_features,
+      total.steady_retained_common_static_features,
+      total.steady_frame_repeatability) << '}'
          << ",\"failure_mode\":\"" << failure_mode(total)
          << "\",\"scenarios\":[";
   for (std::size_t index = 0U; index < scenarios.size(); ++index) {
     if (index != 0U) {
       output << ',';
     }
+    const auto & counts = scenarios[index].counts;
     output << "{\"name\":\"" << scenarios[index].name << "\"," <<
-      metrics_json(scenarios[index].counts) << ",\"failure_mode\":\"" <<
+      metrics_json(counts)
+      << ",\"feature_repeatability_windows\":{\"all_frames\":" << repeatability_window_json(
+      counts.repeatable_static_features, counts.common_visible_static_features,
+      counts.retained_common_static_features, counts.frame_repeatability)
+      << ",\"startup_warmup\":" << repeatability_window_json(
+      counts.warmup_repeatable_static_features, counts.warmup_common_visible_static_features,
+      counts.warmup_retained_common_static_features, counts.warmup_frame_repeatability)
+      << ",\"steady_state\":" << repeatability_window_json(
+      counts.steady_repeatable_static_features, counts.steady_common_visible_static_features,
+      counts.steady_retained_common_static_features, counts.steady_frame_repeatability)
+      << "},\"low_repeatability_frames\":" << low_repeatability_json(counts)
+      << ",\"failure_mode\":\"" <<
       failure_mode(scenarios[index].counts) << "\"}";
   }
   output << "]}";
@@ -837,6 +1037,9 @@ int main(int argc, char ** argv)
          << "\"feature_repeatability\":\"adjacent retained matches divided by current retained common-visible static features\","
          << "\"feature_geometry\":\"pose-aligned distance, PCA normal and local-support consistency\","
          << "\"feature_truth_exclusions\":\"dynamic, occluded and detector-UNKNOWN points are evaluator-only exclusions\"},"
+         << "\"repeatability_warmup_contract\":{\"frames_after_reset\":" <<
+    kWarmupFrameCount << ",\"basis\":\"maximum configured history requirement: far_static_confirmations\","
+         << "\"all_frames_retained\":true,\"competition_exclusion_allowed\":null},"
          << "\"missing_ray_implies_free\":false,\"low_altitude_near_constant_height\":true,"
          << "\"fastlio_input_mutations\":0,\"scenario_count\":18,"
          << "\"ate_delta_m\":0.0,\"rpe_delta_m\":0.0,"
@@ -854,6 +1057,7 @@ int main(int argc, char ** argv)
       return 2;
     }
     output << report.str() << '\n';
+    write_repeatability_visualizations(argv[1], v2_results);
   } else {
     std::cout << report.str() << '\n';
   }

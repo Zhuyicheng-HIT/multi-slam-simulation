@@ -158,6 +158,14 @@ class GatewaySmoke(Node):
         while time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.01)
 
+    def spin_until(self, predicate, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            rclpy.spin_once(self, timeout_sec=0.01)
+        return predicate()
+
 
 def messages_identical(lhs, rhs):
     return (
@@ -221,6 +229,14 @@ def main():
             reseed_stamps.append(scan_ns)
             node.spin_for(0.10)
 
+        reseed_complete = node.spin_until(
+            lambda: all(
+                value in node.clean_by_stamp and value in node.status_by_stamp
+                for value in reseed_stamps
+            ),
+            3.0,
+        )
+
         fail_open_message = node.clean_by_stamp.get(fail_open_stamp)
         fail_open_status = node.status_by_stamp.get(fail_open_stamp, {})
         imu_timeout_message = node.clean_by_stamp.get(imu_timeout_stamp)
@@ -279,9 +295,11 @@ def main():
                 and backend_epoch_status.get("backend_epochs_retained", 0) >= 1
             ),
             "lio_epoch_reseed_exact_raw": all(
-                messages_identical(node.raw_by_stamp[value], node.clean_by_stamp[value])
+                value in node.clean_by_stamp
+                and messages_identical(node.raw_by_stamp[value], node.clean_by_stamp[value])
                 for value in reseed_stamps[:6]
             ),
+            "lio_epoch_reseed_messages_complete": reseed_complete,
             "lio_epoch_reseed_reasons": [value.get("reason") for value in reseed_statuses],
             "lio_epoch_resumed": reseed_statuses[-1].get("reason") == "ok",
             "raw_publishers": node.count_publishers("/livox/lidar"),
@@ -303,6 +321,7 @@ def main():
             and report["timestamp_regression_reason"]
             == "input_timestamp_regression"
             and report["backend_epoch_retains_history"]
+            and report["lio_epoch_reseed_messages_complete"]
             and report["lio_epoch_reseed_exact_raw"]
             and report["lio_epoch_reseed_reasons"][:5]
             == ["lio_epoch_reseeding"] * 5

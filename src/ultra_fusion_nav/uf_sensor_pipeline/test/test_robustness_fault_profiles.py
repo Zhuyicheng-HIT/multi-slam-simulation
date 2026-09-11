@@ -19,6 +19,10 @@ from uf_sensor_pipeline.robustness_fault_injector import (
 PROFILE_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "robustness_v3_profiles.yaml"
 )
+THREE_SOURCE_PROFILE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "config" / "three_source_validation_profiles.yaml"
+)
 
 
 def test_every_profile_loads_and_has_unique_supported_faults():
@@ -29,6 +33,20 @@ def test_every_profile_loads_and_has_unique_supported_faults():
         profile = load_fault_profile(str(PROFILE_PATH), name)
         assert profile.name == name
         assert len({id(spec) for spec in profile.faults}) == len(profile.faults)
+
+
+def test_three_source_lidar_levels_are_fixed_and_reproducible():
+    document = yaml.safe_load(THREE_SOURCE_PROFILE_PATH.read_text(encoding="utf-8"))
+    assert document["defaults"] == {"seed": 731, "start_s": 0.0, "duration_s": 0.0}
+    expected = {"light": 0.20, "medium": 0.60, "heavy": 0.85}
+    for level, dropout in expected.items():
+        profile = load_fault_profile(
+            str(THREE_SOURCE_PROFILE_PATH), f"lidar_imu_flow_{level}"
+        )
+        by_channel = {fault.channel: fault for fault in profile.faults}
+        assert by_channel["gnss"].fault_type == "outage"
+        assert by_channel["native_lidar"].fault_type == "correspondence_dropout"
+        assert by_channel["native_lidar"].magnitude == pytest.approx(dropout)
 
 
 def test_double_fault_profile_expands_both_modalities():

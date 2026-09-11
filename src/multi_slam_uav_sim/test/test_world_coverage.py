@@ -554,6 +554,8 @@ def test_three_source_isolation_switch_defaults_to_native_lidar_enabled():
     assert "FASTLIO_MAP_INSERTION_MODE=${FASTLIO_MAP_INSERTION_MODE:-fast_lio_posterior}" in runner
     assert 'FASTLIO_BACKEND_TRAJECTORY_FRONTEND="$FASTLIO_BACKEND_TRAJECTORY_FRONTEND_MODE"' in runner
     assert "lio_pose_role=transaction_clock_and_initial_frame_anchor" in runner
+    assert "record_sensor_stack_sitl()" in runner
+    assert "Unable to register the current trial SITL process" in runner
     assert '"native_lidar_factor_enabled", default_value="true"' in integration
     assert '"native_lidar_factor_enabled", default_value="true"' in coupling
     assert 'LaunchConfiguration("native_lidar_factor_enabled")' in coupling

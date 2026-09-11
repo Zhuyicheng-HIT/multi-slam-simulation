@@ -68,7 +68,39 @@ def quat_angle_deg(q):
     return math.degrees(2.0 * math.acos(min(1.0, abs(float(q[3])))))
 
 
-def evaluate(estimate, truth, max_delta_s=0.05):
+def longest_continuous_exceedance(timestamps, errors, threshold_m, maximum_gap_s):
+    longest = 0.0
+    started = None
+    previous = None
+    for stamp, error in zip(timestamps, errors):
+        stamp = float(stamp)
+        if error <= threshold_m or (
+            previous is not None and stamp - previous > maximum_gap_s
+        ):
+            if started is not None and previous is not None:
+                longest = max(longest, previous - started)
+            started = stamp if error > threshold_m else None
+        elif started is None:
+            started = stamp
+        previous = stamp
+    if started is not None and previous is not None:
+        longest = max(longest, previous - started)
+    return float(longest)
+
+
+def error_statistics(values):
+    values = np.asarray(values, dtype=np.float64)
+    return {
+        "rmse_m": float(np.sqrt(np.mean(np.square(values)))),
+        "p95_m": float(np.percentile(values, 95.0)),
+        "max_m": float(np.max(values)),
+    }
+
+
+def evaluate(
+    estimate, truth, max_delta_s=0.05, exceedance_threshold_m=0.20,
+    maximum_continuous_gap_s=0.50,
+):
     matches = match_rows(estimate, truth, max_delta_s)
     if len(matches) < 3:
         raise ValueError("Fewer than three timestamp-matched poses")
@@ -76,7 +108,10 @@ def evaluate(estimate, truth, max_delta_s=0.05):
     ref = np.asarray([pair[1] for pair in matches])
     rotation, translation = rigid_align(est[:, 1:4], ref[:, 1:4])
     aligned = (rotation @ est[:, 1:4].T).T + translation
-    ate = np.linalg.norm(aligned - ref[:, 1:4], axis=1)
+    error_xyz = aligned - ref[:, 1:4]
+    ate = np.linalg.norm(error_xyz, axis=1)
+    xy_error = np.linalg.norm(error_xyz[:, :2], axis=1)
+    z_error = np.abs(error_xyz[:, 2])
     rpe_translation = []
     rpe_rotation = []
     for index in range(len(matches) - 1):
@@ -86,14 +121,26 @@ def evaluate(estimate, truth, max_delta_s=0.05):
         dq_est = quat_multiply(quat_inverse(est[index, 4:8]), est[index + 1, 4:8])
         dq_ref = quat_multiply(quat_inverse(ref[index, 4:8]), ref[index + 1, 4:8])
         rpe_rotation.append(quat_angle_deg(quat_multiply(quat_inverse(dq_ref), dq_est)))
-    return {
+    report = {
         "matched_poses": len(matches),
         "ate_rmse_m": float(np.sqrt(np.mean(np.square(ate)))),
         "ate_median_m": float(np.median(ate)),
+        "ate_p95_m": float(np.percentile(ate, 95.0)),
         "ate_max_m": float(np.max(ate)),
+        "xy_rmse_m": error_statistics(xy_error)["rmse_m"],
+        "xy_p95_m": error_statistics(xy_error)["p95_m"],
+        "xy_max_m": error_statistics(xy_error)["max_m"],
+        "z_rmse_m": error_statistics(z_error)["rmse_m"],
+        "z_p95_m": error_statistics(z_error)["p95_m"],
+        "z_max_m": error_statistics(z_error)["max_m"],
+        "exceedance_threshold_m": float(exceedance_threshold_m),
+        "longest_continuous_over_threshold_s": longest_continuous_exceedance(
+            est[:, 0], ate, exceedance_threshold_m, maximum_continuous_gap_s
+        ),
         "rpe_translation_rmse_m": float(np.sqrt(np.mean(np.square(rpe_translation)))),
         "rpe_rotation_rmse_deg": float(np.sqrt(np.mean(np.square(rpe_rotation)))),
     }
+    return report
 
 
 def main():
@@ -101,9 +148,14 @@ def main():
     parser.add_argument("--estimate", required=True)
     parser.add_argument("--truth", required=True)
     parser.add_argument("--max-delta", type=float, default=0.05)
+    parser.add_argument("--exceedance-threshold", type=float, default=0.20)
+    parser.add_argument("--maximum-continuous-gap", type=float, default=0.50)
     parser.add_argument("--output")
     args = parser.parse_args()
-    report = evaluate(read_tum(args.estimate), read_tum(args.truth), args.max_delta)
+    report = evaluate(
+        read_tum(args.estimate), read_tum(args.truth), args.max_delta,
+        args.exceedance_threshold, args.maximum_continuous_gap,
+    )
     text = json.dumps(report, indent=2)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
