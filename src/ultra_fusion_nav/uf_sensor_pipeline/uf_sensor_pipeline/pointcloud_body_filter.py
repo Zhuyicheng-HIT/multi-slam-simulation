@@ -3,7 +3,6 @@ import time
 from collections import deque
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-<<<<<<< HEAD
 from rclpy.qos import qos_profile_sensor_data, QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Float32

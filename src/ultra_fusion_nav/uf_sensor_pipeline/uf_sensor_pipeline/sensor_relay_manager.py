@@ -86,8 +86,6 @@ class SensorRelayManager(Node):
                 message_type,
                 input_topic,
                 lambda msg, name=modality: self._relay(name, msg),
-                qos_profile_sensor_data,
-                callback_group=self.relay_groups[modality],
                 input_qos,
                 callback_group=self.relay_groups[modality],
             )
