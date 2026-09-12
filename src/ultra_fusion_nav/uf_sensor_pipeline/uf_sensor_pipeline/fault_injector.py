@@ -17,6 +17,7 @@ from .fault_models import (
     ensure_monotonic_stamp,
     flatten_image,
     shift_stamp,
+    standardize_imu_acceleration,
 )
 
 
@@ -45,9 +46,15 @@ class FaultInjector(Node):
         # Simulation-only clock alignment. Real hardware and rosbag replay
         # keep source timestamps unless this option is explicitly enabled.
         self.declare_parameter("restamp_output", False)
+        self.declare_parameter("repair_nonmonotonic_timestamps", True)
+        self.declare_parameter("imu_acceleration_scale", 1.0)
 
         self.modality = str(self.get_parameter("modality").value)
         self.restamp_output = bool(self.get_parameter("restamp_output").value)
+        self.repair_nonmonotonic_timestamps = bool(
+            self.get_parameter("repair_nonmonotonic_timestamps").value
+        )
+        self.imu_acceleration_scale = float(self.get_parameter("imu_acceleration_scale").value)
         if self.modality not in MESSAGE_TYPES:
             raise ValueError(f"Unsupported modality: {self.modality}")
         message_type = MESSAGE_TYPES[self.modality]
@@ -162,15 +169,23 @@ class FaultInjector(Node):
         if active and fault_type == "outage":
             self._state(msg, fault_type, magnitude, active)
             return
+        normalized = (
+            standardize_imu_acceleration(msg, self.imu_acceleration_scale)
+            if self.modality == "imu" else msg
+        )
         output = (
-            self._apply(msg, fault_type, magnitude, secondary, fault_elapsed_s)
+            self._apply(normalized, fault_type, magnitude, secondary, fault_elapsed_s)
             if active else msg
         )
+        if self.modality == "imu" and not active:
+            output = normalized
         if self.restamp_output:
             output = copy.deepcopy(output)
             output.header.stamp = self.get_clock().now().to_msg()
         self.last_output_stamp_ns, repaired = ensure_monotonic_stamp(
-            output.header.stamp, self.last_output_stamp_ns
+            output.header.stamp,
+            self.last_output_stamp_ns,
+            repair=self.repair_nonmonotonic_timestamps,
         )
         if repaired:
             self.timestamp_repairs += 1

@@ -78,6 +78,7 @@ class LidarVerticalObservability:
     axis_relative_support: tuple[float, float, float]
     translation_profile_information: tuple[float, ...]
     translation_normalized_eigenvalues: tuple[float, float, float]
+    translation_eigenvectors: tuple[float, ...]
     weakest_translation_direction: tuple[float, float, float]
 
 
@@ -282,6 +283,9 @@ def lidar_vertical_observability(
         ),
         translation_normalized_eigenvalues=tuple(
             float(value / maximum_eigenvalue) for value in eigenvalues
+        ),
+        translation_eigenvectors=tuple(
+            float(value) for value in eigenvectors.reshape(-1)
         ),
         weakest_translation_direction=tuple(
             float(value) for value in weakest_direction

@@ -820,6 +820,24 @@
           </noise>
         </lidar>
       </sensor>
+      <sensor name="mid360_sim_imu" type="imu">
+        <pose>0 0 0 0 0 0</pose>
+        <always_on>1</always_on>
+        <update_rate>200</update_rate>
+        <topic>/mid360/imu</topic>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
     </link>
     <joint name="mid360_mount_joint" type="fixed">
       <parent>iris_with_standoffs::base_link</parent>

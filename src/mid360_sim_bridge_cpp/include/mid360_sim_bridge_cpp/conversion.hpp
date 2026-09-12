@@ -164,4 +164,39 @@ inline bool point_in_body_exclusion_box(
     body_bounds[4] <= body_z && body_z <= body_bounds[5];
 }
 
+inline std::array<double, 3> rotate_vector(
+  const std::array<double, 9> & rotation,
+  const std::array<double, 3> & vector)
+{
+  return {
+    rotation[0] * vector[0] + rotation[1] * vector[1] + rotation[2] * vector[2],
+    rotation[3] * vector[0] + rotation[4] * vector[1] + rotation[5] * vector[2],
+    rotation[6] * vector[0] + rotation[7] * vector[1] + rotation[8] * vector[2]};
+}
+
+inline std::array<double, 9> rotate_covariance(
+  const std::array<double, 9> & rotation,
+  const std::array<double, 9> & covariance)
+{
+  std::array<double, 9> intermediate{};
+  std::array<double, 9> output{};
+  for (std::size_t row = 0; row < 3; ++row) {
+    for (std::size_t column = 0; column < 3; ++column) {
+      for (std::size_t inner = 0; inner < 3; ++inner) {
+        intermediate[3 * row + column] +=
+          rotation[3 * row + inner] * covariance[3 * inner + column];
+      }
+    }
+  }
+  for (std::size_t row = 0; row < 3; ++row) {
+    for (std::size_t column = 0; column < 3; ++column) {
+      for (std::size_t inner = 0; inner < 3; ++inner) {
+        output[3 * row + column] +=
+          intermediate[3 * row + inner] * rotation[3 * column + inner];
+      }
+    }
+  }
+  return output;
+}
+
 }  // namespace mid360_sim_bridge_cpp

@@ -14,6 +14,11 @@ RVIZ=${RVIZ:-1}
 # default for simulation and hardware-aligned tests.
 FASTLIO_INPUT_MODE=${FASTLIO_INPUT_MODE:-livox}
 FASTLIO_CLOUD_TOPIC=/sim/mid360/points_raw
+FASTLIO_LIDAR_TOPIC=${FASTLIO_LIDAR_TOPIC:-/livox/lidar}
+START_DYNAMIC_CLEAN_GATEWAY=${START_DYNAMIC_CLEAN_GATEWAY:-0}
+DYNAMIC_CLEAN_CONFIG=${DYNAMIC_CLEAN_CONFIG:-$WS_ROOT/src/ultra_fusion_nav/uf_dynamic_observer/config/clean_gateway.yaml}
+DYNAMIC_CLEAN_TOPIC=${DYNAMIC_CLEAN_TOPIC:-/dynamic_observer/clean/livox}
+DYNAMIC_CLEAN_PREVIOUS_STATE_TOPIC=${DYNAMIC_CLEAN_PREVIOUS_STATE_TOPIC:-/clean_fast_lio/previous_state}
 FASTLIO_NATIVE_FACTOR_EXPORT=${FASTLIO_NATIVE_FACTOR_EXPORT:-0}
 FASTLIO_NATIVE_FACTOR_TOPIC=${FASTLIO_NATIVE_FACTOR_TOPIC:-/fast_lio/native_lidar_factor}
 FASTLIO_NATIVE_FACTOR_SENSOR_FRAME=${FASTLIO_NATIVE_FACTOR_SENSOR_FRAME:-mid360_link}
@@ -66,6 +71,10 @@ FASTLIO_DIAGNOSTIC_TF_BOOL=$(parse_bool "$FASTLIO_DIAGNOSTIC_TF")
 FASTLIO_BACKEND_TRAJECTORY_FRONTEND_BOOL=$(parse_bool "$FASTLIO_BACKEND_TRAJECTORY_FRONTEND")
 START_FASTLIO_CLOUD_MAPPER_BOOL=$(parse_bool "$START_FASTLIO_CLOUD_MAPPER")
 START_FASTLIO_OCCUPANCY_GRID_BOOL=$(parse_bool "$START_FASTLIO_OCCUPANCY_GRID")
+START_DYNAMIC_CLEAN_GATEWAY_BOOL=$(parse_bool "$START_DYNAMIC_CLEAN_GATEWAY")
+if [[ "$START_DYNAMIC_CLEAN_GATEWAY_BOOL" == "true" ]]; then
+  FASTLIO_LIDAR_TOPIC="$DYNAMIC_CLEAN_TOPIC"
+fi
 case "$FASTLIO_MAP_INSERTION_MODE" in
   fast_lio_posterior|backend_confirmed) ;;
   *)
@@ -187,9 +196,11 @@ Logs:
 
 Inputs:
   $FASTLIO_CLOUD_TOPIC  -> /livox/lidar  (livox_ros_driver2/msg/CustomMsg, protocol reference)
-  /mavros/imu/data_raw    -> /livox/imu    (FCU HIGHRES_IMU sensor_msgs/msg/Imu)
+  /mid360/imu             -> /livox/imu    (MID360 Gazebo IMU, base_link SI units)
   FASTLIO_INPUT_MODE=$FASTLIO_INPUT_MODE
   START_LIVOX_POINTCLOUD_BRIDGE=$START_LIVOX_POINTCLOUD_BRIDGE
+  FASTLIO_LIDAR_TOPIC=$FASTLIO_LIDAR_TOPIC
+  START_DYNAMIC_CLEAN_GATEWAY=$START_DYNAMIC_CLEAN_GATEWAY_BOOL
 
 Outputs:
   /cloud_registered
@@ -231,7 +242,7 @@ if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "1" ]]; then
   setsid ros2 run multi_slam_uav_sim livox_mid360_bridge --ros-args \
     -p use_sim_time:="$USE_SIM_TIME" \
     -p input_cloud_topic:="$FASTLIO_CLOUD_TOPIC" \
-    -p input_imu_topic:=/mavros/imu/data_raw \
+    -p input_imu_topic:=/sim/mid360/imu_raw \
     -p livox_lidar_topic:=/livox/lidar \
     -p livox_imu_topic:=/livox/imu \
     -p lidar_frame_id:=mid360_link \
@@ -245,6 +256,23 @@ if [[ "$START_LIVOX_POINTCLOUD_BRIDGE" == "1" ]]; then
 else
   printf 'Using existing /livox/lidar and /livox/imu publishers; Python bridge is disabled.\n' \
     >"$LOG_DIR/livox_mid360_bridge.log"
+fi
+
+if [[ "$START_DYNAMIC_CLEAN_GATEWAY_BOOL" == "true" ]]; then
+  if [[ ! -f "$DYNAMIC_CLEAN_CONFIG" ]]; then
+    printf 'Dynamic clean gateway config not found: %s\n' "$DYNAMIC_CLEAN_CONFIG" >&2
+    exit 2
+  fi
+  setsid ros2 launch uf_dynamic_observer clean_gateway.launch.py \
+    use_sim_time:="$USE_SIM_TIME" \
+    config:="$DYNAMIC_CLEAN_CONFIG" \
+    enabled:=true \
+    raw_topic:=/livox/lidar \
+    clean_topic:="$DYNAMIC_CLEAN_TOPIC" \
+    previous_state_topic:="$DYNAMIC_CLEAN_PREVIOUS_STATE_TOPIC" \
+    >"$LOG_DIR/dynamic_clean_gateway.log" 2>&1 &
+  pids+=("$!")
+  sleep 1
 fi
 
 # FAST-LIO assumes one ordered LiDAR stream and one ordered IMU stream.  Wait
@@ -278,9 +306,17 @@ if (( livox_lidar_publishers != 1 || livox_imu_publishers != 1 || \
   exit 3
 fi
 
+FASTLIO_RUNTIME_CONFIG_DIR="$LOG_DIR/runtime_config"
+mkdir -p "$FASTLIO_RUNTIME_CONFIG_DIR"
+cp "$PKG_SHARE/config/$FASTLIO_CONFIG" "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG"
+awk -v topic="$FASTLIO_LIDAR_TOPIC" \
+  '{ if ($0 ~ /^[[:space:]]*lid_topic:/) { sub(/:.*/, ":  \"" topic "\"") } print }' \
+  "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG" > "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG.tmp"
+mv "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG.tmp" "$FASTLIO_RUNTIME_CONFIG_DIR/$FASTLIO_CONFIG"
+
 setsid ros2 launch fast_lio mapping.launch.py \
   use_sim_time:="$USE_SIM_TIME" \
-  config_path:="$PKG_SHARE/config" \
+  config_path:="$FASTLIO_RUNTIME_CONFIG_DIR" \
   config_file:="$FASTLIO_CONFIG" \
   rviz:="$RVIZ" \
   native_factor_export_enable:="$FASTLIO_NATIVE_FACTOR_EXPORT_BOOL" \
@@ -290,6 +326,8 @@ setsid ros2 launch fast_lio mapping.launch.py \
   downstream_publish_diagnostic_odometry:="$FASTLIO_DIAGNOSTIC_ODOMETRY_BOOL" \
   downstream_publish_diagnostic_path:="$FASTLIO_DIAGNOSTIC_PATH_BOOL" \
   downstream_publish_diagnostic_tf:="$FASTLIO_DIAGNOSTIC_TF_BOOL" \
+  previous_state_export.enable:="$START_DYNAMIC_CLEAN_GATEWAY_BOOL" \
+  previous_state_export.topic:="$DYNAMIC_CLEAN_PREVIOUS_STATE_TOPIC" \
   downstream_map_insertion_mode:="$FASTLIO_MAP_INSERTION_MODE" \
   downstream_backend_state_topic:="$FASTLIO_BACKEND_STATE_TOPIC" \
   downstream_backend_activation_state_topic:="$FASTLIO_BACKEND_ACTIVATION_STATE_TOPIC" \

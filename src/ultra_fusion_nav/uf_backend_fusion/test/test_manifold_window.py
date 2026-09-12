@@ -13,6 +13,7 @@ try:
         lidar_point_plane_graph_normal_axis_scaled as cpp_lidar_point_plane_graph_normal_axis_scaled,
         lidar_point_plane_normal as cpp_lidar_point_plane_normal,
         lidar_point_plane_normal_axis_scaled as cpp_lidar_point_plane_normal_axis_scaled,
+        lidar_point_plane_normal_subspace as cpp_lidar_point_plane_normal_subspace,
         state_plus_batch as cpp_state_plus_batch,
     )
 except ImportError:
@@ -21,6 +22,7 @@ except ImportError:
     cpp_lidar_point_plane_graph_normal_axis_scaled = None
     cpp_lidar_point_plane_normal = None
     cpp_lidar_point_plane_normal_axis_scaled = None
+    cpp_lidar_point_plane_normal_subspace = None
     cpp_state_plus_batch = None
 
 from uf_backend_fusion.imu_preintegration import (
@@ -311,6 +313,201 @@ class ManifoldWindowTest(unittest.TestCase):
         np.testing.assert_allclose(hessian, python_hessian, atol=1.0e-12)
         np.testing.assert_allclose(gradient, python_gradient, atol=1.0e-12)
         self.assertAlmostEqual(cost, python_cost, places=12)
+
+    def test_rotated_subspace_scale_transforms_translation_normal(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=3, cpp_math_core_enabled=False
+        )
+        index = backend.add_state(np.zeros(15))
+        backend.add_native_lidar_correspondences(
+            index,
+            plane_factor(
+                [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+            ),
+        )
+        base_hessian, base_gradient, _ = backend._normal()
+        weak = np.asarray([1.0, 1.0, 0.0]) / np.sqrt(2.0)
+        scale = np.eye(3) - 0.9 * np.outer(weak, weak)
+        backend.set_lidar_subspace_scale(scale)
+        scaled_hessian, scaled_gradient, _ = backend._normal()
+        from uf_backend_fusion.manifold_window import (
+            lidar_translation_subspace_normal,
+        )
+        local_hessian, local_gradient = lidar_translation_subspace_normal(
+            base_hessian[:6, :6], base_gradient[:6], scale
+        )
+        np.testing.assert_allclose(
+            scaled_hessian[:6, :6], local_hessian,
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            scaled_gradient[:6], local_gradient, atol=1.0e-12
+        )
+
+    @unittest.skipIf(
+        cpp_lidar_point_plane_normal_subspace is None,
+        "rotated LiDAR C++ normal kernel is not installed",
+    )
+    def test_rotated_subspace_cpp_matches_python_path(self):
+        state = np.zeros(15)
+        factor = plane_factor(
+            [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+        )
+        scale = np.eye(3) - 0.9 * np.outer(
+            np.asarray([1.0, 1.0, 0.0]) / np.sqrt(2.0),
+            np.asarray([1.0, 1.0, 0.0]) / np.sqrt(2.0),
+        )
+        cpp_h, cpp_g, cpp_cost = cpp_lidar_point_plane_normal_subspace(
+            state[:6], factor.lidar_points, factor.plane_normals,
+            factor.plane_points, factor.lidar_to_body_rotation,
+            factor.lidar_to_body_translation, np.ones(3), scale,
+            np.asarray([factor.measurement_variance] * factor.matched_points),
+            1.0, 2.5,
+        )
+        backend = ManifoldSlidingWindowBackend(
+            max_states=3, cpp_math_core_enabled=False
+        )
+        index = backend.add_state(state)
+        backend.add_native_lidar_correspondences(index, factor)
+        backend.set_lidar_subspace_scale(scale)
+        py_h, py_g, py_cost = backend._normal()
+        np.testing.assert_allclose(cpp_h, py_h[:6, :6], atol=1.0e-10, rtol=1.0e-10)
+        np.testing.assert_allclose(cpp_g, py_g[:6], atol=1.0e-10, rtol=1.0e-10)
+        self.assertAlmostEqual(cpp_cost, py_cost, places=10)
+
+        axis_scale = np.asarray([0.3, 0.8, 0.5])
+        cpp_h, cpp_g, cpp_cost = cpp_lidar_point_plane_normal_subspace(
+            state[:6], factor.lidar_points, factor.plane_normals,
+            factor.plane_points, factor.lidar_to_body_rotation,
+            factor.lidar_to_body_translation, axis_scale, scale,
+            np.asarray([factor.measurement_variance] * factor.matched_points),
+            1.0, 2.5,
+        )
+        backend = ManifoldSlidingWindowBackend(
+            max_states=3, cpp_math_core_enabled=False
+        )
+        index = backend.add_state(state)
+        backend.add_native_lidar_correspondences(
+            index, factor, axis_information_scale=axis_scale
+        )
+        backend.set_lidar_subspace_scale(scale)
+        py_h, py_g, py_cost = backend._normal()
+        np.testing.assert_allclose(cpp_h, py_h[:6, :6], atol=1.0e-10, rtol=1.0e-10)
+        np.testing.assert_allclose(cpp_g, py_g[:6], atol=1.0e-10, rtol=1.0e-10)
+        self.assertAlmostEqual(cpp_cost, py_cost, places=10)
+
+    def test_subspace_scale_updates_history_but_not_marginal_prior(self):
+        backend = ManifoldSlidingWindowBackend(max_states=2)
+        factor = plane_factor(
+            [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+        )
+        for _ in range(2):
+            index = backend.add_state(np.zeros(15))
+            backend.add_native_lidar_correspondences(index, factor)
+        backend.add_state(np.zeros(15))
+        marginal_prior = next(
+            value for value in backend._factors
+            if value["name"] == "marginal_prior"
+        )
+        prior_hessian = marginal_prior["normal_hessian"].copy()
+        scale = np.diag([0.1, 1.0, 1.0])
+        backend.set_lidar_subspace_scale(scale)
+        active = [
+            value for value in backend._factors
+            if value["name"] == "lidar_point_plane"
+        ]
+        self.assertTrue(active)
+        for value in active:
+            np.testing.assert_allclose(
+                value["translation_subspace_scale"], scale
+            )
+        np.testing.assert_array_equal(
+            marginal_prior["normal_hessian"], prior_hessian
+        )
+
+        diagnostic = backend.marginal_prior_translation_diagnostic(scale)
+        self.assertTrue(diagnostic["active"])
+        self.assertEqual(diagnostic["current_weak_mode_count"], 1)
+        self.assertGreaterEqual(
+            diagnostic["position_information_trace"],
+            diagnostic["current_weak_position_information_trace"],
+        )
+
+    def test_active_lidar_solver_information_matches_factor_normal(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=False
+        )
+        factor = plane_factor(
+            [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+        )
+        index = backend.add_state(np.zeros(15))
+        backend.add_native_lidar_correspondences(index, factor)
+        backend.set_lidar_subspace_scale(np.diag([0.1, 1.0, 1.0]))
+
+        normal, _, _ = backend._normal()
+        observed, count = backend.active_lidar_solver_information()
+        pose = normal[:6, :6]
+        expected = (
+            pose[:3, :3]
+            - pose[:3, 3:] @ np.linalg.pinv(pose[3:, 3:], rcond=1.0e-12)
+            @ pose[3:, :3]
+        )
+
+        self.assertEqual(count, 1)
+        np.testing.assert_allclose(observed, expected, atol=1.0e-12)
+
+    def test_marginal_prior_diagnostic_accumulates_lidar_sources(self):
+        backend = ManifoldSlidingWindowBackend(
+            max_states=2, cpp_math_core_enabled=False
+        )
+        factor = plane_factor(
+            [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+        )
+        for _ in range(4):
+            index = backend.add_state(np.zeros(15))
+            backend.add_native_lidar_correspondences(index, factor)
+        backend.add_state(np.zeros(15))
+
+        diagnostic = backend.marginal_prior_translation_diagnostic(
+            np.diag([0.1, 1.0, 1.0])
+        )
+        self.assertGreaterEqual(
+            diagnostic["historical_source_factor_counts"].get(
+                "lidar_point_plane", 0
+            ),
+            2,
+        )
+        self.assertGreater(
+            diagnostic["historical_lidar_pre_schur_translation_trace"], 0.0
+        )
+
+    def test_historical_lidar_weak_suppression_is_opt_in(self):
+        def run(suppress):
+            backend = ManifoldSlidingWindowBackend(
+                max_states=2, cpp_math_core_enabled=False
+            )
+            backend.suppress_historical_lidar_weak = suppress
+            factor = plane_factor(
+                [1.0, 0.2, -0.4], [0.4, 0.2, 0.9], [0.2, -0.1, 0.3]
+            )
+            for _ in range(3):
+                index = backend.add_state(np.zeros(15))
+                backend.add_native_lidar_correspondences(index, factor)
+                backend.set_lidar_subspace_scale(np.diag([0.001, 1.0, 1.0]))
+            return backend.last_marginal_prior_diagnostic
+
+        baseline = run(False)
+        suppressed = run(True)
+        self.assertFalse(
+            baseline.get("historical_lidar_weak_suppression_active", False)
+        )
+        self.assertTrue(
+            suppressed.get("historical_lidar_weak_suppression_active", False)
+        )
+        self.assertLessEqual(
+            suppressed["lidar_weak_translation_trace_suppressed"],
+            suppressed["lidar_weak_translation_trace"],
+        )
 
     def test_barometer_factor_constrains_only_vertical_position(self):
         backend = ManifoldSlidingWindowBackend(max_states=2)

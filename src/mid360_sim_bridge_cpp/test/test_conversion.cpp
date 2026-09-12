@@ -14,6 +14,8 @@ using mid360_sim_bridge_cpp::point_in_body_exclusion_box;
 using mid360_sim_bridge_cpp::point_offset_time_ns;
 using mid360_sim_bridge_cpp::reflectivity_from_intensity;
 using mid360_sim_bridge_cpp::relative_time_ns;
+using mid360_sim_bridge_cpp::rotate_covariance;
+using mid360_sim_bridge_cpp::rotate_vector;
 
 TEST(Conversion, AssignsFourLivoxLines)
 {
@@ -109,4 +111,32 @@ TEST(Conversion, BodyExclusionUsesLidarToBodyExtrinsic)
     0.80, 0.10, 0.20, bounds, rotation, translation));
   EXPECT_FALSE(point_in_body_exclusion_box(
     0.20, 0.60, 0.00, bounds, rotation, translation));
+}
+
+TEST(Conversion, RotatesMountedImuMeasurementsIntoBodyFrame)
+{
+  constexpr double c = 0.9659258262890683;
+  constexpr double s = 0.2588190451025207;
+  const std::array<double, 9> sensor_to_body{c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c};
+  const std::array<double, 3> stationary_specific_force{-s * 9.80665, 0.0, c * 9.80665};
+
+  const auto body_specific_force = rotate_vector(sensor_to_body, stationary_specific_force);
+  EXPECT_NEAR(body_specific_force[0], 0.0, 1.0e-12);
+  EXPECT_NEAR(body_specific_force[1], 0.0, 1.0e-12);
+  EXPECT_NEAR(body_specific_force[2], 9.80665, 1.0e-12);
+}
+
+TEST(Conversion, RotatesImuCovarianceWithSameExtrinsic)
+{
+  constexpr double c = 0.9659258262890683;
+  constexpr double s = 0.2588190451025207;
+  const std::array<double, 9> sensor_to_body{c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c};
+  const std::array<double, 9> sensor_covariance{1.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 9.0};
+
+  const auto body_covariance = rotate_covariance(sensor_to_body, sensor_covariance);
+  EXPECT_NEAR(body_covariance[0], c * c + 9.0 * s * s, 1.0e-12);
+  EXPECT_NEAR(body_covariance[2], 8.0 * s * c, 1.0e-12);
+  EXPECT_NEAR(body_covariance[6], 8.0 * s * c, 1.0e-12);
+  EXPECT_NEAR(body_covariance[8], s * s + 9.0 * c * c, 1.0e-12);
+  EXPECT_DOUBLE_EQ(body_covariance[4], 4.0);
 }

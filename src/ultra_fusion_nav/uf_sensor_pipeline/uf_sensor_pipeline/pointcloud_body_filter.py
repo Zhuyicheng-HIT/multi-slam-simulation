@@ -1,7 +1,9 @@
 import rclpy
+import time
+from collections import deque
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Float32
 
@@ -25,6 +27,7 @@ class PointCloudBodyFilter(Node):
             "lidar_to_body_rotation", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         )
         self.declare_parameter("lidar_to_body_translation", [0.0, 0.0, 0.0])
+        self.declare_parameter("reliable_input", False)
 
         self.bounds = tuple(float(self.get_parameter(name).value) for name in (
             "body_min_x_m", "body_max_x_m", "body_min_y_m", "body_max_y_m",
@@ -43,21 +46,30 @@ class PointCloudBodyFilter(Node):
         self.ratio_pub = self.create_publisher(
             Float32, "/sensors/lidar/body_removed_ratio", qos_profile_sensor_data
         )
+        input_qos = qos_profile_sensor_data
+        if bool(self.get_parameter("reliable_input").value):
+            input_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST, depth=2,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE,
+            )
         self.create_subscription(
             PointCloud2,
             str(self.get_parameter("input_topic").value),
             self._callback,
-            qos_profile_sensor_data,
+            input_qos,
         )
         self.frames = 0
         self.removed_body = 0
         self.input_points = 0
+        self.processing_latencies_ms = deque(maxlen=512)
         self.create_timer(5.0, self._report)
         self.get_logger().info(
             f"Body filter active with body-frame bounds {self.bounds} and LiDAR extrinsic"
         )
 
     def _callback(self, msg):
+        started = time.perf_counter()
         try:
             output, removed_body, _, total = filter_cloud(
                 msg,
@@ -71,6 +83,7 @@ class PointCloudBodyFilter(Node):
             self.get_logger().error(str(exc))
             return
         self.frames += 1
+        self.processing_latencies_ms.append((time.perf_counter() - started) * 1000.0)
         self.removed_body += removed_body
         self.input_points += total
         ratio = Float32()
@@ -80,9 +93,13 @@ class PointCloudBodyFilter(Node):
 
     def _report(self):
         ratio = self.removed_body / max(1, self.input_points)
+        latencies = sorted(self.processing_latencies_ms)
+        p50 = latencies[len(latencies) // 2] if latencies else 0.0
+        p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else 0.0
         self.get_logger().info(
             f"body_filter frames={self.frames} input_points={self.input_points} "
-            f"removed_body={self.removed_body} ratio={ratio:.5f}"
+            f"removed_body={self.removed_body} ratio={ratio:.5f} "
+            f"processing_ms_p50={p50:.3f} processing_ms_p95={p95:.3f}"
         )
 
 

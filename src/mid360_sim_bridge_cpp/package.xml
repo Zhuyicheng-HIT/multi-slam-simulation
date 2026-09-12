@@ -3,7 +3,7 @@
 <package format="3">
   <name>mid360_sim_bridge_cpp</name>
   <version>0.1.0</version>
-  <description>Direct Gazebo LaserScan to Livox CustomMsg adapter for MID360 simulation.</description>
+  <description>Direct Gazebo LiDAR and IMU to Livox-compatible MID360 simulation adapter.</description>
   <maintainer email="2025111580@stu.hit.edu.cn">Yicheng Zhu</maintainer>
   <license>LGPL-3.0-only</license>
 

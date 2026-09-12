@@ -17,15 +17,25 @@ REPLAY_ACK_TIMEOUT_MS=${REPLAY_ACK_TIMEOUT_MS:-10000}
 REPLAY_WALL_TIMEOUT_S=${REPLAY_WALL_TIMEOUT_S:-1800}
 POST_REPLAY_DRAIN_WALL_S=${POST_REPLAY_DRAIN_WALL_S:-15}
 ENABLE_CYCLE_TRACE=${ENABLE_CYCLE_TRACE:-1}
+REGENERATE_LIDAR_SCHEDULER=${REGENERATE_LIDAR_SCHEDULER:-0}
+LIDAR_FACTOR_SCORE_MODE=${LIDAR_FACTOR_SCORE_MODE:-hybrid}
+LIDAR_ADMISSION_MODE=${LIDAR_ADMISSION_MODE:-adaptive}
+LIDAR_PAPER_ACTIVATION_THRESHOLD=${LIDAR_PAPER_ACTIVATION_THRESHOLD:-0.25}
+LIDAR_SUBSPACE_ENABLED=${LIDAR_SUBSPACE_ENABLED:-0}
+LIDAR_SUBSPACE_WEAK_THRESHOLD=${LIDAR_SUBSPACE_WEAK_THRESHOLD:-0.15}
+LIDAR_SUBSPACE_EXIT_THRESHOLD=${LIDAR_SUBSPACE_EXIT_THRESHOLD:-0.25}
+LIDAR_SUBSPACE_WEAK_SCALE=${LIDAR_SUBSPACE_WEAK_SCALE:-0.10}
 BACKEND_CPUSET=${BACKEND_CPUSET:-}
 BACKEND_NUMERIC_THREADS=${BACKEND_NUMERIC_THREADS:-1}
 BACKEND_EXECUTOR_THREADS=${BACKEND_EXECUTOR_THREADS:-2}
+UNIFIED_ODOM_OUTPUT_MODE=${UNIFIED_ODOM_OUTPUT_MODE:-fixed_rate_propagated}
 NONLINEAR_MAX_ITERATIONS=${NONLINEAR_MAX_ITERATIONS:-2}
 NONLINEAR_INITIALIZATION_MAX_ITERATIONS=${NONLINEAR_INITIALIZATION_MAX_ITERATIONS:-4}
 NONLINEAR_RECOVERY_MAX_ITERATIONS=${NONLINEAR_RECOVERY_MAX_ITERATIONS:-4}
 NONLINEAR_REINTEGRATION_MAX_ITERATIONS=${NONLINEAR_REINTEGRATION_MAX_ITERATIONS:-1}
 NATIVE_LIDAR_QOS_DEPTH=${NATIVE_LIDAR_QOS_DEPTH:-auto}
 NATIVE_WORKER_QUEUE_SIZE=${NATIVE_WORKER_QUEUE_SIZE:-auto}
+NATIVE_WORKER_LATEST_ONLY_ENABLED=${NATIVE_WORKER_LATEST_ONLY_ENABLED:-true}
 FRONTEND_SCAN_PREDICTION_ENABLED=${FRONTEND_SCAN_PREDICTION_ENABLED:-auto}
 CPP_MATH_CORE_ENABLED=${CPP_MATH_CORE_ENABLED:-true}
 VISUAL_FACTOR_MODE=${VISUAL_FACTOR_MODE:-paper_reprojection}
@@ -40,6 +50,8 @@ GNSS_Z_REANCHOR_ENABLED=${GNSS_Z_REANCHOR_ENABLED:-false}
 BAROMETER_FALLBACK_ENABLED=${BAROMETER_FALLBACK_ENABLED:-false}
 BAROMETER_TOPIC=${BAROMETER_TOPIC:-/mavros/imu/static_pressure}
 BACKEND_RELIABILITY_MODE=${BACKEND_RELIABILITY_MODE:-dynamic}
+TRANSACTIONAL_UPDATE_ENABLED=${TRANSACTIONAL_UPDATE_ENABLED:-true}
+MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK=${MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK:-false}
 FIXED_LIDAR_WEIGHT=${FIXED_LIDAR_WEIGHT:-1.0}
 FIXED_GNSS_WEIGHT=${FIXED_GNSS_WEIGHT:-1.0}
 FIXED_IMU_WEIGHT=${FIXED_IMU_WEIGHT:-1.0}
@@ -102,6 +114,20 @@ fi
 if [[ "$BACKEND_RELIABILITY_MODE" != dynamic && \
       "$BACKEND_RELIABILITY_MODE" != fixed ]]; then
   printf 'BACKEND_RELIABILITY_MODE must be dynamic or fixed.\n' >&2
+  exit 2
+fi
+case "$UNIFIED_ODOM_OUTPUT_MODE" in
+  fixed_rate_propagated|lidar_event_propagated|legacy_hybrid) ;;
+  *) printf 'UNIFIED_ODOM_OUTPUT_MODE must be fixed_rate_propagated, lidar_event_propagated, or legacy_hybrid.\n' >&2; exit 2 ;;
+esac
+if [[ "$TRANSACTIONAL_UPDATE_ENABLED" != true && \
+      "$TRANSACTIONAL_UPDATE_ENABLED" != false ]]; then
+  printf 'TRANSACTIONAL_UPDATE_ENABLED must be true or false.\n' >&2
+  exit 2
+fi
+if [[ "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" != true && \
+      "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" != false ]]; then
+  printf 'MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK must be true or false.\n' >&2
   exit 2
 fi
 for value in \
@@ -177,6 +203,26 @@ case "$FRONTEND_SCAN_PREDICTION_ENABLED" in
     printf 'FRONTEND_SCAN_PREDICTION_ENABLED must be auto, true, or false.\n' >&2
     exit 2
     ;;
+esac
+case "$NATIVE_WORKER_LATEST_ONLY_ENABLED" in
+  true|false) ;;
+  *) printf 'NATIVE_WORKER_LATEST_ONLY_ENABLED must be true or false.\n' >&2; exit 2 ;;
+esac
+case "$REGENERATE_LIDAR_SCHEDULER" in
+  0|1) ;;
+  *) printf 'REGENERATE_LIDAR_SCHEDULER must be 0 or 1.\n' >&2; exit 2 ;;
+esac
+case "$LIDAR_FACTOR_SCORE_MODE" in
+  hybrid|paper_eq19) ;;
+  *) printf 'LIDAR_FACTOR_SCORE_MODE must be hybrid or paper_eq19.\n' >&2; exit 2 ;;
+esac
+case "$LIDAR_ADMISSION_MODE" in
+  adaptive|paper_eq15) ;;
+  *) printf 'LIDAR_ADMISSION_MODE must be adaptive or paper_eq15.\n' >&2; exit 2 ;;
+esac
+case "$LIDAR_SUBSPACE_ENABLED" in
+  0|1) ;;
+  *) printf 'LIDAR_SUBSPACE_ENABLED must be 0 or 1.\n' >&2; exit 2 ;;
 esac
 if [[ ! -f "$REPLAY_QOS_OVERRIDES" ]]; then
   printf 'Missing rosbag QoS override file: %s\n' "$REPLAY_QOS_OVERRIDES" >&2
@@ -322,6 +368,20 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+scheduler_mask_args=()
+if [[ "$REPLAY_DISABLE_LIDAR" == true ]]; then
+  scheduler_mask_args+=(--disable lidar)
+fi
+if [[ "$REPLAY_DISABLE_GNSS" == true ]]; then
+  scheduler_mask_args+=(--disable gnss)
+fi
+if (( ${#scheduler_mask_args[@]} > 0 )); then
+  setsid python3 "$REPO_ROOT/tools/replay_scheduler_mask.py" \
+    "${scheduler_mask_args[@]}" \
+    >"$OUTPUT_DIR/scheduler_mask.log" 2>&1 &
+  pids+=("$!")
+fi
+
 backend_command=(
   ros2 run uf_backend_fusion online_backend_fusion
   --ros-args
@@ -342,6 +402,8 @@ backend_command=(
   -p barometer_fallback_enabled:="$BAROMETER_FALLBACK_ENABLED"
   -p barometer_topic:="$BAROMETER_TOPIC"
   -p reliability_mode:="$BACKEND_RELIABILITY_MODE"
+  -p transactional_update_enabled:="$TRANSACTIONAL_UPDATE_ENABLED"
+  -p marginal_prior_suppress_historical_lidar_weak:="$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK"
   -p fixed_lidar_weight:="$FIXED_LIDAR_WEIGHT"
   -p fixed_gnss_weight:="$FIXED_GNSS_WEIGHT"
   -p fixed_imu_weight:="$FIXED_IMU_WEIGHT"
@@ -360,13 +422,26 @@ backend_command=(
   -p allow_lio_pose_fallback:=false
   -p imu_factor_enabled:=true
   -p executor_threads:="$BACKEND_EXECUTOR_THREADS"
+  -p unified_odom_output_mode:="$UNIFIED_ODOM_OUTPUT_MODE"
   -p nonlinear_max_iterations:="$NONLINEAR_MAX_ITERATIONS"
   -p nonlinear_initialization_max_iterations:="$NONLINEAR_INITIALIZATION_MAX_ITERATIONS"
   -p nonlinear_recovery_max_iterations:="$NONLINEAR_RECOVERY_MAX_ITERATIONS"
   -p nonlinear_reintegration_max_iterations:="$NONLINEAR_REINTEGRATION_MAX_ITERATIONS"
   -p native_lidar_qos_depth:="$NATIVE_LIDAR_QOS_DEPTH"
   -p native_worker_queue_size:="$NATIVE_WORKER_QUEUE_SIZE"
+  -p native_worker_latest_only_enabled:="$NATIVE_WORKER_LATEST_ONLY_ENABLED"
 )
+if [[ "$LIDAR_ADMISSION_MODE" != adaptive ]]; then
+  backend_command+=( -p lidar_admission_mode:="$LIDAR_ADMISSION_MODE" )
+fi
+if [[ "$LIDAR_SUBSPACE_ENABLED" == 1 ]]; then
+  backend_command+=(
+    -p lidar_subspace_enabled:=true
+    -p lidar_subspace_weak_threshold:="$LIDAR_SUBSPACE_WEAK_THRESHOLD"
+    -p lidar_subspace_exit_threshold:="$LIDAR_SUBSPACE_EXIT_THRESHOLD"
+    -p lidar_subspace_weak_scale:="$LIDAR_SUBSPACE_WEAK_SCALE"
+  )
+fi
 if [[ "$ENABLE_CYCLE_TRACE" == 1 ]]; then
   backend_command+=(
     -p performance_profiling_enabled:=true
@@ -435,6 +510,42 @@ if (( regenerate_visual_factor_score == 1 )); then
   pids+=("$!")
 fi
 
+if [[ "$REGENERATE_LIDAR_SCHEDULER" == 1 ]]; then
+  monitor_command=(
+    ros2 run uf_reliability reliability_monitor --ros-args
+    --params-file "$WORKSPACE_ROOT/install/uf_reliability/share/uf_reliability/config/reliability.yaml"
+    -p use_sim_time:=true
+    -r /reliability/lidar_score:=/replay/reliability/lidar_score
+    -r /reliability/lidar_map_score:=/replay/reliability/lidar_map_score
+    -r /reliability/gnss_score:=/replay/monitor_unused/gnss_score
+    -r /reliability/imu_score:=/replay/monitor_unused/imu_score
+    -r /reliability/optical_flow_score:=/replay/monitor_unused/optical_flow_score
+    -r /reliability/vision_score:=/replay/monitor_unused/vision_score
+    -r /reliability/vision_factor_score:=/replay/monitor_unused/vision_factor_score
+    -r /reliability/gnss_integrity:=/replay/monitor_unused/gnss_integrity
+  )
+  if [[ "$LIDAR_FACTOR_SCORE_MODE" != hybrid ]]; then
+    monitor_command+=( -p lidar.factor.score_mode:="$LIDAR_FACTOR_SCORE_MODE" )
+  fi
+  setsid "${monitor_command[@]}" >"$OUTPUT_DIR/lidar_score_regenerator.log" 2>&1 &
+  pids+=("$!")
+
+  scheduler_command=(
+    ros2 run uf_reliability reliability_scheduler --ros-args
+    --params-file "$WORKSPACE_ROOT/install/uf_reliability/share/uf_reliability/config/scheduler_config.yaml"
+    -p use_sim_time:=true
+    -r /reliability/lidar_score:=/replay/reliability/lidar_score
+  )
+  if [[ "$LIDAR_ADMISSION_MODE" != adaptive ]]; then
+    scheduler_command+=(
+      -p lidar_admission_mode:="$LIDAR_ADMISSION_MODE"
+      -p lidar_paper_activation_threshold:="$LIDAR_PAPER_ACTIVATION_THRESHOLD"
+    )
+  fi
+  setsid "${scheduler_command[@]}" >"$OUTPUT_DIR/reliability_scheduler.log" 2>&1 &
+  pids+=("$!")
+fi
+
 setsid python3 "$REPO_ROOT/tools/record_backend_replay_metrics.py" \
   --output "$OUTPUT_DIR/replay_metrics.json" --wall-timeout 1800 \
   >"$OUTPUT_DIR/metrics_recorder.log" 2>&1 &
@@ -453,16 +564,7 @@ if [[ "$ACCURACY_ENABLED" == 1 ]]; then
 fi
 sleep 4
 
-play_command=(
-  ros2 bag play "$BAG_DIR"
-  --rate "$REPLAY_RATE"
-  --start-offset "$REPLAY_START_OFFSET"
-  --read-ahead-queue-size "$REPLAY_READ_AHEAD_QUEUE_SIZE"
-  --delay "$REPLAY_DISCOVERY_DELAY_S"
-  --wait-for-all-acked "$REPLAY_ACK_TIMEOUT_MS"
-  --disable-keyboard-controls
-  --qos-profile-overrides-path "$REPLAY_QOS_OVERRIDES"
-  --topics
+play_topics=(
   /clock
   /fast_lio/frontend_scan_request
   /fast_lio/native_lidar_factor
@@ -475,8 +577,6 @@ play_command=(
   /vision/feature_tracks
   /vision/rgbd_geometry_tracks
   /vision/rgbd_direct_tracks
-  /reliability/scheduler_state
-  /reliability/lidar_score
   /reliability/imu_score
   /reliability/gnss_score
   /reliability/optical_flow_score
@@ -487,6 +587,31 @@ play_command=(
   /mission/phase
   /mission/checkpoint
 )
+if [[ "$REGENERATE_LIDAR_SCHEDULER" == 1 ]]; then
+  play_topics+=( /lio/diagnostics /lio/odom )
+else
+  play_topics+=( /reliability/scheduler_state /reliability/lidar_score )
+fi
+
+play_command=(
+  ros2 bag play "$BAG_DIR"
+  --rate "$REPLAY_RATE"
+  --start-offset "$REPLAY_START_OFFSET"
+  --read-ahead-queue-size "$REPLAY_READ_AHEAD_QUEUE_SIZE"
+  --delay "$REPLAY_DISCOVERY_DELAY_S"
+  --disable-keyboard-controls
+  --qos-profile-overrides-path "$REPLAY_QOS_OVERRIDES"
+)
+if [[ "${REPLAY_WAIT_FOR_ALL_ACKED:-true}" == true ]]; then
+  play_command+=(--wait-for-all-acked "$REPLAY_ACK_TIMEOUT_MS")
+fi
+if (( ${#scheduler_mask_args[@]} > 0 )); then
+  play_command+=(
+    --remap
+    /reliability/scheduler_state:=/replay/reliability/scheduler_state_input
+  )
+fi
+play_command+=(--topics "${play_topics[@]}")
 set +e
 timeout "${REPLAY_WALL_TIMEOUT_S}s" "${play_command[@]}" \
   </dev/null >"$OUTPUT_DIR/rosbag_play.log" 2>&1
@@ -548,9 +673,16 @@ printf 'numeric_threads=%s\ncpp_math_core_enabled=%s\nvisual_factor_mode_request
   "$VISUAL_PENDING_ENABLED" \
   "$VISUAL_REQUIRE_TIME_LOCK" "$BACKEND_RELIABILITY_MODE" \
   >>"$OUTPUT_DIR/replay_result.env"
+printf 'transactional_update_enabled=%s\n' \
+  "$TRANSACTIONAL_UPDATE_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
+printf 'marginal_prior_suppress_historical_lidar_weak=%s\n' \
+  "$MARGINAL_PRIOR_SUPPRESS_HISTORICAL_LIDAR_WEAK" >>"$OUTPUT_DIR/replay_result.env"
 printf 'executor_threads=%s\nnative_lidar_qos_depth=%s\nnative_worker_queue_size=%s\n' \
   "$BACKEND_EXECUTOR_THREADS" "$NATIVE_LIDAR_QOS_DEPTH" \
   "$NATIVE_WORKER_QUEUE_SIZE" >>"$OUTPUT_DIR/replay_result.env"
+printf 'native_worker_latest_only_enabled=%s\n' \
+  "$NATIVE_WORKER_LATEST_ONLY_ENABLED" >>"$OUTPUT_DIR/replay_result.env"
+printf 'unified_odom_output_mode=%s\n' "$UNIFIED_ODOM_OUTPUT_MODE" >>"$OUTPUT_DIR/replay_result.env"
 printf 'qos_overrides=%s\n' "$REPLAY_QOS_OVERRIDES" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'read_ahead_queue_size=%s\ndiscovery_delay_s=%s\nack_timeout_ms=%s\npost_replay_drain_wall_s=%s\n' \
@@ -567,6 +699,14 @@ printf 'frontend_scan_prediction_enabled=%s\n' \
 printf 'fixed_lidar_weight=%s\nfixed_gnss_weight=%s\nfixed_imu_weight=%s\nfixed_optical_flow_weight=%s\nfixed_vision_weight=%s\n' \
   "$FIXED_LIDAR_WEIGHT" "$FIXED_GNSS_WEIGHT" "$FIXED_IMU_WEIGHT" \
   "$FIXED_OPTICAL_FLOW_WEIGHT" "$FIXED_VISION_WEIGHT" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'regenerate_lidar_scheduler=%s\nlidar_factor_score_mode=%s\nlidar_admission_mode=%s\nlidar_paper_activation_threshold=%s\n' \
+  "$REGENERATE_LIDAR_SCHEDULER" "$LIDAR_FACTOR_SCORE_MODE" \
+  "$LIDAR_ADMISSION_MODE" "$LIDAR_PAPER_ACTIVATION_THRESHOLD" \
+  >>"$OUTPUT_DIR/replay_result.env"
+printf 'lidar_subspace_enabled=%s\nlidar_subspace_weak_threshold=%s\nlidar_subspace_exit_threshold=%s\nlidar_subspace_weak_scale=%s\n' \
+  "$LIDAR_SUBSPACE_ENABLED" "$LIDAR_SUBSPACE_WEAK_THRESHOLD" \
+  "$LIDAR_SUBSPACE_EXIT_THRESHOLD" "$LIDAR_SUBSPACE_WEAK_SCALE" \
   >>"$OUTPUT_DIR/replay_result.env"
 printf 'rgbd_depth_healthy_lidar_stride=%s\n' \
   "$RGBD_DEPTH_HEALTHY_LIDAR_STRIDE" >>"$OUTPUT_DIR/replay_result.env"

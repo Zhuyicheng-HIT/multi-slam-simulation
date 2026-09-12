@@ -159,11 +159,22 @@ trace_stage() {
     >>"$STARTUP_TRACE"
 }
 
-if [[ -f "$ACTIVE_FILE" ]] && d435i_active_read "$ACTIVE_FILE" && \
-   kill -0 "$D435I_ACTIVE_PID" 2>/dev/null; then
-  printf 'A D435i headless stack is already active: pid=%s run=%s\n' \
-    "$D435I_ACTIVE_PID" "$D435I_ACTIVE_RUN_DIR" >&2
-  exit 2
+if [[ -f "$ACTIVE_FILE" ]] && d435i_active_read "$ACTIVE_FILE"; then
+  if kill -0 "$D435I_ACTIVE_PID" 2>/dev/null; then
+    printf 'A D435i headless stack is already active: pid=%s run=%s\n' \
+      "$D435I_ACTIVE_PID" "$D435I_ACTIVE_RUN_DIR" >&2
+    exit 2
+  fi
+  # A killed wrapper can leave its children alive and the marker behind.  The
+  # stale manifest is trusted only when its run directory belongs to this
+  # workspace; the helper additionally checks command ownership and start
+  # ticks before signalling each process group.
+  if d435i_run_dir_owned "$D435I_ACTIVE_RUN_DIR" "$WS_ROOT"; then
+    d435i_cleanup_run_manifests "$D435I_ACTIVE_RUN_DIR" "$WS_ROOT" \
+      "$D435I_ACTIVE_RUN_DIR/stale_recovery_cleanup.log"
+    d435i_active_archive "$ACTIVE_FILE" "$WS_ROOT/logs/d435i_visual_slam" \
+      stale_wrapper_marker
+  fi
 fi
 
 RUN_TOKEN="$$-$(date +%s%N)"
@@ -400,6 +411,9 @@ trace_stage livox_ownership_stable
 setsid env \
   LOG_DIR="$RUN_DIR/fastlio" RVIZ=0 LIDAR_WS="$LIDAR_WS" \
   FASTLIO_INPUT_MODE=livox START_LIVOX_POINTCLOUD_BRIDGE=0 \
+  START_DYNAMIC_CLEAN_GATEWAY="${START_DYNAMIC_CLEAN_GATEWAY:-0}" \
+  DYNAMIC_CLEAN_CONFIG="${DYNAMIC_CLEAN_CONFIG:-$WS_ROOT/src/ultra_fusion_nav/uf_dynamic_observer/config/clean_gateway.yaml}" \
+  DYNAMIC_CLEAN_TOPIC="${DYNAMIC_CLEAN_TOPIC:-/dynamic_observer/clean/livox}" \
   FASTLIO_NATIVE_FACTOR_EXPORT=1 \
   FASTLIO_DOWNSTREAM_BACKEND=1 \
   FASTLIO_MAP_INSERTION_MODE=backend_confirmed \
@@ -459,8 +473,8 @@ record_pid simulation_performance "$!"
 # These checks are mission-readiness gates, not prerequisites for creating the
 # first native LiDAR state. Keeping them after first odom removes serial ROS CLI
 # startup latency without weakening any estimator observability condition.
-wait_for_topic /mavros/imu/data_raw 120
-trace_stage imu_ready
+wait_for_topic /livox/imu 120
+trace_stage mid360_imu_ready
 wait_for_topic /sim/optical_flow/rad 90
 trace_stage flow_ready
 wait_for_topic /mavros/global_position/raw/fix 120
