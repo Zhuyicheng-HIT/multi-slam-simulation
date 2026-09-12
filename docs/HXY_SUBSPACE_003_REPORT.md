@@ -1,49 +1,27 @@
-# HXY-SUBSPACE-003: arbitrary weak-subspace LiDAR prototype
+# HXY-SUBSPACE-003：任意 weak-subspace LiDAR prototype
 
-## Implementation
+## 实现
 
-C is enabled with `lidar_subspace_enabled=true` and uses the current native
-translation Schur eigendecomposition.  A mode is weak when its normalized
-eigenvalue is below `0.15`; an active episode uses the hysteresis exit threshold
-`0.25`.  Weak modes receive information scale `0.001`; all strong modes remain
-at `1.0`.  The projector is
+C 通过 `lidar_subspace_enabled=true` 启用，并使用当前 native translation Schur eigendecomposition。normalized eigenvalue 低于 `0.15` 的 mode 视为 weak，active episode 的 hysteresis exit threshold 为 `0.25`。Weak mode 的 information scale 为 `0.001`，所有 strong mode 保持 `1.0`。投影器为 `P = U diag(sqrt(s_i)) U^T`，其中 `U` 是当前 3-D translation eigenbasis。每个 raw point-plane factor 的 translation-conditioned Schur block 重加权为 `S' = P S P`，conditional translation gradient 乘以 `P^2`；rotation block 与 translation-rotation coupling 保留。该方法支持任意旋转的 weak direction，而不局限于 XYZ 轴。
 
-`P = U diag(sqrt(s_i)) U^T`,
+当前窗口中每个 active raw `lidar_point_plane` factor 都接收同一 episode projector，包括尚未 marginalize 的历史 factor。`marginal_prior` 从不修改。每条 observation 仍对应一个 factor；GNSS、RGB-D、optical-flow、Z-axis、state-machine 和 relocalization weight 均未改变。
 
-where `U` is the current 3-D translation eigenbasis.  For each raw point-plane
-factor, the translation-conditioned Schur block is reweighted as
-`S' = P S P`; its conditional translation gradient is scaled by `P^2`.  The
-rotation block and translation-rotation coupling are retained.  This supports
-arbitrary rotated weak directions, not only XYZ axes.
+现有 C++ kernel 仅支持对角 XYZ scaling，因此非平凡旋转 projector 使用现有 Python per-factor normal path。该 prototype 数学定义清晰但不具备 real-time 效率；C++ rotated-normal kernel 属于后续优化，不在本实验范围。
 
-Every active raw `lidar_point_plane` factor in the current window receives the
-same episode projector, including historical factors that have not yet been
-marginalized.  `marginal_prior` is never modified.  Factors remain one
-observation per factor.  No GNSS, RGB-D, optical-flow, Z-axis, state-machine, or
-relocalization weight was changed.
+## Replay 与参考
 
-Because the existing C++ kernel only supports diagonal XYZ scaling, a nontrivial
-rotated projector uses the existing Python per-factor normal path.  This keeps
-the prototype mathematically explicit but is not real-time efficient; a C++
-rotated-normal kernel is a follow-up optimization, not part of this experiment.
+冻结输入和 SHA256 与 HXY-DIAG-002 相同。A、B 是该报告中的 formal complete-QoS replay。C 使用相同 bag、QoS depth 1024、worker queue 1024、重新生成的 LiDAR scheduler、rate 0.5，以及：
 
-## Replay and references
+- algorithm base：stable `c7c1adcd92a7fdd3b5b38aa47e48a10ea3552981`；
+- score/admission：`hybrid` / `adaptive`；
+- subspace：threshold `0.15`、exit `0.25`、weak scale `0.001`；
+- output：`/home/ld666/projects/hxy-diag-002/replay_C_subspace_final`。
 
-The frozen input and SHA256 are unchanged from HXY-DIAG-002.  A and B are the
-formal complete-QoS replays in that report.  C used the same bag, QoS depth 1024,
-worker queue 1024, regenerated LiDAR scheduler, rate 0.5, and:
+## A/B/C 精度
 
-- algorithm base: stable `c7c1adcd92a7fdd3b5b38aa47e48a10ea3552981`
-- score/admission: `hybrid` / `adaptive`
-- subspace: threshold `0.15`, exit `0.25`, weak scale `0.001`
-- output: `/home/ld666/projects/hxy-diag-002/replay_C_subspace_final`
+共同 source-stamp 区间为 `30.723 <= t <= 78.804 s`；由于 Python path 增加 callback latency，C 仅产生 453 个可评分 sample。
 
-## A/B/C accuracy
-
-The common source-stamp interval is `30.723 <= t <= 78.804 s`; C produced only
-453 scoreable samples because its Python path increased callback latency.
-
-| Metric | A stable | B PR17 | C subspace |
+| 指标 | A stable | B PR17 | C subspace |
 |---|---:|---:|---:|
 | 3D RMSE (m) | 19.204 | 0.487 | 6.457 |
 | XY RMSE (m) | 19.204 | 0.485 | 6.457 |
@@ -52,58 +30,38 @@ The common source-stamp interval is `30.723 <= t <= 78.804 s`; C produced only
 | 3D max (m) | 66.671 | 1.239 | 25.635 |
 | Endpoint/last scored error (m) | 66.671 | 1.144 | 25.635 |
 
-Full C output ended at 46.071 s with 453 matched samples.  C is materially
-better than A but does not approach B's accuracy.
+C 的完整输出在 46.071 s 结束，共 453 个匹配 sample。C 明显优于 A，但未接近 B 的精度。
 
-Offline error projections onto the instantaneous LiDAR basis over the same
-interval:
+同一区间内将误差投影到瞬时 LiDAR basis：
 
 | Projection RMSE | A | B | C |
 |---|---:|---:|---:|
-| Weakest translation direction (m) | 12.655 | 0.372 | 5.069 |
-| Strongest translation eigenvector (m) | 10.431 | 0.231 | 1.765 |
+| 最弱 translation direction (m) | 12.655 | 0.372 | 5.069 |
+| 最强 translation eigenvector (m) | 10.431 | 0.231 | 1.765 |
 
-C preserves strong-direction information substantially better than A, but the
-weak-direction residual remains dominant.  B is better because it disables all
-LiDAR factors and avoids the unstable feedback loop; that is not evidence that
-B preserves strong LiDAR information.
+C 比 A 更好地保留 strong-direction information，但 weak-direction residual 仍占主导。B 禁用所有 LiDAR factor 并避开不稳定 feedback loop，因而更好；这不证明 B 保留了 strong LiDAR information。
 
-## Admission and timing
+## Admission 与 timing
 
-| Quantity | A | B | C |
+| 数量 | A | B | C |
 |---|---:|---:|---:|
-| Trace transactions | 498 | 672 | 484 |
+| Trace transaction | 498 | 672 | 484 |
 | LiDAR solver admitted | 452 | 0 | 436 |
 | Native received | 678 | 678 | 678 |
 | Internal latest-only skipped | 171 | 0 | 185 |
-| Prediction hard rejects | 12 | 165 | 128 |
-| Recovery factors | 0 | 0 | 107 |
-| Optimized states | 466 | 672 | 447 |
-| Rollbacks | 32 | 0 | 37 |
+| Prediction hard reject | 12 | 165 | 128 |
+| Recovery factor | 0 | 0 | 107 |
+| Optimized state | 466 | 672 | 447 |
+| Rollback | 32 | 0 | 37 |
 
-C's first hard reject and first non-admission are transaction 331, scan 461,
-`t=63.723 s`.  Its first marginalization remains transaction 9 at `31.515 s`,
-with `marginal_prior` first used at transaction 10 / `31.614 s`.  Thus the prior
-precedes the eventual C divergence by about 32 s, but C does not alter the prior;
-the current evidence cannot prove that the prior is the dominant remaining error
-source.  The much larger C callback time also changes latest-only admission and
-must be removed before a definitive causal claim.
+C 的首次 hard reject 和首次 non-admission 为 transaction 331、scan 461、`t=63.723 s`。首次 marginalization 仍是 transaction 9（`31.515 s`），`marginal_prior` 首次使用为 transaction 10（`31.614 s`）。因此 prior 比 C 的最终 divergence 早约 32 s，但 C 未修改 prior，现有证据不能证明 prior 是主要剩余误差来源。C 更长的 callback time 还改变了 latest-only admission，必须先消除该影响才能提出确定因果结论。
 
-## Decision
+## 决策
 
-1. **C vs A:** clearly better on this bag (`6.46 m` vs `19.20 m` 3D RMSE), with
-   much lower strong-direction error and a preserved LiDAR admission stream.
-2. **C vs B:** not close to B (`6.46 m` vs `0.49 m`); C retains LiDAR strong
-   information, while B retains none.  C is not a replacement for B yet.
-3. **Marginal prior:** it is temporally upstream of the residual error, but this
-   run cannot isolate it from the Python-path timing/latest-only effect.  Do not
-   modify marginalization yet; first add prior source/subspace accounting and a
-   rotated C++ normal kernel, then replay with matched transaction horizons.
+1. **C 对 A：** 在此 bag 上明显更好（3D RMSE 为 `6.46 m` 对 `19.20 m`），strong-direction error 更低且保留 LiDAR admission stream。
+2. **C 对 B：** 与 B（`6.46 m` 对 `0.49 m`）仍有明显差距；C 保留 LiDAR strong information，而 B 完全不保留。C 目前不能替代 B。
+3. **Marginal prior：** 在时间上先于 residual error，但本次运行无法将其与 Python-path timing/latest-only effect 分离。暂不修改 marginalization；应先增加 prior source/subspace accounting 和 rotated C++ normal kernel，再以匹配的 transaction horizon replay。
 
 **DO_NOT_PROMOTE**
 
-C is a valid diagnostic/projection prototype and should not be promoted to the
-next algorithm baseline until timing is made fair, marginal-prior attribution is
-logged, and C is compared on a replay where RGB-D or optical flow actually forms
-solver factors.
-
+C 是有效的 diagnostic/projection prototype。在 timing 公平、记录 marginal-prior attribution，并在 RGB-D 或 optical flow 实际形成 solver factor 的 replay 上完成比较前，不应将其提升为下一算法 baseline。

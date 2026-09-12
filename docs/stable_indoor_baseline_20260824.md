@@ -1,12 +1,11 @@
-# Stable Indoor Baseline 2026-08-24
+# 稳定室内基线 2026-08-24
 
-This baseline is based on `checkpoint/stable-microlink-20260822` and contains
-startup fixes only. The fusion algorithm and sensor weighting configuration
-were not changed.
+本基线基于 `checkpoint/stable-microlink-20260822`，仅包含启动修复，未改变
+fusion algorithm 或 sensor weighting 配置。
 
-## Validation
+## 验证
 
-Validated with the ordinary indoor world:
+使用普通室内场景验证：
 
 ```bash
 LOG_DIR="$PWD/logs/stable_baseline_indoor_aug22_rerun_20260824" \
@@ -28,36 +27,32 @@ RECTANGLE_SPEED=0.2 RECTANGLE_HOLD_TIME=2 \
 bash tools/run_unified_rectangle_validation.sh
 ```
 
-The vehicle completed takeoff, all four rectangle edges, landing, and
-disarm. The strict validation result was `passed=true`.
+飞行器完成起飞、矩形四条边、着陆和 disarm，严格验证结果为 `passed=true`。
 
-## Accuracy
+## 精度
 
-Metrics are causal and use the frozen initial alignment:
+指标采用冻结的初始对齐并具有因果性：
 
-| Metric | Result |
+| 指标 | 结果 |
 | --- | ---: |
 | 3D RMSE | 0.0245 m |
 | 3D P95 | 0.0346 m |
-| 3D maximum | 0.0523 m |
+| 3D 最大值 | 0.0523 m |
 | XY RMSE | 0.0147 m |
 | Z RMSE | 0.0196 m |
-| Endpoint error | 0.0211 m |
+| 终点误差 | 0.0211 m |
 
-The run used the unified five-source backend with ExternalNav FCU consumption
-disabled for estimator-only evaluation. LiDAR, GNSS, optical flow, RGB-D, and
-IMU factor paths were all active; native factor queue loss and optimization
-rollback counts were zero.
+本次运行使用 unified five-source backend，并关闭 ExternalNav FCU consumption，
+用于 estimator-only 评估。LiDAR、GNSS、optical flow、RGB-D 和 IMU factor 路径
+均启用；native factor queue 丢失和 optimization rollback 计数均为零。
 
-## Startup fixes
+## 启动修复
 
-- Wait for MAVROS IMU and simulated barometer before waiting for the LiDAR
-  bridge, avoiding a bridge initialization deadlock.
-- Load `mavros_apm_rgbd.yaml` so MAVROS connects to the SITL TCP endpoint.
-- Use the dependency workspace `local_setup.bash` to preserve the ArduPilot
-  Gazebo system plugin path.
+- 在等待 LiDAR bridge 前等待 MAVROS IMU 与 simulated barometer，避免 bridge 初始化死锁；
+- 加载 `mavros_apm_rgbd.yaml`，使 MAVROS 连接 SITL TCP endpoint；
+- 使用依赖工作空间的 `local_setup.bash`，保留 ArduPilot Gazebo system plugin 路径。
 
-Build and test verification after the change:
+修改后的构建与测试验证：
 
 ```text
 colcon build --symlink-install: passed

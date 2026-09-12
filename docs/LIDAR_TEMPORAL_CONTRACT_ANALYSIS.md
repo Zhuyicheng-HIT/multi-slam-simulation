@@ -1,88 +1,45 @@
-# LiDAR Temporal Contract Analysis
+# LiDAR 时间契约分析
 
-## Scope and evidence
+## 范围与证据
 
-This analysis separates a coherent delay at the FAST-LIO/backend boundary from
-an intentionally broken interface contract.  The frozen deterministic replay is
-`logs/tmp/robustness_v3_frozen_clock_replay_c`; the complete 26-profile result is
-`logs/tmp/robustness_v3_1_lidar_temporal_deterministic/temporal_summary.json`.
+本分析区分 FAST-LIO/backend 边界上的一致延迟与故意破坏的接口契约。冻结 replay 为 `logs/tmp/robustness_v3_frozen_clock_replay_c`，完整 26-profile 结果位于 `logs/tmp/robustness_v3_1_lidar_temporal_deterministic/temporal_summary.json`。
 
-The frozen bag contains `FrontendScanRequest` and `NativeLidarFactor`, but it
-does not contain raw LiDAR packets or per-point timestamps.  Therefore A1 proves
-the coherent temporal contract from the FAST-LIO frontend boundary onward.  It
-does not claim a physical packet/deskew tolerance for a real MID360.
+冻结 bag 含 `FrontendScanRequest` 和 `NativeLidarFactor`，不含原始 LiDAR packet 或逐点 timestamp。因此 A1 只证明 FAST-LIO frontend 边界之后的一致时间契约，不能代表真实 MID360 的 packet/deskew 物理容差。
 
-## What the old injector changed
+## 旧 injector 的变化
 
-The previous `native_lidar/time_offset` profile shifted only the
-`NativeLidarFactor` header, scan-begin and scan-end stamps.  It did not shift the
-paired `FrontendScanRequest`; it also had no access to packet, per-point,
-FAST-LIO frontend or deskew timestamps.  The old `+2 ms` result was therefore an
-A2 interface-mismatch experiment, not a physical sensor-delay result.
+旧 `native_lidar/time_offset` 只移动 `NativeLidarFactor` header、scan-begin 和 scan-end，没有移动配对的 `FrontendScanRequest`，也无法访问 packet、逐点、FAST-LIO frontend 或 deskew timestamp；旧的 `+2 ms` 是 A2 interface-mismatch 实验，不是物理传感器延迟结果。
 
-The V3.1 injector now supports two explicit scopes:
+V3.1 injector 提供两个明确范围：`coherent_frontend_contract` 同时移动 request、factor header、scan begin/end；`factor_only` 只移动 factor timestamp，故意违反 request/factor cache contract。Scan-request publisher 使用与 backend subscription 匹配的 reliable、transient-local QoS，仅移动 timestamp，不用到达时间重新盖章。
 
-- `coherent_frontend_contract`: shifts `FrontendScanRequest`, factor header,
-  scan begin and scan end together.
-- `factor_only`: shifts only the factor-side stamps to deliberately violate the
-  request/factor cache contract.
+## 确定性矩阵
 
-The scan-request publisher uses reliable, transient-local QoS, matching the
-backend subscription.  Timestamp values are shifted; messages are not
-restamped with arrival time.
+每个值使用相同冻结消息和顺序；所有行 optimization error、integrity reject、transaction rollback 均为零。
 
-## Deterministic matrix
-
-Each value below used the same frozen messages and ordering.  Optimization
-errors, integrity rejects and transaction rollbacks were zero in every row.
-
-| Offset | A1 coherent boundary | A2 factor-only mismatch |
+| Offset | A1 一致边界 | A2 仅 factor 不匹配 |
 |---:|---|---|
-| 0 ms | PASS, completeness 1.000 | PASS, completeness 1.000 |
-| ±0.5 ms | PASS, completeness 1.000 | PASS, completeness 1.000 |
-| ±1 ms | PASS, completeness 1.000 | PASS, completeness 1.000 |
-| ±2 ms | PASS, completeness 1.000 | FAIL: +2 ms has a 1.023 s gap; -2 ms completeness 0.0186 |
-| ±5 ms | PASS, completeness 1.000 | FAIL, effectively no usable trajectory |
-| +10 ms | PASS, completeness 1.000, max gap 0.627 s | FAIL |
-| -10 ms | PASS, completeness 1.000, max gap 0.232 s | FAIL |
-| +20 ms | FAIL, completeness 0.6637, first gap 1.716 s | FAIL |
-| -20 ms | FAIL, completeness 0.7696 | FAIL |
+| 0 ms | PASS，completeness 1.000 | PASS，completeness 1.000 |
+| ±0.5 ms | PASS，completeness 1.000 | PASS，completeness 1.000 |
+| ±1 ms | PASS，completeness 1.000 | PASS，completeness 1.000 |
+| ±2 ms | PASS，completeness 1.000 | FAIL：+2 ms gap 1.023 s；-2 ms completeness 0.0186 |
+| ±5 ms | PASS，completeness 1.000 | FAIL，几乎无可用轨迹 |
+| +10 ms | PASS，completeness 1.000，max gap 0.627 s | FAIL |
+| -10 ms | PASS，completeness 1.000，max gap 0.232 s | FAIL |
+| +20 ms | FAIL，completeness 0.6637，first gap 1.716 s | FAIL |
+| -20 ms | FAIL，completeness 0.7696 | FAIL |
 
-The demonstrated coherent boundary range is therefore **[-10 ms, +10 ms]**.
-The demonstrated factor/request mismatch range is only **[-1 ms, +1 ms]**.
-These are tested bounds, not interpolated or universal hardware limits.
+实测一致边界为 **[-10 ms, +10 ms]**；factor/request mismatch 仅为 **[-1 ms, +1 ms]**。这些是测试边界，不是插值或通用硬件上限。
 
-## Scan-prediction cache mechanism
+## Scan-prediction cache 机制
 
-At nominal coherent timing, 575 Native factors were produced with 574 cache
-hits and zero misses.  Coherent +10 ms retained 542 hits and zero misses; the
-backend rejected 43 reuse attempts and 34 scans whose available IMU/window
-coverage was no longer suitable.  Coherent +20 ms still had zero cache misses,
-but reuse and scan rejection rose to 160 and 202, producing the real loss of
-completeness at this interface boundary.
+名义一致 timing 产生 575 个 Native factor，574 次 cache hit、0 miss。+10 ms 保留 542 次 hit、0 miss；backend 拒绝 43 次 reuse 和 34 个 IMU/window coverage 不足的 scan。+20 ms 仍无 cache miss，但 reuse 与 scan reject 升至 160 和 202，导致 completeness 真正下降。
 
-For factor-only +2 ms, the request remains at its original timestamp while the
-factor key moves.  At +2 ms this produced 184 reuse rejections and a 1.023 s
-trajectory gap.  At -2 ms only 7 factors survived; deferred/released and reuse
-diagnostics show the request/factor pairing contract collapsing.  At ±5 ms and
-beyond only the initial factor survived.  This is
-`INTERFACE_CONTRACT_SENSITIVITY`.
+Factor-only +2 ms 中 request 保持原 timestamp 而 factor key 移动，产生 184 次 reuse reject 和 1.023 s 轨迹 gap；-2 ms 仅 7 个 factor 存活，说明 request/factor pairing contract 崩溃，即 `INTERFACE_CONTRACT_SENSITIVITY`。
 
-## Online calibration and remaining hardware evidence
+## 在线标定与硬件证据
 
-The existing LiDAR-IMU time calibration path is shadow-only in this runtime and
-the frozen bag lacks an independently shifted raw LiDAR motion stream.  It
-cannot legitimately recover or validate packet/point/deskew delay here.  The
-following remain `HARDWARE_DATA_REQUIRED`:
+现有 LiDAR-IMU time calibration 在该 runtime 中仅 shadow-only，冻结 bag 没有独立平移的原始 LiDAR motion stream，无法合法恢复或验证 packet/point/deskew delay。以下项目仍标记为 `HARDWARE_DATA_REQUIRED`：MID360 packet/逐点 timestamp 传播、生产 driver 的 scan begin/end 推导、真实 deskew trajectory 与 FAST-LIO frontend timing，以及生产 LiDAR-IMU online time-calibration path 的恢复能力。
 
-- MID360 packet and per-point timestamp propagation;
-- scan begin/end derivation in the production driver;
-- real deskew trajectory and FAST-LIO frontend timing;
-- recovery by the production LiDAR-IMU online time-calibration path.
+## 结论
 
-## Conclusion
-
-The reported `+2 ms` failure was not physical temporal sensitivity.  It was a
-deliberate mismatch between `NativeLidarFactor` and its paired trajectory/cache
-request.  The interface is now explicit, testable and diagnosed without
-changing any association tolerance.
+报告中的 `+2 ms` 失败不是物理时间敏感性，而是 `NativeLidarFactor` 与配对 trajectory/cache request 的故意不匹配。接口现已显式、可测试并可诊断，未修改任何 association tolerance。

@@ -1,103 +1,59 @@
-# Ultra-Fusion paper-to-code audit
+# Ultra-Fusion 论文到代码审计
 
-## Baseline and scope
+## 基线与范围
 
-This work is based only on tag `ultra-fusion-four-source-reloc-stable-20260806`,
-which dereferences to commit `57930c86d7d96468b3416f84f8e6f504f527df8a`.
-The then-current Stage3 branch had one later map-visualization commit; it was
-intentionally not used. Existing D435i/RTAB and HybridFusion code was migrated
-only where it did not replace the tagged backend.
+本工作仅基于 tag `ultra-fusion-four-source-reloc-stable-20260806`，解析到 commit `57930c86d7d96468b3416f84f8e6f504f527df8a`。当时 Stage3 branch 后来还有一个 map-visualization commit，本审计有意未使用。只有不替换 tagged backend 的部分才迁移现有 D435i/RTAB 与 HybridFusion code。
 
-## Paper-step implementation matrix
+## 论文步骤实现矩阵
 
-| Paper component | Tagged baseline | This branch | Status |
+| 论文组件 | Tagged baseline | 当前分支 | 状态 |
 |---|---|---|---|
-| Shared navigation state `R,p,v,b_a,b_g` | 15-state SO(3) fixed-lag window | unchanged | real, compact reproduction |
-| IMU preintegration | bias-aware manifold residual | unchanged | real |
-| LiDAR point-to-plane factor | raw or condensed `NativeLidarFactor` | unchanged | real |
-| GNSS pseudorange/Doppler | ENU position anchor only | unchanged | paper gap |
-| Optical/wheel factor | compensated optical-flow displacement | unchanged | adapted, not wheel odometry |
-| Visual reprojection Eq. (10) | absent | RGB-D inverse-depth reprojection between two window states | real V1 |
-| Visual landmark state | absent | depth is a fixed measured anchor with variance | partial |
-| Visual FRS Eq. (20) | image/depth proxy | real tracks, grid occupancy, reprojection and KLT evidence | real/adapted |
-| Camera temporal offset | absent | configured timestamp correction | interface real, calibration not estimated |
-| Camera extrinsic | absent | calibrated body-camera transform parameter | interface real, calibration not estimated |
-| LiDAR-IMU online calibration | shadow diagnostics | unchanged | prototype; application remains locked off |
-| OAI | startup and observability gates | unchanged | partial reproduction |
-| Relocalization | static LiDAR keyframes plus migrated RTAB workflow | final old workflow fixes retained | real workflow, not paper-identical |
+| Shared navigation state `R,p,v,b_a,b_g` | 15-state SO(3) fixed-lag window | 不变 | real，compact reproduction |
+| IMU preintegration | bias-aware manifold residual | 不变 | real |
+| LiDAR point-to-plane factor | raw/condensed `NativeLidarFactor` | 不变 | real |
+| GNSS pseudorange/Doppler | 仅 ENU position anchor | 不变 | paper gap |
+| Optical/wheel factor | compensated optical-flow displacement | 不变 | adapted，不是 wheel odometry |
+| Visual reprojection Eq. (10) | 无 | RGB-D inverse-depth reprojection between two window states | real V1 |
+| Visual landmark state | 无 | depth 是带 variance 的 fixed measured anchor | partial |
+| Visual FRS Eq. (20) | image/depth proxy | real tracks、grid occupancy、reprojection、KLT evidence | real/adapted |
+| Camera temporal offset | 无 | configured timestamp correction | interface real，calibration 未估计 |
+| Camera extrinsic | 无 | calibrated body-camera transform parameter | interface real，calibration 未估计 |
+| LiDAR-IMU online calibration | shadow diagnostics | 不变 | prototype，application locked off |
+| OAI | startup/observability gates | 不变 | partial reproduction |
+| Relocalization | static LiDAR keyframes + migrated RTAB workflow | 保留旧 workflow 修复 | real workflow，非 paper-identical |
 | Geometric/color map | FAST-LIO map | opt-in source-aware LiDAR/RGB-D voxel map | engineering V1 |
 
-## Implemented visual equations
+## 已实现的视觉方程
 
-For a feature anchored in camera frame `C_i` with normalized coordinate
-`u_i=[x_i,y_i,1]^T` and measured inverse depth `rho_i`, the fixed 3-D anchor is
+以 camera frame `C_i` 中、normalized coordinate `u_i=[x_i,y_i,1]^T` 和 measured inverse depth `rho_i` 锚定的 feature，其固定 3D anchor 为 `p_Ci = u_i / rho_i`。使用 calibrated `T_BC` 与 optimized body pose `T_WBi,T_WBj`，预测为 `p_Cj = T_BC^-1 T_WBj^-1 T_WBi T_BC p_Ci`，残差为 `r_ij = pi(p_Cj) - u_j`。这是适配项目 compact window 的论文双帧 visual geometry。使用 analytic right-local SE(3) pose Jacobian，并用 central finite difference 检查；每个 normalized image coordinate 应用 Huber loss。有效 information 仍乘以现有 FRS decision `reliability_weight / covariance_inflation`。
 
-`p_Ci = u_i / rho_i`.
-
-With calibrated `T_BC` and optimized body poses `T_WBi,T_WBj`, prediction is
-
-`p_Cj = T_BC^-1 T_WBj^-1 T_WBi T_BC p_Ci`,
-
-`r_ij = pi(p_Cj) - u_j`.
-
-This is the paper's two-frame visual geometry, adapted to the project's compact
-window. Analytic right-local SE(3) pose Jacobians are used and checked against
-central finite differences. A Huber loss is applied per normalized image
-coordinate. The effective information is still multiplied by the existing FRS
-decision `reliability_weight / covariance_inflation`.
-
-Depth uncertainty is not hidden: the factor variance is the configured
-normalized pixel variance plus a scaled measured inverse-depth variance. Depth
-is not silently promoted to an optimized landmark, so this branch does not
-claim full bundle adjustment.
+Depth uncertainty 显式计入 factor variance：configured normalized pixel variance 加 scaled measured inverse-depth variance。Depth 不会静默升级为 optimized landmark，因此不宣称 full bundle adjustment。
 
 ## Visual reliability
 
-The primary degradation score keeps the tagged Eq. (20) adaptation:
+主 degradation score 保留 tagged Eq. (20) adaptation：`D_V = 0.30 D_count + 0.25 D_grid + 0.25 D_reprojection + 0.20 D_depth`。Forward-backward KLT consistency 是显式扩展：`D_V_final = 0.85 D_V + 0.15 (1-r_KLT)`。
 
-`D_V = 0.30 D_count + 0.25 D_grid + 0.25 D_reprojection + 0.20 D_depth`.
+PnP/RANSAC 仅作为 geometric validity gate 和 reprojection evidence source，其 pose 不会作为第二 factor 插入。Paper-reprojection mode 不启用 RTAB odometry，避免同源 double weighting。
 
-Forward-backward KLT consistency is then an explicitly documented extension:
+## Calibration 与 observability 契约
 
-`D_V_final = 0.85 D_V + 0.15 (1-r_KLT)`.
+- `visual_time_offset_s` 在匹配两个 backend state 前修正 camera timestamp，V1 中固定。
+- `visual_rotation_body_camera` 与 `visual_translation_body_camera_m` 是测量得到的 body-from-camera extrinsic，Identity 仅是 placeholder。
+- Online camera calibration 有意延期。解锁前需满足 multi-axis rotation、translation parallax、有界 Hessian condition number、split window 中可重复估计，以及与 held-out reprojection set 一致。
+- LiDAR-IMU calibration 仍是 tagged shadow-only implementation。
+- Timestamp mismatch、depth-valid KLT+PnP inlier 太少、invalid covariance、non-finite geometry、scheduler disable 或 point 投影到 camera 后方时拒绝 factor。Threshold 属于 configuration，不是论文结论。
 
-PnP/RANSAC is only a geometric validity gate and reprojection-evidence source;
-its pose is never inserted as a second factor. RTAB odometry is not enabled in
-the paper-reprojection mode, preventing same-source double weighting.
+## 仅作架构参考的外部系统
 
-## Calibration and observability contract
+- FAST-LIVO2：unified voxel map 与 direct visual/LiDAR update；GPL-2.0。
+- R3LIVE：FAST-LIO geometry + image colorization；GPL-2.0。
+- LVI-SAM：modular visual-inertial 与 LiDAR-inertial smoothing；BSD-3-Clause。
+- VINS-RGBD：RGB-D inverse-depth/depth-aided VINS；GPL-3.0。
+- Ground-Fusion：RGB-D/IMU/wheel/GNSS factor graph；GPL-3.0。
+- LIC-Fusion：带 online spatiotemporal calibration 的 sparse camera/LiDAR/IMU fusion。
 
-- `visual_time_offset_s` corrects camera timestamps before matching the two
-  backend states. It is fixed in V1.
-- `visual_rotation_body_camera` and `visual_translation_body_camera_m` are
-  measured body-from-camera extrinsics. Identity is only a placeholder.
-- Online camera calibration is deliberately deferred. Before unlocking it,
-  require multi-axis rotation, translation parallax, a bounded Hessian
-  condition number, repeatable estimates in split windows, and consistency
-  against a held-out reprojection set.
-- LiDAR-IMU calibration remains the tagged shadow-only implementation.
-- A factor is rejected for timestamp mismatch, too few depth-valid KLT+PnP
-  inliers, invalid covariance, non-finite geometry, scheduler disable, or point
-  projection behind the camera. Thresholds are configuration, not paper claims.
+未复制外部 implementation code。Repository 仍为 Apache-2.0，只有 high-level design comparison 影响本工作。
 
-## External systems used only as architectural references
+## 已知非论文项与未完成项
 
-- FAST-LIVO2: unified voxel map and direct visual/LiDAR update; GPL-2.0.
-- R3LIVE: FAST-LIO geometry plus image colorization; GPL-2.0.
-- LVI-SAM: modular visual-inertial and LiDAR-inertial smoothing; BSD-3-Clause.
-- VINS-RGBD: RGB-D inverse-depth/depth-aided VINS; GPL-3.0.
-- Ground-Fusion: RGB-D/IMU/wheel/GNSS factor graph; GPL-3.0.
-- LIC-Fusion: sparse camera/LiDAR/IMU fusion with online spatiotemporal
-  calibration.
-
-No external implementation code was copied. The repository remains
-Apache-2.0 and only the high-level design comparisons informed this work.
-
-## Known non-paper and incomplete items
-
-The tagged backend still lacks original pseudorange/Doppler GNSS, optimized
-visual landmarks, full cross-factor covariance propagation, and observable
-online camera calibration. The shared RGB-D map is an engineering extension:
-the paper describes a geometric/color mapping architecture but does not specify
-this exact depth-conflict policy. These limitations must remain visible in any
-future PR description.
+Tagged backend 仍缺 original pseudorange/Doppler GNSS、optimized visual landmark、full cross-factor covariance propagation 和 observable online camera calibration。Shared RGB-D map 是 engineering extension；论文描述 geometric/color mapping architecture，但没有定义这套 exact depth-conflict policy。这些限制必须继续出现在后续 PR description 中。

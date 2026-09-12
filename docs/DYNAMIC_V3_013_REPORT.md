@@ -1,21 +1,16 @@
 # DYNAMIC-V3-013
 
-## Baseline and worst scenes
+## 基线与困难场景
 
-The PR15-compatible 18-scenario benchmark was rerun with three deterministic seeds and two repeats per seed. The previous v2 result was micro P/R/F1 `99.8439/97.0854/98.4454%`, macro `93.5449/85.7748/88.8424%`, static preservation `99.9859%`, and latency P95 `9.784 ms`.
+PR15-compatible 的 18-scenario benchmark 以 3 个 deterministic seed、每个 2 次 repeat 重跑。旧 v2 的 micro P/R/F1 为 `99.8439/97.0854/98.4454%`，macro 为 `93.5449/85.7748/88.8424%`，static preservation `99.9859%`，latency P95 `9.784 ms`。
 
-The lowest v2 dynamic recall was `far_sparse_target` (`0%`), followed by `occlusion_appear_disappear` (`54.0%`), `small_fast_target` (`68.4%`), and `opening_closing_door` (`67.2%`). The far sparse case is an observability-limited target: it is sparse, far from the sensor, moves only a fraction of a voxel per frame, and has little neighboring evidence. It is not safe to solve by broad deletion because the same evidence is ambiguous with new static structure.
+v2 最低 dynamic recall 是 `far_sparse_target`（`0%`），其次为 `occlusion_appear_disappear`（`54.0%`）、`small_fast_target`（`68.4%`）和 `opening_closing_door`（`67.2%`）。Far sparse 是 observability-limited target：稀疏、距离远、每帧移动不足一个 voxel，邻域证据很少，不能用 broad deletion 安全解决。
 
-## Minimal prototype
+## 最小 prototype
 
-The prototype makes two conservative visibility settings less inert for sparse/far returns:
+针对 sparse/far return 仅放宽两项 visibility 设置：dynamic neighborhood growth 从 `1` 增至 `2` voxel；将 `20 m` 作为 far-range boundary，并把 far static confirmation 从 `12` 改为 `4`。只影响 Dynamic Observer configuration/default；HXY、GNSS、MID360 IMU、Z、state machine、relocalization、prediction recovery 与 scan contract 均不变。
 
-- increase dynamic neighborhood growth from `1` to `2` voxels;
-- treat `20 m` as the far-range boundary and use `4` far static confirmations instead of `12`.
-
-The changes affect only Dynamic Observer configuration/defaults. HXY, GNSS, MID360 IMU, Z, state machine, relocalization, prediction recovery, and scan contract are untouched.
-
-## Benchmark result
+## Benchmark 结果
 
 | method | micro P/R/F1 | macro P/R/F1 | static preserve | latency P95 |
 |---|---|---|---:|---:|
@@ -23,22 +18,12 @@ The changes affect only Dynamic Observer configuration/defaults. HXY, GNSS, MID3
 | Observer v1 | 100.0000/95.0779/97.4769% | 93.7500/84.5115/88.0008% | 100.0000% | 5.736 ms |
 | Observer v2 prototype | 99.8430/97.2592/98.5342% | 93.5435/86.5318/89.3450% | 99.9858% | 10.746 ms |
 
-The prototype improves macro recall by `0.756 percentage points` and macro F1 by `0.503 points`, while micro precision changes by `-0.0009 points` and static preservation by `-0.0001`. Latency P95 increases by about `0.96 ms`, remaining below the 15 ms budget. The far sparse scenario remains at `0%` recall; this is documented as an observability gap rather than addressed with unsafe broad deletion. Occlusion recall improves to `59.8%`.
+Prototype 将 macro recall 提高 `0.756` 个百分点、macro F1 提高 `0.503`，micro precision 变化 `-0.0009`，static preservation 变化 `-0.0001`；latency P95 增加约 `0.96 ms`，仍低于 15 ms budget。Far sparse 仍为 `0%` recall，作为 observability gap 记录；occlusion recall 提高至 `59.8%`。
 
-## Formal feature repeatability
+## Feature repeatability
 
-The existing 60 s Dynamic-enabled static evidence contains 60 scored frames:
+现有 60 s Dynamic-enabled static evidence 有 60 个 scored frame：median `100%`、P5 `100%`、minimum `0%`（startup frame）、低于 95% 的比例 `1/60 = 1.67%`。
 
-- median: `100%`
-- P5: `100%`
-- minimum: `0%` (startup frame)
-- fraction below `95%`: `1/60 = 1.67%`
+## Localization 回归
 
-This is the formal statistic from the available diagnostic stream, not only the median.
-
-## Localization regressions
-
-The previously completed Dynamic-enabled 60 s static replay remains the current localization evidence: maximum 3D deviation `0.028 m`, with 10/30/60 s XYZ displacement `0.019/0.017/0.023 m` and XY displacement `0.019/0.015/0.021 m`. The HXY frozen long-tunnel replay remains approximately `0.790 m` XY RMSE versus `0.787 m` GNSS+MID360 IMU. No Dynamic-specific localization regression was observed in those recorded runs.
-
-The 60 s and HXY replay artifacts were not regenerated after this local Dynamic configuration prototype in this pass; the existing runs use the same estimator chain but the prior Dynamic defaults. A promotion decision should require rerunning both with the prototype before merging.
-
+已完成的 Dynamic-enabled 60 s static replay 仍是当前证据：最大 3D deviation `0.028 m`，10/30/60 s XYZ displacement `0.019/0.017/0.023 m`，XY displacement `0.019/0.015/0.021 m`。HXY frozen long-tunnel replay 约 `0.790 m` XY RMSE（GNSS+MID360 IMU 为 `0.787 m`）。未观察到 Dynamic-specific localization regression。Prototype 后尚未重新生成这些 artifacts，promotion 前应重跑。

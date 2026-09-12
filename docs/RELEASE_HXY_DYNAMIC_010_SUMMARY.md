@@ -1,32 +1,32 @@
-# RELEASE-HXY-DYNAMIC-010 Stage Summary
+# RELEASE-HXY-DYNAMIC-010 阶段总结
 
-## Baseline
+## 基线
 
-- Branch: `feat/lidar-horizontal-degeneracy-v1`
-- Release commit before this summary: `88203bf22e12887e1aacecebe99219d550e89b9e`
-- Intended base: current `main` (`c7c1adcd92a7fdd3b5b38aa47e48a10ea3552981`)
-- Repository: `Zhuyicheng-HIT/multi-slam-simulation`
+- Branch：`feat/lidar-horizontal-degeneracy-v1`
+- Summary 前 release commit：`88203bf22e12887e1aacecebe99219d550e89b9e`
+- 目标 base：当前 `main`（`c7c1adcd92a7fdd3b5b38aa47e48a10ea3552981`）
+- Repository：`Zhuyicheng-HIT/multi-slam-simulation`
 
-## Delivered
+## 已交付
 
-- MID360 native IMU is the common IMU source for FAST-LIO and the Ultra-Fusion backend; FCU IMU remains inside ArduPilot.
-- HXY horizontal LiDAR degeneracy handling with arbitrary rotated weak-subspace attenuation.
-- Prediction recovery and scan-prediction contract fail-closed protection.
-- PR15 Dynamic Observer v2 and Clean Scan Gateway migration, preserving the raw cloud path for safety/avoidance.
-- Gazebo clock startup/ownership guard and FAST-LIO clean-topic runtime configuration fix.
+- MID360 native IMU 是 FAST-LIO 与 Ultra-Fusion backend 的公共 IMU 源；FCU IMU 仍在 ArduPilot 内部使用。
+- HXY horizontal LiDAR degeneracy 处理支持任意旋转的 weak-subspace attenuation。
+- 增加 prediction recovery 与 scan-prediction contract fail-closed 保护。
+- 迁移 PR15 Dynamic Observer v2 和 Clean Scan Gateway，同时保留 safety/avoidance 使用的 raw cloud 路径。
+- 增加 Gazebo clock startup/ownership guard，并修复 FAST-LIO clean-topic runtime 配置。
 
-## Evidence
+## 证据
 
-- Dynamic benchmark (PR15-compatible synthetic benchmark): micro precision `99.8439%`, recall `97.0854%`, F1 `98.4454%`; macro precision `93.5449%`, recall `85.7748%`, F1 `88.8424%`.
-- Static-point preservation `99.9859%`; dynamic contamination `1.8083%`; observer latency p50 `7.186 ms`, p95 `9.784 ms`.
-- HXY long-tunnel replay reduced approximately `6.5 m` horizontal drift to `0.79 m` on the frozen comparison bag.
-- Dynamic-enabled static replay completed 60 s ROS time: maximum 3D deviation `0.028 m` (about `2.8 cm`); 10/30/60 s XYZ displacement `0.019/0.017/0.023 m`; XY displacement `0.019/0.015/0.021 m`.
-- Static replay recorded 600 FAST-LIO and 600 truth samples with no invalid timestamps. Native LiDAR factors: `598`; GNSS factors: `41`; IMU factors: `597`; optimization rollbacks: `0`.
-- Feature repeatability median: `100%`.
+- Dynamic benchmark（PR15-compatible synthetic benchmark）：micro precision `99.8439%`、recall `97.0854%`、F1 `98.4454%`；macro precision `93.5449%`、recall `85.7748%`、F1 `88.8424%`。
+- Static-point preservation `99.9859%`；dynamic contamination `1.8083%`；observer latency p50 `7.186 ms`、p95 `9.784 ms`。
+- HXY long-tunnel replay 将冻结 comparison bag 的水平漂移从约 `6.5 m` 降至 `0.79 m`。
+- Dynamic-enabled static replay 完成 60 s ROS time：最大 3D deviation `0.028 m`；10/30/60 s XYZ displacement `0.019/0.017/0.023 m`，XY displacement `0.019/0.015/0.021 m`。
+- Static replay 记录 600 个 FAST-LIO 与 600 个 truth sample，无 invalid timestamp。Native LiDAR factor：`598`；GNSS factor：`41`；IMU factor：`597`；optimization rollback：`0`。
+- Feature repeatability median：`100%`。
 
-## Known limits and follow-up
+## 已知限制与后续
 
-- Feature repeatability is currently a median diagnostic only. Formal P5/minimum and fraction-of-frames-below-95% scoring is still required.
-- Dynamic benchmark macro recall is below the micro result and needs scene-diverse validation before claiming universal recall.
-- Marginal-prior weak-direction attribution and further replay coverage remain follow-up work; no marginalization retuning is included here.
-- No merge is requested as part of this release PR.
+- Feature repeatability 目前只有 median diagnostic，仍需正式 P5/minimum 及低于 95% 的 frame fraction 评分。
+- Dynamic benchmark 的 macro recall 低于 micro 结果，宣称通用 recall 前需进行多场景验证。
+- Marginal-prior weak-direction attribution 与更多 replay coverage 仍待完成；本阶段未调整 marginalization。
+- 本 release PR 不请求 merge。

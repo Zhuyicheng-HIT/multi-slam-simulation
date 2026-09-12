@@ -1,86 +1,53 @@
-# Sensor payload and Iris roll PID stability report
+# 传感器载荷与 Iris roll PID 稳定性报告
 
-Date: 2026-08-04
+日期：2026-08-04
 
-## Scope
+## 范围
 
-This iteration isolates the Gazebo aircraft dynamics from the navigation
-backend. Gazebo `SIM2` ground truth is used only to select the airborne interval
-and evaluate physical motion; it is never fed to FAST-LIO or the unified
-estimator.
+本轮将 Gazebo 飞行器 dynamics 与 navigation backend 隔离。Gazebo `SIM2` truth 仅用于选择 airborne interval 和评估物理运动，绝不输入 FAST-LIO 或 unified estimator。
 
-The D435i, optical-flow assembly, and MID360 are fixed measurement links. SDF
-requires a positive mass and positive-definite inertia for a dynamic link, so
-"zero mass" is represented by `1e-6 kg` and diagonal inertia `1e-9 kg m^2` per
-link. The Iris base, rotor links, and the upstream `imu_link` remain unchanged.
+D435i、optical-flow assembly 与 MID360 是固定 measurement link。SDF 要求 dynamic link 具有正质量和 positive-definite inertia，因此“zero mass”用每个 link `1e-6 kg`、diagonal inertia `1e-9 kg m^2` 表示；Iris base、rotor link 和上游 `imu_link` 不变。
 
-| Payload link | Previous mass | Final mass | Previous diagonal inertia | Final diagonal inertia |
-| --- | ---: | ---: | ---: | ---: |
+| Payload link | 旧 mass | 最终 mass | 旧 diagonal inertia | 最终 diagonal inertia |
+|---|---:|---:|---:|---:|
 | `flow_camera_link` | 0.001 kg | 1e-6 kg | 1e-6 kg m^2 | 1e-9 kg m^2 |
 | `front_d435i_link` | 0.001 kg | 1e-6 kg | 1e-6 kg m^2 | 1e-9 kg m^2 |
 | `mid360_link` | 0.001 kg | 1e-6 kg | 1e-6 kg m^2 | 1e-9 kg m^2 |
 
-## Controlled flight results
+## 受控飞行结果
 
-Each retained trial wipes SITL EEPROM, keeps roll P/I, pitch PID, filters,
-motor model, route, and sensor configuration unchanged, and flies one complete
-22.77 m S pass followed by return and automatic landing. DataFlash is analyzed
-with `tools/analyze_apm_attitude_jitter.py`.
+每次保留的 trial 都清除 SITL EEPROM，保持 roll P/I、pitch PID、filter、motor model、route 和 sensor 配置不变，完成一条 22.77 m S 航线并返航自动降落。DataFlash 使用 `tools/analyze_apm_attitude_jitter.py` 分析。
 
 | Trial | DataFlash | Airborne | Roll D | Roll RMS | Roll >3 Hz RMS | Dominant peak | Rate error RMS | Correlation | Clips |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Original 1 g payload | `00000309.BIN` | 91.56 s | 0.0036 | 22.68 deg/s | 22.41 deg/s | 7.54 Hz | 23.84 deg/s | -0.553 | 0 |
 | 1 mg payload only | `00000310.BIN` | 123.64 s | 0.0036 | 23.18 deg/s | 22.91 deg/s | 7.55 Hz | 24.34 deg/s | -0.572 | 0 |
 | First PID trial | `00000311.BIN` | 123.63 s | 0.0027 | 18.07 deg/s | 17.89 deg/s | 6.73 Hz | 18.95 deg/s | -0.466 | 0 |
 | Retained PID | `00000312.BIN` | 123.62 s | 0.0018 | 1.38 deg/s | 0.35 deg/s | 0.52 Hz | 0.33 deg/s | 0.975 | 0 |
 
-Reducing payload mass alone changes roll RMS by +2.2 percent and does not
-remove the limit cycle. The retained D gain removes the 7.5 Hz peak and reduces
-roll RMS by 94.1 percent relative to the equal-mass native-PID run.
+仅降低 payload mass 使 roll RMS 增加 2.2%，没有消除 limit cycle。保留的 D gain 消除 7.5 Hz peak，相比 equal-mass native-PID run 将 roll RMS 降低 94.1%。最终 roll actual/desired 标准差比为 0.943；四个 motor output 在 1501–1597 us，未接近 1050/1950 us saturation。Roll PID contribution RMS：P=0.000509、I=0.000124、D=0.000457（normalized output units）。
 
-The final roll actual/desired standard-deviation ratio is 0.943, so the result
-is not obtained by making the axis unresponsive. Four motor outputs remain
-between 1501 and 1597 us with zero samples near the 1050/1950 us saturation
-bounds. Roll PID contribution RMS values are P=0.000509, I=0.000124, and
-D=0.000457 in normalized output units.
+## Optical-flow 影响
 
-## Optical-flow effect
+Flight interval 的 median gyro-equivalent image velocity 从 D=0.0036 时的 0.271 m/s 降到 D=0.0018 时的 0.037 m/s，下降 86.3%。Median optical-flow quality 仍约 200/255，说明 quality score 没有发现原 rotation-driven error。
 
-The flight-interval median gyro-equivalent image velocity falls from 0.271 m/s
-at D=0.0036 to 0.037 m/s at D=0.0018, an 86.3 percent reduction. Median optical
-flow quality remains about 200/255, showing that the quality score did not
-detect the original rotation-driven error.
+最终运行的 image/gyro integration period 仍不规则（median 约 0.132 s，p95 0.264 s）。PID tuning 消除了 aircraft limit cycle，但未解决独立的 optical-flow scheduling/timestamp 问题。
 
-The image/gyro integration period is still irregular (about 0.132 s median and
-0.264 s p95 in the final run). PID tuning removes the aircraft limit cycle but
-does not solve this separate optical-flow scheduling/timestamp issue.
+## 保留配置
 
-## Retained configuration
-
-`params/iris_roll_stability.parm` sets only:
+`params/iris_roll_stability.parm` 仅设置：
 
 ```text
 ATC_RAT_RLL_D 0.0018
 ```
 
-The profile is enabled by default only in the SITL launcher. Set
-`WIPE_EEPROM=1 ENABLE_IRIS_ROLL_STABILITY_PROFILE=0` to recover native
-ArduPilot defaults for controlled A/B tests. An existing workspace that has
-stored older PID values must also use `WIPE_EEPROM=1` once when enabling the
-profile, because stored SITL parameters override defaults files. Real-hardware
-PID values must be tuned on the real airframe and are not inherited from this
-profile.
+Profile 只在 SITL launcher 中默认启用。设置 `WIPE_EEPROM=1 ENABLE_IRIS_ROLL_STABILITY_PROFILE=0` 可恢复 ArduPilot native default 做 A/B test。已有 workspace 若存储旧 PID 值，启用 profile 时也需先 `WIPE_EEPROM=1`；real-hardware PID 必须在真实机体上调参。
 
-ArduPilot's official guidance treats rapid oscillation as an excessive-gain
-boundary and recommends reducing the D value after it is observed. SITL default
-overrides should be loaded from a parameter file with EEPROM wiped for a clean
-comparison:
+ArduPilot 官方建议将 rapid oscillation 视为过高 gain 边界，观察到后降低 D value。参考：
 
 - https://ardupilot.org/copter/docs/ac_rollpitchtuning.html
 - https://ardupilot.org/dev/docs/using-sitl-for-ardupilot-testing.html
 
-## Evidence
+## 证据
 
-JSON reports are under `logs/sensor_mass_pid_20260804/` in the active workspace.
-This iteration validates the simulated flight plant and its optical-flow input;
-it is not a new unified-SLAM accuracy or ExternalNav closed-loop acceptance.
+JSON report 位于 `logs/sensor_mass_pid_20260804/`。本轮验证 simulated flight plant 与 optical-flow input，不是新的 unified-SLAM accuracy 或 ExternalNav closed-loop 验收。
