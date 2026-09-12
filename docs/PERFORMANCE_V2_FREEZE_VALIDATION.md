@@ -1,23 +1,14 @@
-# Performance V2 freeze validation
+# Performance V2 冻结验证
 
-> Historical candidate-gate report.  The controlled full-online replay and
-> per-cycle profiler in `PERFORMANCE_V2_STABILITY_CONVERGENCE.md` supersede the
-> performance decision below and freeze V2 as `SIM_ENV_CONTENDED`.
+> 历史 candidate-gate 报告。`PERFORMANCE_V2_STABILITY_CONVERGENCE.md` 中的 controlled full-online replay 与 per-cycle profiler 已取代以下 performance decision，并将 V2 冻结状态标记为 `SIM_ENV_CONTENDED`。
 
-## Decision
+## 决策
 
-Performance V2 remains a candidate and is **not frozen** by this validation.
-The accuracy, visual-use, safety, mapping, build and test gates pass, but the
-required `<= 45 ms` live solver median did not reproduce in the final six-run
-set.  No algorithm threshold was relaxed and no result was discarded to force
-a freeze decision.
+本验证下 Performance V2 仍是 candidate，**未冻结**。Accuracy、visual-use、safety、mapping、build 和 test gate 通过，但最终 6-run set 未重现要求的 live solver median ≤45 ms。没有放宽 algorithm threshold，也没有丢弃结果来强行 freeze。
 
 ## Rectangle V1/V2 A/B
 
-The matched five-run rectangle comparison used the same world, route, sensor
-rates, balanced visual cadence, 0.065 s association tolerance, D_V/FRS,
-ExternalNav and FAST-LIO configuration.  Optical-flow noise used fixed seed
-29.  Gazebo does not expose a global seed through this launch contract.
+匹配的 5-run rectangle comparison 使用同一 world、route、sensor rate、balanced visual cadence、0.065 s association tolerance、D_V/FRS、ExternalNav 与 FAST-LIO configuration；optical-flow noise 固定 seed 29。
 
 | Statistic | Frozen V1 | V2 candidate |
 |---|---:|---:|
@@ -30,30 +21,13 @@ ExternalNav and FAST-LIO configuration.  Optical-flow noise used fixed seed
 | visual accepted / quality-valid | 294 / 386 | 367 / 476 |
 | time rejection | 9.84% | 10.29% |
 
-The earlier rectangle warning is not systematic.  V2 translation RPE median
-is 22.9% lower than V1 and its ATE median is 20.0% lower.  Therefore none of
-the marginal-prior block transform, transaction snapshot optimization or
-visual vectorization was reverted.
+此前的 rectangle warning 并非系统性；V2 translation RPE median 比 V1 低 22.9%，ATE median 低 20.0%。因此没有回滚 marginal-prior block transform、transaction snapshot optimization 或 visual vectorization。
 
-## Remaining visual timing rejection
+## 剩余 visual timing rejection
 
-Across the final three rectangle and three S-curve runs, 782 of 1089
-quality-valid candidates were solver accepted (71.81%).  There were 112 time
-rejects (10.28%):
+最终 3 次 rectangle 和 3 次 S-curve run 中，1089 个 quality-valid candidate 有 782 个被 solver 接受（71.81%），112 个 time reject（10.28%）：105 个是 `state_tolerance_mismatch`（93.75%，其中 58 个缺左 state、47 个缺右 state），7 个超出 active window；queue overflow、duplicate submission、track rejection 均为 0。Rejected observation 常距最近真实 state 0.066–0.099 s，偶有 0.198 s LiDAR-state gap。实现继续只使用真实 causal state：0.065 s tolerance、source timestamp、D_V threshold 均不变，没有 future state、retimestamping 或 interpolation。
 
-- 105 `state_tolerance_mismatch` rejects (93.75% of time rejects): 58 missing
-  the left-side state and 47 missing the right-side state;
-- 7 candidates expired outside the active window (6.25%);
-- zero queue overflow, duplicate submission or track rejection.
-
-Rejected observations commonly fell 0.066--0.099 s from the nearest real
-state, with occasional 0.198 s LiDAR-state gaps.  Queue residence and ROS wall
-scheduling jitter were present, but the pending buffer cannot synthesize a
-missing state.  The implementation still uses real causal states only: the
-0.065 s tolerance, source timestamps and D_V threshold are unchanged; no
-future state, retimestamping or interpolation was introduced.
-
-## Final accuracy and runtime
+## 最终 accuracy 与 runtime
 
 | Scenario | ATE (m) | translation RPE (m) | rotation RPE (deg) | solver median / P95 (ms) | RTF |
 |---|---:|---:|---:|---:|---:|
@@ -64,51 +38,14 @@ future state, retimestamping or interpolation was introduced.
 | S-curve r152 | 0.538685 | 0.046189 | 0.112401 | 53.943 / 78.356 | 0.5294 |
 | S-curve r153 | 0.525499 | 0.047406 | 0.115260 | 56.019 / 74.311 | 0.4432 |
 
-The six-run solver median of run medians is 54.375 ms and the corresponding
-P95 median is 77.435 ms.  This fails the freeze threshold despite the original
-V2 candidate's six-run 42.399 ms result.  All six runs had zero optimization
-errors, integrity rejects and transaction rollbacks.  The interrupted r152
-rectangle directory is retained as an external task-interruption sample and
-is not represented as a completed runtime run.
+6-run solver median 为 54.375 ms，P95 median 为 77.435 ms，未达 freeze threshold；6 次均为 zero optimization error、integrity reject、transaction rollback。
 
-## Replay and simulation separation
+## Replay 与 simulation 分离
 
-The same deterministic 180-frame factor stream produced identical V1/V2 costs
-and final states.  Median pure replay throughput was 111.84 frame/s for V1 and
-112.97 frame/s for V2, a 1.01% increase.  This replay path exercises the base
-window solver but not all online transaction, callback and visual hot paths,
-so it does not reproduce the 27.95% original live-solver improvement.
+同一 deterministic 180-frame factor stream 产生完全相同的 V1/V2 cost 与 final state。Pure replay throughput median：V1 111.84 frame/s，V2 112.97 frame/s，仅提升 1.01%；该路径未覆盖完整 online transaction、callback 与 visual hot path，不能复现原 live-solver 27.95% 提升。最终 6 次 simulation 的 classified process CPU：REAL_TRANSFERABLE（backend、visual frontend、FAST-LIO、shared mapping）占 whole-WSL 4.296%，SIM_ONLY（Gazebo、bridge、SITL）占 7.330%；SIM_ONLY 占 classified pipeline 63.05%，不是全部 host work。Gazebo 使用 `kms_swrast`，WSL/driver 修复记录为 `SIM_ENV_BLOCKED`。
 
-For the final six complete simulations, median classified process CPU was:
+## Joint map 与验证
 
-- REAL_TRANSFERABLE (backend, visual frontend, FAST-LIO, shared mapping):
-  4.296% of whole-WSL capacity;
-- SIM_ONLY (Gazebo, simulation bridges and SITL): 7.330%;
-- SIM_ONLY share of classified pipeline CPU: 63.05%.
+最终 joint-map run 完成 LAND/disarm，共 108191 voxel：97990 LiDAR、22449 RGB-D、10201 supplementary RGB-D；occupied-volume growth 10.41%、color coverage 12.50%、conflict ratio 与 eviction 均为 0，LiDAR 仍是 geometry authority。15 个 package 以 `RelWithDebInfo` 构建；colcon 57 项全通过；backend 158/158、visual 4/4、D435i lifecycle short test 与 Python/YAML/XML/shell 检查均通过。
 
-Only 29.86% of whole-WSL CPU was attributable to those named groups, so this
-63.05% is a classified-pipeline share, not a claim about all host work.  Gazebo
-used `kms_swrast`: `/dev/dri/renderD128` is owned by group `render`, while the
-runtime user is not a member.  `/dev/dxg` and the RTX 4070 are visible, but
-OpenCV reports no CUDA/OpenCL path.  Fixing group/driver/WSLg configuration
-requires host or sudo-level system changes and is recorded as
-`SIM_ENV_BLOCKED`.
-
-## Joint map and verification
-
-The final joint-map run completed LAND/disarm with 108191 total voxels:
-97990 LiDAR voxels, 22449 RGB-D voxels and 10201 supplementary RGB-D voxels.
-Occupied-volume growth was 10.41%, color coverage 12.50%, conflict ratio zero
-and evictions zero.  LiDAR remained the geometry authority.
-
-- 15 packages built in `RelWithDebInfo`.
-- Full colcon result: 57 test-result entries, 0 errors, 0 failures, 0 skipped.
-- Backend 158/158 and visual 4/4 direct tests passed.
-- D435i active-run lifecycle short test passed.
-- Python 198, YAML 29, XML 15 and shell 53 syntax/static checks passed.
-- `git diff --check` passed.
-
-The candidate can be frozen only after the live solver median is shown to be
-stably at or below 45 ms on a controlled runtime host.  The RTF shortfall is
-separately classified as `SIM_ENV_BLOCKED`; it is not a reason to alter fusion
-semantics.
+只有在 controlled runtime host 上稳定证明 live solver median ≤45 ms 后，candidate 才可 freeze。RTF shortfall 单独归类为 `SIM_ENV_BLOCKED`，不是修改 fusion semantics 的理由。

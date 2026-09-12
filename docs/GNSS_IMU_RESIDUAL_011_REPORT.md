@@ -1,46 +1,38 @@
 # GNSS-IMU-RESIDUAL-011
 
-## Scope
+## 范围
 
-This audit uses the HXY-DIAG-002 frozen bag (`d842a6d3e19159123644efb8e9ac0d80e46ac2b02360a1ed44b812e84222372b` metadata; `1fdf2c5616670dc9fca7d6ba830ac5b2a4eec07d9cd54deb6f3d6aaf965ebd56` compressed database) and the current HXY + MID360 IMU + Dynamic V2 backend replay artifacts. Truth is used only offline.
+本审计使用 HXY-DIAG-002 frozen bag（metadata `d842a6d3e19159123644efb8e9ac0d80e46ac2b02360a1ed44b812e84222372b`，compressed database `1fdf2c5616670dc9fca7d6ba830ac5b2a4eec07d9cd54deb6f3d6aaf965ebd56`）以及当前 HXY + MID360 IMU + Dynamic V2 backend replay artifacts。Truth 仅离线使用。
 
-## Replay comparison
+## Replay 对比
 
-| mode | XY RMSE | 3D RMSE | endpoint | interpretation |
+| mode | XY RMSE | 3D RMSE | endpoint | 解释 |
 |---|---:|---:|---:|---|
 | GNSS + MID360 IMU | 0.787 m | 0.788 m | 2.09 m | absolute-factor error floor |
-| HXY full chain with current weak-mode cap | 0.790 m | 0.790 m | 2.05 m | only 3 mm above GNSS+IMU |
+| HXY full chain with current weak-mode cap | 0.790 m | 0.790 m | 2.05 m | 仅比 GNSS+IMU 高 3 mm |
 
-The 3 mm difference is within replay executor/interleaving variation. HXY is no longer the dominant source after the active weak-subspace cap; changing its cap is not justified by this evidence.
+3 mm 差异在 replay executor/interleaving variation 范围内。启用 weak-subspace cap 后 HXY 不再是主因，没有证据支持修改 cap。
 
-## GNSS association and absolute error
+## GNSS association 与绝对误差
 
-The bag contains 375 `/sensors/gnss/fix` samples and 752 truth samples. Nearest truth association gives GNSS header-to-truth timing offset median `-32 ms`, p95 absolute `46 ms`, maximum `51 ms`. Backend GNSS prefit traces report time-compensation age median `33 ms`, p95 `49 ms`, maximum `142 ms`; compensation is applied rather than silently ignored.
+Bag 含 375 个 `/sensors/gnss/fix` 与 752 个 truth sample。Nearest-truth association 得到 GNSS header-to-truth timing offset median `-32 ms`、p95 absolute `46 ms`、maximum `51 ms`。Backend GNSS prefit trace 报告 time-compensation age median `33 ms`、p95 `49 ms`、maximum `142 ms`，补偿已应用而非忽略。
 
-The source stream contains non-monotonic timestamp repairs in the formal static run (`fault_injector_gnss: repaired non-monotonic gnss timestamp`). This is a data/transport quality issue to close in the next replay, but it is not evidence of a fixed constant offset large enough to explain 0.79 m.
+Formal static run 的 source stream 含 non-monotonic timestamp repair（`fault_injector_gnss: repaired non-monotonic gnss timestamp`）。这是下一次 replay 要关闭的数据/transport 质量问题，但不足以解释 0.79 m 的固定大偏移。
 
-Direct lat/lon-to-truth comparison requires the simulation's ENU frame transform. After an offline affine frame fit, GNSS horizontal residual is p50 `0.193 m`, p95 `0.529 m`, maximum `0.950 m`; raw uncalibrated comparison is invalid because the bag's GNSS frame and truth frame have different axis/origin conventions. GNSS altitude has a roughly `0.195 m` datum offset, with p95 absolute residual `0.237 m`.
+Lat/lon 与 truth 直接比较必须使用 simulation ENU frame transform。Offline affine frame fit 后 GNSS horizontal residual 为 p50 `0.193 m`、p95 `0.529 m`、maximum `0.950 m`；raw uncalibrated comparison 因 axis/origin convention 不同而无效。GNSS altitude 有约 `0.195 m` datum offset，p95 absolute residual `0.237 m`。
 
-## GNSS innovation and admission
+## GNSS innovation 与 admission
 
-From the frozen replay backend trace and final summary:
+冻结 replay backend trace/final summary：GNSS received `375`、consumed `260`、records `258`、factors `258`；stale `22`、scheduler-disabled `2`；hard GNSS NIS reject `0`；XY NIS robust-downweighted `96`、rejected counter `96`、Z NIS reject `0`；prefit XY NIS median `0.222`，p95 `11295`、maximum `30947`；time compensation delta median X/Y/Z 为 `2/17/1 mm`，p95 absolute `39/93/25 mm`，Y maximum `4.42 m`。
 
-- GNSS received `375`, consumed `260`, records `258`, factors `258`.
-- Stale samples `22`; scheduler-disabled `2`.
-- Hard GNSS NIS rejects `0`.
-- XY NIS robust-downweighted samples `96`; XY NIS rejected counter `96`; Z NIS rejects `0`.
-- Prefit XY NIS median `0.222`, but p95 `11295` and maximum `30947`.
-- Time compensation delta median: X `2 mm`, Y `17 mm`, Z `1 mm`; p95 absolute values X `39 mm`, Y `93 mm`, Z `25 mm`; maximum Y `4.42 m`.
-
-Thus valid GNSS is entering the solver, but a substantial tail of innovations is being robustly weakened. This explains why GNSS+IMU stabilizes the trajectory at approximately `0.787 m` without fully removing the error.
+有效 GNSS 正进入 solver，但 innovation tail 中相当一部分被 robust weakening。这解释了 GNSS+IMU 将轨迹稳定在约 `0.787 m`，却未完全消除误差。
 
 ## MID360 IMU propagation
 
-The replay consumed 7,513 IMU samples and formed 497 IMU factors with zero invalid samples, zero pair timeouts, and zero non-monotonic arrivals. Startup initialization passed (`89` samples over `0.881 s`, bias accepted). It performed 16 reintegrations, with 22 deferred, and used the IMU-propagated covariance anchor. There is no evidence of an IMU transport failure or permanent propagation loss. Remaining IMU contribution is therefore ordinary bias/noise/extrinsic propagation error, coupled to the GNSS correction cadence and robust gating.
+Replay 消费 7,513 个 IMU sample，形成 497 个 IMU factor；invalid sample、pair timeout、non-monotonic arrival 均为 0。Startup initialization 通过（`89` sample、`0.881 s`，bias accepted）；执行 16 次 reintegration、22 次 deferred，并使用 IMU-propagated covariance anchor。没有 IMU transport failure 或永久 propagation loss 证据，剩余影响是普通 bias/noise/extrinsic propagation error，与 GNSS correction cadence 和 robust gating 耦合。
 
-## Conclusion
+## 结论
 
-The approximately `0.79 m` residual is already close to the current GNSS + MID360 IMU observation floor. The HXY full chain is only about `3 mm` worse than GNSS+IMU, and HXY-PRIOR-007 found historical weak LiDAR suppression changes RMSE by only about `6 mm`. Do not tune GNSS weight, IMU noise, HXY cap, or thresholds from this replay.
+约 `0.79 m` residual 已接近当前 GNSS + MID360 IMU observation floor；HXY full chain 只差约 3 mm，HXY-PRIOR-007 也显示历史 weak LiDAR suppression 仅改变约 6 mm。不要依据本 replay 调整 GNSS weight、IMU noise、HXY cap 或 threshold。
 
-No estimator fix is made in this task. The next useful experiment is a clean GNSS timestamp/association replay with timestamp repair disabled as an explicit failure mode, plus a GNSS-frame calibration check against the simulator's actual ENU transform. If that replay preserves the same residual, the remaining 0.79 m should be treated as the current sensor/model floor rather than an HXY defect.
-
+下一步应做 clean GNSS timestamp/association replay（关闭 timestamp repair，并将其作为显式 failure mode），再依据 simulator 实际 ENU transform 做 GNSS-frame calibration check。若 residual 保持不变，应将 0.79 m 视为当前 sensor/model floor，而非 HXY defect。

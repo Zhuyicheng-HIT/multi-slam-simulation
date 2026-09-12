@@ -325,6 +325,23 @@ bash tools/run_fastlio_mapping.sh
 
 脚本会加载外部 FAST-LIO 工作空间，并启动项目自己的可靠点云与栅格处理节点。
 
+### 11.4 可选：Dynamic Observer 与 Clean Scan Gateway
+
+PR24 新增的 `uf_dynamic_observer` 默认关闭，不会改变原始 `/livox/lidar`、
+FAST-LIO 或统一后端的数据所有权。需要做独立 A/B 时，在完成终端 1 的传感器
+启动和终端 3 的 FAST-LIO 配置后，另开终端执行：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch uf_dynamic_observer observer.launch.py enabled:=true
+```
+
+`Clean Scan Gateway` 必须在独立命名空间中进行验证；它不会原地 remap 或覆盖
+生产 `/livox/lidar`。完整输入/输出话题、时间契约和回放命令见
+[`src/ultra_fusion_nav/uf_dynamic_observer/README.md`](src/ultra_fusion_nav/uf_dynamic_observer/README.md)。
+
 ## 12. D435i RGB-D 可视化
 
 彩色图和深度图建议分别打开一个 `rqt_image_view`，因为工具可能记住上次话题：

@@ -1,90 +1,72 @@
-# HybridFusion map-level fusion architecture
+# HybridFusion map-level fusion 架构
 
-## Isolation from PR #6 and PR #8
+## 与 PR #6 和 PR #8 的隔离
 
-`hybridfusion_map_fusion` is a new leaf package. No PR #6 backend, reliability,
-FAST-LIO, RTAB-Map, D435i bridge, scheduler, TF owner, flight controller or
-launch default is changed. The package is absent from the existing integration
-launch and its own launch is disabled unless `enabled:=true` is supplied.
+`hybridfusion_map_fusion` 是新的 leaf package。不会更改 PR #6 backend、reliability、FAST-LIO、RTAB-Map、D435i bridge、scheduler、TF owner、flight controller 或 launch default。该 package 不在现有 integration launch 中，只有提供 `enabled:=true` 时才会在自身 launch 中启用。
 
 ```text
-existing PR #8 visual stack                    existing PR #6 LiDAR stack
+现有 PR #8 visual stack                    现有 PR #6 LiDAR stack
 RGB + 16UC1 depth + CameraInfo                 /fastlio_denoised_map
 RTAB pose + existing TF                                    |
              |                                             |
              v                                             v
-  rgbd_map_exporter (no cloud topic)             lidar_map_exporter
+  rgbd_map_exporter（无 cloud topic）             lidar_map_exporter
              |                                             |
  visual PCD + keyframes + calibration             LiDAR PCD + frame/stamp
              +--------------------+------------------------+
                                   |
-                    hybridfusion_offline (separate process)
+                    hybridfusion_offline（独立 process）
                                   |
        result JSON + SE(3) YAML + aligned copy + fused PCD
 ```
 
-Export and registration errors cannot stop or reconfigure the publishers. The
-module does not broadcast the estimated transform; an operator must review an
-offline result before any future downstream use.
+Export 和 registration error 无法停止或重新配置 publisher。该模块不会广播估计出的 transform；任何未来下游使用前，operator 必须先审核 offline result。
 
-## Paper-to-implementation trace
+## 从论文到实现的追踪
 
-| Paper step | Local implementation | Status/provenance |
+| 论文步骤 | 本地实现 | 状态/来源 |
 |---|---|---|
-| Module A visual reconstruction | Existing D435i/RTAB stack; `rgbd_map_exporter.cpp` back-projects exact RGB-D keyframes using CameraInfo and timestamped TF | Implemented by reuse, no second visual odometry |
-| Module B LiDAR SLAM | Existing MID360, FAST-LIO and reliable denoised map | Reused unchanged |
-| GNSS/existing-pose rough match | `dataset.yaml: initial_lidar_to_visual` | Implemented; source may be GNSS or calibrated poses |
-| VoxelGrid preprocessing | `voxel_downsample()` | Implemented; leaf size is an engineering parameter |
-| Grid patches | `make_blocks()` with common origin | Implemented; automatic scene-size/10 follows paper text |
-| Significant/valid blocks | `grid.min_points` | Implemented; count absent from paper and parameterized |
-| Radial/angle candidate range | centroid radius, lambda ring and angle filter | Implemented; lambda/theta absent from paper and parameterized |
-| ESF640 patch filtering | PCL ESF plus Pearson correlation | Implemented; threshold cannot be below paper Eq. (6) value 0.60 |
-| Neighbor filter | same-offset neighboring ESF correlations | Equivalent implementation; numerical threshold parameterized |
-| Spliced patch neighborhoods | `collect_neighborhood()` | Implemented |
-| Ground removal and XY boundary | height quantile, `d>h`, occupancy boundary cells | Equivalent PCL-compatible implementation; h/raster parameterized |
-| 2D NDT | Gaussian-cell likelihood and Gauss-Newton in SE(2), output constrained to XY/yaw | Implemented; avoids singular PCL 3D-NDT neighborhoods on zero-Z input |
-| 3D NDT | PCL NDT on local 3D neighborhoods | Implemented |
-| Local transformation set K | one SE(3) per converged 2D-3D registration | Implemented with failures retained |
-| Translation/rotation clustering | connected components under epsilon/omega | Implemented; both thresholds parameterized |
-| Pose fusion | translation mean plus iterative quaternion SLERP | Implemented as described after paper Eq. (7) |
-| Minor full-map adjustment | guarded full-map 3D NDT | Implemented; rejected if NN fitness degrades beyond configured ratio |
-| Fused map and supplement metric | source transformed into target frame, union voxel map | Implemented without altering either input |
+| Module A visual reconstruction | 现有 D435i/RTAB stack；`rgbd_map_exporter.cpp` 使用 CameraInfo 和带 timestamp 的 TF 对精确 RGB-D keyframe 进行 back-project | 通过复用实现，不使用第二套 visual odometry |
+| Module B LiDAR SLAM | 现有 MID360、FAST-LIO 和可靠的 denoised map | 原样复用 |
+| GNSS/existing-pose rough match | `dataset.yaml: initial_lidar_to_visual` | 已实现；来源可为 GNSS 或 calibrated pose |
+| VoxelGrid preprocessing | `voxel_downsample()` | 已实现；leaf size 为工程参数 |
+| Grid patches | 使用 common origin 的 `make_blocks()` | 已实现；按论文文字自动设为 scene-size/10 |
+| Significant/valid blocks | `grid.min_points` | 已实现；论文未给出 count，已参数化 |
+| Radial/angle candidate range | centroid radius、lambda ring 和 angle filter | 已实现；lambda/theta 未在论文中给出，已参数化 |
+| ESF640 patch filtering | PCL ESF 加 Pearson correlation | 已实现；threshold 不能低于论文 Eq. (6) 的 0.60 |
+| Neighbor filter | 相同 offset 邻居的 ESF correlation | 等效实现；数值 threshold 已参数化 |
+| Spliced patch neighborhoods | `collect_neighborhood()` | 已实现 |
+| Ground removal and XY boundary | height quantile、`d>h`、occupancy boundary cell | 等效的 PCL-compatible 实现；h/raster 已参数化 |
+| 2D NDT | Gaussian-cell likelihood 和 SE(2) 中的 Gauss-Newton，输出约束为 XY/yaw | 已实现；避免 zero-Z 输入导致的奇异 PCL 3D-NDT neighborhood |
+| 3D NDT | 局部 3D neighborhood 上的 PCL NDT | 已实现 |
+| Local transformation set K | 每个收敛的 2D-3D registration 一个 SE(3) | 已实现，保留失败项 |
+| Translation/rotation clustering | 在 epsilon/omega 下的 connected component | 已实现；两个 threshold 均参数化 |
+| Pose fusion | translation mean 加 iterative quaternion SLERP | 按论文 Eq. (7) 后描述实现 |
+| Minor full-map adjustment | 受保护的 full-map 3D NDT | 已实现；若 NN fitness 超过配置比例而恶化则拒绝 |
+| Fused map and supplement metric | 将 source 变换到 target frame，构建 union voxel map | 已实现，不修改任一输入 |
 
-## Coordinate and file contracts
+## 坐标与文件 contract
 
-- Estimated transform direction is always `visual_frame <- lidar_frame`.
-- Live visual points are stored directly in the selected RTAB/global TF frame.
-- The FAST-LIO PCD remains in its message frame, normally `camera_init`.
-- Dataset manifests and transform YAML use metres and radians in
-  `[x,y,z,roll,pitch,yaw]` order.
-- `transform.yaml` explicitly records `published_as_tf: false`.
-- Keyframe and map metadata preserve source topics, ROS stamps, frames,
-  intrinsics, distortion coefficients and voxel sizes.
+- 估计 transform 的方向始终为 `visual_frame <- lidar_frame`。
+- live visual point 直接存储在选定的 RTAB/global TF frame 中。
+- FAST-LIO PCD 保留在其 message frame，通常是 `camera_init`。
+- Dataset manifest 和 transform YAML 使用 metre、radian，顺序为 `[x,y,z,roll,pitch,yaw]`。
+- `transform.yaml` 明确记录 `published_as_tf: false`。
+- Keyframe 和 map metadata 保留 source topic、ROS stamp、frame、intrinsic、distortion coefficient 和 voxel size。
 
-## Evaluation definitions
+## 评估定义
 
-- Translation/rotation error: distance between estimated and truth SE(3).
-- Overlap error: source-to-target nearest-neighbor mean and RMSE, capped by the
-  configured overlap distance.
-- Boundary error: nearest-neighbor error between the two extracted XY boundary
-  clouds.
-- Inlier ratio: aligned LiDAR points within the configured target distance.
-- Supplement growth: `(union occupied voxels - visual occupied voxels) /
-  visual occupied voxels`, analogous to the paper's octree leaf volume metric.
-- Runtime: steady-clock duration inside each standalone method process.
-- Memory: process peak resident set from `getrusage`.
-- Block accounting: descriptor candidates, neighbor-consistent candidates,
-  converged local transformations, failed local registrations and selected
-  cluster size are all recorded.
+- Translation/rotation error：估计值与真实 SE(3) 之间的距离。
+- Overlap error：source-to-target 最近邻 mean 和 RMSE，受配置的 overlap distance 截断。
+- Boundary error：两组提取的 XY boundary cloud 之间的最近邻误差。
+- Inlier ratio：在配置 target distance 内的对齐 LiDAR 点比例。
+- Supplement growth：`(union occupied voxels - visual occupied voxels) / visual occupied voxels`，类似论文中的 octree leaf volume metric。
+- Runtime：每个独立 method process 内的 steady-clock 时长。
+- Memory：通过 `getrusage` 获取的 process peak resident set。
+- Block accounting：descriptor candidate、neighbor-consistent candidate、收敛的 local transformation、失败的 local registration 以及选定 cluster size 均会记录。
 
-## Known scope
+## 已知范围
 
-This v1 validates map-level fusion offline. It deliberately excludes real-time
-D435i point-cloud display, backend factors, repeated TF, flight-time feedback,
-official Ultra-Fusion binaries and any writeback into RTAB or FAST-LIO maps.
+此 v1 只验证 offline 的 map-level fusion。它有意排除实时 D435i point-cloud display、backend factor、重复 TF、flight-time feedback、官方 Ultra-Fusion binary，以及写回 RTAB 或 FAST-LIO map。
 
-`collect_hybridfusion_simulation.sh` is an optional owner-aware orchestration
-wrapper. It starts the unchanged PR #6/PR #8 headless stack with the existing
-guided rectangle, runs only this package's two exporters in another process
-group, invokes their save services after landing, and delegates stack cleanup
-to the existing active-run lifecycle. It does not alter any launch default.
+`collect_hybridfusion_simulation.sh` 是可选的 owner-aware orchestration wrapper。它使用现有 guided rectangle 启动未修改的 PR #6/PR #8 headless stack，在另一个 process group 中仅运行本 package 的两个 exporter，着陆后调用其 save service，并将 stack cleanup 交给现有 active-run lifecycle。它不会更改任何 launch default。

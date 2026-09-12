@@ -1,6 +1,6 @@
-# Estimator hot-path breakdown
+# Estimator 热路径分解
 
-## Final opt-in profile (joint-map r65)
+## 最终 opt-in profile（joint-map r65）
 
 | Requested boundary | Measured boundary | P50 (ms) | P90 (ms) | P95 (ms) | Max (ms) |
 |---|---|---:|---:|---:|---:|
@@ -22,22 +22,10 @@
 | complete optimize | `solver_optimize_total` | 40.765 | 64.633 | 71.980 | 116.799 |
 | marginalization | `solver_marginalization` | 6.662 | 11.304 | 12.490 | 21.208 |
 
-The few 250 ms post/publish maxima are scheduler/preemption outliers; P50/P95
-and the zero-error/zero-rollback counters are the decision metrics.
+少量 250 ms post/publish 最大值是 scheduler/preemption outlier；决策指标应看 P50/P95 以及 zero-error/zero-rollback counter。
 
-FRS is computed in the separate reliability process and consumed inside the
-bounded auxiliary-factor phase.  This V2 instrumentation measures its process
-cost and the backend consumption boundary, but does not split D_V scoring from
-scheduler state-machine work.  Likewise, Native message deserialization,
-correspondence conversion, scan prediction and trajectory-front-end transport
-remain aggregated in callback preparation/state creation.  No unsupported
-per-stage number is invented for those sub-boundaries.
+FRS 在独立 reliability process 中计算，并在 bounded auxiliary-factor phase 消费。V2 instrumentation 测量 process cost 与 backend consumption boundary，但没有拆分 D_V scoring 和 scheduler state-machine。Native message deserialization、correspondence conversion、scan prediction 与 trajectory frontend transport 仍聚合在 callback preparation/state creation，未为这些边界虚构 unsupported 数字。
 
-## Process and queue observations
+## Process 与 queue 观察
 
-In r65 the estimator process used 2.164% of total WSL capacity at the median,
-the visual frontend 1.266%, and shared mapping 1.747%.  Total WSL CPU/RAM were
-40.494% and 3.314 GiB with profiling and joint mapping active.  Native worker
-queue overflow, pending overflow, dropped/invalid Native factors and duplicate
-visual submissions were all zero.  The profiler keeps at most 4096 samples per
-stage and emits only aggregate diagnostics.
+r65 中 estimator process median 使用 WSL capacity 的 2.164%，visual frontend 1.266%，shared mapping 1.747%；开启 profiling 与 joint mapping 时 WSL CPU/RAM 为 40.494% 和 3.314 GiB。Native worker queue overflow、pending overflow、dropped/invalid Native factor 和 duplicate visual submission 均为 0。Profiler 每个 stage 最多保留 4096 个 sample，只输出 aggregate diagnostics。

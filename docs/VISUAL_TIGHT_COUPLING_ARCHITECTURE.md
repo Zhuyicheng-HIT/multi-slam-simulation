@@ -1,68 +1,52 @@
-# Visual tight-coupling architecture
+# Visual 紧耦合架构
 
-## Data path
+## 数据路径
 
-1. `d435i_rgbd_bridge_cpp` normalizes exact RGB, `16UC1` depth, CameraInfo and
-   the calibrated camera TF.
-2. `uf_visual_frontend/rgbd_feature_frontend` accepts only RGB and depth with
-   identical ROS timestamps. Keyframes default to 10 Hz.
-3. KLT forward/backward tracking produces stable IDs and ages. Previous-frame
-   depth unprojects anchors. PnP/RANSAC provides geometric inliers and measured
-   reprojection errors, not an estimator pose.
-4. `uf_reliability/reliability_monitor` publishes the single existing
-   `/reliability/vision_score`; the existing scheduler owns switching, weights
-   and covariance inflation.
-5. `uf_backend_fusion` matches a feature batch to adjacent LiDAR-keyed window
-   states, applies the fixed camera time offset/extrinsic, and inserts the
-   robust reprojection factor beside Native LiDAR, IMU, GNSS and optical flow.
+1. `d435i_rgbd_bridge_cpp` 规范化精确 RGB、`16UC1` depth、CameraInfo 以及经过标定的 camera TF。
+2. `uf_visual_frontend/rgbd_feature_frontend` 只接受 ROS timestamp 完全一致的 RGB 和 depth。Keyframe 默认频率为 10 Hz。
+3. KLT 前向/后向跟踪生成稳定的 ID 和 age。利用前一帧 depth 将 anchor 反投影。PnP/RANSAC 提供几何内点和实测 reprojection error，而不是 estimator pose。
+4. `uf_reliability/reliability_monitor` 发布现有的唯一 `/reliability/vision_score`；现有 scheduler 负责切换、权重和 covariance inflation。
+5. `uf_backend_fusion` 将 feature batch 匹配到相邻的 LiDAR-keyed window state，应用固定的 camera time offset/extrinsic，并在 Native LiDAR、IMU、GNSS 和 optical flow 旁插入 robust reprojection factor。
 
-## Interfaces
+## 接口
 
-Inputs:
+输入：
 
-- `/sensors/rgbd/color` (`sensor_msgs/Image`, `bgr8` normalized by bridge)
-- `/sensors/rgbd/depth` (`sensor_msgs/Image`, `16UC1` mm or `32FC1` m)
-- `/sensors/rgbd/camera_info` (`sensor_msgs/CameraInfo`)
-- Existing Native LiDAR, IMU, GNSS, optical-flow and scheduler topics
+- `/sensors/rgbd/color`（`sensor_msgs/Image`，由 bridge 规范化为 `bgr8`）
+- `/sensors/rgbd/depth`（`sensor_msgs/Image`，`16UC1` mm 或 `32FC1` m）
+- `/sensors/rgbd/camera_info`（`sensor_msgs/CameraInfo`）
+- 现有 Native LiDAR、IMU、GNSS、optical-flow 和 scheduler topic
 
-Outputs:
+输出：
 
-- `/vision/feature_tracks` (`uf_interfaces/VisualFeatureTracks`)
-- `/reliability/vision_score` (`uf_interfaces/ReliabilityScore`)
-- Existing `/fusion/unified/odom`, path and diagnostics
+- `/vision/feature_tracks`（`uf_interfaces/VisualFeatureTracks`）
+- `/reliability/vision_score`（`uf_interfaces/ReliabilityScore`）
+- 现有的 `/fusion/unified/odom`、path 和 diagnostics
 
-The feature message records both timestamps, normalized and pixel coordinates,
-depth/inverse-depth variance, track age, KLT error, grid cell, PnP inlier and
-reprojection error. This keeps every admission decision auditable.
+feature message 同时记录两个 timestamp、normalized 与 pixel 坐标、depth/inverse-depth variance、track age、KLT error、grid cell、PnP inlier 和 reprojection error，使每次 admission decision 都可审计。
 
-## Configuration and launch
+## 配置与 launch
 
-Stable four-source defaults remain unchanged: `visual_factor_mode: disabled`.
-To run the visual frontend only against an already running fusion stack:
+稳定的 four-source 默认设置保持不变：`visual_factor_mode: disabled`。要只针对已经运行的 fusion stack 启动 visual frontend：
 
 ```bash
 ros2 launch uf_visual_frontend visual_tight_coupling.launch.py \
   enabled:=true start_fusion_stack:=false
 ```
 
-To start the reliability monitor, five-modality scheduler and unified backend
-from this launch as well:
+要通过该 launch 同时启动 reliability monitor、five-modality scheduler 和 unified backend：
 
 ```bash
 ros2 launch uf_visual_frontend visual_tight_coupling.launch.py \
   enabled:=true start_fusion_stack:=true camera_time_offset_s:=0.0
 ```
 
-Before hardware use, replace both camera extrinsic parameters with a measured
-body-from-camera transform. Do not tune a transform from SLAM success alone.
+使用硬件前，将两个 camera extrinsic 参数替换为实测的 body-from-camera transform。不要仅根据 SLAM 成功来调节 transform。
 
-## Mutually exclusive visual modes
+## 互斥的视觉模式
 
-- `disabled`: exact stable-tag four-source behavior.
-- `paper_reprojection`: the only online visual factor in this branch.
-- `legacy_rtab_relative` exists only as a deterministic factor-level A/B helper
-  (`add_legacy_visual_odometry`) and is not wired into the online node.
+- `disabled`：精确的 stable-tag four-source 行为。
+- `paper_reprojection`：本分支中唯一在线 visual factor。
+- `legacy_rtab_relative` 仅作为确定性的 factor-level A/B helper（`add_legacy_visual_odometry`）存在，不接入 online node。
 
-RTAB remains available for mapping, loops and cross-session relocalization. Its
-frame-to-frame odometry is intentionally not inserted when sparse features from
-the same images already form the reprojection factor.
+RTAB 仍可用于 mapping、loop 和 cross-session relocalization。当同一图像产生的 sparse feature 已形成 reprojection factor 时，不会再插入其 frame-to-frame odometry。

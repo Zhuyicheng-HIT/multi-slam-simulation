@@ -1,131 +1,58 @@
-# Ultra-Fusion Robustness V3 validation results
+# Ultra-Fusion Robustness V3 验证结果
 
-## Scope and evidence contract
+## 范围与证据 contract
 
-This report freezes Performance V2 at
-`d04f88d422de611454cf9454ffa2cc3a5741dab3` and evaluates Robustness V3 from
-outside the estimator.  No fusion factor, physical sensor model, integrity
-threshold, rollback rule, D_V/FRS threshold, or `/Odometry` fallback was
-changed.  The levels in the profile YAML are explicit engineering test points;
-they are not claimed as limits from the Ultra-Fusion paper.
+本报告冻结 Performance V2 estimator（`d04f88d422de611454cf9454ffa2cc3a5741dab3`），并从 estimator 外部评估 Robustness V3。未修改 fusion factor、物理 sensor model、integrity threshold、rollback rule、D_V/FRS threshold 或 `/Odometry` fallback。Profile 中的 level 是工程测试点，不是论文声称的极限。
 
-The campaign contains 88 deterministic replay reports: 38 single-fault, 40
-time/extrinsic-calibration, 8 double-fault, and 2 endurance runs.  Every replay
-used the same immutable sensor payloads and the same frozen nominal backend
-trajectory as its alignment reference.  Therefore replay ATE/RPE below are
-**delta-to-frozen-nominal**, not absolute simulator-ground-truth accuracy.
-All 88 replays had zero optimization error, zero true integrity rejection, zero
-transaction rollback, and zero `/Odometry` fallback.
+Campaign 共 88 份确定性 replay report：38 个 single-fault、40 个 time/extrinsic-calibration、8 个 double-fault 和 2 个 endurance。所有 replay 使用相同 immutable sensor payload 和冻结 nominal backend trajectory 作为 alignment reference，因此以下 replay ATE/RPE 是 **delta-to-frozen-nominal**，不是 simulator ground-truth 绝对精度。88 次 replay 均为 zero optimization error、zero true integrity rejection、zero transaction rollback、zero `/Odometry` fallback。
 
-## FRS ON/OFF result
+## FRS ON/OFF 结果
 
-Among paired runs with valid aligned trajectories, FRS ON reduced delta-ATE in
-36 cases and increased it in 5.  The median benefit was 0.001188 m.  This shows
-that FRS is broadly protective, but it is not uniformly beneficial: LiDAR
-medium degradation and IMU medium bias are counterexamples and must remain in
-the regression set.
+在具有有效对齐轨迹的配对运行中，FRS ON 在 36 个 case 降低 delta-ATE，在 5 个 case 增加。中位收益 0.001188 m，说明 FRS 总体有保护作用但并非始终更优；LiDAR medium degradation 和 IMU medium bias 是反例，应保留在 regression set。
 
-Median fault-response times were 0.070 s for vision, 0.177 s for LiDAR,
-0.009 s for GNSS, 0.018 s for optical flow, and 0.109 s for IMU.  Median
-measured recovery times were 0.047 s for vision, 0.496 s for LiDAR, 0.471 s for
-flow, and 0.008 s for IMU.  GNSS recovery cannot be asserted from this replay:
-the frozen capture does not contain live FCU GNSS innovation metadata, so the
-fresh scheduler correctly holds GNSS invalid at zero weight.  The injected
-GNSS jump A/B still validates isolation behavior, but detection and recovery
-must be repeated with live FCU innovation evidence.
+中位 fault-response time：vision 0.070 s、LiDAR 0.177 s、GNSS 0.009 s、optical flow 0.018 s、IMU 0.109 s。中位 measured recovery time：vision 0.047 s、LiDAR 0.496 s、flow 0.471 s、IMU 0.008 s。GNSS recovery 不能由本 replay 断言，因为冻结 capture 没有 live FCU GNSS innovation metadata，fresh scheduler 正确地将 GNSS 保持为 zero weight。注入的 GNSS jump A/B 验证 isolation，但 detection/recovery 需使用 live FCU innovation evidence 重复。
 
-Representative A/B results:
-
-| Profile | FRS ON delta-ATE | FRS OFF delta-ATE | Completeness | Finding |
+| Profile | FRS ON delta-ATE | FRS OFF delta-ATE | Completeness | 结论 |
 |---|---:|---:|---:|---|
 | nominal | 0.002278 m | 0.003623 m | 1.000 | reference |
-| visual heavy, 6 s dropout | 0.003669 m | 0.004603 m | 1.000 | continuous |
-| LiDAR medium, 60% correspondence dropout | 0.018342 m | 0.017146 m | 1.000 | continuous; ON is slightly less accurate |
-| GNSS jump heavy, 35 m | 0.002307 m | 0.012175 m | 1.000 | strongest measured FRS protection |
-| flow heavy, 25 s outage | 0.002281 m | 0.003625 m | 1.000 | continuous |
-| IMU medium, 0.05 rad/s and 0.30 m/s2 bias | 0.005890 m | 0.003646 m | 1.000 | continuous; ON is less accurate |
-| LiDAR heavy, 25 s outage | approximately 0 m | 0.000068 m | 0.512 | failed continuity in both modes |
-| IMU heavy, 25 s outage | approximately 0 m | 0.000069 m | 0.416 | failed continuity in both modes |
+| visual heavy，6 s dropout | 0.003669 m | 0.004603 m | 1.000 | continuous |
+| LiDAR medium，60% correspondence dropout | 0.018342 m | 0.017146 m | 1.000 | continuous；ON 略低精度 |
+| GNSS jump heavy，35 m | 0.002307 m | 0.012175 m | 1.000 | FRS 保护最强 |
+| flow heavy，25 s outage | 0.002281 m | 0.003625 m | 1.000 | continuous |
+| IMU medium，0.05 rad/s、0.30 m/s² bias | 0.005890 m | 0.003646 m | 1.000 | continuous；ON 较低精度 |
+| LiDAR heavy，25 s outage | 约 0 m | 0.000068 m | 0.512 | 两种模式均 continuity failure |
+| IMU heavy，25 s outage | 约 0 m | 0.000069 m | 0.416 | 两种模式均 continuity failure |
 
-Near-zero ATE on an incomplete heavy-outage trajectory is not a success: only
-the short surviving prefix aligned.  Completeness and maximum odometry gap are
-the governing criteria for those cases.
+不完整 heavy-outage trajectory 的近零 ATE 不是成功：只有短暂存活 prefix 被对齐。Completeness 和最大 odometry gap 才是 governing criterion。
 
-## Measured boundaries
+## 实测边界
 
-These are only the pass/fail bounds exercised by this campaign, not exhaustive
-physical limits:
+以下仅是本 campaign 测试的 pass/fail boundary，并非完整物理极限：
 
-* Vision remained continuous through the tested 6 s heavy outage.
-* Native LiDAR remained continuous with 60% correspondence dropout; a 25 s
-  outage failed at 0.512 route completeness.
-* GNSS denial for 30 s and a 35 m position jump remained continuous, subject to
-  the frozen-innovation limitation above.
-* Optical-flow outage for 25 s remained continuous.
-* IMU bias of 0.05 rad/s plus 0.30 m/s2 remained continuous; a 25 s outage
-  failed at 0.416 completeness.
-* Camera-to-IMU offsets passed at +100 ms and -50 ms, the largest tested
-  positive/negative values.  The actual limit lies outside or between untested
-  points and is not inferred.
-* Native LiDAR timing was the most dangerous tested fault.  Even +2 ms produced
-  a trajectory gap greater than 1 s; +/-5 ms and +20 ms commonly left only one
-  usable native factor.  There is no demonstrated nonzero tolerant operating
-  interval in this frozen replay.
-* D435i extrinsics passed at the largest tested errors: 8 degrees rotation and
-  15 cm translation.
-* MID360 passed at 3 degrees rotation; 8 degrees failed with 0.77
-  completeness.  A 15 cm translation passed the broad continuity criterion,
-  but delta-ATE increased to 0.0856 m versus 0.0285 m at 5 cm, so it is not a
-  recommended calibration allowance.
+- Vision 在测试的 6 s heavy outage 中保持 continuous。
+- Native LiDAR 在 60% correspondence dropout 下保持 continuous；25 s outage 在 route completeness 0.512 时失败。
+- GNSS denial 30 s 和 35 m position jump 保持 continuous，但受上述 frozen-innovation 限制。
+- Optical-flow outage 25 s 保持 continuous。
+- IMU bias 0.05 rad/s + 0.30 m/s² 保持 continuous；25 s outage 在 completeness 0.416 时失败。
+- Camera-to-IMU offset 在 +100 ms、−50 ms 通过，这是测试的最大正/负值；实际极限位于未测试点之外或之间，不能推断。
+- Native LiDAR timing 是最危险 fault；即使 +2 ms 也产生超过 1 s 的 trajectory gap，±5 ms 和 +20 ms 通常只剩一个可用 native factor。本冻结 replay 未证明存在非零容忍 operating interval。
+- D435i extrinsic 在最大测试误差 8° rotation、15 cm translation 下通过。
+- MID360 在 3° rotation 下通过；8° 时 completeness 0.77 失败。15 cm translation 通过宽松 continuity criterion，但 delta-ATE 增至 0.0856 m（5 cm 时 0.0285 m），不建议作为 calibration allowance。
 
-## Double faults and endurance
+## Double fault 与 endurance
 
-Visual+GNSS medium, LiDAR+GNSS medium, and IMU+flow medium retained complete
-trajectories with zero optimization/integrity/rollback errors in both FRS
-modes.  Visual+LiDAR heavy failed in both modes at 0.512 completeness.  FRS ON
-improved visual+GNSS, while the LiDAR+GNSS and IMU+flow pairs were slightly
-more accurate with FRS OFF; this is why the result is a measured boundary, not
-a blanket robustness claim.
+Visual+GNSS medium、LiDAR+GNSS medium、IMU+flow medium 在两种 FRS mode 下均保持完整轨迹，optimization/integrity/rollback error 为零。Visual+LiDAR heavy 两种模式均在 completeness 0.512 失败。FRS ON 改善 visual+GNSS，而 LiDAR+GNSS 与 IMU+flow pair 在 FRS OFF 略高精度，因此结果应视为 measured boundary，不能泛化为鲁棒性保证。
 
-The long cyclic visual/GNSS replay remained complete.  FRS ON produced delta
-ATE 0.002825 m, RPE 0.003716 m / 0.015354 deg, 26.888 ms median solver time,
-58% process CPU, and 91,516 KiB peak RSS.  FRS OFF produced 0.003350 m,
-0.004029 m / 0.019241 deg, 32.211 ms, 62% CPU, and 93,480 KiB.  Both had zero
-optimization/integrity/rollback errors.
+Long cyclic visual/GNSS replay 保持完整。FRS ON：delta ATE 0.002825 m，RPE 0.003716 m / 0.015354°，solver median 26.888 ms，CPU 58%，peak RSS 91,516 KiB；FRS OFF：0.003350 m，0.004029 m / 0.019241°，32.211 ms，CPU 62%，93,480 KiB。两者均 zero optimization/integrity/rollback error。
 
-## Online joint-map stress result
+## Online joint-map 压力结果
 
-The final full-stack run verified the corrected launch contract:
-`paper_reprojection` was active, the mapper consumed
-`/cloud_registered_filtered`, NativeLidarFactor was used, and no pose fallback
-was enabled.  Before the vehicle failure it accepted 448 LiDAR, 516 IMU, 516
-GNSS, 91 optical-flow, and 9 paper visual factors.  The source-aware map
-contained 83,973 voxels: 59,303 LiDAR, 34,419 RGB-D, 9,749 joint-source, and
-49,554 LiDAR-only voxels.  RGB coverage was 0.164393; RGB-D contributed 24,670
-supplementary voxels (0.415999 volume growth).  Recorded geometry conflicts,
-conflict ratio, ghosting proxy, and evictions were all zero.
+最终 full-stack run 验证了修正后的 launch contract：`paper_reprojection` active，mapper 消费 `/cloud_registered_filtered`，使用 NativeLidarFactor，未启用 pose fallback。车辆故障前接收 448 LiDAR、516 IMU、516 GNSS、91 optical-flow 和 9 paper visual factor。Source-aware map 含 83,973 voxel：59,303 LiDAR、34,419 RGB-D、9,749 joint-source、49,554 LiDAR-only。RGB coverage 0.164393；RGB-D 提供 24,670 supplementary voxel（0.415999 volume growth）。Geometry conflict、conflict ratio、ghosting proxy、eviction 全为零。
 
-This full-stack test is **FAIL**, not a stability pass.  During the second turn
-ArduPilot reported `Crash: AngErr=50>30, Accel=0.2<3.0`; the vehicle was safely
-disarmed without LAND.  The backend recorded 27 non-committed transactions and
-27 rollbacks (22 excessive translation corrections and 5 excessive
-accelerometer-bias corrections).  Simulation RTF was 0.478.  The failure
-occurred after only about 5.8 m of the first leg, so long-duration map stability
-was not demonstrated even though the partial map was internally consistent.
-All spawned processes and ports were cleaned after the run.
+该 full-stack test 为 **FAIL**，不是 stability pass。第二个 turn 中 ArduPilot 报告 `Crash: AngErr=50>30, Accel=0.2<3.0`；车辆在未 LAND 的情况下安全 disarm。Backend 记录 27 个 non-committed transaction 和 27 次 rollback（22 次 excessive translation correction、5 次 excessive accelerometer-bias correction）。Simulation RTF 为 0.478。故障发生在第一段约 5.8 m 后，因此虽 partial map 内部一致，仍未证明长时间 map stability。所有 process 与 port 均已清理。
 
-## Release decision
+## 发布决定
 
-Robustness V3 is suitable as a reproducible fault-injection and regression
-candidate, but it has **not** reached the gate for direct real-hardware flight
-integration.  Blocking evidence is the nonzero rollback/full-stack crash, the
-absence of a demonstrated nonzero Native LiDAR time-offset margin, and the
-missing live GNSS innovation/recovery validation.  The next safe step is a
-tethered or propeller-off hardware bench run that verifies clock discipline,
-MID360 extrinsics, FCU GNSS innovation metadata, and transaction integrity
-before any flight test.
+Robustness V3 适合作为可复现的 fault-injection/regression candidate，但尚未达到直接 real-hardware flight integration 门槛。阻塞证据包括非零 rollback/full-stack crash、尚未证明 nonzero Native LiDAR time-offset margin，以及缺失 live GNSS innovation/recovery validation。下一安全步骤是 tethered 或 propeller-off hardware bench run，在任何 flight test 前验证 clock discipline、MID360 extrinsic、FCU GNSS innovation metadata 和 transaction integrity。
 
-Machine-readable evidence is generated under ignored `logs/tmp` directories;
-the campaign aggregate is `logs/tmp/robustness_v3_campaign_summary.json` and
-the final map result is
-`logs/tmp/robustness_v3_joint_map_stress_final6/robustness_joint_map_report.json`.
+Machine-readable evidence 位于被忽略的 `logs/tmp` 目录；campaign aggregate 为 `logs/tmp/robustness_v3_campaign_summary.json`，最终 map result 为 `logs/tmp/robustness_v3_joint_map_stress_final6/robustness_joint_map_report.json`。

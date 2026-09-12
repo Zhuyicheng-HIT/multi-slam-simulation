@@ -40,7 +40,9 @@ bash tools/setup_ubuntu.sh
 - ArduPilot Copter SITL；
 - ArduPilot Gazebo 插件；
 - Livox-SDK2、Livox ROS Driver 2 与 FAST-LIO；
-- 本仓库的 `multi_slam_uav_sim`、`multi_slam_worlds` 和 `mid360_reliable_mapper`。
+- 本仓库的全部 ROS 2 包，包括 `multi_slam_uav_sim`、`multi_slam_worlds`、
+  `mid360_reliable_mapper`、`mid360_sim_bridge_cpp`、`uf_sensor_pipeline`、
+  统一后端及其动态观测、重定位和共享建图组件。
 
 ## 3. 固定版本
 
@@ -124,3 +126,20 @@ colcon build --symlink-install
 source install/setup.bash
 python3 tools/verify_repository.py
 ```
+
+### 7.1 真实 MID360 的输入适配
+
+真实设备使用官方 `livox_ros_driver2` 发布 `/livox/lidar` 和 `/livox/imu`，不
+启动 Gazebo 的 `mid360_sim_bridge_cpp`。在已加载 Livox 工作空间和本仓库后，
+将传感器管线叠加为：
+
+```bash
+ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
+  config:=src/ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360_imu_units.yaml \
+  enable_livox_custom_adapter:=true \
+  enable_fault_injection:=false
+```
+
+该 overlay 将 Livox IMU 的线加速度从 `g` 转换为后端约定的 `m/s^2`；角速度
+保持 `rad/s`。真实设备不要同时启动仿真 bridge，以免 `/livox/lidar` 或
+`/livox/imu` 出现重复发布者。

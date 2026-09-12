@@ -1,7 +1,6 @@
-# Frozen Low-Altitude Figure-Eight Baseline
+# 冻结低空八字基线
 
-This is the stable demonstration and regression entry point after the
-2026-08-19 low-altitude figure-eight run. Use:
+这是 2026-08-19 低空八字飞行后的稳定演示和回归入口。使用：
 
 ```bash
 cd /home/zyc/multi-slam-pr12-audit
@@ -11,40 +10,35 @@ source install/setup.bash
 bash tools/run_frozen_low_figure8_validation.sh
 ```
 
-The frozen profile uses the low indoor world, a 2.2 m nominal takeoff, RGB-D
-direct factors, a 10 m simulation depth limit, and directional LiDAR axis
-handoff. It keeps online time calibration in shadow/diagnostic mode.
-The low-altitude route contract is the frozen 29 m traversal with at least
-14 route checkpoints. FAST-LIO drift is still recorded as a diagnostic, but it
-is not a fatal acceptance gate for this profile because FAST-LIO does not own
-the final estimator pose.
-Mission observers, including runtime, drift, and reliability recorders, stop
-on `/mission/phase=landed` by default, which is published only after the route
-node confirms landing and FCU disarm. Replay bag recording is then interrupted during validation
-teardown so the baseline does not spend wall time or disk on idle post-landing
-data. Set `VALIDATION_STOP_OBSERVERS_ON_LANDING=false` only when a fixed
-duration post-flight recording is explicitly needed.
+冻结配置使用低空室内场景、名义 2.2 m 起飞高度、RGB-D direct factors、10 m
+仿真深度上限和 directional LiDAR axis handoff，并将 online time calibration
+保持在 shadow/diagnostic mode。低空路线契约是冻结的 29 m 航迹，至少包含 14 个
+route checkpoints。FAST-LIO drift 仍作为 diagnostic 记录，但不是本配置的致命
+acceptance gate，因为 FAST-LIO 不拥有最终 estimator pose。
 
-The following experimental paths are retained but not invoked by this entry
-point: Range-Facet, barometer fallback, and active relocalization triggers.
-EKF3 ExternalNav control is enabled by this entry point. One-variable experiments must use a new `LOG_DIR`
-and must not overwrite the frozen run.
+Mission observers（包括 runtime、drift 和 reliability recorders）默认在
+`/mission/phase=landed` 时停止；该信号仅在路线节点确认着陆和 FCU disarm 后发布。
+随后在验证 teardown 期间中断 replay bag recording，避免基线在着陆后空闲数据上
+消耗 wall time 或磁盘。只有明确需要固定时长的飞行后记录时才设置
+`VALIDATION_STOP_OBSERVERS_ON_LANDING=false`。
 
-Reference run: `logs/low_indoor_figure8_rangefacet_20260819`.
+以下实验路径保留但不会由此入口调用：Range-Facet、barometer fallback 和 active
+relocalization triggers。此入口启用 EKF3 ExternalNav control。单变量实验必须使用
+新的 `LOG_DIR`，不得覆盖冻结运行。
 
-| Metric | Reference |
+参考运行：`logs/low_indoor_figure8_rangefacet_20260819`。
+
+| 指标 | 参考值 |
 | --- | ---: |
-| Simulation duration | 279.807 s |
-| Matched samples | 2617 |
+| 仿真时长 | 279.807 s |
+| 匹配样本数 | 2617 |
 | Causal 3D RMSE | 3.232 cm |
 | Causal 3D P95 | 4.973 cm |
-| Maximum 3D error | 11.460 cm |
-| Vertical RMSE | 2.685 cm |
-| Solver P95 | about 33 ms |
-| Backend callback P95 | about 81 ms |
+| 3D 最大误差 | 11.460 cm |
+| 垂直 RMSE | 2.685 cm |
+| Solver P95 | 约 33 ms |
+| Backend callback P95 | 约 81 ms |
 
-The recorded run had the Range-Facet switch present but no accepted
-Range-Facet factor. The frozen profile disables it explicitly to prevent an
-experimental path from consuming runtime budget. The reference metrics are
-therefore an archived comparison point, not a claim that every future run is
-identical.
+记录的运行包含 Range-Facet 开关，但没有接受任何 Range-Facet factor。冻结配置
+明确禁用它，防止实验路径消耗 runtime budget。因此参考指标是归档的比较点，
+不声称未来每次运行都完全相同。

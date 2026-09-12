@@ -1,14 +1,12 @@
-# Native FAST-LIO residual runtime report
+# Native FAST-LIO 残差运行报告
 
-Date: 2026-07-26
+日期：2026-07-26
 
-## Scope
+## 范围
 
-This report validates the patched FAST-LIO2 scan-to-map measurement export. It
-does not claim that the unified sliding-window backend already consumes the
-native point-to-plane factors.
+本报告验证 patched FAST-LIO2 的 scan-to-map measurement export，不宣称 unified sliding-window backend 已经消费 native point-to-plane factor。
 
-The implementation follows the paper's LiDAR model:
+实现遵循论文 LiDAR model：
 
 ```text
 r_i = n_i^T (p_i^w - s_i)                         Eq. (6)
@@ -18,28 +16,21 @@ D_L = w_h phi_h + w_n normal_term + w_a phi_a
       + w_c (1 - min(1, M_k / M_ref))            Eq. (19)
 ```
 
-FAST-LIO uses a right SO(3) perturbation. The equivalent rotation block checked
-by the validator is `(p_body x R_WB^T n_world)^T`.
+FAST-LIO 使用 right SO(3) perturbation；validator 检查的等价 rotation block 为 `(p_body x R_WB^T n_world)^T`。
 
-## Validation layers
+## 验证层
 
-1. Reconstruct every signed point-to-plane residual from the exported point,
-   plane, body pose, and LiDAR-to-body extrinsic.
-2. Reconstruct the first six Jacobian columns independently from geometry.
-3. Recompute `J^T J` and `J^T r`; check symmetry and positive semidefiniteness.
-4. Check posterior pose covariance structure, packet dimensions, frames,
-   sequence behavior, and finite values.
-5. Feed the native six-dimensional pose Hessian and residual statistics into
-   `/lio/diagnostics`, then into the reliability scheduler.
+1. 从导出的 point、plane、body pose 和 LiDAR-to-body extrinsic 重建所有 signed point-to-plane residual。
+2. 独立依据 geometry 重建前 6 个 Jacobian column。
+3. 重新计算 `J^T J` 与 `J^T r`，检查 symmetry 和 positive semidefiniteness。
+4. 检查 posterior pose covariance、packet dimensions、frame、sequence 与 finite value。
+5. 将 native 6D pose Hessian 与 residual statistics 送入 `/lio/diagnostics`，再送给 reliability scheduler。
 
-The original FAST-LIO iterated EKF and map update remain unchanged. The adapter
-falls back to the external voxel proxy only if native packets time out.
+原 FAST-LIO iterated EKF 与 map update 不变；仅在 native packet 超时才回退 external voxel proxy。
 
-## Fixed-route results
+## 固定航线结果
 
-All runs used `simple_apm_rgbd_mid360`, the same rectangle flight, headless
-Gazebo GPU rendering, FCU HIGHRES_IMU, and one-thread OpenBLAS for Python nodes.
-The table reports medians in the active evaluation interval.
+各运行使用 `simple_apm_rgbd_mid360`、相同 rectangle flight、headless Gazebo GPU rendering、FCU HIGHRES_IMU 和单线程 OpenBLAS。表中为评估区间 median。
 
 | Run | Native packets | Matches | Residual P95 (m) | lambda_1 | lambda_1 / match | condition | D_L output | Scheduler action |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
@@ -48,11 +39,9 @@ The table reports medians in the active evaluation interval.
 | 90% dropout | 387 | 38 | 0.0636 | 0.410 | 0.0108 | 3410 | 0.326 | disabled, weight 0, inflation 20 |
 | 90% recovery | 540 | 1148 | 0.0510 | 248.8 | 0.2159 | 31.4 | 0.0196 | re-enabled, weight 0.932 |
 
-The 90% dropout run is the first runtime run with the independent pose-Jacobian
-geometry check enabled. It received 1404 packets and accepted 1404; no packet
-failed residual, Jacobian, normal-equation, covariance, or metadata checks.
+90% dropout 是首个启用 independent pose-Jacobian geometry check 的 runtime 运行；接收并通过了 1404/1404 packet 检查，无 residual、Jacobian、normal-equation、covariance 或 metadata 失败。
 
-## Trajectory and runtime gates
+## 轨迹与运行门控
 
 | Run | Aligned ATE RMSE (m) | RPE translation RMSE (m) | Drift yaw RMSE (deg) | RTF median | RTF P10 | Stamp regressions |
 |---|---:|---:|---:|---:|---:|---:|
@@ -60,12 +49,9 @@ failed residual, Jacobian, normal-equation, covariance, or metadata checks.
 | 75% dropout | 0.0472 | 0.01104 | 0.1011 | 0.9994 | 0.781 | 0 |
 | 90% dropout | 0.0600 | 0.01367 | 0.1150 | 0.9995 | 0.774 | 0 |
 
-The simple test map remains localizable even during heavy random point loss.
-The scheduler therefore applies continuous down-weighting at 75% loss and only
-uses the Eq. (15) minimum-observation gate when the median match count falls
-below 50 in the 90% run.
+即使大量随机丢点，简单测试地图仍可定位。因此 scheduler 在 75% 丢点时连续降权，仅在 90% 运行的 median match count 低于 50 时启用 Eq. (15) minimum-observation gate。
 
-## Reproduction
+## 复现
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -77,7 +63,7 @@ python3 src/ultra_fusion_nav/scripts/analyze_native_lidar_experiment.py \
   --output /tmp/native_lidar_dropout90_20260726_210614/native_factor_report.json
 ```
 
-Evidence directories:
+证据目录：
 
 ```text
 /tmp/native_lidar_nominal_v2_20260726_205300
@@ -85,15 +71,10 @@ Evidence directories:
 /tmp/native_lidar_dropout90_20260726_210614
 ```
 
-## Remaining integration boundary
+## 剩余集成边界
 
-The exporter is now suitable for the next backend step, but the backend must
-not add a FAST-LIO pose anchor and the same native point-to-plane information at
-the same timestamp. The next implementation should use one of these policies:
+Exporter 已适合下一步 backend 集成，但 backend 不得在同一 timestamp 同时加入 FAST-LIO pose anchor 与相同 native point-to-plane 信息。后续应选择：
 
-1. Consume native LiDAR pose blocks while using separate IMU preintegration,
-   and remove the proxy LIO pose factor for those states.
-2. Keep FAST-LIO odometry only as initialization/output continuity, not as an
-   additional information factor.
-3. Treat exported posterior covariance as diagnostics only; use
-   `measurement_variance` with the native residual/Jacobian for factor weight.
+1. 消费 native LiDAR pose block，使用独立 IMU preintegration，并移除这些 state 的 proxy LIO pose factor；
+2. FAST-LIO odometry 仅作 initialization/output continuity，不作为额外 information factor；
+3. 导出的 posterior covariance 只作 diagnostics，factor weight 使用 `measurement_variance` 与 native residual/Jacobian。
