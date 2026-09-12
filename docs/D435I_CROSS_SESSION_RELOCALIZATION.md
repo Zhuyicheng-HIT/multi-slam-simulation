@@ -53,14 +53,14 @@ obstacles. The reference maps the center line from x=0 to x=4.50 m at y=0.
 
 | Condition | x (m) | y (m) | z (m) | yaw | Purpose |
 |---|---:|---:|---:|---:|---|
-| `start_same` | 0.00 | 0.00 | 0.50 | 0Â° | mapped start hover, same view |
-| `start_reverse` | 0.00 | 0.00 | 0.50 | 180Â° | same position, large view change |
-| `route_middle` | 2.25 | 0.00 | 0.50 | 0Â° | mapped route midpoint |
-| `route_end` | 4.25 | 0.00 | 0.50 | 0Â° | near mapped endpoint |
-| `mapped_edge` | 3.75 | 0.45 | 0.50 | 0Â° | near mapped corridor edge |
-| `similar_geometry` | 2.25 | 0.60 | 0.50 | 0Â° | repetitive grid, lateral geometric offset |
+| `start_same` | 0.00 | 0.00 | 0.50 | 0° | mapped start hover, same view |
+| `start_reverse` | 0.00 | 0.00 | 0.50 | 180° | same position, large view change |
+| `route_middle` | 2.25 | 0.00 | 0.50 | 0° | mapped route midpoint |
+| `route_end` | 4.25 | 0.00 | 0.50 | 0° | near mapped endpoint |
+| `mapped_edge` | 3.75 | 0.45 | 0.50 | 0° | near mapped corridor edge |
+| `similar_geometry` | 2.25 | 0.60 | 0.50 | 0° | repetitive grid, lateral geometric offset |
 
-Each target performs a bounded yaw sweep of 12Â° or 18Â°, then holds the original
+Each target performs a bounded yaw sweep of 12° or 18°, then holds the original
 view. RTAB-Map starts only after the aircraft reaches the target, so Session 2
 does not map or visually odometer-integrate the positioning flight.
 
@@ -72,7 +72,7 @@ relocalization only when all of the following also hold:
 
 - the accepted node is within 1.25 m of the GT-relative mapped position;
 - map-aligned pose reaches position error at most 0.75 m and yaw error at most
-  45Â° for five consecutive samples;
+  45° for five consecutive samples;
 - no accepted visually similar but geometrically wrong candidate is present;
 - there is no post-alignment position jump above 1 m;
 - lost/reset and TF backward-jump counts are zero;
@@ -94,7 +94,7 @@ Experiment `cross_session_v1_smoke_20260730_01` passed:
 - Session 2 `start_same`: matched node 133 in map 0 with 76 geometry inliers
   and 214 visual words;
 - stable alignment latency 0.178 s from the first RTAB-Map Info event;
-- stable position/yaw error 0.066 m / 0.064Â°;
+- stable position/yaw error 0.066 m / 0.064°;
 - maximum map-to-odom translation jump 0.050 m;
 - abnormal post-alignment jumps, lost, reset and TF backward jumps all zero;
 - the reference mother SHA-256 remained unchanged and both sessions passed
