@@ -455,4 +455,28 @@ python3 tools/plot_s_curve_world_audit.py \
 - [场景说明](docs/WORLDS.md)
 - [GitHub 打包原则](docs/PACKAGING.md)
 
+## 10. 贡献者与致谢
+
+感谢所有通过代码、实验、验证和文档推动本项目的贡献者。下面的记录依据
+历史 PR 整理，包含后来被整合或关闭的 PR；关闭 PR 不代表其中的工作没有被
+吸收，PR #24 对 runtime、sensor normalization 和 MID360 hardware adaptation
+进行了统一整合。
+
+- **Yicheng Zhu（[@Zhuyicheng-HIT](https://github.com/Zhuyicheng-HIT)）**：项目
+  初始架构、WSL/ROS 2 安装教程、一键安装脚本、Gazebo/ArduPilot/FAST-LIO
+  启动流程、four-source/five-source ExternalNav baseline，以及 Dynamic、GNSS、
+  HXY 和 runtime 相关实验与报告（PR #1–6、#11、#13–17、#20–23）。
+- **Zhuoyi Zhang（[@zzy20061214](https://github.com/zzy20061214)）**：D435i
+  RGB-D visual SLAM、HybridFusion map fusion、视觉可靠性/重投影验证，以及
+  部分 robustness、dynamic localization 和 HXY 实验（PR #7–10、#12、#15、#18）。
+- **zero zoe（[@zoe060413](https://github.com/zoe060413)）**：onboard unified
+  odometry publication 稳定性修复与相关运行时验证（PR #19）。
+- **Duo Liu（[@Cat-blizzard](https://github.com/Cat-blizzard)）**：将上述成熟的
+  runtime、sensor、MID360 适配结果整合为 PR #24，并补充 GitHub Actions CI、
+  smoke tests、文档乱码修复和中文文档维护（PR #24–29）。
+
+如果后续贡献者希望在 GitHub Contributors 图表中显示，需要将其独立代码提交
+合并到默认分支；对于已经被 PR #24 吸收的重复代码，不建议为了 Contributors
+图表再次合并旧 PR。历史贡献统一在本节保留致谢。
+
 主仿真包采用 Apache-2.0；外部依赖遵循各自上游许可证。
