@@ -5,15 +5,17 @@ Date: 2026-08-25
 ## Result
 
 The diagnostic trace is sufficient to locate the first causal difference, but
-it is not sufficient to claim that PR17 is the desired solution.On this bag,
-PR17's `paper_eq19`/`paper_eq15` path disables every LiDAR factor.It avoids the
+it is not sufficient to claim that PR17 is the desired solution.  On this bag,
+PR17's `paper_eq19`/`paper_eq15` path disables every LiDAR factor.  It avoids the
 stable branch's catastrophic Y drift by falling back primarily to GNSS and IMU;
-it does not preserve strong LiDAR subspaces.This is evidence for implementing
+it does not preserve strong LiDAR subspaces.  This is evidence for implementing
 and testing subspace C, not evidence that C is already validated.
+
 No estimator decision, state machine, Z-axis policy, relocalization behavior, or
-factor math was changed.The patch only extends the existing performance trace
+factor math was changed.  The patch only extends the existing performance trace
 after each transaction and allows the existing replay wrapper to regenerate the
 LiDAR score/scheduler path for A/B.
+
 ## Frozen input
 
 Frozen copy:
@@ -38,28 +40,32 @@ Checksums:
 | `replay_bag_0.db3.zstd` | 126180529 | `1fdf2c5616670dc9fca7d6ba830ac5b2a4eec07d9cd54deb6f3d6aaf965ebd56` |
 
 The verified input contract is in
-`/home/ld666/projects/hxy-diag-002/bag_contract.json`.Important topic counts
+`/home/ld666/projects/hxy-diag-002/bag_contract.json`.  Important topic counts
 are native LiDAR 678, IMU 7513, GNSS fix 375, raw GNSS 325, optical flow 951,
-RGB-D direct/geometry 57 each, visual tracks 57, and truth 752.Truth was
+RGB-D direct/geometry 57 each, visual tracks 57, and truth 752.  Truth was
 subscribed only by `external_nav_accuracy` and was not an estimator input.
+
 ## Replay contract
 
 Both final runs used the bag from offset zero, rate 0.5, CycloneDDS, one numeric
 thread, two executor threads, axis handoff off, Z reanchor off, barometer
-fallback off, range facet off, and identical QoS/worker depths of 1024.Recorded
+fallback off, range facet off, and identical QoS/worker depths of 1024.  Recorded
 LiDAR score and scheduler messages were excluded and regenerated from the same
 recorded `/lio/diagnostics` and `/lio/odom`; all non-LiDAR score inputs were the
 same recorded messages.
+
 | Run | Algorithm reference | Diagnostic commit | LiDAR score/admission | Output directory |
 |---|---|---|---|---|
 | A | `c7c1adcd92a7fdd3b5b38aa47e48a10ea3552981` | `cb05eb0` | `hybrid` / `adaptive` | `/home/ld666/projects/hxy-diag-002/replay_A_complete_c7c1adc` |
 | B | `4587e479d5f02dbaaaff048c266fd873d124d109` | cherry-pick `8d6afa0` | `paper_eq19` / `paper_eq15` | `/home/ld666/projects/hxy-diag-002/replay_B_complete_pr17` |
 
-Both received all 678 native factors with zero DDS/worker queue supersession.A nevertheless invoked its estimator-internal latest-only check and skipped 171
-already queued old frames after long callbacks; B skipped zero.This is a real
+Both received all 678 native factors with zero DDS/worker queue supersession.
+A nevertheless invoked its estimator-internal latest-only check and skipped 171
+already queued old frames after long callbacks; B skipped zero.  This is a real
 closed-loop timing consequence of the current implementation, not an input-bag
-difference.Consequently final full-run metrics have different output horizons;
+difference.  Consequently final full-run metrics have different output horizons;
 the common-horizon comparison below is the defensible A/B score.
+
 ## Added trace evidence
 
 Each existing `backend_cycle_trace.jsonl` record now includes transaction and
@@ -69,10 +75,12 @@ information/eigenpairs, prediction innovation/gate/recovery, effective factor
 weight, explicit solver admission, active LiDAR factor indices/count/ages,
 marginalization, optimized state, and the already-existing GNSS, visual, flow,
 factor-count, and solver profile diagnostics.
+
 The effective matrix is diagnostic-only:
-`H_eff = w_eff * sqrt(D_axis) * H_schur * sqrt(D_axis)`.Axis handoff was off in
-these runs, so `D_axis=I`.This is computed after the solve from the actual
+`H_eff = w_eff * sqrt(D_axis) * H_schur * sqrt(D_axis)`.  Axis handoff was off in
+these runs, so `D_axis=I`.  This is computed after the solve from the actual
 active factor record and cannot affect the transaction.
+
 ## Core metrics
 
 Offline causal ATE, common source-stamp interval `30.723 <= t <= 78.804 s`
@@ -89,8 +97,10 @@ Offline causal ATE, common source-stamp interval `30.723 <= t <= 78.804 s`
 | Last-sample 3D error (m) | 66.671 | 1.144 |
 
 For completeness, B's full 74.085 s output has 3D/XY/Z RMSE
-`0.788/0.787/0.040 m`, 3D P95/max `1.361/2.440 m`, and endpoint `2.065 m`.A stops producing scoreable output after 48.171 s, so comparing that A value to
+`0.788/0.787/0.040 m`, 3D P95/max `1.361/2.440 m`, and endpoint `2.065 m`.
+A stops producing scoreable output after 48.171 s, so comparing that A value to
 B's full horizon would not be fair.
+
 Factor and admission accounting:
 
 | Quantity | A | B |
@@ -106,27 +116,33 @@ Factor and admission accounting:
 | RGB-D direct received / direct factors | 57 / 0 | 57 / 0 |
 | Visual batches attempted / solver factors | 57 / 0 | 57 / 0 |
 
-Flow was scheduler-disabled on the attempted transactions.RGB-D/visual data
+Flow was scheduler-disabled on the attempted transactions.  RGB-D/visual data
 was received and scored, but `vision_frs_gate_disabled`/quality gating prevented
-factor formation.Thus neither flow nor RGB-D supplies horizontal correction in
-this replay.GNSS is the only active external horizontal absolute constraint;
+factor formation.  Thus neither flow nor RGB-D supplies horizontal correction in
+this replay.  GNSS is the only active external horizontal absolute constraint;
 A later downweights/rejects 95 XY GNSS prefits as its estimate departs, while B
 keeps all 364 GNSS factors mutually consistent.
+
 ## First divergence and timing
 
 There are two useful definitions:
 
-1.First decision divergence: transaction 1, scan sequence 131, `t=30.723 s`.   Both runs have exactly the same Schur spectrum
+1. First decision divergence: transaction 1, scan sequence 131, `t=30.723 s`.
+   Both runs have exactly the same Schur spectrum
    `[0.09029, 0.60937, 1.0]` and weak direction
-   `[-0.01638, 0.99986, -0.00182]`.A admits the LiDAR factor at effective
-   weight 1.0; B sets weight 0/inflation 20 and does not admit it.2.First clear state divergence: transaction 83, scan 213, `t=38.907 s`, where
-   A/B optimized XY positions differ by 0.084 m (first crossing of 0.05 m).   The same timestamp is also A's first offline horizontal error over 0.05 m.
+   `[-0.01638, 0.99986, -0.00182]`.  A admits the LiDAR factor at effective
+   weight 1.0; B sets weight 0/inflation 20 and does not admit it.
+2. First clear state divergence: transaction 83, scan 213, `t=38.907 s`, where
+   A/B optimized XY positions differ by 0.084 m (first crossing of 0.05 m).
+   The same timestamp is also A's first offline horizontal error over 0.05 m.
+
 A's offline horizontal error first exceeds 0.1 m at `43.725 s`, 0.2 m at
-`49.731 s`, and 1.0 m at `60.225 s`; the error is predominantly Y.The first A
+`49.731 s`, and 1.0 m at `60.225 s`; the error is predominantly Y.  The first A
 prediction hard reject is much later, transaction 460 / scan 591 /
-`t=76.824 s`.A's first factor-disabled transaction is transaction 444 at
-`75.009 s`.Prediction gating therefore reacts after the horizontal trajectory
+`t=76.824 s`.  A's first factor-disabled transaction is transaction 444 at
+`75.009 s`.  Prediction gating therefore reacts after the horizontal trajectory
 has already escaped; recovery never activates.
+
 ## Weak direction over time
 
 The weak eigenvector is not fixed in the world frame:
@@ -140,24 +156,28 @@ The weak eigenvector is not fixed in the world frame:
 | 75.934 | 583 | `[0.994, -0.109, -0.004]` | `[0.031, 0.716, 1]` | no |
 
 The vector close to the baseline observation `[0.992,-0.107,-0.072]` occurs at
-`75.934 s`, after A has already crossed 1 m horizontal error.Earlier, while Y
-drift is accumulating, the weak vector is almost world Y.A final Y error and a
-later X-like instantaneous weak direction are therefore not contradictory.Eigenvector sign is arbitrary, and the weak subspace rotates with pose and scene
+`75.934 s`, after A has already crossed 1 m horizontal error.  Earlier, while Y
+drift is accumulating, the weak vector is almost world Y.  A final Y error and a
+later X-like instantaneous weak direction are therefore not contradictory.
+Eigenvector sign is arbitrary, and the weak subspace rotates with pose and scene
 geometry; causal analysis must use the time series, not one terminal vector.
+
 ## Marginal prior
 
 Both runs first fill the 8-state window and marginalize at transaction 9,
-scan 139, `t=31.515 s`.The generated `marginal_prior` first participates in the
-next optimizer call at transaction 10, scan 140, `t=31.614 s`.This precedes the
+scan 139, `t=31.515 s`.  The generated `marginal_prior` first participates in the
+next optimizer call at transaction 10, scan 140, `t=31.614 s`.  This precedes the
 first 5 cm trajectory divergence by 7.293 s and A's 0.2 m truth-error crossing by
 18.117 s.
+
 In A, admitted full-rank LiDAR factors enter the prior continuously: the window
 holds up to 8 active LiDAR factors, with median oldest age 0.693 s and maximum
-0.890 s.Marginalization therefore preserves past LiDAR information after the
-corresponding raw factors leave the window.In B there are no active LiDAR
-factors to preserve.The trace establishes temporal precedence and the
+0.890 s.  Marginalization therefore preserves past LiDAR information after the
+corresponding raw factors leave the window.  In B there are no active LiDAR
+factors to preserve.  The trace establishes temporal precedence and the
 information path; it does not by itself decompose the marginal prior back into
 per-source Schur blocks, which remains a useful C-era diagnostic.
+
 ## Readiness for C
 
 There is sufficient evidence to implement a narrowly scoped C prototype:
@@ -170,12 +190,18 @@ There is sufficient evidence to implement a narrowly scoped C prototype:
   horizontal Y, before prediction gate/rejection intervenes;
 - disabling the entire factor removes the catastrophic drift but also discards
   all strong-direction LiDAR information.
-There is not yet sufficient evidence to declare C correct.C must preserve the
+
+There is not yet sufficient evidence to declare C correct.  C must preserve the
 same full-input replay contract, log per-eigenmode applied scales including what
-enters marginalization, and be compared against A and B on the common horizon.It should also add at least one bag where RGB-D or flow actually forms solver
+enters marginalization, and be compared against A and B on the common horizon.
+It should also add at least one bag where RGB-D or flow actually forms solver
 factors, because this bag cannot test cross-modal compensation beyond GNSS.
+
 ## Verification
 
 - 177 focused Python tests passed (`native_lidar`, `online_backend`, and
-  `manifold_window`).- `uf_backend_fusion` rebuilt successfully on A; PR17 and dependencies rebuilt
-  successfully in its isolated worktree.- Both final bag plays exited zero and passed the input-contract check.- No Gazebo run and no push were performed.
+  `manifold_window`).
+- `uf_backend_fusion` rebuilt successfully on A; PR17 and dependencies rebuilt
+  successfully in its isolated worktree.
+- Both final bag plays exited zero and passed the input-contract check.
+- No Gazebo run and no push were performed.
