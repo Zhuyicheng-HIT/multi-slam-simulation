@@ -34,6 +34,9 @@ def check_text(files: list[Path]) -> None:
     for path in files:
         if path.suffix.lower() not in TEXT_SUFFIXES:
             continue
+        # This checker contains the marker strings it is looking for.
+        if path.resolve() == Path(__file__).resolve():
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
