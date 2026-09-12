@@ -131,15 +131,16 @@ python3 tools/verify_repository.py
 
 真实设备使用官方 `livox_ros_driver2` 发布 `/livox/lidar` 和 `/livox/imu`，不
 启动 Gazebo 的 `mid360_sim_bridge_cpp`。在已加载 Livox 工作空间和本仓库后，
-将传感器管线叠加为：
+保留通用配置中的点云外参与过滤边界，并显式设置真实 IMU 单位比例：
 
 ```bash
 ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
-  config:=src/ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360_imu_units.yaml \
+  config:=src/ultra_fusion_nav/uf_sensor_pipeline/config/sim_sensor_config.yaml \
   enable_livox_custom_adapter:=true \
-  enable_fault_injection:=false
+  enable_fault_injection:=false \
+  imu_acceleration_scale:=9.80665
 ```
 
-该 overlay 将 Livox IMU 的线加速度从 `g` 转换为后端约定的 `m/s^2`；角速度
+该参数将 Livox IMU 的线加速度从 `g` 转换为后端约定的 `m/s^2`；角速度
 保持 `rad/s`。真实设备不要同时启动仿真 bridge，以免 `/livox/lidar` 或
 `/livox/imu` 出现重复发布者。

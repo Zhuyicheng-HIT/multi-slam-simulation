@@ -73,8 +73,7 @@ FAST-LIO 与 Livox 驱动源码放在独立外部工作空间，本仓库只包�
 PR24 将仿真和硬件输入收敛到同一条 Livox/传感器契约。仿真时，
 `mid360_sim_bridge_cpp` 从 Gazebo 的 `/mid360/lidar`、`/mid360/imu` 读取，
 发布硬件兼容的 `/livox/lidar`、`/livox/imu`；真实 MID360 则直接使用官方
-`livox_ros_driver2`，不启动仿真 bridge。两条路径都必须保持各自一个发布者，
-启动脚本会在 FAST-LIO 启动前检查并持续监测该所有权。
+`livox_ros_driver2`，不启动仿真 bridge。两条路径都必须保持各自一个发布者，避免重复数据进入 FAST-LIO；启动脚本会在 FAST-LIO 启动前检查并持续监测该所有权。
 
 ```text
 /livox/lidar -> livox_custom_to_pointcloud -> /sensors/lidar/points_raw
@@ -86,7 +85,8 @@ PR24 将仿真和硬件输入收敛到同一条 Livox/传感器契约。仿真�
 真实 MID360 的 Livox IMU 线加速度通常以 `g` 表示，使用
 `config/real_mid360_imu_units.yaml` 将其转换为后端所需的 SI 单位；仿真桥已经
 直接输出 `m/s^2`。同一观测只能进入统一滑窗一次，故 normalized `/sensors/*`
-话题是 estimator 的唯一输入边界。
+话题是 Ultra-Fusion 后端的唯一归一化输入边界；FAST-LIO 仍直接消费硬件兼容的
+`/livox/*` 输入并输出原生点面信息。
 
 统一后端由 `tools/run_unified_backend_stack.sh` 的 `RUNTIME_PROFILE` 选择模态：
 `minimal_lidar_imu`、`four_source`、`five_source` 和 `robustness`（测试故障注入）。
