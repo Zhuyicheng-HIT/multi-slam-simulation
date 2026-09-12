@@ -459,18 +459,22 @@ python3 tools/plot_s_curve_world_audit.py \
 
 感谢所有通过代码、实验、验证和文档推动本项目的贡献者。下面的记录依据
 历史 PR 整理，包含后来被整合或关闭的 PR；关闭 PR 不代表其中的工作没有被
-吸收，PR #24 对 runtime、sensor normalization 和 MID360 hardware adaptation
-进行了统一整合。
+PR #24 对 runtime、sensor normalization 和 MID360 hardware adaptation
+进行了统一整合。本节同时记录实际提交贡献，以及历史 PR 的发起、提议和验证
+工作。GitHub Contributors 只按默认分支中已合并提交的作者统计；PR 的发起人
+不一定是其中代码提交的作者。
 
 - **Yicheng Zhu（[@Zhuyicheng-HIT](https://github.com/Zhuyicheng-HIT)）**：项目
   初始架构、WSL/ROS 2 安装教程、一键安装脚本、Gazebo/ArduPilot/FAST-LIO
   启动流程、four-source/five-source ExternalNav baseline，以及 Dynamic、GNSS、
   HXY 和 runtime 相关实验与报告（PR #1–6、#11、#13–17、#20–23）。
-- **Zhuoyi Zhang（[@zzy20061214](https://github.com/zzy20061214)）**：D435i
-  RGB-D visual SLAM、HybridFusion map fusion、视觉可靠性/重投影验证，以及
-  部分 robustness、dynamic localization 和 HXY 实验（PR #7–10、#12、#15、#18）。
-- **zero zoe（[@zoe060413](https://github.com/zoe060413)）**：onboard unified
-  odometry publication 稳定性修复与相关运行时验证（PR #19）。
+- **Zhuoyi Zhang（[@zzy20061214](https://github.com/zzy20061214)）**：发起并整理
+  D435i RGB-D visual SLAM、HybridFusion map fusion、视觉可靠性/重投影验证，
+  以及部分 robustness、dynamic localization 和 HXY 实验相关 PR（PR #7–10、
+  #12、#15、#18）。这些 PR 的实现提交仍按 Git 历史记录归属于其实际提交作者。
+- **zero zoe（[@zoe060413](https://github.com/zoe060413)）**：PR #19 中提出
+  onboard unified odometry publication 稳定性修复并完成相关运行时验证；其锚点
+  重试回归场景已适配到后续 PR #31。
 - **Duo Liu（[@Cat-blizzard](https://github.com/Cat-blizzard)）**：将上述成熟的
   runtime、sensor、MID360 适配结果整合为 PR #24，并补充 GitHub Actions CI、
   smoke tests、文档乱码修复和中文文档维护（PR #24–29）。
