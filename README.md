@@ -246,6 +246,33 @@ frame 不匹配或时间戳过期时，状态机会在解锁前退出。飞行�
 `FASTLIO_BACKEND_TRAJECTORY_FRONTEND=1` 单独 A/B；它在 2026-08-07 长航线测试中
 出现请求/原生因子循环等待，尚未列入稳定默认值。
 
+### 5.1.2 PR24 运行时、传感器归一化与动态观测组件
+
+PR24 合并后的代码由以下几层组成，默认启动入口仍保持兼容：
+
+- `uf_sensor_pipeline`：统一传感器话题、单位和 frame，提供故障注入、rosbag2
+  录制/回放以及 sensor contract 检查；
+- `mid360_sim_bridge_cpp`：将 Gazebo MID360 输出转换为硬件兼容的
+  `/livox/lidar` 与 `/livox/imu`，并在进入 FAST-LIO 前执行机身点云过滤；
+- `uf_backend_fusion`：在 bounded sliding window 中接收 native FAST-LIO
+  LiDAR factor、IMU、GNSS 和 optical-flow factor；
+- `uf_dynamic_observer`：可选的 dynamic observer 和 Clean Scan Gateway，默认关闭，
+  不会自动替换生产 `/livox/lidar` 或 FAST-LIO 输入。
+
+需要单独验证这些组件时，可先完成常规编译，再按包文档启动：
+
+```bash
+cd "$HOME/projects/multi-slam-simulation"
+colcon build --symlink-install
+source install/setup.bash
+ros2 launch uf_dynamic_observer observer.launch.py enabled:=true
+```
+
+组件边界、话题契约和 A/B 入口见
+[`src/ultra_fusion_nav/uf_dynamic_observer/README.md`](src/ultra_fusion_nav/uf_dynamic_observer/README.md)、
+[`src/mid360_sim_bridge_cpp/README.md`](src/mid360_sim_bridge_cpp/README.md) 以及
+[`docs/RELEASE_HXY_DYNAMIC_010_SUMMARY.md`](docs/RELEASE_HXY_DYNAMIC_010_SUMMARY.md)。
+
 ### 5.2 四源统一后端长 S 自动验证
 
 下面的单条命令自动启动无界面仿真、LiDAR 前端、统一后端、三圈长 S 航线、
