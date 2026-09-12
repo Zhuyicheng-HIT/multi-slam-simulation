@@ -1380,6 +1380,10 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         node.live_propagation_maximum_output_age_s = 0.20
         node.live_propagation_minimum_interval_s = 0.08
         node.live_propagation_maximum_imu_age_s = 0.20
+        # Exercise the fixed-rate publication owner used by onboard output.
+        # A committed anchor must be able to trigger one retry without being
+        # blocked by the recent-LiDAR throttle.
+        node.unified_odom_output_mode = "fixed_rate_propagated"
         node.backend_solver_mode = "manifold"
         node.imu_factor_enabled = True
         node.native_worker_stop = threading.Event()
@@ -1472,8 +1476,8 @@ class OnlineBackendHelpersTest(unittest.TestCase):
             release_measurement.set()
         live_thread.join(timeout=1.0)
         self.assertFalse(live_thread.is_alive())
-        self.assertFalse(node.odom_pub.messages)
-        self.assertEqual(node.last_live_propagation_reason, "anchor_changed")
+        self.assertEqual(len(node.odom_pub.messages), 1)
+        self.assertEqual(node.last_live_propagation_reason, "ok")
         self.assertEqual(node.optimization_anchor.generation, 5)
 
     def test_unified_odom_suppresses_timestamp_regression(self):
