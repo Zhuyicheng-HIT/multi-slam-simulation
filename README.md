@@ -84,9 +84,10 @@ bash tools/setup_ubuntu.sh
 PR24 之后，仿真与真实 MID360 共用同一条 Livox 接口：仿真默认由 direct
 Livox bridge 发布 `/livox/lidar` 和 `/livox/imu`，真实设备则由官方
 `livox_ros_driver2` 发布。`uf_sensor_pipeline` 会把点云、IMU、GNSS、光流和
-RGB-D 统一到 `/sensors/*`；真实 MID360 的加速度单位（`g`）可使用
-`src/ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360_imu_units.yaml`
-转换为 SI 单位。统一后端通过 `RUNTIME_PROFILE=minimal_lidar_imu|four_source|five_source|robustness`
+RGB-D 统一到 `/sensors/*`；真实 MID360 在线启动时将
+`imu_acceleration_scale=9.80665` 把加速度从 `g` 转换为 SI 单位，故障注入/回放
+可参考 `src/ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360_imu_units.yaml`。
+统一后端通过 `RUNTIME_PROFILE=minimal_lidar_imu|four_source|five_source|robustness`
 选择运行时模态组合，并对 `/livox/lidar`、`/livox/imu` 强制单发布者约束。
 
 外部大型源码默认保存在 `$HOME/ardupilot`、`$HOME/ardupilot_gazebo` 和 `$HOME/multi-slam-deps`，不会被提交到本仓库。

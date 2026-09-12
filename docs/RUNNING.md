@@ -125,6 +125,39 @@ ros2 pkg prefix fast_lio
 ros2 pkg prefix livox_ros_driver2
 ```
 
+### 3.1 MID360 仿真与真实设备切换
+
+仿真推荐使用 direct Livox bridge，使 Gazebo 与真实设备共享
+`/livox/lidar`、`/livox/imu` 接口：
+
+```bash
+MID360_SIM_BRIDGE_MODE=direct_livox \
+  bash tools/run_sim_with_flow.sh
+```
+
+真实 MID360 运行官方 `livox_ros_driver2` 后，只启动传感器归一化管线，将
+`CustomMsg` 点云转换为 estimator 使用的 `PointCloud2`，并把 IMU 加速度从 `g`
+转换为 `m/s^2`：
+
+```bash
+source /opt/ros/humble/setup.bash
+source "$HOME/multi-slam-deps/mid360_ws/install/setup.bash"
+source install/setup.bash
+ros2 launch uf_sensor_pipeline sensor_pipeline.launch.py \
+  config:=src/ultra_fusion_nav/uf_sensor_pipeline/config/sim_sensor_config.yaml \
+  enable_livox_custom_adapter:=true \
+  enable_fault_injection:=false \
+  imu_acceleration_scale:=9.80665
+```
+
+两种模式不能同时运行；`/livox/lidar` 和 `/livox/imu` 必须各只有一个发布者。
+统一后端的模态组合通过 `RUNTIME_PROFILE=minimal_lidar_imu|four_source|five_source|robustness`
+选择，例如：
+
+```bash
+RUNTIME_PROFILE=five_source bash tools/run_unified_backend_stack.sh
+```
+
 ## 4. D435i RGB-D 可视化
 
 彩色图：
