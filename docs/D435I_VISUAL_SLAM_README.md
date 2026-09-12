@@ -1,26 +1,20 @@
+# D435i RGB-D Visual SLAM
 
-# D435i RGB-D è§†è§‰ SLAM
+This feature provides a D435i-only RGB-D visual SLAM baseline that can run alongside the original multi-sensor simulation. It uses the C++ bridge and the RTAB-Map `feature_aligned` profile by default in headless mode; the Python bridge remains available as a compatibility fallback.
 
-æœ¬åŠŸèƒ½æä¾›ä¸€ä¸ªä¸ŽåŽŸå¤šä¼ æ„Ÿå™¨ä»¿çœŸå¹¶å­˜çš„ D435i-only RGB-D è§†è§‰ SLAM
-åŸºçº¿ã€‚é»˜è®¤ä½¿ç”¨ C++ bridge å’Œ RTAB-Map `feature_aligned` profileï¼Œä»¥
-headless æ–¹å¼è¿è¡Œï¼›Python bridge ä¿ç•™ä¸ºå…¼å®¹é™çº§æ–¹æ¡ˆã€‚
-
-## èŒƒå›´ä¸Žè¾¹ç•Œ
+## Scope
 
 ```text
 Gazebo D435i RGB/depth/CameraInfo/IMU
   -> d435i_rgbd_bridge_cpp
   -> paired RGB + aligned 16UC1 depth + CameraInfo + optical TF
   -> RTAB-Map RGB-D odometry/mapping
-  -> /rtabmap/odom, map and read-only database diagnostics
+  -> /rtabmap/odom, map, and read-only database diagnostics
 ```
 
-RTAB-Map åªç”¨äºŽè¯„æµ‹ï¼Œä¸å‘ ArduPilot EKF æˆ–é£žæŽ§å›žçŒä½å§¿ã€‚D435i-only
-profile é»˜è®¤å…³é—­ MID360ã€FAST-LIOã€å…‰æµã€Gazebo GUIã€RTAB-Map GUIã€
-RViz å’Œ PointCloud2ã€‚åŽŸå®Œæ•´ä»¿çœŸä»ç”±åŽŸå…¥å£æŒ‰åŽŸé»˜è®¤å€¼å¯åŠ¨ï¼›æœ¬åŠŸèƒ½æ²¡æœ‰ä¿®æ”¹
-FAST-LIO æˆ– Ultra-Fusion ç®—æ³•ã€‚
+RTAB-Map is used for evaluation only; poses are not fed back into the ArduPilot EKF or flight controller. The D435i-only profile disables MID360, FAST-LIO, optical flow, the Gazebo GUI, the RTAB-Map GUI, RViz, and PointCloud2 by default. The original full simulation keeps its existing entry point and defaults. This feature does not modify FAST-LIO or Ultra-Fusion algorithms.
 
-## æž„å»º
+## Build
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
@@ -30,10 +24,9 @@ colcon build --symlink-install \
 source install/setup.bash
 ```
 
-éœ€è¦ ROS 2 Humbleã€Gazebo Harmonicã€`ros_gz_bridge`ã€RTAB-Map ROS 2ã€
-MAVROSã€NumPyã€PyYAML å’Œ psutilã€‚ä»“åº“å®‰è£…è„šæœ¬è´Ÿè´£é¡¹ç›®çš„é€šç”¨ä¾èµ–ã€‚
+The environment requires ROS 2 Humble, Gazebo Harmonic, `ros_gz_bridge`, RTAB-Map ROS 2, MAVROS, NumPy, PyYAML, and psutil. The repository installation scripts provide the common project dependencies.
 
-## ä¸€é”®å¯åŠ¨å’Œåœæ­¢
+## Start and stop
 
 ```bash
 cd "$HOME/projects/multi-slam-simulation"
@@ -41,81 +34,72 @@ RTABMAP_PROFILE=feature_aligned D435I_WORLD=textured \
   bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_d435i_visual_slam_headless.sh
 ```
 
-åœæ­¢æ—¶åªå¤„ç†æœ¬æ¬¡è¿è¡Œæ¸…å•ä¸­è®°å½•å¹¶æ ¸å¯¹è¿‡ process group çš„ PIDï¼š
+To stop the run, process only the PIDs recorded and verified in the run manifest:
 
 ```bash
 bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/stop_d435i_visual_slam_headless.sh
 ```
 
-é»˜è®¤æ—¥å¿—å†™å…¥
-`logs/d435i_visual_slam/headless/<run-id>/`ï¼Œæ•°æ®åº“å’Œ PID/active æ ‡è®°å‡ä¸º
-è¿è¡Œäº§ç‰©ï¼Œä¸æäº¤åˆ° Gitã€‚
+Logs are written to `logs/d435i_visual_slam/headless/<run-id>/` by default. Databases and PID/active markers are runtime artifacts and are not committed to Git.
 
-## ä¸»è¦è¯é¢˜
+## Main topics
 
-| ä½œç”¨ | ROS 2 è¯é¢˜ |
+| Purpose | ROS 2 topic |
 |---|---|
 | RGB | `/front/d435i/color/image_raw` |
-| raw depth | `/front/d435i/depth/image_rect_raw` |
-| aligned depth | `/front/d435i/aligned_depth_to_color/image_raw` |
-| color CameraInfo | `/front/d435i/color/camera_info` |
-| depth CameraInfo | `/front/d435i/depth/camera_info` |
+| Raw depth | `/front/d435i/depth/image_rect_raw` |
+| Aligned depth | `/front/d435i/aligned_depth_to_color/image_raw` |
+| Color CameraInfo | `/front/d435i/color/camera_info` |
+| Depth CameraInfo | `/front/d435i/depth/camera_info` |
 | IMU | `/front/d435i/imu` |
-| simulation time | `/clock`ï¼Œè¦æ±‚å”¯ä¸€ publisher |
+| Simulation time | `/clock` (requires a single publisher) |
 | RTAB odometry | `/rtabmap/odom` |
-| RTAB diagnostics | `/rtabmap/odom_info`ã€`/rtabmap/info` |
-| evaluation ground truth | `/d435i_visual_slam/ground_truth` |
+| RTAB diagnostics | `/rtabmap/odom_info`, `/rtabmap/info` |
+| Evaluation ground truth | `/d435i_visual_slam/ground_truth` |
 
-C++ bridge åªåœ¨ RGB å’Œ depth éƒ½æ›´æ–°åŽå‘å¸ƒä¸€å¯¹æ¶ˆæ¯ï¼Œå¹¶ä¸º RGBã€depthã€
-aligned depth å’Œ CameraInfo å†™å…¥åŒä¸€ä¸ªæ—¶é—´æˆ³ã€‚æ·±åº¦é»˜è®¤ç¼–ç ä¸º
-`16UC1`ï¼Œframe ä½¿ç”¨ D435i optical frameã€‚PointCloud2 é»˜è®¤å…³é—­ï¼›å¼€å¯æ—¶
-ä¹Ÿåªåœ¨å­˜åœ¨è®¢é˜…è€…ä¸”æ»¡è¶³é™é¢‘æ¡ä»¶æ—¶ç”Ÿæˆã€‚
+The C++ bridge publishes a pair only after both RGB and depth have been updated, and gives RGB, depth, aligned depth, and CameraInfo the same timestamp. Depth uses `16UC1` by default and messages use the D435i optical frame. PointCloud2 is disabled by default; when enabled, it is generated only when subscribers exist and the rate limit allows it.
 
-## Profile å‚æ•°
+## Profile parameters
 
-RTAB-Map profile ä½äºŽ
-`src/multi_slam_uav_sim/config/d435i_rtabmap_feature_aligned.yaml`ã€‚
-å…³é”®ä¸å˜é‡ï¼š
+The RTAB-Map profile is at `src/multi_slam_uav_sim/config/d435i_rtabmap_feature_aligned.yaml`. Key invariants are:
 
-- `frame_id=base_link`ï¼Œ`use_sim_time=true`ï¼Œexact syncï¼›
-- `Kp/DetectorStrategy=6`ï¼Œ`Vis/FeatureType=6`ï¼›
-- `Mem/UseOdomFeatures=true`ï¼›
-- `Vis/MinInliers=10`ï¼Œ`Rtabmap/LoopThr=0.11`ï¼›
-- launch æ‹’ç»é™ä½Ž MinInliers/LoopThr æˆ–å¼€å¯ approximate syncã€‚
+- `frame_id=base_link`, `use_sim_time=true`, and exact synchronization;
+- `Kp/DetectorStrategy=6` and `Vis/FeatureType=6`;
+- `Mem/UseOdomFeatures=true`;
+- `Vis/MinInliers=10` and `Rtabmap/LoopThr=0.11`;
+- the launch rejects lower MinInliers/LoopThr values and approximate synchronization.
 
-å¸¸ç”¨çŽ¯å¢ƒå¼€å…³å‡ä¸º `0` æˆ– `1`ï¼š
+Common environment switches use `0` or `1`:
 
-| å˜é‡ | é»˜è®¤ | ä½œç”¨ |
+| Variable | Default | Purpose |
 |---|---:|---|
 | `GAZEBO_GUI` | 0 | Gazebo GUI |
 | `RTABMAP_GUI` | 0 | RTAB-Map GUI |
 | `RVIZ` | 0 | RViz |
-| `ENABLE_FLOW` | 0 | optical-flow stack |
-| `ENABLE_FLOW_VIEWER` | 0 | optical-flow viewer |
+| `ENABLE_FLOW` | 0 | Optical-flow stack |
+| `ENABLE_FLOW_VIEWER` | 0 | Optical-flow viewer |
 | `ENABLE_MID360` | 0 | MID360 bridge |
 | `ENABLE_D435I_POINTCLOUD` | 0 | D435i PointCloud2 |
-| `D435I_START_FLIGHT_STACK` | 1 | SITL/MAVROS/flight-state |
+| `D435I_START_FLIGHT_STACK` | 1 | SITL/MAVROS/flight state |
 | `D435I_ENABLE_RTABMAP` | 1 | RTAB-Map |
 
-`D435I_BRIDGE_IMPL=python` å¯åˆ‡æ¢åˆ°å…¼å®¹ bridgeï¼›æ­£å¼åŸºçº¿ä½¿ç”¨ `cpp`ã€‚
+Set `D435I_BRIDGE_IMPL=python` to use the compatibility bridge; the supported baseline uses `cpp`.
 
-## éªŒè¯å…¥å£
+## Validation commands
 
 ```bash
-# bridge åžåã€RTAB å»¶è¿Ÿã€ATE/RPE
+# Bridge throughput, RTAB latency, ATE/RPE
 bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/profile_d435i_visual_pipeline.sh
 
-# A-G è§†è§‰å‹å¥½èˆªçº¿
+# A-G visual-friendly flight route
 bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_d435i_visual_slam_flight.sh
 
-# feature alignment å’Œé€Ÿåº¦åŒ…çº¿çŸ©é˜µ
+# Feature-alignment and speed-envelope matrices
 bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_d435i_feature_alignment_matrix.sh
 bash install/multi_slam_uav_sim/share/multi_slam_uav_sim/scripts/run_d435i_speed_envelope_matrix.sh
 
-# å¯¹å·²æœ‰æ•°æ®åº“æ‰§è¡Œåªè¯»è¯Šæ–­
+# Read-only diagnostics for an existing database
 ros2 run multi_slam_uav_sim rtabmap_database_diagnostics --help
 ```
 
-æ€§èƒ½ç»“æžœã€é™åˆ¶å’Œå¤çŽ°å£å¾„åˆ†åˆ«è§
-[D435I_VISUAL_SLAM_BENCHMARK.md](D435I_VISUAL_SLAM_BENCHMARK.md) ä¸Ž
-[D435I_VISUAL_SLAM_STATUS.md](D435I_VISUAL_SLAM_STATUS.md)ã€‚
+See [D435I_VISUAL_SLAM_BENCHMARK.md](D435I_VISUAL_SLAM_BENCHMARK.md) and [D435I_VISUAL_SLAM_STATUS.md](D435I_VISUAL_SLAM_STATUS.md) for performance results, limitations, and reproduction details.
