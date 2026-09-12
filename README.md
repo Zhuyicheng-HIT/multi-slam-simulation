@@ -79,7 +79,15 @@ bash tools/setup_ubuntu.sh
 - 下载并编译 ArduPilot Gazebo 插件；
 - 下载并安装 Livox-SDK2；
 - 下载并编译 Livox ROS Driver 2 与 FAST-LIO；
-- 编译本仓库的三个 ROS 2 包并执行仓库检查。
+- 编译本仓库的全部 ROS 2 包（包括 `uf_sensor_pipeline`、统一后端、动态观测器、重定位和建图组件）并执行仓库检查。
+
+PR24 之后，仿真与真实 MID360 共用同一条 Livox 接口：仿真默认由 direct
+Livox bridge 发布 `/livox/lidar` 和 `/livox/imu`，真实设备则由官方
+`livox_ros_driver2` 发布。`uf_sensor_pipeline` 会把点云、IMU、GNSS、光流和
+RGB-D 统一到 `/sensors/*`；真实 MID360 的加速度单位（`g`）可使用
+`src/ultra_fusion_nav/uf_sensor_pipeline/config/real_mid360_imu_units.yaml`
+转换为 SI 单位。统一后端通过 `RUNTIME_PROFILE=minimal_lidar_imu|four_source|five_source|robustness`
+选择运行时模态组合，并对 `/livox/lidar`、`/livox/imu` 强制单发布者约束。
 
 外部大型源码默认保存在 `$HOME/ardupilot`、`$HOME/ardupilot_gazebo` 和 `$HOME/multi-slam-deps`，不会被提交到本仓库。
 

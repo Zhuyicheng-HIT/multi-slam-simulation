@@ -69,7 +69,8 @@ ros2 launch uf_dynamic_observer clean_gateway.launch.py enabled:=true
 
 The enabled form is only for an independently namespaced Clean FAST-LIO A/B.
 It does not authorize production LiDAR cutover. See
-`docs/DYN_INTEGRATION_005_CLEAN_GATEWAY.md` for the frozen replay and gate.
+`docs/DYNAMIC_V3_VALIDATE_014_REPORT.md` and
+`docs/RELEASE_HXY_DYNAMIC_010_SUMMARY.md` for the current validation gates.
 
 ## Algorithm scope
 
@@ -123,5 +124,6 @@ thread CPU, and filter memory.
 ATE/RPE/residual deltas are exactly zero by construction because neither branch
 is connected to FAST-LIO; they are not claims about closed-loop improvement.
 
-See `docs/DYNAMIC_OBSERVER_V2_VALIDATION.md` and
-`docs/DYNAMIC_OBSERVER_V2_ARCHITECTURE.md` for the final matrix and gate.
+See `docs/DYNAMIC_V3_VALIDATE_014_REPORT.md`,
+`docs/DYNAMIC_V3_013_REPORT.md`, and
+`docs/RELEASE_HXY_DYNAMIC_010_SUMMARY.md` for the validation matrix and gate.
