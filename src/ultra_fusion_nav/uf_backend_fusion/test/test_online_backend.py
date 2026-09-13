@@ -1460,10 +1460,20 @@ class OnlineBackendHelpersTest(unittest.TestCase):
         measurement_ready = threading.Event()
         release_measurement = threading.Event()
 
-        def delayed_measurement(_anchor, _target, _samples):
+        def delayed_measurement(anchor, target, _samples):
             measurement_ready.set()
             self.assertTrue(release_measurement.wait(timeout=1.0))
-            return measurement, "ok"
+            # The retry must preintegrate from the newly committed anchor;
+            # reusing the stale measurement would violate the production
+            # interval/bias contract and correctly be rejected.
+            retry_samples = [
+                ImuSample(stamp, (0.0, 0.0, 9.81), (0.0, 0.0, 0.0))
+                for stamp in (anchor.stamp_s, 9.84, target)
+            ]
+            retry_measurement = preintegrate_manifold(
+                retry_samples, anchor.stamp_s, target, max_gap_s=0.30
+            )
+            return retry_measurement, "ok"
 
         node._live_imu_measurement = delayed_measurement
         with node.state_publication_lock:
