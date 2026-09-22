@@ -468,7 +468,7 @@ PR #24 对 runtime、sensor normalization 和 MID360 hardware adaptation
   初始架构、WSL/ROS 2 安装教程、一键安装脚本、Gazebo/ArduPilot/FAST-LIO
   启动流程、four-source/five-source ExternalNav baseline，以及 Dynamic、GNSS、
   HXY 和 runtime 相关实验与报告（PR #1–6、#11、#13–17、#20–23）。
-- **Zhuoyi Zhang（[@zzy20061214](https://github.com/zzy20061214)）**：发起并整理
+- **Zhiwen Chen（[@zzy20061214](https://github.com/zzy20061214)）**：发起并整理
   D435i RGB-D visual SLAM、HybridFusion map fusion、视觉可靠性/重投影验证，
   以及部分 robustness、dynamic localization 和 HXY 实验相关 PR（PR #7–10、
   #12、#15、#18）。这些 PR 的实现提交仍按 Git 历史记录归属于其实际提交作者。
